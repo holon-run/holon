@@ -38,7 +38,7 @@ pub use runtime::{
     prepare_runtime_before_server_observed_with_maintenance_lease,
     prepare_runtime_before_server_with_maintenance_lease,
 };
-pub(crate) use service::activity_from_snapshots;
+pub use service::activity_from_snapshots;
 pub use service::runtime_activity_summary;
 
 pub type ResolvedDaemonServePlan = holon_daemon::ResolvedDaemonServePlan<crate::config::AppConfig>;

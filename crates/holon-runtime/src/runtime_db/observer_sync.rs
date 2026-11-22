@@ -62,8 +62,8 @@ pub(crate) const AGENT_LATEST_BRIEF_SQL: &str =
 
 /// Principal and entitlement used to derive the runtime-local public scope
 /// for unauthenticated local mode.
-pub(crate) const PUBLIC_SCOPE_PRINCIPAL: &str = "public";
-pub(crate) const PUBLIC_SCOPE_ENTITLEMENT: &str = "public";
+pub const PUBLIC_SCOPE_PRINCIPAL: &str = "public";
+pub const PUBLIC_SCOPE_ENTITLEMENT: &str = "public";
 
 /// Roster anchor rows captured inside one committed database read view.
 /// `runtime_id`, `event_log_epoch`, and `visibility_policy_generation`

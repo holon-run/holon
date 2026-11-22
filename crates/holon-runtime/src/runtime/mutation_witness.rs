@@ -16,7 +16,7 @@ use crate::runtime_db::{
 /// Finishing the synchronous attempt proves only that it cannot still commit;
 /// receipt presence or absence must be read on a fresh coherent transaction.
 #[derive(Debug, Clone)]
-pub(crate) struct MutationWitness {
+pub struct MutationWitness {
     operation_id: String,
     family: MutationWitnessFamily,
     original_attempt_finished: Arc<AtomicBool>,
@@ -736,7 +736,7 @@ impl MutationWitness {
 
     /// Called immediately when the synchronous storage invocation returns, on
     /// both success and failure, before any async installation can be cancelled.
-    pub(crate) fn finish_original_attempt(&self) {
+    pub fn finish_original_attempt(&self) {
         if let Some(attempt) = &self.input_attempt {
             attempt.finish_original_attempt();
         }
@@ -744,14 +744,14 @@ impl MutationWitness {
             .store(true, Ordering::Release);
     }
 
-    pub(crate) fn original_attempt_finished(&self) -> bool {
+    pub fn original_attempt_finished(&self) -> bool {
         if let Some(attempt) = &self.input_attempt {
             return attempt.original_attempt_finished();
         }
         self.original_attempt_finished.load(Ordering::Acquire)
     }
 
-    pub(crate) fn same_attempt(&self, other: &Self) -> bool {
+    pub fn same_attempt(&self, other: &Self) -> bool {
         self.operation_id == other.operation_id
             && self.family == other.family
             && match (&self.input_attempt, &other.input_attempt) {

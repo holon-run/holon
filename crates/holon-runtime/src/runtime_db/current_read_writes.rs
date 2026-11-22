@@ -43,7 +43,7 @@ pub(crate) struct OwnedCurrentRecord {
 }
 
 enum CanonicalEvents<'a> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     Owned(&'a [crate::types::AuditEvent]),
     Shared(&'a [super::transitions::AuditEventAck]),
 }
@@ -57,7 +57,7 @@ impl CanonicalEvents<'_> {
         Option<&super::transitions::AuditEventAck>,
     )> {
         match self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "http-test-support"))]
             Self::Owned(events) => events
                 .iter()
                 .find(|event| event.id == id)
@@ -505,7 +505,7 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
             .context("Current generated address overflow")
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     pub(in crate::runtime_db) fn finish(
         self,
         material: &mut InputReadMaterial<'_>,
@@ -514,7 +514,7 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
         self.finish_with_events(material, &[], visit)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     pub(in crate::runtime_db) fn finish_with_events(
         self,
         material: &mut InputReadMaterial<'_>,
@@ -524,7 +524,7 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
         self.finish_with_records(material, canonical_events, &[], visit)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     pub(in crate::runtime_db) fn finish_with_records(
         self,
         material: &mut InputReadMaterial<'_>,

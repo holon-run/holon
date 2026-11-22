@@ -54,24 +54,7 @@ pub mod test_support {
     use super::*;
     use tempfile::TempDir;
 
-    pub struct TempRuntimeDb {
-        pub db: RuntimeDb,
-        _temp_dir: TempDir,
-    }
-
-    impl TempRuntimeDb {
-        pub fn new() -> Result<Self> {
-            let temp_dir = tempfile::tempdir()?;
-            let db = RuntimeDb::open_and_migrate(
-                temp_dir.path().join("state/runtime.sqlite"),
-                temp_dir.path().join("state/runtime.lock"),
-            )?;
-            Ok(Self {
-                db,
-                _temp_dir: temp_dir,
-            })
-        }
-    }
+    pub use crate::runtime_db::temp_fixture::TempRuntimeDb;
 }
 
 #[cfg(holon_lib_test_shard = "b")]
@@ -11007,7 +10990,3 @@ DELETE FROM schema_migrations WHERE version = 67;
         );
     }
 }
-
-#[cfg(all(test, holon_lib_test_shard = "c"))]
-#[path = "observer_sync_http_tests.rs"]
-mod http_tests;

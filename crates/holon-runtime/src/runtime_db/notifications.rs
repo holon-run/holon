@@ -210,9 +210,54 @@ pub(crate) struct InboxNotification {
     pub target: NotificationTarget,
 }
 
-#[derive(Serialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct InboxNotificationList {
     pub(crate) items: Vec<InboxNotification>,
+}
+
+impl super::RuntimeDb {
+    pub async fn notification_snapshot(
+        &self,
+        recipient: NotificationRecipient,
+    ) -> Result<(InboxNotificationList, InboxNotificationList)> {
+        self.with_read_async(move |conn| {
+            let now = Utc::now();
+            let view = conn.transaction()?;
+            let pending = InboxNotificationList {
+                items: pending(&view, &recipient, now)?,
+            };
+            let recent = InboxNotificationList {
+                items: recent(&view, &recipient, now)?,
+            };
+            view.commit()?;
+            Ok((pending, recent))
+        })
+        .await
+    }
+
+    pub async fn pending_notifications(
+        &self,
+        recipient: NotificationRecipient,
+    ) -> Result<InboxNotificationList> {
+        self.with_read_async(move |conn| {
+            Ok(InboxNotificationList {
+                items: pending(conn, &recipient, Utc::now())?,
+            })
+        })
+        .await
+    }
+
+    pub async fn recent_notifications(
+        &self,
+        recipient: NotificationRecipient,
+    ) -> Result<InboxNotificationList> {
+        self.with_read_async(move |conn| {
+            Ok(InboxNotificationList {
+                items: recent(conn, &recipient, Utc::now())?,
+            })
+        })
+        .await
+    }
 }
 
 /// Return the persisted principal only for the runtime's own trusted
@@ -229,7 +274,7 @@ fn trusted_operator_principal(message: &MessageEnvelope) -> Option<&str> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct NotificationRecipient {
+pub struct NotificationRecipient {
     pub principal_id: String,
     pub local_control: bool,
 }

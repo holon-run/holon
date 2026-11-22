@@ -510,10 +510,8 @@ impl RuntimeHandle {
             .map_err(|_| anyhow!("agent_cleanup_blocked: resource_refresh_exit_pending"))?;
         Ok((admission, physical))
     }
-    #[cfg(test)]
-    pub(crate) async fn hold_resource_refresh_for_test(
-        &self,
-    ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub async fn hold_resource_refresh_for_test(&self) -> Result<tokio::sync::OwnedMutexGuard<()>> {
         self.lock_context_resource_refresh().await
     }
     #[cfg(test)]
@@ -562,7 +560,7 @@ impl RuntimeHandle {
         }
         Ok(())
     }
-    pub(super) async fn await_initial_resources(&self) {
+    pub async fn await_initial_resources(&self) {
         self.start_resource_worker()
             .expect("resource observer startup");
         self.trace_resource_refresh("initial_wait_start");
@@ -577,8 +575,8 @@ impl RuntimeHandle {
             notified.await;
         }
     }
-    #[cfg(test)]
-    pub(crate) async fn await_initial_resources_for_test(&self) {
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub async fn await_initial_resources_for_test(&self) {
         self.await_initial_resources().await;
     }
     /// Explicit refresh/event worker only; no mutation owner survives the I/O.

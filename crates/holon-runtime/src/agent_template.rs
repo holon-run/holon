@@ -95,7 +95,7 @@ const TEMPLATES: TemplateEnvironment = TemplateEnvironment::new(
 );
 
 fn github_template_archive_base() -> String {
-    if cfg!(test) {
+    if cfg!(any(test, feature = "http-test-support")) {
         env::var("HOLON_TEMPLATE_GITHUB_API_BASE")
             .unwrap_or_else(|_| DEFAULT_ARCHIVE_BASE.to_string())
     } else {
@@ -595,20 +595,20 @@ pub async fn ensure_agent_home_agents_md_without_template_with_home(
         .await
 }
 
-pub(crate) fn discover_agent_templates_catalog(
+pub fn discover_agent_templates_catalog(
     user_home: Option<&Path>,
     agent_home: &Path,
 ) -> Vec<AgentTemplateCatalogEntry> {
     package::discover_agent_templates_catalog(TEMPLATES, user_home, agent_home)
 }
 
-pub(crate) fn resolve_agent_template_detail(
+pub fn resolve_agent_template_detail(
     entry: &AgentTemplateCatalogEntry,
 ) -> Option<AgentTemplateDetail> {
     package::resolve_agent_template_detail(TEMPLATES, entry)
 }
 
-pub(crate) async fn resolve_remote_agent_template_detail(
+pub async fn resolve_remote_agent_template_detail(
     entry: &AgentTemplateCatalogEntry,
 ) -> Result<AgentTemplateDetail> {
     package::resolve_remote_agent_template_detail(TEMPLATES, entry).await

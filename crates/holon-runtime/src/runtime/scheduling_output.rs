@@ -122,7 +122,7 @@ impl std::borrow::Borrow<ExternalTriggerRecord> for ExternalTriggerRecordLoan {
     }
 }
 impl ExternalTriggerRecordLoan {
-    pub(crate) fn state_snapshot(&self) -> Result<ExternalTriggerStateSnapshot> {
+    pub fn state_snapshot(&self) -> Result<ExternalTriggerStateSnapshot> {
         external_trigger_state_snapshot(self)
     }
 }

@@ -2,7 +2,7 @@
 use super::*;
 use crate::types::TaskStatusSnapshot;
 
-pub(crate) struct TaskStatusRead {
+pub struct TaskStatusRead {
     pub snapshot: TaskStatusSnapshot,
     _selected: CurrentTaskRecordRead,
     _query: Option<super::super::task_queries::TaskQueryLease>,
@@ -168,7 +168,7 @@ impl RuntimeHandle {
 
     /// Ordinary prepared reads are pure. Only an explicitly named missing
     /// historical Task enters the original owner preparation protocol.
-    pub(crate) async fn task_status_read(&self, id: &str) -> Result<TaskStatusRead> {
+    pub async fn task_status_read(&self, id: &str) -> Result<TaskStatusRead> {
         let mut read = match self
             .with_task_publication(|| self.capture_task_status_material(id))
             .await

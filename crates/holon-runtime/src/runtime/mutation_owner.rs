@@ -27,14 +27,14 @@ use crate::types::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RecoveryKey {
+pub struct RecoveryKey {
     pub agent_id: String,
     pub identity_incarnation: u64,
     pub operation_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PublicationToken {
+pub struct PublicationToken {
     pub identity_incarnation: u64,
     pub owner_epoch: u64,
     pub generation: u64,
@@ -51,7 +51,7 @@ pub(crate) struct StateReadFacts {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RecoveryPhase {
+pub enum RecoveryPhase {
     Committing,
     NeedsReconcile,
 }
@@ -175,7 +175,7 @@ pub(in crate::runtime) enum OriginalInputRecoveryEvidence {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RecoveryRecord {
+pub struct RecoveryRecord {
     pub key: RecoveryKey,
     pub phase: RecoveryPhase,
     started_at: std::time::Instant,
@@ -183,7 +183,7 @@ pub(crate) struct RecoveryRecord {
     // Compatibility views only; `known` distinguishes absent rows from unknown.
     pub committed_state: Option<Arc<AgentState>>,
     pub(super) committed_runtime: Option<Arc<super::state_mutation::RuntimeMutationFacts>>,
-    pub known: Option<KnownCommit>,
+    pub(crate) known: Option<KnownCommit>,
     pub witness: Option<MutationWitness>,
     // A successor claim clears its root. Preserve the original cold boundary
     // so recovery cannot reinterpret a formerly published State as absent.
@@ -211,13 +211,13 @@ impl RecoveryRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WitnessUnknownResolution {
+pub enum WitnessUnknownResolution {
     Known,
     NotCommitted,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum MutationOwnerError {
+pub enum MutationOwnerError {
     #[error("agent mutation owner is busy")]
     Busy,
     #[error("agent mutation owner has been replaced")]
@@ -285,7 +285,7 @@ impl Publication {
 #[derive(Debug, Default)]
 struct MutationOwnerSlot {
     reservation: Arc<AsyncMutex<()>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     reservation_waiting: tokio::sync::Notify,
     publication: Mutex<Publication>,
     // Load/store only after validating epoch and fence under publication.
@@ -598,7 +598,7 @@ impl MutationOwnerRegistry {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct MutationOwner {
+pub struct MutationOwner {
     agent_id: String,
     incarnation: u64,
     epoch: u64,
@@ -692,7 +692,7 @@ impl MutationOwner {
             .collect()
     }
 
-    pub(crate) async fn reserve_all(
+    pub async fn reserve_all(
         mut owners: Vec<Self>,
     ) -> Result<Vec<MutationReservation>, MutationOwnerError> {
         loop {
@@ -729,9 +729,9 @@ impl MutationOwner {
         }
     }
 
-    pub(crate) async fn reserve(&self) -> Result<MutationReservation, MutationOwnerError> {
+    pub async fn reserve(&self) -> Result<MutationReservation, MutationOwnerError> {
         let acquire = self.slot.reservation.clone().lock_owned();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "http-test-support"))]
         let acquire = async {
             tokio::pin!(acquire);
             std::future::poll_fn(|cx| {
@@ -752,8 +752,8 @@ impl MutationOwner {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) async fn wait_for_reservation_waiter_for_test(&self) {
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub async fn wait_for_reservation_waiter_for_test(&self) {
         self.slot.reservation_waiting.notified().await;
     }
 
@@ -771,13 +771,13 @@ impl MutationOwner {
         Ok(())
     }
 
-    pub(crate) fn capture(&self) -> Result<Option<Arc<PostureObservation>>, MutationOwnerError> {
+    pub fn capture(&self) -> Result<Option<Arc<PostureObservation>>, MutationOwnerError> {
         self.capture_with_token().map(|(_, root)| root)
     }
 
     /// State display only: capture the last complete cut and its phase together.
     /// Strict execution/cursor readers continue to use `capture_with_token`.
-    pub(crate) fn capture_state_observation(
+    pub fn capture_state_observation(
         &self,
     ) -> Result<Option<(Arc<PostureObservation>, AgentListObservation)>, MutationOwnerError> {
         let publication = self.slot.publication.lock().expect("publication poisoned");
@@ -883,7 +883,7 @@ impl MutationOwner {
     }
 
     /// Cold observations also need the generation when no Root is published.
-    pub(crate) fn capture_with_token(
+    pub fn capture_with_token(
         &self,
     ) -> Result<(PublicationToken, Option<Arc<PostureObservation>>), MutationOwnerError> {
         let publication = self.slot.publication.lock().expect("publication poisoned");
@@ -909,7 +909,7 @@ impl MutationOwner {
     }
 }
 
-pub(crate) struct MutationReservation {
+pub struct MutationReservation {
     owner: MutationOwner,
     _guard: OwnedMutexGuard<()>,
     ticket: Option<RecoveryKey>,
@@ -1106,7 +1106,7 @@ impl MutationReservation {
         Self::begin_all_inner(reservations, operation_id, None, false)
     }
 
-    pub(crate) fn begin_all_identity_change(
+    pub fn begin_all_identity_change(
         reservations: &mut [Self],
         operation_id: String,
     ) -> Result<Vec<RecoveryKey>, MutationOwnerError> {
@@ -1115,7 +1115,7 @@ impl MutationReservation {
 
     /// Registers a frozen durable result address in the same critical section
     /// that closes the original operation's publication gate.
-    pub(crate) fn begin_all_with_witness(
+    pub fn begin_all_with_witness(
         reservations: &mut [Self],
         operation_id: String,
         witness: MutationWitness,
@@ -1777,7 +1777,7 @@ impl MutationReservation {
         }
     }
 
-    pub(crate) fn definitely_not_committed_all(
+    pub fn definitely_not_committed_all(
         reservations: &mut [Self],
     ) -> Result<(), MutationOwnerError> {
         Self::validate_order(reservations)?;
@@ -1948,7 +1948,7 @@ impl MutationReservation {
             .collect()
     }
 
-    pub(crate) fn recovery(&self) -> Result<Option<RecoveryRecord>, MutationOwnerError> {
+    pub fn recovery(&self) -> Result<Option<RecoveryRecord>, MutationOwnerError> {
         let publication = self
             .owner
             .slot
@@ -1988,14 +1988,11 @@ impl MutationReservation {
         Ok(())
     }
 
-    pub(crate) fn begin(
-        &mut self,
-        operation_id: String,
-    ) -> Result<RecoveryKey, MutationOwnerError> {
+    pub fn begin(&mut self, operation_id: String) -> Result<RecoveryKey, MutationOwnerError> {
         Ok(Self::begin_all(std::slice::from_mut(self), operation_id)?.remove(0))
     }
 
-    pub(crate) fn begin_identity_rename(
+    pub fn begin_identity_rename(
         &mut self,
         operation_id: String,
         before: Arc<AgentIdentityRecord>,
@@ -2069,8 +2066,8 @@ impl MutationReservation {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) fn definitely_not_committed(&mut self) -> Result<(), MutationOwnerError> {
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub fn definitely_not_committed(&mut self) -> Result<(), MutationOwnerError> {
         Self::definitely_not_committed_all(std::slice::from_mut(self))
     }
 
@@ -2128,7 +2125,7 @@ impl MutationReservation {
             scheduling,
         )
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     pub(crate) fn committed_prepared_with_scheduling_domains(
         &self,
         state: Arc<AgentState>,

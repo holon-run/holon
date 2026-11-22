@@ -232,7 +232,7 @@ impl RuntimeRegistry {
         Ok(records)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     pub(crate) fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.inner.host_storage.append_agent_identity(record)?;
         self.cache_agent_identity(record)

@@ -4,8 +4,8 @@ use super::*;
 use crate::diagnostics::resource_io::{self, ResourceReadMaterial};
 use tokio_util::bytes::Bytes;
 
-pub(crate) struct StateProjectionMaterial {
-    pub(crate) acquisition: ResourceReadMaterial,
+pub struct StateProjectionMaterial {
+    pub acquisition: ResourceReadMaterial,
     pub(crate) _work: Option<Arc<BudgetViewGuard>>,
     pub(crate) _tasks: Option<Arc<BudgetViewGuard>>,
     pub(crate) _scheduling: Option<SchedulingReadMaterial>,
@@ -21,10 +21,6 @@ struct StateWire {
 #[path = "operator_state_tests.rs"]
 mod tests;
 
-#[cfg(all(test, holon_lib_test_shard = "c"))]
-#[path = "operator_state_http_tests.rs"]
-mod http_tests;
-
 impl AsRef<[u8]> for StateWire {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
@@ -32,7 +28,7 @@ impl AsRef<[u8]> for StateWire {
 }
 
 impl StateProjectionMaterial {
-    pub(crate) fn into_json_bytes(self, value: &impl serde::Serialize) -> Result<Bytes> {
+    pub fn into_json_bytes(self, value: &impl serde::Serialize) -> Result<Bytes> {
         let bytes = self.acquisition.read(|| {
             let size = usize::try_from(super::input_evidence_budget::serialized_bytes(value)?)?;
             resource_io::charge_owned_payload(u64::try_from(size)?)?;
@@ -58,8 +54,8 @@ impl StateProjectionMaterial {
 }
 
 impl RuntimeHandle {
-    #[cfg(test)]
-    pub(crate) async fn operator_state_read_projection(
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub async fn operator_state_read_projection(
         &self,
         task_limit: usize,
         timer_limit: usize,

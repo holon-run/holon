@@ -12,7 +12,7 @@ impl RuntimeHost {
         )
     }
 
-    pub(crate) fn operator_agent_state_projection_scoped(
+    pub fn operator_agent_state_projection_scoped(
         &self,
         agent_id: &str,
         task_limit: usize,

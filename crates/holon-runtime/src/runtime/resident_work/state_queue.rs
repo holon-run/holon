@@ -7,7 +7,7 @@ use crate::work_item_scheduling::{
 use std::{borrow::Borrow, ops::Deref};
 
 pub(crate) type StateWorkQueue = WorkQueueReadModel<StateWorkRecord>;
-pub(crate) const STATE_ACTIVE_WORK_ITEM_LIMIT: usize = 50;
+pub const STATE_ACTIVE_WORK_ITEM_LIMIT: usize = 50;
 
 #[derive(Debug, Clone)]
 enum StateWorkOwner {
@@ -39,7 +39,7 @@ impl StateWorkRecord {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct StateWorkRecord {
+pub struct StateWorkRecord {
     owner: StateWorkOwner,
     // Keep the captured pin accounting with every surviving record loan.
     _pins: Arc<Vec<Arc<BudgetViewGuard>>>,

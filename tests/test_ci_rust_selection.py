@@ -38,6 +38,18 @@ class RustSelectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.select(path), (False, [path.split("/")[1]], True))
 
+    def test_http_api_tests_are_independent_of_runtime_shards(self):
+        for path in (
+            "crates/holon-http-api/src/http/runtime_integration_tests/mod.rs",
+            "crates/holon-http-api/src/http/runtime_integration_tests/reader_pool_http_tests.rs",
+        ):
+            with self.subTest(path=path):
+                plan = self.plan(path)
+                self.assertFalse(plan["root"])
+                self.assertFalse(plan["runtime_tests_only"])
+                self.assertTrue(plan["crate_tests_only"])
+                self.assertEqual(plan["crates"], ["holon-http-api"])
+
     def test_leaf_and_reverse_dependencies(self):
         self.assertEqual(self.select("crates/holon-daemon/src/lifecycle.rs"),
                          (True, ["holon-daemon", "holon-http-api"], False))
@@ -62,7 +74,6 @@ class RustSelectionTests(unittest.TestCase):
         for paths, groups, jobs in (
             (["runtime/tests/scheduler.rs"], ["a"], ["lib-a"]),
             (["runtime_db/reader_pool_tests.rs"], ["b"], ["lib-b"]),
-            (["runtime_db/reader_pool_http_tests.rs"], ["c"], ["lib-a"]),
             (["worktree_tests.rs"], ["d"], ["lib-b"]),
             (["runtime_db/transitions/provider_queue_tests.rs"], ["e"], ["lib-a"]),
             (

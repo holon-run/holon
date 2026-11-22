@@ -12,20 +12,20 @@ use super::resident_work::{CapturedWork, ResidentWorkDomain};
 use crate::types::{AgentIdentityRecord, AgentState, ContextEpisodeRecord};
 
 #[derive(Debug, Clone)]
-pub(crate) struct AgentSnapshot {
+pub struct AgentSnapshot {
     pub token: PublicationToken,
-    pub state: Arc<AgentState>,
+    pub(crate) state: Arc<AgentState>,
     pub identity: Option<Arc<AgentIdentityRecord>>,
-    pub queue_posture: Option<crate::queue::QueuePostureFacts>,
-    pub scheduler_events: Option<crate::runtime_db::current_query::SchedulerEventFacts>,
+    pub(crate) queue_posture: Option<crate::queue::QueuePostureFacts>,
+    pub(crate) scheduler_events: Option<crate::runtime_db::current_query::SchedulerEventFacts>,
     // None is an unprepared domain, never a ready empty collection.
-    pub episodes: Option<Arc<ResidentEpisodes>>,
-    pub input_evidence: Option<Arc<ResidentInputEvidence>>,
-    pub work: Option<Arc<ResidentWorkDomain>>,
-    pub tasks: Option<Arc<ResidentTaskDomain>>,
-    pub scheduling: Option<Arc<ResidentSchedulingDomain>>,
+    pub(crate) episodes: Option<Arc<ResidentEpisodes>>,
+    pub(crate) input_evidence: Option<Arc<ResidentInputEvidence>>,
+    pub(crate) work: Option<Arc<ResidentWorkDomain>>,
+    pub(crate) tasks: Option<Arc<ResidentTaskDomain>>,
+    pub(crate) scheduling: Option<Arc<ResidentSchedulingDomain>>,
     /// Sparse original-ACK bodies, never complete Queue/Event query coverage.
-    pub current: Option<Arc<crate::runtime_db::current_read_writes::CommittedCurrentWrites>>,
+    pub(crate) current: Option<Arc<crate::runtime_db::current_read_writes::CommittedCurrentWrites>>,
 }
 
 /// Only the selected immutable records survive request preparation. This value

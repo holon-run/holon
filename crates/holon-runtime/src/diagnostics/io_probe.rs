@@ -36,30 +36,30 @@ static FILE_ERRORS: AtomicU64 = AtomicU64::new(0);
 static TIMINGS_DROPPED: AtomicU64 = AtomicU64::new(0);
 static TIMINGS: Mutex<Vec<TimingSample>> = Mutex::new(Vec::new());
 
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 thread_local! {
     static DENY_RESOURCE_READS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static DENIED_READ_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
-#[cfg(test)]
-pub(crate) struct DenyResourceReaders(bool);
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
+pub struct DenyResourceReaders(bool);
+#[cfg(any(test, feature = "http-test-support"))]
 impl DenyResourceReaders {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         DENIED_READ_ATTEMPTS.with(|attempts| attempts.set(0));
         Self(DENY_RESOURCE_READS.with(|deny| deny.replace(true)))
     }
-    pub(crate) fn attempts(&self) -> usize {
+    pub fn attempts(&self) -> usize {
         DENIED_READ_ATTEMPTS.with(std::cell::Cell::get)
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 impl Drop for DenyResourceReaders {
     fn drop(&mut self) {
         DENY_RESOURCE_READS.with(|deny| deny.set(self.0));
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 fn check_resource_read() -> io::Result<()> {
     if DENY_RESOURCE_READS.with(std::cell::Cell::get) {
         DENIED_READ_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
@@ -346,15 +346,8 @@ impl Drop for IoProbe {
     }
 }
 
-#[cfg(all(
-    test,
-    any(
-        holon_lib_test_shard = "a",
-        holon_lib_test_shard = "c",
-        holon_lib_test_shard = "d"
-    )
-))]
-pub(crate) fn run_isolated_test(module: &str, test_name: &str) -> bool {
+#[cfg(any(test, feature = "http-test-support"))]
+pub fn run_isolated_test(module: &str, test_name: &str) -> bool {
     const CHILD_TEST: &str = "HOLON_IO_PROBE_CHILD_TEST";
     let (_, module) = module
         .split_once("::")
@@ -467,7 +460,7 @@ unsafe extern "C" fn sql_statement(
 }
 
 pub(crate) fn read_to_string(path: impl AsRef<Path>) -> io::Result<String> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     {
         let allowed = check_resource_read();
         super::resource_io::observe_read_error(&allowed);
@@ -516,7 +509,7 @@ pub(crate) fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 }
 
 pub(crate) fn read_dir(path: impl AsRef<Path>) -> io::Result<super::resource_io::ResourceReadDir> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     {
         let allowed = check_resource_read();
         super::resource_io::observe_read_error(&allowed);
@@ -540,7 +533,7 @@ pub(crate) fn start_timer() -> Option<Instant> {
 }
 
 pub(crate) fn open_file(path: impl AsRef<Path>) -> io::Result<File> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     {
         let allowed = check_resource_read();
         super::resource_io::observe_read_error(&allowed);

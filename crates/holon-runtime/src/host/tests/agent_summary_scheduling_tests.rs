@@ -204,68 +204,6 @@ async fn cold_summary_owned_queue_keeps_empty_fallback_and_scheduling_rejection(
 }
 
 #[tokio::test]
-async fn cold_summary_and_compact_http_projection_keep_exact_scheduling_until_wire() -> Result<()> {
-    let (_home, host) = test_host();
-    let config = host.config().as_ref().clone();
-    let runtime = host.default_runtime().await?;
-    let trigger = runtime
-        .default_external_trigger(CallbackDeliveryMode::WakeHint)
-        .await?;
-    let agent_id = runtime.instance_agent_id().to_owned();
-    drop(runtime);
-    host.shutdown().await?;
-    drop(host);
-    let cold = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
-    assert!(cold.inner.runtimes.read().await.agents.is_empty());
-    let baseline = cold.inner.input_evidence_budget.report()?.observed_bytes;
-    let summary = cold
-        .local_agent_summary(&agent_id)
-        .await
-        .map_err(|error| anyhow!("{error:?}"))?;
-    assert_eq!(summary.active_external_triggers.len(), 1);
-    assert_eq!(
-        summary.active_external_triggers[0].external_trigger_id,
-        trigger.external_trigger_id
-    );
-    assert!(cold.inner.input_evidence_budget.report()?.observed_bytes > baseline);
-    let original = serde_json::to_value(&*summary)?;
-    let wire = serde_json::to_value(&summary)?;
-    assert_eq!(wire, original);
-    assert_eq!(wire["agent"]["id"], agent_id);
-    // This is the actual HTTP synchronous serializer, consuming the carrier.
-    let response =
-        crate::http::traced_json("summary-owned-test", std::time::Instant::now(), summary)
-            .map_err(|error| anyhow!("{error:?}"))?;
-    assert_eq!(response.status(), axum::http::StatusCode::OK);
-    assert_eq!(
-        cold.inner.input_evidence_budget.report()?.observed_bytes,
-        baseline
-    );
-    let compact = cold
-        .local_agent_lightweight_projection(&agent_id)
-        .await
-        .map_err(|error| anyhow!("{error:?}"))?;
-    assert!(compact._scheduling_material.is_some());
-    assert!(cold.inner.input_evidence_budget.report()?.observed_bytes > baseline);
-    let response = crate::http::traced_json(
-        "compact-owned-test",
-        std::time::Instant::now(),
-        crate::http_dto::SlimAgentDto::from(&compact),
-    )
-    .map_err(|error| anyhow!("{error:?}"))?;
-    assert_eq!(response.status(), axum::http::StatusCode::OK);
-    assert!(cold.inner.input_evidence_budget.report()?.observed_bytes > baseline);
-    drop(compact);
-    assert_eq!(
-        cold.inner.input_evidence_budget.report()?.observed_bytes,
-        baseline
-    );
-    assert!(cold.inner.runtimes.read().await.agents.is_empty());
-    cold.shutdown().await?;
-    Ok(())
-}
-
-#[tokio::test]
 async fn cold_summary_no_state_known_timer_is_typed_and_never_becomes_empty_ready() -> Result<()> {
     let (_home, host) = test_host();
     let identity = host.ensure_default_agent_identity()?;

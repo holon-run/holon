@@ -28,8 +28,8 @@ pub(crate) fn retain_observation_guard(material: &ObservationMaterial) -> Arc<Bu
         .expect("runtime observations carry a budget view guard")
 }
 
-#[cfg(test)]
-pub(crate) fn same_observation_guard(
+#[cfg(any(test, feature = "http-test-support"))]
+pub fn same_observation_guard(
     material: &ObservationMaterial,
     guard: &Arc<BudgetViewGuard>,
 ) -> bool {

@@ -13,7 +13,7 @@ use serde_json::Value;
 
 pub(crate) use holon_tools::builtins::apply_patch_tool::*;
 
-pub(crate) async fn execute(
+pub async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
     _authority_class: &AuthorityClass,

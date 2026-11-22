@@ -14,16 +14,23 @@ use crate::types::{
     WorkspaceProjectionMetadata, WorktreeSession,
 };
 
-pub(crate) struct LightweightAgentStateProjection {
-    pub(crate) identity: AgentIdentityView,
-    pub(crate) agent: AgentState,
-    pub(crate) scheduling_posture: AgentPostureProjection,
-    pub(crate) active_task_count: usize,
-    pub(crate) lifecycle: AgentLifecycleHint,
-    pub(crate) model: AgentModelState,
-    pub(crate) closure: ClosureDecision,
-    pub(crate) work_queue: StateWorkQueue,
+pub struct LightweightAgentStateProjection {
+    pub identity: AgentIdentityView,
+    pub agent: AgentState,
+    pub scheduling_posture: AgentPostureProjection,
+    pub active_task_count: usize,
+    pub lifecycle: AgentLifecycleHint,
+    pub model: AgentModelState,
+    pub closure: ClosureDecision,
+    pub work_queue: StateWorkQueue,
     pub(crate) _scheduling_material: Option<super::SchedulingReadMaterial>,
+}
+
+#[cfg(feature = "http-test-support")]
+impl LightweightAgentStateProjection {
+    pub fn has_scheduling_material_for_http_test(&self) -> bool {
+        self._scheduling_material.is_some()
+    }
 }
 
 pub(crate) struct ChildAgentSummaryObservation {
@@ -1787,7 +1794,7 @@ impl RuntimeHandle {
         self.workspace_entry_by_id(workspace_id).await
     }
 
-    pub(crate) async fn activate_agent_home(
+    pub async fn activate_agent_home(
         &self,
         access_mode: WorkspaceAccessMode,
         cwd: Option<PathBuf>,

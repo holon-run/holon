@@ -848,7 +848,7 @@ impl RuntimeHandle {
             .map(|message| message.id))
     }
 
-    pub(super) async fn emit_system_tick_from_wake_hint_with_decision(
+    pub async fn emit_system_tick_from_wake_hint_with_decision(
         &self,
         pending: &PendingWakeHint,
     ) -> Result<bool> {

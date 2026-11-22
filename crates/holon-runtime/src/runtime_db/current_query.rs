@@ -15,11 +15,14 @@ use crate::runtime::{
 };
 
 mod event_page;
-#[cfg(test)]
-pub(crate) use event_page::{append_qualified_event_for_fixture, prepare_event_page};
+#[cfg(any(test, feature = "http-test-support"))]
+pub use event_page::append_qualified_event_for_fixture;
+#[cfg(any(test, feature = "http-test-support"))]
+pub(crate) use event_page::prepare_event_page;
 #[cfg(test)]
 mod source_fixture;
-pub(crate) use event_page::{prepare_event_page_with_scan, EventPageScan, PreparedEventPage};
+pub(crate) use event_page::prepare_event_page_with_scan;
+pub use event_page::{EventPageScan, PreparedEventPage};
 #[cfg(test)]
 pub(crate) use source_fixture::remove_qualified_terminal_queue_for_fixture;
 

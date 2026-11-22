@@ -1,7 +1,8 @@
 pub use holon_observability::diagnostics::*;
 
 pub mod io_probe;
-pub(crate) mod resource_io;
+#[doc(hidden)]
+pub mod resource_io;
 
 pub fn record_runtime_db_wal_checkpoint(
     report: &crate::runtime_db::retention::RuntimeDbWalCheckpointReport,

@@ -7,12 +7,12 @@ use crate::types::{
     TaskInputResult, TaskRecord,
 };
 
-pub(crate) struct ManagedTaskSupervisor<'a> {
+pub struct ManagedTaskSupervisor<'a> {
     runtime: &'a RuntimeHandle,
 }
 
 impl RuntimeHandle {
-    pub(crate) fn managed_tasks(&self) -> ManagedTaskSupervisor<'_> {
+    pub fn managed_tasks(&self) -> ManagedTaskSupervisor<'_> {
         ManagedTaskSupervisor { runtime: self }
     }
 }
@@ -59,14 +59,14 @@ impl ManagedTaskSupervisor<'_> {
         self.runtime.active_task_list_snapshot(usize::MAX).await
     }
 
-    pub(crate) async fn task_status_read(
+    pub async fn task_status_read(
         &self,
         task_id: &str,
     ) -> Result<super::task_reads::TaskStatusRead> {
         self.runtime.task_status_read(task_id).await
     }
 
-    pub(crate) async fn task_output_read(
+    pub async fn task_output_read(
         &self,
         task_id: &str,
         block: bool,
@@ -77,7 +77,7 @@ impl ManagedTaskSupervisor<'_> {
             .await
     }
 
-    pub(crate) async fn stop_task(
+    pub async fn stop_task(
         &self,
         task_id: &str,
         authority_class: &AuthorityClass,
@@ -85,7 +85,7 @@ impl ManagedTaskSupervisor<'_> {
         self.runtime.stop_task(task_id, authority_class).await
     }
 
-    pub(crate) async fn task_input_with_trust(
+    pub async fn task_input_with_trust(
         &self,
         task_id: &str,
         input: &str,

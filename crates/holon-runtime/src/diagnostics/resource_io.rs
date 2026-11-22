@@ -1,10 +1,10 @@
 //! Scoped observations of synchronous context-resource preparation.
 //! Estimates describe ownership and diagnostics; they never limit runtime reads.
 mod structured;
+pub use holon_system::resource_material::admit_cloned_value;
 pub(crate) use structured::{
-    admit_cloned_value, admit_json_buffer, admit_json_payload, admit_serialized_value,
-    admit_typed_cloned_value, admit_typed_json_payload, cloned_value_material,
-    json_payload_material,
+    admit_json_buffer, admit_json_payload, admit_serialized_value, admit_typed_cloned_value,
+    admit_typed_json_payload, cloned_value_material, json_payload_material,
 };
 
 use holon_system::resource_material::{ResourceObserver, ResourceObserverScope};
@@ -31,18 +31,18 @@ struct ReadMaterial {
     scratch_bytes: u64,
     scratch_records: usize,
     // Explicit fault injection only. Production observations have no quota.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     limits: Option<(u64, usize)>,
     material: OwnedCompletionBudget,
     failed: bool,
     parent: Option<Arc<Mutex<ReadMaterial>>>,
     read_error: Option<io::ErrorKind>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     after_file_metadata: Option<Box<dyn FnOnce() + Send>>,
 }
 impl ReadMaterial {
     fn fits(&self, bytes: u64, records: usize) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "http-test-support"))]
         if let Some((byte_limit, record_limit)) = self.limits {
             return bytes
                 <= byte_limit
@@ -56,15 +56,15 @@ impl ReadMaterial {
         let _ = (bytes, records);
         true
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     fn remaining_bytes(&self) -> u64 {
         self.limits.expect("explicit test fault limit").0 - self.bytes - self.scratch_bytes
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     fn remaining_records(&self) -> usize {
         self.limits.expect("explicit test fault limit").1 - self.records - self.scratch_records
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     fn child_limits(&self) -> Option<(u64, usize)> {
         self.limits
             .map(|_| (self.remaining_bytes(), self.remaining_records()))
@@ -74,7 +74,7 @@ impl ReadMaterial {
 /// Named callers share it with source adapters; this is not a publication cut.
 /// The synchronous TLS entry is never held across an await.
 #[derive(Clone)]
-pub(crate) struct ResourceReadMaterial {
+pub struct ResourceReadMaterial {
     active: Arc<Mutex<ReadMaterial>>,
 }
 impl std::fmt::Debug for ResourceReadMaterial {
@@ -83,7 +83,7 @@ impl std::fmt::Debug for ResourceReadMaterial {
             .finish_non_exhaustive()
     }
 }
-pub(crate) struct ResourceReadBudget {
+pub struct ResourceReadBudget {
     previous: Option<Arc<Mutex<ReadMaterial>>>,
     _observer: ResourceObserverScope,
 }
@@ -113,13 +113,13 @@ impl ResourceReadMaterial {
                 records: source.records,
                 scratch_bytes: source.scratch_bytes,
                 scratch_records: source.scratch_records,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "http-test-support"))]
                 limits: source.limits,
                 material: source.material.fork_owned(),
                 failed: false,
                 parent: None,
                 read_error: None,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "http-test-support"))]
                 after_file_metadata: None,
             })),
         }
@@ -129,7 +129,7 @@ impl ResourceReadMaterial {
         Arc::ptr_eq(&self.active, &other.active)
     }
 
-    pub(crate) fn new(
+    pub fn new(
         ledger: &InputEvidenceBudgetLedger,
         scope: &InputEvidenceScope,
     ) -> anyhow::Result<Self> {
@@ -174,7 +174,7 @@ impl ResourceReadMaterial {
         let _ = prior;
         Self::observe_identity(ledger, agent_id, identity_incarnation)
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     fn with_limits(
         ledger: &InputEvidenceBudgetLedger,
         scope: &InputEvidenceScope,
@@ -189,7 +189,7 @@ impl ResourceReadMaterial {
             records,
         )
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     fn with_identity_limits(
         ledger: &InputEvidenceBudgetLedger,
         agent_id: &str,
@@ -233,19 +233,19 @@ impl ResourceReadMaterial {
                 records: header_records,
                 scratch_bytes: 0,
                 scratch_records: 0,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "http-test-support"))]
                 limits: None,
                 material,
                 failed: false,
                 parent: None,
                 read_error: None,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "http-test-support"))]
                 after_file_metadata: None,
             })),
         };
         Ok(result)
     }
-    pub(crate) fn enter(&self) -> ResourceReadBudget {
+    pub fn enter(&self) -> ResourceReadBudget {
         let previous = ACTIVE.with(|slot| slot.replace(Some(self.active.clone())));
         ResourceReadBudget {
             previous,
@@ -267,7 +267,7 @@ impl ResourceReadMaterial {
 
     /// One synchronous acquisition, including nested source adapters. The
     /// caller retains this phase's guard with the returned owning material.
-    pub(crate) fn read<T>(&self, read: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    pub fn read<T>(&self, read: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
         self.finish()?;
         let _entry = self.enter();
         let value = read()?;
@@ -283,7 +283,7 @@ impl ResourceReadMaterial {
             .unwrap_or_else(|error| error.into_inner());
         let bytes = phase.material.sibling_header_bytes()?;
         let records = 64;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "http-test-support"))]
         let limits = phase.child_limits();
         reserve_allowance(&mut phase, bytes, records).map_err(|_| resource_exhausted())?;
         let material = phase.material.reserve_sibling(OwnedBytesEstimate {
@@ -297,13 +297,13 @@ impl ResourceReadMaterial {
                 records,
                 scratch_bytes: 0,
                 scratch_records: 0,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "http-test-support"))]
                 limits,
                 material,
                 failed: false,
                 parent: Some(self.active.clone()),
                 read_error: None,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "http-test-support"))]
                 after_file_metadata: None,
             })),
         })
@@ -316,7 +316,7 @@ impl ResourceReadMaterial {
         let mut phase = parent.lock().unwrap_or_else(|error| error.into_inner());
         let bytes = 2048;
         let records = 64;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "http-test-support"))]
         let limits = phase.child_limits();
         reserve_allowance(&mut phase, bytes, records).map_err(|_| resource_exhausted())?;
         // Ledger registration admits its metadata against this same parent.
@@ -334,19 +334,19 @@ impl ResourceReadMaterial {
                 records,
                 scratch_bytes: 0,
                 scratch_records: 0,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "http-test-support"))]
                 limits,
                 material,
                 failed: false,
                 parent: Some(parent),
                 read_error: None,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "http-test-support"))]
                 after_file_metadata: None,
             })),
         })
     }
-    #[cfg(test)]
-    pub(crate) fn with_test_limits(
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub fn with_test_limits(
         ledger: &InputEvidenceBudgetLedger,
         scope: &InputEvidenceScope,
         bytes: u64,
@@ -354,11 +354,11 @@ impl ResourceReadMaterial {
     ) -> anyhow::Result<Self> {
         Self::with_limits(ledger, scope, bytes, records)
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     pub(crate) fn after_file_metadata(&self, action: impl FnOnce() + Send + 'static) {
         self.active.lock().unwrap().after_file_metadata = Some(Box::new(action));
     }
-    pub(crate) fn finish(&self) -> anyhow::Result<(u64, usize)> {
+    pub fn finish(&self) -> anyhow::Result<(u64, usize)> {
         let material = self
             .active
             .lock()
@@ -374,7 +374,7 @@ impl ResourceReadMaterial {
             material.records.saturating_add(material.scratch_records),
         ))
     }
-    pub(crate) fn guard(&self) -> anyhow::Result<Arc<BudgetViewGuard>> {
+    pub fn guard(&self) -> anyhow::Result<Arc<BudgetViewGuard>> {
         self.finish()?;
         Ok(self
             .active
@@ -411,7 +411,7 @@ impl ResourceReadMaterial {
             && phase.material.matches_identity(agent_id, incarnation)
     }
     /// Keep the existing phase allocation with a synchronous consumer's value.
-    pub(crate) fn active_guard() -> anyhow::Result<Option<Arc<BudgetViewGuard>>> {
+    pub fn active_guard() -> anyhow::Result<Option<Arc<BudgetViewGuard>>> {
         ACTIVE
             .with(|slot| slot.borrow().clone())
             .map(|active| Self { active }.guard())
@@ -604,14 +604,14 @@ pub(crate) fn read_to_string(path: &Path) -> Option<io::Result<String>> {
         charge(&active, 0, 0, false)?;
         let mut file = File::open(path)?;
         admit_file_bytes(file.metadata()?.len())?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "http-test-support"))]
         run_after_file_metadata();
         let mut bytes = Vec::new();
         read_to_end_active(&active, &mut file, &mut bytes)?;
         String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     })())
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 pub(crate) fn run_after_file_metadata() {
     let action = ACTIVE.with(|slot| {
         slot.borrow()
@@ -710,7 +710,7 @@ impl Iterator for ResourceReadDir {
     }
 }
 #[track_caller]
-pub(crate) fn charge_owned_payload(bytes: u64) -> io::Result<()> {
+pub fn charge_owned_payload(bytes: u64) -> io::Result<()> {
     let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
         return Ok(());
     };
@@ -729,7 +729,7 @@ pub(crate) fn charge_owned_buffer(bytes: u64) -> io::Result<()> {
     Ok(())
 }
 #[track_caller]
-pub(crate) fn charge_owned_metadata(bytes: u64, records: usize) -> io::Result<()> {
+pub fn charge_owned_metadata(bytes: u64, records: usize) -> io::Result<()> {
     let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
         return Ok(());
     };
@@ -987,7 +987,7 @@ fn reserve_template_scratch(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 pub(crate) fn assert_retryable_resource_error(error: &anyhow::Error) {
     use crate::runtime_error::{describe_runtime_error, RuntimeError, RuntimeErrorDomain};
 

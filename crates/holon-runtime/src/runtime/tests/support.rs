@@ -225,14 +225,7 @@ pub(crate) fn continuation_ready_context_config(
     }
 }
 
-/// Crate-level fixtures use the same qualified Task writer as runtime tests.
-pub(crate) async fn persist_task_transition(
-    runtime: &RuntimeHandle,
-    record: &TaskRecord,
-    event_type: &'static str,
-) -> anyhow::Result<()> {
-    runtime.persist_task_transition(record, event_type).await
-}
+pub(crate) use super::super::http_test_support::persist_task_transition;
 
 /// Persist the original Timer creation ACK, leaving its loop unarmed so restart
 /// is the first producer. This models a crash after durable creation.
@@ -366,20 +359,7 @@ pub(crate) async fn wait_for_audit_events(
     .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
 }
 
-pub(crate) async fn host_backed_test_runtime() -> (TempDir, RuntimeHost, RuntimeHandle) {
-    let home = tempdir().unwrap();
-    std::fs::write(
-        home.path().join("config.json"),
-        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
-    )
-    .unwrap();
-    let mut config =
-        crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-    config.user_home_dir = None;
-    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
-    let runtime = host.default_runtime().await.unwrap();
-    (home, host, runtime)
-}
+pub(crate) use super::super::http_test_support::host_backed_test_runtime;
 
 pub(crate) async fn run_lifecycle_tool_calls(
     runtime: &RuntimeHandle,

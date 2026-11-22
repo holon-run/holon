@@ -26,7 +26,8 @@ pub mod content_reports;
 pub(crate) mod context_inputs;
 pub(crate) mod control_transition;
 pub mod conversation;
-pub(crate) mod current_query;
+#[doc(hidden)]
+pub mod current_query;
 pub(crate) mod current_read_writes;
 pub(crate) mod current_run_abort;
 pub mod destructive_operations;
@@ -46,11 +47,10 @@ mod legacy_scheduler_wire;
 mod migration_data_tests;
 pub mod migrations;
 pub(crate) mod notifications;
+pub use notifications::{InboxNotificationList, NotificationRecipient};
 pub mod persistence;
 pub(crate) mod prepared_input_evidence;
 pub mod provider_admission;
-#[cfg(all(test, holon_lib_test_shard = "c"))]
-mod reader_pool_http_tests;
 #[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod reader_pool_tests;
@@ -66,6 +66,7 @@ pub(crate) mod subagents;
 pub(crate) mod task_result_queue;
 pub(crate) mod task_result_settlement;
 pub(crate) mod transitions;
+pub use transitions::WorkCommandLane;
 pub mod turn_content_deletion;
 #[cfg(all(test, holon_lib_test_shard = "b"))]
 mod turn_content_deletion_tests;
@@ -79,7 +80,8 @@ pub(crate) mod command_task_creation;
 pub(crate) mod command_task_terminal;
 pub(crate) mod scheduling_snapshot;
 pub(crate) mod task_recovery;
-pub(crate) mod task_snapshot;
+#[doc(hidden)]
+pub mod task_snapshot;
 pub(crate) mod task_status_metadata;
 pub(crate) mod task_stop;
 pub mod types;
@@ -180,7 +182,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 pub use holon_storage::connection::RuntimeDbLock;
-pub(crate) use holon_storage::read_block;
+pub use holon_storage::read_block;
 use holon_storage::{blocking, reader_pool};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -602,12 +604,12 @@ impl RuntimeDb {
         db
     }
 
-    pub(crate) fn check_read_scope(&self) -> Result<()> {
+    pub fn check_read_scope(&self) -> Result<()> {
         self.readers.check_read_scope()
     }
 
     /// Between assembly rows only; full protection checks guard entry/exit.
-    pub(crate) fn check_read_cancellation(&self) -> Result<()> {
+    pub fn check_read_cancellation(&self) -> Result<()> {
         self.readers.check_read_cancellation()
     }
 
@@ -626,11 +628,41 @@ impl RuntimeDb {
         blocking::at_blocking_boundary(|| self.readers.with_read_at(origin, f))
     }
 
+    #[cfg(feature = "http-test-support")]
+    #[track_caller]
+    pub fn read_for_http_test<T>(
+        &self,
+        read: impl FnOnce(&mut Connection) -> Result<T>,
+    ) -> Result<T> {
+        self.with_read(read)
+    }
+
+    #[cfg(feature = "http-test-support")]
+    #[track_caller]
+    pub fn read_preparation_for_http_test<T>(
+        &self,
+        read: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.read_for_preparation(read)
+    }
+
+    #[cfg(feature = "http-test-support")]
+    pub fn set_observer_self_heal_attempt_for_test(&self, value: u64) {
+        self.observer_sync_self_heal_last_attempt_ms
+            .store(value, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "http-test-support")]
+    pub fn observer_self_heal_attempt_for_test(&self) -> u64 {
+        self.observer_sync_self_heal_last_attempt_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Polling HTTP handlers must read through this instead of calling a
     /// synchronous storage read on an async worker. The block runs on the
     /// blocking pool under one absolute read deadline; SQL execution is
     /// cancelled at the deadline through the scoped-read progress hook.
-    pub(crate) async fn read_block<T, F>(
+    pub async fn read_block<T, F>(
         &self,
         label: &'static str,
         budget: Duration,
@@ -654,8 +686,8 @@ impl RuntimeDb {
             .await
     }
 
-    #[cfg(test)]
-    pub(crate) fn configure_reader_pool_for_tests(
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub fn configure_reader_pool_for_tests(
         &mut self,
         capacity: u32,
         budget: Duration,
@@ -676,20 +708,20 @@ impl RuntimeDb {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) fn reader_pool_stats_for_tests(&self) -> reader_pool::ReaderPoolStats {
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub fn reader_pool_stats_for_tests(&self) -> reader_pool::ReaderPoolStats {
         self.readers.stats()
     }
 
-    #[cfg(test)]
-    pub(crate) fn preparation_pool_stats_for_tests(&self) -> reader_pool::ReaderPoolStats {
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub fn preparation_pool_stats_for_tests(&self) -> reader_pool::ReaderPoolStats {
         self.preparation_readers.stats()
     }
 
-    #[cfg(test)]
-    pub(crate) fn reader_pool_writer_weak_for_tests(
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub fn reader_pool_writer_weak_for_tests(
         &self,
-    ) -> std::sync::Weak<write_queue::RuntimeDbWriterState> {
+    ) -> std::sync::Weak<holon_storage::write_queue::RuntimeDbWriterState> {
         self.readers.writer_weak()
     }
 
@@ -1557,3 +1589,6 @@ fn migration_head(connection: &Connection) -> Result<Option<(i64, String)>> {
         .optional()
         .map_err(Into::into)
 }
+
+#[cfg(any(test, feature = "http-test-support"))]
+pub(crate) mod temp_fixture;

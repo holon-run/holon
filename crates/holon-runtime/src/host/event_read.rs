@@ -7,7 +7,7 @@ use crate::{
     types::AuditEvent,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 use crate::runtime_db::current_query::prepare_event_page;
 
 struct EventPageMaterial {
@@ -17,7 +17,7 @@ struct EventPageMaterial {
 }
 
 #[derive(Clone)]
-pub(crate) struct OwnedEventPageRead(Arc<EventPageMaterial>);
+pub struct OwnedEventPageRead(Arc<EventPageMaterial>);
 
 #[path = "event_stream_read.rs"]
 mod stream;
@@ -42,10 +42,7 @@ impl std::ops::Deref for OwnedEventPageRead {
 }
 
 impl OwnedEventPageRead {
-    pub(crate) fn json_bytes(
-        &self,
-        value: &impl serde::Serialize,
-    ) -> Result<tokio_util::bytes::Bytes> {
+    pub fn json_bytes(&self, value: &impl serde::Serialize) -> Result<tokio_util::bytes::Bytes> {
         self.0.material.read(|| {
             let size = usize::try_from(crate::runtime::input_evidence_budget::serialized_bytes(
                 value,
@@ -72,7 +69,7 @@ impl OwnedEventPageRead {
 
 impl RuntimeHost {
     /// Runs on the caller's blocking worker with its exact read scope.
-    pub(crate) fn operator_event_page_scoped<F>(
+    pub fn operator_event_page_scoped<F>(
         &self,
         agent_id: &str,
         before_seq: Option<u64>,
@@ -143,8 +140,8 @@ impl RuntimeHost {
         result.map_err(PublicAgentError::Runtime)
     }
 
-    #[cfg(test)]
-    pub(crate) async fn operator_event_page<F>(
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub async fn operator_event_page<F>(
         &self,
         agent_id: &str,
         before_seq: Option<u64>,
@@ -204,8 +201,3 @@ impl RuntimeHost {
 #[cfg(test)]
 #[path = "event_read_tests.rs"]
 mod tests;
-
-#[cfg(holon_lib_test_shard = "d")]
-#[cfg(test)]
-#[path = "event_stream_http_tests.rs"]
-mod stream_http_tests;

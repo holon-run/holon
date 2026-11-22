@@ -1,3 +1,19 @@
+use crate::http::{
+    AgentDeletionResponse, AgentDeletionStatusResponse, BatchGetBriefsRequest,
+    BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
+    CompleteWorkItemRequest, ControlPromptRequest, ConversationActivityResponse,
+    ConversationLocateRequest, ConversationLocateResponse, ConversationReadQuery,
+    ConversationShadowQuery, ConversationStreamMessage, ConversationSummaryResponse,
+    CreateContentReportRequest, CreateContentReportResponse, CreateTimerRequest,
+    CurrentUserResponse, DeleteAgentRequest, DesktopCapabilities, EnqueueResponse,
+    HandshakeResponse, MarkBriefReadRequest, MemoryGetRequest, ModelConfigMigrationRequest,
+    NativeSessionResponse, PairingIssueResponse, PairingRedeemRequest, PickWorkItemRequest,
+    PickWorkItemResponse, ResolveFileReferencesRequest, ResolveFileReferencesResponse,
+    RevealFileRequest, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
+    RuntimeConfigUpdateResponse, RuntimeDecisionTestRequest, RuntimeDecisionTestResponse,
+    SearchRequest, SearchResponse, SessionExchangeRequest, SessionResponse, TailscaleServeStatus,
+    UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
+};
 use holon_server::openapi::{
     component_schema, component_schema_with_refs, error_response_schema, ConversationShadowLimits,
 };
@@ -6,22 +22,6 @@ use serde_json::{json, Map, Value};
 use holon_runtime::{
     diagnostics::PerformanceDiagnosticsSnapshot,
     domain::conversation::ConversationShadowDiagnostics,
-    http::{
-        AgentDeletionResponse, AgentDeletionStatusResponse, BatchGetBriefsRequest,
-        BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
-        CompleteWorkItemRequest, ControlPromptRequest, ConversationActivityResponse,
-        ConversationLocateRequest, ConversationLocateResponse, ConversationReadQuery,
-        ConversationShadowQuery, ConversationStreamMessage, ConversationSummaryResponse,
-        CreateContentReportRequest, CreateContentReportResponse, CreateTimerRequest,
-        CurrentUserResponse, DeleteAgentRequest, DesktopCapabilities, EnqueueResponse,
-        HandshakeResponse, MarkBriefReadRequest, MemoryGetRequest, ModelConfigMigrationRequest,
-        NativeSessionResponse, PairingIssueResponse, PairingRedeemRequest, PickWorkItemRequest,
-        PickWorkItemResponse, ResolveFileReferencesRequest, ResolveFileReferencesResponse,
-        RevealFileRequest, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
-        RuntimeConfigUpdateResponse, RuntimeDecisionTestRequest, RuntimeDecisionTestResponse,
-        SearchRequest, SearchResponse, SessionExchangeRequest, SessionResponse,
-        TailscaleServeStatus, UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
-    },
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto, TaskRecordDto},
     memory::MemoryGetResult,
     model_config_migration::ModelConfigMigrationReport,
@@ -61,7 +61,7 @@ fn component_schemas() -> Map<String, Value> {
     schemas.insert("ErrorResponse".into(), error_response_schema());
     schemas.insert(
         "InboxNotificationList".into(),
-        component_schema::<holon_runtime::http::InboxNotificationList>(),
+        component_schema::<crate::http::InboxNotificationList>(),
     );
     schemas.insert(
         "HandshakeResponse".into(),
@@ -238,7 +238,7 @@ fn component_schemas() -> Map<String, Value> {
     );
     schemas.insert(
         "ToolExecutionArtifactContent".into(),
-        component_schema::<holon_runtime::http::ToolExecutionArtifactContent>(),
+        component_schema::<crate::http::ToolExecutionArtifactContent>(),
     );
     schemas.insert(
         "TaskInputResult".into(),

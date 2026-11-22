@@ -12,8 +12,8 @@ policy — and how those labels flow through the runtime.
 
 > **Last verified:** 2026-09-13 against `crates/holon-domain/src/message.rs` `MessageEnvelope`,
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
-> `AdmissionContext`, `crates/holon-runtime/src/policy.rs`, `crates/holon-runtime/src/ingress.rs`, `crates/holon-runtime/src/http/mod.rs`,
-> `crates/holon-runtime/src/http/state.rs`, `crates/holon-runtime/src/context/mod.rs`, `crates/holon-context/src/render.rs`,
+> `AdmissionContext`, `crates/holon-runtime/src/policy.rs`, `crates/holon-runtime/src/ingress.rs`, `crates/holon-http-api/src/http/mod.rs`,
+> `crates/holon-http-api/src/http/state.rs`, `crates/holon-runtime/src/context/mod.rs`, `crates/holon-context/src/render.rs`,
 > `crates/holon-runtime/src/prompt/mod.rs`, `crates/holon-tui/src/operator_event.rs`, `crates/holon-tui/src/presentation.rs`,
 > `crates/holon-runtime/src/runtime/message_dispatch.rs`, `crates/holon-runtime/src/runtime/operator_dispatch.rs`, and
 > `crates/holon-runtime/src/runtime/turn/execution.rs`.
@@ -235,7 +235,7 @@ Validated implementation points:
   compatibility.
 - `crates/holon-runtime/src/policy.rs` defines default authority by origin and kind/origin admission
   checks.
-- [`crates/holon-runtime/src/http/state.rs`](../../../crates/holon-runtime/src/http/state.rs) prevents public enqueue from
+- [`crates/holon-http-api/src/http/state.rs`](../../../crates/holon-http-api/src/http/state.rs) prevents public enqueue from
   using runtime-owned kinds,
   `Interject` priority, privileged origins, or authority overrides.
 - [`crates/holon-runtime/src/context/mod.rs`](../../../crates/holon-runtime/src/context/mod.rs) and

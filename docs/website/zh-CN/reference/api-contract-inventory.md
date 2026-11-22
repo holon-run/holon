@@ -12,7 +12,7 @@ order: 25
 缺口。
 
 - **最后核对基准：** `holon` v0.39.0，`main` 位于 `885367b9`。
-- **权威来源：** [`crates/holon-runtime/src/http/mod.rs`](../../../../crates/holon-runtime/src/http/mod.rs) 的 Axum 路由和
+- **权威来源：** [`crates/holon-http-api/src/http/mod.rs`](../../../../crates/holon-http-api/src/http/mod.rs) 的 Axum 路由和
   请求/响应结构体。
 - **生成的 schema：** [`openapi.json`](/reference/openapi.json)，由
   `holon::openapi::generate_openapi_json()` 生成，并由 `make snapshots-check`
@@ -39,7 +39,7 @@ order: 25
 
 | 接口 | 当前行为 | 稳定性 |
 |---------|------------------|-----------|
-| HTTP TCP | 路由由 [`crates/holon-runtime/src/http/mod.rs`](../../../../crates/holon-runtime/src/http/mod.rs) 中的 Axum 路由提供服务。 | 候选稳定 |
+| HTTP TCP | 路由由 [`crates/holon-http-api/src/http/mod.rs`](../../../../crates/holon-http-api/src/http/mod.rs) 中的 Axum 路由提供服务。 | 候选稳定 |
 | Unix socket 客户端回退 | 存在配置的 Unix socket 时，`LocalClient` 先尝试它，再回退到 HTTP。 | 对本地客户端为候选稳定；未记录为通用的远程 API |
 | Bearer 认证 | 当 `require_control_token` 为 true 时，读取路由和 `/api/control/*` 路由要求 `Authorization: Bearer <token>`。 | 候选稳定 |
 | 本地模式 | 不需要 control token 时，服务端信任本地进程边界。 | 候选稳定，但应绑定到明确的部署指引 |

@@ -97,7 +97,7 @@ impl OwnedAgentListRead {
         })
     }
 
-    pub(crate) fn into_json_bytes(self) -> Result<tokio_util::bytes::Bytes> {
+    pub fn into_json_bytes(self) -> Result<tokio_util::bytes::Bytes> {
         let Some(first) = self.entries.first() else {
             return Ok(tokio_util::bytes::Bytes::from_static(b"[]"));
         };
@@ -154,7 +154,7 @@ impl RuntimeHost {
             .await
     }
 
-    pub(crate) async fn list_agent_entries_for_parent_in(
+    pub async fn list_agent_entries_for_parent_in(
         &self,
         parent_agent_id: Option<&str>,
         db: &RuntimeDb,

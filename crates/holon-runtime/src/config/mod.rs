@@ -511,7 +511,7 @@ impl AppConfig {
         }
     }
 
-    pub(crate) fn validate_model_route_options(&self) -> Result<()> {
+    pub fn validate_model_route_options(&self) -> Result<()> {
         validate_model_route_options(&RuntimeModelCatalog::from_config(self))
     }
 

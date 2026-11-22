@@ -166,7 +166,7 @@ pub(super) use holon_storage::schema::TASK_DOMAIN_VERSION;
 const MAX_RECORDS: usize = 65_536;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum TaskSnapshotError {
+pub enum TaskSnapshotError {
     #[error("Task domain needs preparation: {0:?}")]
     NeedsPreparation(TaskKey),
     #[error("Task coverage needs explicit preparation at unchanged revision")]

@@ -242,7 +242,7 @@ pub(crate) fn resolve_shared_decision_route(
     }))
 }
 
-pub(crate) fn validate_shared_decision_config(
+pub fn validate_shared_decision_config(
     configured: &crate::config::DecisionConfigFile,
     app_config: &crate::config::AppConfig,
 ) -> anyhow::Result<()> {

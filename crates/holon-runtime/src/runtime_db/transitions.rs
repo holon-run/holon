@@ -49,11 +49,12 @@ impl OriginalChildTaskWriteProof<'_, '_, '_, '_> {
         }
     }
 }
+pub use prepared_input::WorkCommandLane;
 pub(crate) use prepared_input::{
     ExternalTriggerMutationOutcome, InputMutationExecution, OriginalChildStatusSelection,
     OriginalTaskCleanupView, PreparedExternalTriggerTransition, PreparedInputTransition,
     PreparedQueueTransition, PreparedSupervisedInvocationAdmission, PreparedTaskBaselines,
-    PreparedTaskTransition, PreparedTimerTransition, TimerMutationOutcome, WorkCommandLane,
+    PreparedTaskTransition, PreparedTimerTransition, TimerMutationOutcome,
 };
 pub(in crate::runtime_db) use prepared_task_result::receipt_budget_with_material_tx as task_status_receipt_budget_with_material_tx;
 pub(crate) use prepared_task_result::{
@@ -203,64 +204,65 @@ pub(crate) enum QueueOperation {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct PostCommitEffects {
-    pub current_read_writes: Option<super::current_read_writes::CommittedCurrentWrites>,
-    pub scheduler_events: Option<super::current_query::CommittedSchedulerEventFacts>,
-    pub scheduling_delta:
+pub struct PostCommitEffects {
+    pub(crate) current_read_writes: Option<super::current_read_writes::CommittedCurrentWrites>,
+    pub(crate) scheduler_events: Option<super::current_query::CommittedSchedulerEventFacts>,
+    pub(crate) scheduling_delta:
         Option<Box<crate::runtime::resident_scheduling::CommittedSchedulingDelta>>,
-    pub scheduling_delta_requires_prepared_domain: bool,
-    pub scheduling_write_keys: BTreeSet<crate::runtime::resident_scheduling::SchedulingKey>,
-    pub scheduling_material_budget_views:
+    pub(crate) scheduling_delta_requires_prepared_domain: bool,
+    pub(crate) scheduling_write_keys: BTreeSet<crate::runtime::resident_scheduling::SchedulingKey>,
+    pub(crate) scheduling_material_budget_views:
         Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
-    pub task_material_budget_views:
+    pub(crate) task_material_budget_views:
         Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
-    pub task_delta: Option<crate::runtime::resident_task::CommittedTaskDelta>,
+    pub(crate) task_delta: Option<crate::runtime::resident_task::CommittedTaskDelta>,
     /// Original cross-agent business writes, published under their reserved owners.
-    pub related_task_deltas: Vec<crate::runtime::resident_task::CommittedTaskDelta>,
+    pub(crate) related_task_deltas: Vec<crate::runtime::resident_task::CommittedTaskDelta>,
     /// Already observed related Status heads from one original child terminal ACK.
     /// They carry no State, Task body or missing-domain bootstrap permission.
-    pub related_task_metadata_deltas: Vec<crate::runtime::resident_task::CommittedTaskDelta>,
+    pub(crate) related_task_metadata_deltas: Vec<crate::runtime::resident_task::CommittedTaskDelta>,
     /// A Task delta never supplies complete missing-domain authority.
-    pub task_delta_requires_prepared_domain: bool,
+    pub(crate) task_delta_requires_prepared_domain: bool,
     /// Actual original SQL writes, independent of full domain install records.
-    pub task_write_keys: BTreeSet<crate::runtime::resident_task::TaskKey>,
+    pub(crate) task_write_keys: BTreeSet<crate::runtime::resident_task::TaskKey>,
     /// Frozen original command/result observations, including noop dependencies.
-    pub task_observation_keys: BTreeSet<crate::runtime::resident_task::TaskKey>,
+    pub(crate) task_observation_keys: BTreeSet<crate::runtime::resident_task::TaskKey>,
     /// Final complete Work coverage from this original committing transaction.
-    pub work_delta: Option<crate::runtime::resident_work::CommittedWorkDelta>,
+    pub(crate) work_delta: Option<crate::runtime::resident_work::CommittedWorkDelta>,
     /// Sparse metadata/maintenance ACKs cannot bootstrap missing Work bodies.
-    pub work_delta_requires_prepared_domain: bool,
+    pub(crate) work_delta_requires_prepared_domain: bool,
     /// Finite new dependencies. Existing unrelated Input coverage remains valid;
     /// a combined request must prepare any uncovered owning/head dependency.
-    pub work_input_preparation: Option<WorkInputPreparation>,
-    pub input_evidence_delta: CommittedInputEvidenceDelta,
+    pub(crate) work_input_preparation: Option<WorkInputPreparation>,
+    pub(crate) input_evidence_delta: CommittedInputEvidenceDelta,
     // Actual Wait rows and Turn revision bookkeeping touched by the whole transaction.
-    pub wait_condition_writes: WaitConditionWrites,
-    pub agent_state: Option<AgentStateMutation>,
-    pub agent_identities: Vec<crate::types::AgentIdentityRecord>,
-    pub context_episodes: Vec<crate::types::ContextEpisodeRecord>,
-    pub removed_context_episode_ids: Vec<String>,
+    pub(crate) wait_condition_writes: WaitConditionWrites,
+    pub(crate) agent_state: Option<AgentStateMutation>,
+    pub(crate) agent_identities: Vec<crate::types::AgentIdentityRecord>,
+    pub(crate) context_episodes: Vec<crate::types::ContextEpisodeRecord>,
+    pub(crate) removed_context_episode_ids: Vec<String>,
     // Touched canonical facts read back inside the committing transaction,
     // including allocated sequences and event links. Empty is no delta, not
     // a claim that the corresponding resident domain is complete.
-    pub messages: Vec<MessageEnvelope>,
-    pub turns: Vec<TurnRecord>,
-    pub tool_executions: Vec<ToolExecutionRecord>,
-    pub briefs: Vec<BriefRecord>,
-    pub transcript_entries: Vec<TranscriptEntry>,
-    pub execution_protocol: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
-    pub queued_messages: Vec<MessageEnvelope>,
-    pub removed_queue_message_ids: Vec<String>,
+    pub(crate) messages: Vec<MessageEnvelope>,
+    pub(crate) turns: Vec<TurnRecord>,
+    pub(crate) tool_executions: Vec<ToolExecutionRecord>,
+    pub(crate) briefs: Vec<BriefRecord>,
+    pub(crate) transcript_entries: Vec<TranscriptEntry>,
+    pub(crate) execution_protocol:
+        Option<crate::domain::execution_protocol::ExecutionProtocolState>,
+    pub(crate) queued_messages: Vec<MessageEnvelope>,
+    pub(crate) removed_queue_message_ids: Vec<String>,
     /// Actual canonical Queue writes, independent of wake/removal notifications.
-    pub current_queue_write_ids: Vec<String>,
-    pub timers: Vec<crate::types::TimerRecord>,
-    pub external_triggers: Vec<crate::types::ExternalTriggerRecord>,
-    pub work_items: Vec<WorkItemRecord>,
-    pub tasks: Vec<TaskRecord>,
-    pub audit_events: Vec<AuditEventAck>,
-    pub notify_memory_index: bool,
-    pub notify_scheduler: bool,
-    pub fault: Option<TransitionFaultPoint>,
+    pub(crate) current_queue_write_ids: Vec<String>,
+    pub(crate) timers: Vec<crate::types::TimerRecord>,
+    pub(crate) external_triggers: Vec<crate::types::ExternalTriggerRecord>,
+    pub(crate) work_items: Vec<WorkItemRecord>,
+    pub(crate) tasks: Vec<TaskRecord>,
+    pub(crate) audit_events: Vec<AuditEventAck>,
+    pub(crate) notify_memory_index: bool,
+    pub(crate) notify_scheduler: bool,
+    pub(crate) fault: Option<TransitionFaultPoint>,
 }
 
 impl PostCommitEffects {

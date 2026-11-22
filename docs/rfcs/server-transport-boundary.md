@@ -19,12 +19,10 @@ existing repository build paths. A fresh checkout can build without either
 artifact. A configured Web distribution override remains authoritative for
 Web requests.
 
-The private `holon-http-api` crate assembles the concrete OpenAPI document
-and the runtime status inventory. It uses typed wire contracts and product
-version information from `holon-runtime` and OpenAPI generation primitives
-from `holon-server`. The application exports both documents at their
-existing paths.
-
-Holon-runtime registers the routes and implements handlers that compose
-RuntimeHost, RuntimeDb, and daemon services. The HTTP API crate consumes
-runtime contracts through a one-way dependency.
+The private `holon-http-api` crate registers the application routes and
+implements the handlers. It also owns the concrete OpenAPI document and
+the runtime status inventory, which the application exports at their
+existing paths. The crate depends on `holon-runtime` for runtime operations
+and on `holon-server` for shared transport primitives. Runtime lifecycle,
+authorization decisions, and durable transactions remain in
+`holon-runtime`.

@@ -104,7 +104,7 @@ LIB_C_OWNERS = frozenset(
     {
         "agent_template", "auth", "calendar", "client", "cloudflare_tunnel",
         "daemon", "domain", "fd_limit", "github",
-        "github_archive", "host_registry", "http", "http_dto", "memory",
+        "github_archive", "host_registry", "http_dto", "memory",
         "model_catalog", "model_config_migration", "model_discovery",
         "object_query_cache", "object_resolver", "oidc", "otlp_exporter",
         "policy", "presentation", "provider", "runtime_event", "skills",
@@ -117,10 +117,6 @@ LIB_C_OWNERS = frozenset(
 def lib_compile_group(name: str) -> str:
     parts = name.split("::")
     owner = parts[0]
-    if owner in ("runtime", "runtime_db") and (
-        "http_tests" in parts or "reader_pool_http_tests" in parts
-    ):
-        return "c"
     if owner == "runtime":
         return "a"
     if owner == "runtime_db":

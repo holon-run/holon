@@ -9,7 +9,7 @@ use crate::{
 };
 use std::io::Write;
 
-pub(crate) struct EventStreamScope {
+pub struct EventStreamScope {
     scope: InputEvidenceScope,
     ledger: InputEvidenceBudgetLedger,
     _material: ResourceReadMaterial,
@@ -27,7 +27,7 @@ enum EventFrameSource {
 }
 
 #[derive(Clone)]
-pub(crate) struct EventFrameRead {
+pub struct EventFrameRead {
     source: EventFrameSource,
     material: ResourceReadMaterial,
 }
@@ -44,7 +44,7 @@ impl AsRef<[u8]> for EventFrameWire {
 }
 
 impl RuntimeHost {
-    pub(crate) fn event_stream_scope(&self, page: &OwnedEventPageRead) -> Result<EventStreamScope> {
+    pub fn event_stream_scope(&self, page: &OwnedEventPageRead) -> Result<EventStreamScope> {
         page.0.material.guard()?.validate_owned_material_binding(
             &page.0.scope,
             &self.inner.input_evidence_budget,
@@ -69,11 +69,7 @@ impl RuntimeHost {
 }
 
 impl EventStreamScope {
-    pub(crate) fn history_frame(
-        &self,
-        page: &OwnedEventPageRead,
-        index: usize,
-    ) -> Result<EventFrameRead> {
+    pub fn history_frame(&self, page: &OwnedEventPageRead, index: usize) -> Result<EventFrameRead> {
         anyhow::ensure!(
             page.0.scope == self.scope,
             "Event replay crossed stream scope"
@@ -89,7 +85,7 @@ impl EventStreamScope {
         })
     }
 
-    pub(crate) fn live_frame(&self, published: &PublishedAuditEvent) -> Result<EventFrameRead> {
+    pub fn live_frame(&self, published: &PublishedAuditEvent) -> Result<EventFrameRead> {
         anyhow::ensure!(
             published.agent_id.as_deref() == Some(self.scope.agent_id.as_str()),
             "Event notification crossed stream Agent"
@@ -110,7 +106,7 @@ impl EventStreamScope {
 }
 
 impl EventFrameRead {
-    pub(crate) fn event(&self) -> &AuditEvent {
+    pub fn event(&self) -> &AuditEvent {
         match &self.source {
             EventFrameSource::History(page, index) => {
                 page.events().nth(*index).expect("checked Event index")
@@ -120,10 +116,7 @@ impl EventFrameRead {
     }
 
     /// JSON and SSE framing are both written once into the final admitted buffer.
-    pub(crate) fn sse_bytes(
-        &self,
-        value: &impl serde::Serialize,
-    ) -> Result<tokio_util::bytes::Bytes> {
+    pub fn sse_bytes(&self, value: &impl serde::Serialize) -> Result<tokio_util::bytes::Bytes> {
         self.material.read(|| {
             let event = self.event();
             anyhow::ensure!(
