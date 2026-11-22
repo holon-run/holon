@@ -1,7 +1,4 @@
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
+use std::time::Duration;
 
 use axum::{
     extract::MatchedPath,
@@ -20,25 +17,9 @@ use tracing::{info, warn, Span};
 
 use crate::response::{add_retry_after_to_service_unavailable, is_slow_or_large_response};
 
-static HTTP_IN_FLIGHT_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+mod in_flight;
 
-fn decrement_http_in_flight_requests() -> usize {
-    let mut current = HTTP_IN_FLIGHT_REQUESTS.load(Ordering::Relaxed);
-    loop {
-        if current == 0 {
-            return 0;
-        }
-        match HTTP_IN_FLIGHT_REQUESTS.compare_exchange_weak(
-            current,
-            current - 1,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return current - 1,
-            Err(next) => current = next,
-        }
-    }
-}
+use in_flight::InFlightLayer;
 
 pub fn apply_http_layers<S>(router: Router<S>, cors: &ApiCorsConfigFile) -> Router<S>
 where
@@ -48,6 +29,10 @@ where
         .layer(api_cors_layer(cors))
         .layer(CompressionLayer::new())
         .layer(map_response(add_retry_after_to_service_unavailable))
+        // In-flight accounting wraps the route but sits inside the trace layer,
+        // so the request span is already entered when `call` accepts the
+        // request and the response callbacks observe the returned unit.
+        .layer(InFlightLayer::shared())
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &AxumRequest<axum::body::Body>| {
@@ -84,15 +69,14 @@ where
                     }
                     span
                 })
-                .on_request(|_request: &AxumRequest<axum::body::Body>, span: &Span| {
-                    let in_flight = HTTP_IN_FLIGHT_REQUESTS.fetch_add(1, Ordering::Relaxed) + 1;
-                    span.record("in_flight", in_flight);
-                })
                 .on_response(
                     |response: &Response<axum::body::Body>,
                      elapsed: std::time::Duration,
                      span: &Span| {
-                        let in_flight = decrement_http_in_flight_requests();
+                        // Response headers are ready: return the unit here and
+                        // log the post-return value. Streamed bodies and
+                        // upgrades no longer change the counter.
+                        let in_flight = in_flight::current_http_in_flight_requests();
                         let response_bytes = response
                             .headers()
                             .get(axum::http::header::CONTENT_LENGTH)
@@ -131,7 +115,7 @@ where
                      elapsed: std::time::Duration,
                      span: &Span| {
                         if matches!(failure, ServerErrorsFailureClass::Error(_)) {
-                            let in_flight = decrement_http_in_flight_requests();
+                            let in_flight = in_flight::current_http_in_flight_requests();
                             span.record("elapsed_ms", elapsed.as_millis() as u64);
                             span.record("in_flight", in_flight);
                             warn!(
