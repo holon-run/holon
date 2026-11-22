@@ -297,7 +297,7 @@ async fn cold_lightweight_owned_state_keeps_empty_fallback_and_rejection() -> Re
         interval_ms: None,
         repeat: false,
         status: TimerStatus::Active,
-        summary: None,
+        content: holon_domain::TimerContent::default(),
         next_fire_at: None,
         last_fired_at: None,
         fire_count: 0,
@@ -680,7 +680,7 @@ async fn no_state_cold_empty_display_requires_every_original_inventory_empty() -
     schedule_generation: 0,
     calendar: None,id:"raw-cold-timer".into(),agent_id:scope.agent_id.clone(),
                         created_at:Utc::now(),duration_ms:3600000,interval_ms:None,repeat:false,
-                        status:TimerStatus::Active,summary:None,next_fire_at:None,last_fired_at:None,fire_count:0};
+                        status:TimerStatus::Active,content:Default::default(),next_fire_at:None,last_fired_at:None,fire_count:0};
                     crate::runtime_db::repositories::upsert_timer_tx(tx,&timer)?;
                     tx.execute("UPDATE timers SET payload_json='bad-unqualified-body' WHERE timer_id=?1",[&timer.id])?;
                 }
@@ -697,7 +697,7 @@ async fn no_state_cold_empty_display_requires_every_original_inventory_empty() -
     schedule_generation: 0,
     calendar: None,id:"foreign-cold-timer".into(),agent_id:"foreign-agent".into(),
                         created_at:Utc::now(),duration_ms:3600000,interval_ms:None,repeat:false,
-                        status:TimerStatus::Active,summary:None,next_fire_at:None,last_fired_at:None,fire_count:1};
+                        status:TimerStatus::Active,content:Default::default(),next_fire_at:None,last_fired_at:None,fire_count:1};
                     crate::runtime_db::repositories::upsert_timer_tx(tx,&timer)?;
                     let message=MessageEnvelope::new(scope.agent_id.clone(),MessageKind::TimerTick,
                         MessageOrigin::Timer {timer_id:timer.id.clone()},AuthorityClass::RuntimeInstruction,

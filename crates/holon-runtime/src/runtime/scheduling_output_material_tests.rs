@@ -64,7 +64,9 @@ fn fixture(count: usize) -> Result<CapturedScheduling> {
             interval_ms: None,
             repeat: false,
             status: TimerStatus::Active,
-            summary: Some("汉🦀".repeat(index + 1)),
+            content: holon_domain::TimerContent::from_legacy_summary(Some(
+                "汉🦀".repeat(index + 1),
+            )),
             next_fire_at: None,
             last_fired_at: Some(created),
             fire_count: 1,

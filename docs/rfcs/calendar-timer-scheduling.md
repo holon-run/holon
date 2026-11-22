@@ -50,5 +50,20 @@ Pause fences uncommitted scheduler work, including work that outlives a
 subsequent resume. It does not retract committed wakes or stop admitted runs.
 A one-shot timer becomes completed when its fire commits, even if its wake
 has not been claimed. Cancelling a paused timer uses the existing cancel and
-wait invalidation semantics. The HTTP control API and agent overview expose
-pause and resume; there are no new CLI commands or agent tools.
+wait invalidation semantics. The HTTP control API, CLI, and agent overview
+expose pause and resume; there are no pause or resume agent tools.
+
+## Timer content
+
+`instruction` is the only editable input to a timer's trigger message;
+without an instruction the scheduler uses the existing `timer <id> fired`
+text. `title` is optional display text and never enters the trigger message.
+Clients display the title, then an instruction preview, then the timer ID.
+
+Existing records with only `summary` read that field as `instruction`, with
+no backfill. Reads retain `summary` as an alias for the same instruction.
+Writes accept `summary` in place of `instruction`, but not both names in the
+same request. In a content edit, omission preserves the field, explicit
+`null` clears it, and whitespace-only text is rejected. The update cannot
+modify scheduling or history. Once the edit commits, a subsequent timer fire
+uses the current instruction; already enqueued messages are not rewritten.

@@ -47,7 +47,7 @@ fn active_timer(f: &Fixture) -> TimerRecord {
         interval_ms: Some(1000),
         repeat: true,
         status: TimerStatus::Active,
-        summary: Some("original timer".into()),
+        content: holon_domain::TimerContent::from_legacy_summary(Some("original timer".into())),
         next_fire_at: Some(f.time + chrono::Duration::seconds(1)),
         last_fired_at: Some(f.time),
         fire_count: 4,

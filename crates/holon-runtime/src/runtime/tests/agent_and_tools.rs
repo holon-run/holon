@@ -2142,6 +2142,8 @@ async fn timer_tools_manage_only_the_current_agent_lifecycle() {
     let timer_id = timer["id"].as_str().unwrap().to_string();
     assert_eq!(timer["agent_id"], current_agent_id);
     assert_eq!(timer["repeat"], true);
+    assert_eq!(timer["instruction"], "repeat status check");
+    assert_eq!(timer["summary"], timer["instruction"]);
 
     let list = crate::tool::tools::execute_builtin_tool(
         &runtime,
@@ -2338,7 +2340,7 @@ async fn wait_for_timer_validation_returns_recoverable_tool_errors() {
             interval_ms: None,
             repeat: false,
             status: TimerStatus::Active,
-            summary: Some("foreign timer".into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some("foreign timer".into())),
             next_fire_at: Some(Utc::now() + chrono::Duration::minutes(1)),
             last_fired_at: None,
             fire_count: 0,

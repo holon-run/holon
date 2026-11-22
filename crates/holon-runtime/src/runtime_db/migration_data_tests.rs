@@ -152,7 +152,9 @@ fn seed(tx: &Transaction<'_>) -> Result<()> {
         interval_ms: Some(1000),
         repeat: true,
         status: TimerStatus::Active,
-        summary: Some("original repeating timer".into()),
+        content: holon_domain::TimerContent::from_legacy_summary(Some(
+            "original repeating timer".into(),
+        )),
         next_fire_at: Some(at + chrono::Duration::seconds(1)),
         last_fired_at: Some(at),
         fire_count: 5,

@@ -79,7 +79,7 @@ async fn exact_timer_query_rejects_foreign_before_body_decode_and_never_adopts_r
         interval_ms: None,
         repeat: false,
         status: TimerStatus::Active,
-        summary: None,
+        content: holon_domain::TimerContent::default(),
         next_fire_at: Some(at + chrono::Duration::hours(1)),
         last_fired_at: None,
         fire_count: 0,

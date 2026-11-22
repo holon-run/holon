@@ -1773,13 +1773,27 @@ impl RuntimeHandle {
         interval_ms: Option<u64>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
+        self.schedule_timer_with_content(
+            duration_ms,
+            interval_ms,
+            holon_domain::TimerContent::from_legacy_summary(summary),
+        )
+        .await
+    }
+
+    pub async fn schedule_timer_with_content(
+        &self,
+        duration_ms: u64,
+        interval_ms: Option<u64>,
+        content: holon_domain::TimerContent,
+    ) -> Result<TimerRecord> {
         let admission = self.execution_admission_lease()?;
         let runtime = self.clone();
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         self.spawn_owned_mutation(async move {
             let _admission = admission;
             let result = runtime
-                .schedule_timer_owned(duration_ms, interval_ms, summary)
+                .schedule_timer_owned(duration_ms, interval_ms, content)
                 .await;
             if let Err(error) = &result {
                 tracing::warn!(error = %error, "owned timer scheduling failed");
@@ -1795,7 +1809,7 @@ impl RuntimeHandle {
         &self,
         duration_ms: u64,
         interval_ms: Option<u64>,
-        summary: Option<String>,
+        content: holon_domain::TimerContent,
     ) -> Result<TimerRecord> {
         let mutation = self.begin_mutation().await?;
         let created_at = self.now();
@@ -1807,7 +1821,7 @@ impl RuntimeHandle {
             interval_ms,
             repeat: interval_ms.is_some(),
             status: TimerStatus::Active,
-            summary,
+            content,
             next_fire_at: Some(advance_time(created_at, duration_ms)?),
             last_fired_at: None,
             fire_count: 0,
@@ -1859,6 +1873,20 @@ impl RuntimeHandle {
         timezone: impl Into<String>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
+        self.schedule_calendar_timer_with_content(
+            expression,
+            timezone,
+            holon_domain::TimerContent::from_legacy_summary(summary),
+        )
+        .await
+    }
+
+    pub async fn schedule_calendar_timer_with_content(
+        &self,
+        expression: impl Into<String>,
+        timezone: impl Into<String>,
+        content: holon_domain::TimerContent,
+    ) -> Result<TimerRecord> {
         let admission = self.execution_admission_lease()?;
         let calendar = crate::calendar::CalendarSchedule::new(expression, timezone)?;
         let runtime = self.clone();
@@ -1866,7 +1894,7 @@ impl RuntimeHandle {
         self.spawn_owned_mutation(async move {
             let _admission = admission;
             let result = runtime
-                .schedule_calendar_timer_owned(calendar, summary)
+                .schedule_calendar_timer_owned(calendar, content)
                 .await;
             if let Err(error) = &result {
                 tracing::warn!(error = %error, "owned calendar timer scheduling failed");
@@ -1881,7 +1909,7 @@ impl RuntimeHandle {
     async fn schedule_calendar_timer_owned(
         &self,
         calendar: crate::calendar::CalendarSchedule,
-        summary: Option<String>,
+        content: holon_domain::TimerContent,
     ) -> Result<TimerRecord> {
         let mutation = self.begin_mutation().await?;
         let created_at = self.now();
@@ -1896,7 +1924,7 @@ impl RuntimeHandle {
             interval_ms: None,
             repeat: true,
             status: TimerStatus::Active,
-            summary,
+            content,
             next_fire_at: Some(next_fire_at),
             last_fired_at: None,
             fire_count: 0,
@@ -1917,6 +1945,80 @@ impl RuntimeHandle {
 
     pub async fn resume_timer(&self, timer_id: &str) -> Result<TimerRecord> {
         self.set_timer_paused(timer_id, false).await
+    }
+
+    pub async fn edit_timer_content(
+        &self,
+        timer_id: &str,
+        patch: crate::types::TimerContentPatch,
+    ) -> Result<TimerRecord> {
+        let admission = self.execution_admission_lease()?;
+        let runtime = self.clone();
+        let timer_id = timer_id.to_owned();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = admission;
+            let _ = send.send(runtime.edit_timer_content_owned(&timer_id, patch).await);
+        })?;
+        receive.await.context("timer content edit worker stopped")?
+    }
+
+    async fn edit_timer_content_owned(
+        &self,
+        timer_id: &str,
+        patch: crate::types::TimerContentPatch,
+    ) -> Result<TimerRecord> {
+        use crate::runtime_db::transitions::{
+            PreparedInputTransition, PreparedTimerTransition, TimerMutationOutcome,
+        };
+        let mut guard = self.begin_mutation().await?;
+        let read = match guard.prepare_timer_mutation_read(timer_id, None, false).await {
+            Ok(read) => read,
+            Err(error) if matches!(error.downcast_ref::<crate::runtime_db::scheduling_snapshot::SchedulingSnapshotError>(),
+                Some(crate::runtime_db::scheduling_snapshot::SchedulingSnapshotError::ForeignRecord(key))
+                if key.family == super::resident_scheduling::SchedulingFamily::Timer && key.id == timer_id) => None,
+            Err(error) => return Err(error),
+        }
+        .filter(|read| read.timer.agent_id == guard.state.id)
+        .ok_or_else(|| {
+            RuntimeError::not_found("timer_not_found", format!("timer {timer_id} not found"))
+                .with_safe_context("timer_id", timer_id)
+        })?;
+        let expected = read.timer;
+        let mut record = expected.clone();
+        patch.apply(&mut record.content).map_err(|error| {
+            RuntimeError::validation("invalid_timer_content", error.to_string())
+        })?;
+        if record == expected {
+            return Ok(record);
+        }
+        let prepared = PreparedInputTransition::timer(
+            guard.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            self.now(),
+            PreparedTimerTransition::EditContent {
+                expected: Box::new(expected),
+                record: Box::new(record.clone()),
+                fault: self.take_transition_fault(),
+            },
+        )?;
+        match guard.commit_prepared_timer_transition(prepared).await {
+            Ok((commit, TimerMutationOutcome::ContentEdited { record: actual })) => {
+                anyhow::ensure!(
+                    commit.applied && actual == record,
+                    "timer content edit ACK differs"
+                );
+                drop(guard);
+                self.apply_transition_commit(commit).await;
+            }
+            Ok(_) => anyhow::bail!("timer content edit returned another operation"),
+            Err(error) => {
+                if !guard.reconcile_known_commit().await? {
+                    return Err(error);
+                }
+            }
+        }
+        Ok(record)
     }
 
     async fn set_timer_paused(&self, timer_id: &str, paused: bool) -> Result<TimerRecord> {
@@ -2356,10 +2458,7 @@ impl RuntimeHandle {
                 AuthorityClass::RuntimeInstruction,
                 Priority::Next,
                 MessageBody::Text {
-                    text: timer
-                        .summary
-                        .clone()
-                        .unwrap_or_else(|| format!("timer {} fired", timer.id)),
+                    text: expected.trigger_text(),
                 },
             )
             .with_admission(
@@ -2388,11 +2487,18 @@ impl RuntimeHandle {
             let _route_material = route.material;
             if route.timer.schedule_generation != timer.schedule_generation
                 || route.timer.status != TimerStatus::Active
+                || route.timer.fire_count != expected.fire_count
             {
                 *timer = route.timer;
                 return Ok(());
             }
             let pending = route.pending;
+            // An edit can commit between State OCC attempts without rescheduling.
+            // Rebuild from the same canonical record the write will compare.
+            record.content.clone_from(&route.timer.content);
+            message.body = MessageBody::Text {
+                text: route.timer.trigger_text(),
+            };
 
             let expected_state = guard.committed_state().clone();
             let mut committed_state = guard.state.clone();
@@ -2400,7 +2506,7 @@ impl RuntimeHandle {
             committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
             scheduler::apply_message_wake_projection(&mut committed_state);
             let command = crate::runtime_db::TimerFire {
-                expected: expected.clone(),
+                expected: route.timer,
                 record: record.clone(),
                 message: message.clone(),
                 queue_entry: QueueEntryRecord {
@@ -2446,7 +2552,7 @@ impl RuntimeHandle {
                         "timer_fired",
                         serde_json::json!({
                             "timer_id": timer.id,
-                            "summary": timer.summary.clone(),
+                            "summary": timer.content.instruction.clone(),
                             "status": timer.status,
                             "fire_count": timer.fire_count,
                             "next_fire_at": timer.next_fire_at,
@@ -3026,7 +3132,7 @@ mod mutation_tests {
             interval_ms: Some(1_000),
             repeat: true,
             status: TimerStatus::Active,
-            summary: None,
+            content: holon_domain::TimerContent::default(),
             next_fire_at: Some(now),
             last_fired_at: None,
             fire_count: 0,
@@ -3054,7 +3160,7 @@ mod mutation_tests {
         let resumed = runtime.resume_timer(&original.id).await.unwrap();
         assert_eq!(resumed.status, TimerStatus::Active);
         assert_eq!(resumed.id, original.id);
-        assert_eq!(resumed.summary, original.summary);
+        assert_eq!(resumed.content, original.content);
         assert_eq!(resumed.duration_ms, original.duration_ms);
         assert_eq!(resumed.last_fired_at, None);
         assert_eq!(runtime.resume_timer(&original.id).await.unwrap(), resumed);

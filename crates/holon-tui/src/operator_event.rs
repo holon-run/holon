@@ -1319,7 +1319,7 @@ fn timer_text(
         };
         return (title.into(), None, title.into());
     };
-    let body = timer.summary.clone();
+    let body = timer.content.instruction.clone();
     let label = if fired {
         "Timer fired"
     } else {

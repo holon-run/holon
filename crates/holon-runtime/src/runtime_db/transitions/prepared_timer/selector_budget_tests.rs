@@ -37,7 +37,7 @@ fn current_queue_selector_includes_cancelled_pending_wake_without_a_new_birth() 
         interval_ms: None,
         repeat: false,
         status: TimerStatus::Active,
-        summary: None,
+        content: holon_domain::TimerContent::default(),
         next_fire_at: Some(at),
         last_fired_at: Some(at),
         fire_count: 1,

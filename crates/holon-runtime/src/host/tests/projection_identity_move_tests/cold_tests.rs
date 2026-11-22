@@ -206,7 +206,7 @@ async fn cold_identity_entrypoints_keep_missing_identity_and_scheduling_rejectio
         interval_ms: None,
         repeat: false,
         status: TimerStatus::Active,
-        summary: None,
+        content: holon_domain::TimerContent::default(),
         next_fire_at: None,
         last_fired_at: None,
         fire_count: 0,

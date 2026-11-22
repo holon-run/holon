@@ -76,7 +76,7 @@ pub(super) fn timer(id: &str, status: TimerStatus) -> TimerRecord {
         interval_ms: Some(1000),
         repeat: true,
         status,
-        summary: Some(id.into()),
+        content: holon_domain::TimerContent::from_legacy_summary(Some(id.into())),
         next_fire_at: Some(at() + chrono::Duration::seconds(1)),
         last_fired_at: Some(at()),
         fire_count: 5,

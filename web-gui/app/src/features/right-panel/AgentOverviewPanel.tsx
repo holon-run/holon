@@ -23,6 +23,7 @@ import { ObjectDetailRefreshFeedback } from "./ObjectDetailRefreshFeedback";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import { AgentTasksPanel } from "./AgentTasksPanel";
+import { timerDisplayName } from "./TimerContentEditor";
 import { AgentWorkItemsPanel } from "./AgentWorkItemsPanel";
 import { RuntimeHttpError } from "../../runtime/client";
 import { useRuntimeStore } from "../../runtime/runtime-store";
@@ -169,12 +170,13 @@ function TimerRow({
   const ScheduleIcon = calendar ? CalendarClock : timer.interval_ms ? Repeat2 : Timer;
   const nextFire = paused ? null : formatTimerDate(timer.next_fire_at, calendar?.timezone);
   const lastFired = formatTimerDate(timer.last_fired_at, calendar?.timezone);
+  const displayName = timerDisplayName(timer);
 
   return (
     <article className={`agent-timer-row${primaryAction ? "" : " is-history"}`} aria-busy={pendingAction ? true : undefined}>
       <div className="agent-timer-summary">
         <div className="agent-timer-heading">
-          <strong title={timer.summary || timer.id}>{timer.summary || timer.id}</strong>
+          <strong title={displayName}>{displayName}</strong>
           <span className="agent-timer-type" title={timerType} aria-label={timerType}>
             {calendar ? <CalendarClock size={14} aria-hidden="true" /> : timer.interval_ms ? <Repeat2 size={14} aria-hidden="true" /> : <Timer size={14} aria-hidden="true" />}
             <span className="sr-only">{timerType}</span>

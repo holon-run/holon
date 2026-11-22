@@ -32,8 +32,8 @@ use holon_domain::{
     AgentModelState, AgentSummary, AgentTreeProjection, AuthorityClass, BriefRecord,
     ExternalTriggerStateSnapshot, MessageEnvelope, OperatorNotificationRecord,
     ResolvedModelAvailability, RuntimeErrorContext, RuntimeErrorDomain, TaskInputResult,
-    TaskOutputResult, TaskRecord, TaskStatusSnapshot, TaskStopResult, TimerRecord,
-    ToolExecutionRecord, TranscriptEntry, TurnTerminalRecord, WorkItemRecord,
+    TaskOutputResult, TaskRecord, TaskStatusSnapshot, TaskStopResult, TimerContentPatch,
+    TimerRecord, ToolExecutionRecord, TranscriptEntry, TurnTerminalRecord, WorkItemRecord,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -653,18 +653,29 @@ impl LocalClient {
         timezone: Option<String>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
-        self.post_control_json(
-            &format!("/control/agents/{agent_id}/timers"),
+        self.create_timer_with_request(
+            agent_id,
             &CreateTimerRequest {
                 duration_ms,
                 interval_ms,
                 calendar_expression,
                 timezone,
+                title: None,
+                instruction: None,
                 summary,
                 authority_class: Some(AuthorityClass::OperatorInstruction),
             },
         )
         .await
+    }
+
+    pub async fn create_timer_with_request(
+        &self,
+        agent_id: &str,
+        request: &CreateTimerRequest,
+    ) -> Result<TimerRecord> {
+        self.post_control_json(&format!("/control/agents/{agent_id}/timers"), request)
+            .await
     }
 
     pub async fn cancel_timer(&self, agent_id: &str, timer_id: &str) -> Result<TimerRecord> {
@@ -677,6 +688,19 @@ impl LocalClient {
 
     pub async fn resume_timer(&self, agent_id: &str, timer_id: &str) -> Result<TimerRecord> {
         self.change_timer(agent_id, timer_id, "resume").await
+    }
+
+    pub async fn edit_timer_content(
+        &self,
+        agent_id: &str,
+        timer_id: &str,
+        patch: &TimerContentPatch,
+    ) -> Result<TimerRecord> {
+        self.patch_control_json(
+            &format!("/control/agents/{agent_id}/timers/{timer_id}"),
+            patch,
+        )
+        .await
     }
 
     async fn change_timer(

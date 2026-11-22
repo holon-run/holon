@@ -30,6 +30,11 @@ pub struct CreateTimerArgs {
     pub interval_ms: Option<u64>,
     pub calendar_expression: Option<String>,
     pub timezone: Option<String>,
+    /// Optional display title; not used in the trigger message.
+    pub title: Option<String>,
+    /// Text for each new timer wake. Do not combine with `summary`.
+    pub instruction: Option<String>,
+    /// Legacy alias for `instruction`.
     pub summary: Option<String>,
 }
 

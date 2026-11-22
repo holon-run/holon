@@ -2078,7 +2078,7 @@ mod tests {
             interval_ms: None,
             repeat: false,
             status: crate::types::TimerStatus::Active,
-            summary: Some("wake later".into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some("wake later".into())),
             next_fire_at: Some(now + chrono::Duration::seconds(1)),
             last_fired_at: None,
             fire_count: 0,
@@ -2237,7 +2237,7 @@ mod tests {
             interval_ms: None,
             repeat: false,
             status: crate::types::TimerStatus::Active,
-            summary: Some("timer".into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some("timer".into())),
             next_fire_at: Some(now + chrono::Duration::seconds(1)),
             last_fired_at: None,
             fire_count: 0,
@@ -2458,7 +2458,7 @@ mod tests {
             interval_ms: None,
             repeat: false,
             status: crate::types::TimerStatus::Active,
-            summary: Some(id.into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some(id.into())),
             next_fire_at: Some(now),
             last_fired_at: None,
             fire_count: 0,
@@ -4764,7 +4764,7 @@ mod tests {
             interval_ms: None,
             repeat: false,
             status: crate::types::TimerStatus::Active,
-            summary: Some("older".into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some("older".into())),
             next_fire_at: Some(now),
             last_fired_at: None,
             fire_count: 0,
@@ -4774,10 +4774,10 @@ mod tests {
         };
         let mut updated = older.clone();
         updated.status = crate::types::TimerStatus::Completed;
-        updated.summary = Some("updated".into());
+        updated.content.instruction = Some("updated".into());
         let other = TimerRecord {
             id: "timer-2".into(),
-            summary: Some("other".into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some("other".into())),
             ..older.clone()
         };
 
@@ -4790,7 +4790,7 @@ mod tests {
             .unwrap()
             .expect("timer should be found");
         assert_eq!(latest.status, crate::types::TimerStatus::Completed);
-        assert_eq!(latest.summary.as_deref(), Some("updated"));
+        assert_eq!(latest.content.instruction.as_deref(), Some("updated"));
     }
 
     #[test]

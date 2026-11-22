@@ -127,7 +127,8 @@ fn task_and_timer_incarnation_and_data_share_snapshot_during_replacement_and_del
                     tx.execute(
                         &format!(
                             "UPDATE {table} SET payload_json =
-                             json_set(payload_json, '$.summary', 'replacement-only')"
+                             json_set(json_remove(payload_json, '$.instruction'),
+                                      '$.summary', 'replacement-only')"
                         ),
                         [],
                     )?;
@@ -172,7 +173,10 @@ fn task_and_timer_incarnation_and_data_share_snapshot_during_replacement_and_del
             assert_eq!(tasks[0].summary.as_deref(), Some("replacement-only"));
             let (identity, timers) = timers.expect("replacement timer snapshot");
             assert_eq!(identity.agent_incarnation, 2);
-            assert_eq!(timers[0].summary.as_deref(), Some("replacement-only"));
+            assert_eq!(
+                timers[0].content.instruction.as_deref(),
+                Some("replacement-only")
+            );
             for table in ["tasks", "timers"] {
                 db.connection()?.execute(
                     &format!("UPDATE {table} SET payload_json = 'invalid replacement payload'"),

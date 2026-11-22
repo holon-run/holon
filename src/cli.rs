@@ -91,11 +91,54 @@ pub enum TimerCommands {
         #[arg(long)]
         agent: Option<String>,
     },
+    #[command(about = "Edit a timer's title or instruction without changing its schedule")]
+    Edit {
+        timer_id: String,
+        #[arg(long)]
+        agent: Option<String>,
+        #[command(flatten)]
+        content: TimerEditArgs,
+    },
     Cancel {
         timer_id: String,
         #[arg(long)]
         agent: Option<String>,
     },
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("timer_content")
+        .required(true)
+        .multiple(true)
+        .args(["title", "clear_title", "instruction", "clear_instruction"])
+))]
+pub struct TimerEditArgs {
+    #[arg(long, conflicts_with = "clear_title")]
+    pub title: Option<String>,
+    #[arg(long)]
+    pub clear_title: bool,
+    #[arg(long, visible_alias = "summary", conflicts_with = "clear_instruction")]
+    pub instruction: Option<String>,
+    #[arg(long, visible_alias = "clear-summary")]
+    pub clear_instruction: bool,
+}
+
+impl TimerEditArgs {
+    pub fn into_patch(self) -> crate::types::TimerContentPatch {
+        crate::types::TimerContentPatch {
+            title: if self.clear_title {
+                Some(None)
+            } else {
+                self.title.map(Some)
+            },
+            instruction: if self.clear_instruction {
+                Some(None)
+            } else {
+                self.instruction.map(Some)
+            },
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -113,7 +156,15 @@ pub struct TimerCreateArgs {
     pub calendar_expression: Option<String>,
     #[arg(long)]
     pub timezone: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional display title")]
+    pub title: Option<String>,
+    #[arg(
+        long,
+        conflicts_with = "summary",
+        help = "Text for each new timer wake"
+    )]
+    pub instruction: Option<String>,
+    #[arg(long, help = "Legacy alias for --instruction")]
     pub summary: Option<String>,
     #[arg(long)]
     pub agent: Option<String>,
@@ -212,7 +263,7 @@ pub enum Commands {
         command: MemoryIndexCommands,
     },
     #[command(
-        about = "Create, list, pause, resume, or cancel timers",
+        about = "Create, list, edit, pause, resume, or cancel timers",
         args_conflicts_with_subcommands = true
     )]
     Timer {

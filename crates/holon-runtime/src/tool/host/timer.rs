@@ -5,6 +5,7 @@ use crate::tool::helpers::invalid_tool_input;
 use crate::tool::helpers::parse_tool_args;
 use crate::tool::helpers::validate_non_empty;
 use anyhow::Result;
+use holon_domain::TimerContent;
 use serde_json::json;
 use serde_json::Value;
 
@@ -32,15 +33,24 @@ pub(crate) async fn create(
         )
         .into());
     }
+    let content =
+        TimerContent::for_create(args.title, args.instruction, args.summary).map_err(|error| {
+            invalid_tool_input(
+                CREATE_NAME,
+                error.to_string(),
+                json!({"fields": ["title", "instruction", "summary"]}),
+                "provide a nonblank title and at most one of instruction or summary",
+            )
+        })?;
     let timer = match (args.calendar_expression, args.timezone) {
         (Some(expression), Some(timezone)) => {
             runtime
-                .schedule_calendar_timer(expression, timezone, args.summary)
+                .schedule_calendar_timer_with_content(expression, timezone, content)
                 .await?
         }
         (None, None) => {
             runtime
-                .schedule_timer(
+                .schedule_timer_with_content(
                     args.duration_ms.ok_or_else(|| {
                         invalid_tool_input(
                             CREATE_NAME,
@@ -50,7 +60,7 @@ pub(crate) async fn create(
                         )
                     })?,
                     args.interval_ms,
-                    args.summary,
+                    content,
                 )
                 .await?
         }

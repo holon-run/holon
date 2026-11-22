@@ -65,7 +65,7 @@ impl Fixture {
             interval_ms: None,
             repeat: false,
             status: TimerStatus::Cancelled,
-            summary: None,
+            content: holon_domain::TimerContent::default(),
             next_fire_at: None,
             last_fired_at: None,
             fire_count: 0,

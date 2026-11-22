@@ -889,20 +889,27 @@ pub async fn create_timer(
             .into(),
         ));
     }
+    let content =
+        crate::types::TimerContent::for_create(request.title, request.instruction, request.summary)
+            .map_err(|error| {
+                error_response(
+                    RuntimeError::validation("invalid_timer_content", error.to_string()).into(),
+                )
+            })?;
     let timer = match (request.calendar_expression, request.timezone) {
         (Some(expression), Some(timezone)) => runtime
-            .schedule_calendar_timer(expression, timezone, request.summary)
+            .schedule_calendar_timer_with_content(expression, timezone, content)
             .await
             .map_err(error_response)?,
         (None, None) => runtime
-            .schedule_timer(
+            .schedule_timer_with_content(
                 request.duration_ms.ok_or_else(|| {
                     error_response(anyhow::anyhow!(
                         "duration_ms is required when calendar_expression is absent"
                     ))
                 })?,
                 request.interval_ms,
-                request.summary,
+                content,
             )
             .await
             .map_err(error_response)?,

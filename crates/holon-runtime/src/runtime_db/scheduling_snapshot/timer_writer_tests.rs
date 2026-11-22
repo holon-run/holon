@@ -492,7 +492,7 @@ fn timer_create_exact_receipt_replay_keeps_original_ack_after_later_fire() -> Re
     assert_eq!(db.timers().latest("created")?.unwrap().fire_count, 1);
     assert_eq!(rows(&db)?, before);
     let mut changed = timer.clone();
-    changed.summary = Some("changed intent".into());
+    changed.content.instruction = Some("changed intent".into());
     assert!(execute(
         &db,
         &freeze("create", PreparedTimerTransition::create(changed, None))?,

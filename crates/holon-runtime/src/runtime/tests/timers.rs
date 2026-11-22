@@ -1658,7 +1658,9 @@ async fn runtime_fires_overdue_timer_after_restart() {
             interval_ms: None,
             repeat: false,
             status: TimerStatus::Active,
-            summary: Some("timer recovered".into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some(
+                "timer recovered".into(),
+            )),
             next_fire_at: Some(now - chrono::Duration::milliseconds(5)),
             last_fired_at: None,
             fire_count: 0,
@@ -1668,6 +1670,21 @@ async fn runtime_fires_overdue_timer_after_restart() {
         }],
         &[],
     );
+
+    // Exercise the stored pre-instruction wire shape across restart.
+    let database =
+        rusqlite::Connection::open(dir.path().join(".holon/state/runtime.sqlite")).unwrap();
+    assert_eq!(
+        database
+            .execute(
+                "UPDATE timers SET payload_json = json_remove(payload_json, '$.instruction', '$.title')
+                 WHERE timer_id = 'timer-recover'",
+                [],
+            )
+            .unwrap(),
+        1
+    );
+    drop(database);
 
     let runtime = RuntimeHandle::new_with_clock(
         "default",
@@ -1695,6 +1712,12 @@ async fn runtime_fires_overdue_timer_after_restart() {
         .find(|timer| timer.id == "timer-recover" && timer.fire_count == 1)
         .unwrap();
     assert_eq!(timer.status, TimerStatus::Completed);
+    let messages = runtime.storage().read_recent_messages(100).unwrap();
+    let wake = messages
+        .iter()
+        .find(|message| matches!(&message.origin, MessageOrigin::Timer { timer_id } if timer_id == &timer.id))
+        .unwrap();
+    assert!(matches!(&wake.body, MessageBody::Text { text } if text == "timer recovered"));
     runtime_task.abort();
 }
 
@@ -1979,7 +2002,7 @@ async fn runtime_recovers_active_timer_without_next_fire_at() {
             interval_ms: None,
             repeat: false,
             status: TimerStatus::Active,
-            summary: Some("timer fallback".into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some("timer fallback".into())),
             next_fire_at: None,
             last_fired_at: None,
             fire_count: 0,
@@ -2036,7 +2059,9 @@ async fn runtime_recovers_overdue_repeating_timer_on_original_schedule() {
             interval_ms: Some(1_000),
             repeat: true,
             status: TimerStatus::Active,
-            summary: Some("repeating timer recovered".into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some(
+                "repeating timer recovered".into(),
+            )),
             next_fire_at: Some(scheduled_fire_at),
             last_fired_at: None,
             fire_count: 0,
@@ -2718,7 +2743,7 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
         interval_ms: Some(10_000),
         repeat: true,
         status: TimerStatus::Active,
-        summary: Some("legacy active".into()),
+        content: holon_domain::TimerContent::from_legacy_summary(Some("legacy active".into())),
         next_fire_at: Some(now + chrono::Duration::seconds(10)),
         last_fired_at: Some(now),
         fire_count: 3,
@@ -2730,7 +2755,7 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
         id: "legacy-cancelled-timer".into(),
         status: TimerStatus::Cancelled,
         next_fire_at: None,
-        summary: Some("legacy cancelled".into()),
+        content: holon_domain::TimerContent::from_legacy_summary(Some("legacy cancelled".into())),
         ..active_timer.clone()
     };
 
@@ -2867,7 +2892,7 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
         interval_ms: Some(10_000),
         repeat: true,
         status: TimerStatus::Active,
-        summary: Some("restored timer".into()),
+        content: holon_domain::TimerContent::from_legacy_summary(Some("restored timer".into())),
         next_fire_at: Some(now + chrono::Duration::seconds(10)),
         last_fired_at: Some(now),
         fire_count: 1,
@@ -3454,6 +3479,85 @@ async fn terminal_timer_drop_releases_pending_for_next_fire() {
             "duplicate ticks still coalesce after a terminal source is retired"
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn timer_content_edit_leaves_existing_wake_and_schedule_unchanged() {
+    use crate::runtime_db::transitions::QueueMutation;
+    use crate::types::TimerContentPatch;
+
+    let (_dir, _workspace, runtime, mut producer) = terminal_timer_fixture(true).await;
+    let old_id = assert_single_durable_timer_wake(&runtime, &producer.id);
+    let read_message = |id: &str| runtime.storage().read_message_by_id(id).unwrap().unwrap();
+    let old_message = read_message(&old_id);
+    let title_patch = serde_json::from_value(serde_json::json!({"title": "Display only"})).unwrap();
+    let mut expected = producer.clone();
+    expected.content.title = Some("Display only".into());
+    assert_eq!(
+        runtime
+            .edit_timer_content(&producer.id, title_patch)
+            .await
+            .unwrap(),
+        expected
+    );
+    let legacy_patch =
+        serde_json::from_value(serde_json::json!({"summary": "New instruction"})).unwrap();
+    expected.content.instruction = Some("New instruction".into());
+    let edited = runtime
+        .edit_timer_content(&producer.id, legacy_patch)
+        .await
+        .unwrap();
+    assert_eq!(edited, expected);
+    assert_eq!(
+        assert_single_durable_timer_wake(&runtime, &producer.id),
+        old_id
+    );
+    assert_eq!(read_message(&old_id), old_message);
+
+    let mut command = terminal_timer_queue_command(&runtime, &edited);
+    let QueueMutation::CompareAndSet { record, .. } = &mut command.mutation else {
+        unreachable!();
+    };
+    record.status = QueueEntryStatus::Dropped;
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let commit = mutation
+        .commit_prepared_queue(
+            crate::ids::audit_event_id(),
+            crate::runtime_db::transitions::PreparedQueueTransition::new(command),
+        )
+        .await
+        .unwrap();
+    assert!(commit.applied);
+    drop(mutation);
+    runtime.apply_transition_commit(commit).await;
+
+    runtime.fire_timer_record(&mut producer).await.unwrap();
+    assert_eq!(producer.fire_count, edited.fire_count + 1);
+    let wake = runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&producer.id)
+        .unwrap()
+        .unwrap();
+    let next = read_message(&wake.message_id);
+    assert_ne!(next.id, old_id);
+    assert!(matches!(&next.body, MessageBody::Text { text } if text == "New instruction"));
+    let clear = TimerContentPatch {
+        title: Some(None),
+        instruction: Some(None),
+    };
+    let mut expected = producer.clone();
+    expected.content = Default::default();
+    let cleared = runtime
+        .edit_timer_content(&producer.id, clear)
+        .await
+        .unwrap();
+    assert_eq!(cleared, expected);
+    assert_eq!(
+        cleared.trigger_text(),
+        format!("timer {} fired", producer.id)
+    );
 }
 
 #[tokio::test(start_paused = true)]

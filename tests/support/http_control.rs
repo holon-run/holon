@@ -1850,7 +1850,7 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
     assert!(snapshot
         .timers
         .iter()
-        .any(|timer| timer.summary.as_deref() == Some("state timer")));
+        .any(|timer| timer.content.instruction.as_deref() == Some("state timer")));
     assert!(snapshot
         .work_items
         .iter()

@@ -55,6 +55,12 @@ pub(crate) enum PreparedTimerTransition {
         #[serde(skip)]
         fault: Option<TransitionFaultPoint>,
     },
+    EditContent {
+        expected: Box<crate::types::TimerRecord>,
+        record: Box<crate::types::TimerRecord>,
+        #[serde(skip)]
+        fault: Option<TransitionFaultPoint>,
+    },
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -69,6 +75,9 @@ pub(crate) enum TimerMutationOutcome {
         result: crate::runtime_db::TimerCancelResult,
     },
     Rescheduled {
+        record: crate::types::TimerRecord,
+    },
+    ContentEdited {
         record: crate::types::TimerRecord,
     },
 }
@@ -109,7 +118,7 @@ impl PreparedTimerTransition {
             Self::Create { record, .. } => record,
             Self::Fire { command, .. } => &command.record,
             Self::Cancel { command, .. } => &command.record,
-            Self::Reschedule { record, .. } => record,
+            Self::Reschedule { record, .. } | Self::EditContent { record, .. } => record,
         }
     }
     pub(super) fn new_wake(&self) -> Option<(&MessageEnvelope, &QueueEntryRecord)> {
@@ -236,6 +245,16 @@ impl PreparedTimerTransition {
                     _ => false,
                 };
                 anyhow::ensure!(valid, "Timer reschedule data differs from its status");
+            }
+            Self::EditContent {
+                expected, record, ..
+            } => {
+                let mut unchanged = record.as_ref().clone();
+                unchanged.content.clone_from(&expected.content);
+                anyhow::ensure!(
+                    &unchanged == expected.as_ref() && record.content != expected.content,
+                    "Timer content edit must change content only"
+                );
             }
         }
         Ok(())
@@ -399,6 +418,24 @@ impl PreparedTimerTransition {
                 inject_fault(*fault, TransitionFaultPoint::AfterCanonicalWrites)?;
                 TimerMutationOutcome::Rescheduled { record: actual }
             }
+            Self::EditContent { record, fault, .. } => {
+                inject_fault(*fault, TransitionFaultPoint::AfterValidation)?;
+                repositories::edit_timer_content_tx(tx, record)?;
+                value.applied = true;
+                value.effects.fault = *fault;
+                value
+                    .effects
+                    .scheduling_write_keys
+                    .insert(timer_selector(&record.id)?);
+                let actual = repositories::timer_tx(tx, &record.id)?
+                    .context("Timer content edit ACK missing")?;
+                value
+                    .effects
+                    .timers
+                    .push(repositories::clone_timer_body(&actual)?);
+                inject_fault(*fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+                TimerMutationOutcome::ContentEdited { record: actual }
+            }
         };
         Ok((
             value,
@@ -412,7 +449,8 @@ impl PreparedTimerTransition {
             Self::Create { fault, .. }
             | Self::Fire { fault, .. }
             | Self::Cancel { fault, .. }
-            | Self::Reschedule { fault, .. } => *fault,
+            | Self::Reschedule { fault, .. }
+            | Self::EditContent { fault, .. } => *fault,
         }
     }
 }
@@ -618,6 +656,10 @@ pub(super) fn prepare_tx<'tx, 'conn>(
             PreparedTimerTransition::Reschedule { expected, .. } => anyhow::ensure!(
                 matches!(proof.fact_before(&timer_key), Some(CanonicalSchedulingFact::Timer(actual)) if actual == expected.as_ref()),
                 "Timer reschedule compare-and-swap mismatch"
+            ),
+            PreparedTimerTransition::EditContent { expected, .. } => anyhow::ensure!(
+                matches!(proof.fact_before(&timer_key), Some(CanonicalSchedulingFact::Timer(actual)) if actual == expected.as_ref()),
+                "Timer content edit compare-and-swap mismatch"
             ),
             PreparedTimerTransition::Fire {
                 command, pending, ..
