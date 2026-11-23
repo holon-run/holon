@@ -311,6 +311,12 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
         .into_iter()
         .map(|model| volcengine_route_definition("volcengine-agent", "plan", model, None)),
     );
+    definitions.push(volcengine_route_definition(
+        "volcengine-agent",
+        "plan",
+        "glm-5.4",
+        None,
+    ));
     // Append admissions without changing the existing preferred plan model.
     for model in ["qwen4-max", "qwen4-max-preview"] {
         let mut definition = route_definition(
@@ -1291,6 +1297,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
         }),
     );
     entries.extend([
+        reviewed_subscription_model("volcengine", "plan", "glm-5.4", "GLM-5.4", false, true),
         reviewed_subscription_model(
             "volcengine",
             "coding",
@@ -1746,6 +1753,44 @@ fn reviewed_byteplus_vision_and_volcengine_alias_are_endpoint_scoped() {
         ] {
             let route = ModelRouteRef::parse(unsupported).unwrap();
             assert!(catalog.get_route(&route).is_none(), "{unsupported}");
+        }
+    }
+}
+
+#[test]
+fn volcengine_glm54_admits_only_agent_plan_and_scopes_image_input() {
+    for catalog in [
+        BuiltInModelCatalog::from_legacy_definitions(),
+        BuiltInModelCatalog::new(),
+    ] {
+        let route = ModelRouteRef::parse("volcengine@plan/glm-5.4").unwrap();
+        let resolve = |route: &ModelRouteRef| {
+            catalog
+                .try_resolve_route_policy(
+                    route,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &ContextConfig::default(),
+                    8_192,
+                )
+                .unwrap()
+        };
+        assert!(catalog.get_route(&route).is_some());
+        let metadata = catalog.get(&route.model_ref()).unwrap();
+        assert_eq!(metadata.default_max_output_tokens, None);
+        let plan = resolve(&route);
+        assert!(plan.capabilities.image_input);
+        assert!(!plan.capabilities.supports_reasoning);
+        assert!(!plan.capabilities.parallel_tool_calls);
+        assert_eq!(plan.context_window_tokens, None);
+        assert_eq!(plan.max_output_tokens_upper_limit, None);
+        assert!(plan.reasoning_effort_options.is_empty());
+
+        for endpoint in ["default", "coding"] {
+            let other = ModelRouteRef::parse(&format!("volcengine@{endpoint}/glm-5.4")).unwrap();
+            assert!(catalog.get_route(&other).is_none());
+            assert!(!resolve(&other).capabilities.image_input);
         }
     }
 }

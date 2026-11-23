@@ -693,13 +693,18 @@ impl BuiltInModelCatalog {
         configured_runtime_max_output_tokens: u32,
         endpoint: Option<&'a ProviderEndpointId>,
     ) -> ModelMetadataSelection<'a> {
-        // Go's reviewed LongCat 2.5 metadata describes native Chat only.
-        // A missing route policy must not turn that metadata into a fallback.
+        // These reviewed model facts apply only to the documented endpoint.
+        // A missing route policy must not turn them into a sibling-endpoint fallback.
+        let reviewed_endpoint = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
+            ("opencode-go", "longcat-2.5") => Some("default"),
+            ("volcengine", "glm-5.4") => Some("plan"),
+            _ => None,
+        };
         let model_builtin = model_builtin.filter(|_| {
-            !(model_ref.provider.as_str() == "opencode-go"
-                && model_ref.model == "longcat-2.5"
-                && route_builtin.is_none()
-                && endpoint.is_some_and(|endpoint| endpoint.as_str() != "default"))
+            route_builtin.is_some()
+                || !reviewed_endpoint
+                    .zip(endpoint)
+                    .is_some_and(|(reviewed, requested)| reviewed != requested.as_str())
         });
         // Go discovery is model-scoped, but describes only its native endpoint.
         let discovered = discovered_models

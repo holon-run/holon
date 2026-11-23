@@ -7338,6 +7338,27 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "volcengine/glm-5.4",
+      "display_name": "GLM-5.4",
+      "description": "volcengine plan subscription GLM-5.4; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "volcengine/glm-latest",
       "display_name": "GLM-5.3 Latest",
       "description": "volcengine coding subscription GLM-5.3 Latest; exact token limits unconfirmed.",
@@ -14612,6 +14633,16 @@
       }
     },
     {
+      "route_ref": "volcengine@plan/glm-5.4",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@plan/glm-latest",
       "policy": {
         "display_name": null,
@@ -15512,6 +15543,10 @@
     {
       "alias": "volcengine-agent/glm-5.3-flash",
       "target": "volcengine/glm-5.3-flash"
+    },
+    {
+      "alias": "volcengine-agent/glm-5.4",
+      "target": "volcengine/glm-5.4"
     },
     {
       "alias": "volcengine-agent/glm-latest",
@@ -17282,6 +17317,10 @@
     {
       "model_ref": "volcengine/glm-5.3-flash",
       "route_ref": "volcengine@coding/glm-5.3-flash"
+    },
+    {
+      "model_ref": "volcengine/glm-5.4",
+      "route_ref": "volcengine@plan/glm-5.4"
     },
     {
       "model_ref": "volcengine/glm-latest",
