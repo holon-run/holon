@@ -104,7 +104,6 @@ use crate::{
     },
     runtime_db::{
         agent_relations::{independent_creation_records, supervised_creation_records},
-        destructive_operations::DestructiveOperationPhase,
         RuntimeDb,
     },
     runtime_error::{describe_runtime_error, RuntimeError},
@@ -3905,31 +3904,6 @@ impl RuntimeHost {
         // Any Result Queue ACK is visible to the original activation predicates
         // below. Stop history alone never supplies an activation request.
         self.sweep_pending_task_stops_at_startup().await?;
-        for operation in self
-            .runtime_db()
-            .destructive_operations()
-            .pending_verification()?
-        {
-            let status = tokio::time::timeout(
-                Duration::from_secs(10),
-                tokio::process::Command::new("/bin/sh")
-                    .args(["-lc", &operation.verification_target])
-                    .status(),
-            )
-            .await;
-            match status {
-                Ok(Ok(exit)) if exit.success() => {
-                    self.runtime_db().destructive_operations().transition(
-                        &operation.operation_id,
-                        DestructiveOperationPhase::DaemonInterrupted,
-                        DestructiveOperationPhase::Verified,
-                    )?;
-                }
-                other => {
-                    warn!(operation_id = %operation.operation_id, result = ?other, "destructive operation verify-only recovery did not confirm the target");
-                }
-            }
-        }
         tracing::info!(
             startup_id = %observation.startup_id,
             queue_entries_changed = recovery_report.queue_entries_changed,

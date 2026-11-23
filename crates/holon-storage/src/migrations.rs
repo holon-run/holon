@@ -4639,6 +4639,26 @@ FROM normalized;
         // never materialized `turn_records` stay upgrade-safe.
         sql: "",
     },
+    Migration {
+        version: 121,
+        name: "retire_destructive_operation_scheduler",
+        sql: r#"
+-- Old dispatch ownership is not proof of the external outcome. Carry only the
+-- existing no-replay barrier forward for unfinished turns; do not alter finished
+-- turn terminals or tool receipts.
+UPDATE turn_records
+SET payload_json = CASE
+  WHEN terminal_kind IS NULL THEN json_remove(
+    json_set(payload_json, '$.external_side_effect_possible', json('true')),
+    '$.destructive_operation_id')
+  ELSE json_remove(payload_json, '$.destructive_operation_id')
+END
+WHERE json_extract(payload_json, '$.destructive_operation_id') IS NOT NULL;
+
+DELETE FROM runtime_metadata WHERE key GLOB 'destructive_operation_closed:*';
+DROP TABLE IF EXISTS destructive_operations;
+"#,
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {

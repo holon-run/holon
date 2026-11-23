@@ -22,21 +22,12 @@ current daemon cgroup and can interrupt active turns. Never run
 `systemctl --user restart holon.service`, `holon daemon restart`, or an
 equivalent synchronous stop/start from a turn executing inside that service.
 
-Before the restart, create one durable operation id and persist its phase as
-`planned`, then atomically advance it to `scheduled` together with the owning
-turn's destructive-operation fence. Execute the restart from outside the
-daemon cgroup, preferably with a transient unit:
-
-```sh
-systemd-run --user --unit=holon-restart-<operation-id> --collect \
-  --on-active=2s systemctl --user restart holon.service
-```
-
-The scheduling command must return before the current turn settles. After
-startup, perform only readiness/version/status verification and advance the
-operation to `verified`. If the operation id already exists, treat it as
-already scheduled and never issue a second stop/start. Do not use `nohup`,
-shell backgrounding, or a fixed `sleep` as a cgroup escape.
+An authorized operator must perform the restart through the service manager
+from outside the daemon cgroup. Do not substitute `ExecCommand`, `nohup`,
+shell backgrounding, or a fixed `sleep` for an external operator session.
+After restart, check readiness, version, and service status without repeating
+the restart. If an earlier external dispatch may still be running, verify its
+status independently before attempting another lifecycle operation.
 
 ## When To Use
 

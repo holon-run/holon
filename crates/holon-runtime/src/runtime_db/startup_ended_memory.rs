@@ -491,6 +491,7 @@ fn read_startup_interruption_tx(
                 "startup_recovery/superseded_by_replay"
                     | "startup_recovery/external_side_effect_indeterminate"
                     | "startup_recovery/orphaned_queue_claim"
+                    // Historical Turn terminals written before the scheduler's retirement.
                     | "startup_recovery/destructive_operation_verify_only"
                     | "startup_recovery/daemon_restart"
             ),

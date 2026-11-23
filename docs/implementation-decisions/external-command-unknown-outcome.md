@@ -16,7 +16,6 @@ be active. Out-of-band HTTP/control command tasks do not mark an unrelated turn;
 that ingress is not replayed as an `ExecCommand` call. Commands promoted from
 `ExecCommand` remain fenced until their tool result is durable.
 
-The shared one-shot executor receives the owning tool name.
-`ScheduleDestructiveOperation` checkpoints clear the command barrier after a
-durable success or error result, preserving the operation ledger's verify-only
-recovery policy. Deferred or interrupted results never clear the barrier.
+On startup the runtime can recover a durable `ExecCommand` or
+`ExecCommandBatch` result missing from the transcript. A pre-execution record
+without a durable result still leaves the external outcome unknown.

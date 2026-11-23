@@ -415,8 +415,7 @@ fn assert_external_command_startup_recovery(tool_name: &str) -> Result<()> {
     use crate::diagnostics::io_probe::IoProbe;
     use crate::runtime::resident_input_evidence::InputEvidenceKey as Key;
     use crate::runtime_db::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery;
-    use crate::runtime_db::{DestructiveOperationPhase, DestructiveOperationRecord};
-    use crate::tool::names::{EXEC_COMMAND, EXEC_COMMAND_BATCH, SCHEDULE_DESTRUCTIVE_OPERATION};
+    use crate::tool::names::{EXEC_COMMAND, EXEC_COMMAND_BATCH};
     use crate::types::ToolExecutionCallBinding;
     use serde_json::json;
 
@@ -543,10 +542,6 @@ fn assert_external_command_startup_recovery(tool_name: &str) -> Result<()> {
             "skipped_count":0, "stop_on_error":true,
             "items":[{"index":1,"cmd":"printf ok","status":"completed","result":command_output}],
         }),
-        SCHEDULE_DESTRUCTIVE_OPERATION => json!({
-            "operation_id":"settled-operation", "phase":"scheduled",
-            "already_scheduled":false, "external_dispatch":command_output,
-        }),
         _ => unreachable!(),
     };
     let result = crate::tool::ToolResult::success(tool_name, output, None);
@@ -582,28 +577,6 @@ fn assert_external_command_startup_recovery(tool_name: &str) -> Result<()> {
         statements(&new_sql)
     );
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
-    let operation = if tool_name == SCHEDULE_DESTRUCTIVE_OPERATION {
-        let operation = DestructiveOperationRecord {
-            operation_id: "pending-operation".into(),
-            owner_turn_id: turn.turn_id.clone(),
-            owner_work_item_id: Some("work-fixture".into()),
-            command_digest: "fixture-digest".into(),
-            phase: DestructiveOperationPhase::Planned,
-            verification_target: "fixture-target".into(),
-            recovery_policy: "verify_only".into(),
-            created_at: f.at,
-            updated_at: f.at,
-        };
-        assert!(
-            db.destructive_operations()
-                .plan_and_schedule_in_scope(&f.scope, &operation, &ledger, None)?
-                .record
-                .should_dispatch
-        );
-        Some(operation)
-    } else {
-        None
-    };
     let pending = begin("pending")?;
 
     let path = f._dir.path().join("runtime-maintenance.lock");
@@ -620,18 +593,6 @@ fn assert_external_command_startup_recovery(tool_name: &str) -> Result<()> {
         None,
     )?;
     assert_eq!(recovered.report.interrupted_turns, 1);
-    if let Some(operation) = operation {
-        let pending_verification = db.destructive_operations().pending_verification()?;
-        assert_eq!(pending_verification[0].operation_id, operation.operation_id);
-        let retry = db
-            .destructive_operations()
-            .plan_and_schedule_in_scope(&f.scope, &operation, &ledger, None)?;
-        assert!(!retry.record.should_dispatch);
-        assert_eq!(
-            retry.record.record.phase,
-            DestructiveOperationPhase::DaemonInterrupted
-        );
-    }
     assert_eq!(
         db.queue_entries().latest_all()?[0].status,
         crate::types::QueueEntryStatus::Aborted,

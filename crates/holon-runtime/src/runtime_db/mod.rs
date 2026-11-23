@@ -30,7 +30,6 @@ pub mod conversation;
 pub mod current_query;
 pub(crate) mod current_read_writes;
 pub(crate) mod current_run_abort;
-pub mod destructive_operations;
 pub(crate) mod dispatch_memory;
 pub(crate) mod episode_memory;
 pub(crate) mod episode_snapshot;
@@ -108,10 +107,6 @@ pub use crate::runtime_db::brief_publication_repair::{
     WaitFinalBriefPublicationRepairDiagnostic, WaitFinalBriefPublicationRepairPhase,
     WaitFinalBriefPublicationRepairPlanStatus, WaitFinalBriefPublicationRepairProgress,
     WaitFinalBriefPublicationRepairReport,
-};
-pub use crate::runtime_db::destructive_operations::{
-    DestructiveOperationPhase, DestructiveOperationRecord, DestructiveOperationRepository,
-    PlannedDestructiveOperation,
 };
 pub use crate::runtime_db::evidence::{
     EvidenceKind, EvidencePayloadRow, EvidenceQuery, EvidenceRow,
@@ -1158,10 +1153,6 @@ impl RuntimeDb {
 
     pub fn turn_records(&self) -> TurnRecordRepository<'_> {
         TurnRecordRepository { db: self }
-    }
-
-    pub fn destructive_operations(&self) -> DestructiveOperationRepository<'_> {
-        DestructiveOperationRepository { db: self }
     }
 
     pub fn conversation(&self) -> ConversationRepository<'_> {

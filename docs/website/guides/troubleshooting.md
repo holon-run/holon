@@ -99,6 +99,16 @@ printf '%s\n' "${HOLON_HOME:-<default home>}"
 
 Do not copy or overwrite runtime databases across different `HOLON_HOME` directories. After fixing the cause and restarting the daemon, re-read open WorkItems and task states—durable WorkItems survive restarts, but an in-flight shell command may have exited when the daemon stopped.
 
+### Upgrading from the retired destructive-operation scheduler
+
+The upgrade removes `ScheduleDestructiveOperation` and its private ledger. It
+does not run saved verification commands, retry old operations, or stop jobs
+already handed to an external executor. A missing ledger entry does not mean an
+operation succeeded or its process exited. If an old dispatch may still be
+running, independently check its status in the external service manager before
+deciding whether to start a similar operation. Run any authorized daemon restart
+from an operator session outside the daemon's own service.
+
 ### "No available model" or credential errors
 
 ```bash

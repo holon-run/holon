@@ -31,7 +31,6 @@ pub mod memory_get;
 pub mod memory_search;
 pub mod pick_work_item;
 pub mod remove_worktree;
-pub mod schedule_destructive_operation;
 pub mod semantic_projection;
 pub mod send_agent_message;
 pub mod sleep;
@@ -101,7 +100,6 @@ pub fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         switch_workspace::definition()?,
         create_worktree::definition()?,
         remove_worktree::definition()?,
-        schedule_destructive_operation::definition()?,
         apply_patch_tool::definition()?,
         exec_command::definition()?,
         exec_command_batch::definition()?,
@@ -186,7 +184,6 @@ pub enum BuiltinTool {
     SwitchWorkspace,
     CreateWorktree,
     RemoveWorktree,
-    ScheduleDestructiveOperation,
     CreateExternalTrigger,
     CancelExternalTrigger,
     ApplyPatchTool,
@@ -241,7 +238,6 @@ impl BuiltinTool {
             switch_workspace::NAME => Self::SwitchWorkspace,
             create_worktree::NAME => Self::CreateWorktree,
             remove_worktree::NAME => Self::RemoveWorktree,
-            schedule_destructive_operation::NAME => Self::ScheduleDestructiveOperation,
             create_external_trigger::NAME => Self::CreateExternalTrigger,
             cancel_external_trigger::NAME => Self::CancelExternalTrigger,
             apply_patch_tool::NAME => Self::ApplyPatchTool,

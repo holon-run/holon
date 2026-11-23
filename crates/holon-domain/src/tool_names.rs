@@ -1,6 +1,5 @@
 //! Shared names for built-in tool calls and their wire events.
 
-pub const SCHEDULE_DESTRUCTIVE_OPERATION: &str = "ScheduleDestructiveOperation";
 pub const GET_AGENT: &str = "GetAgent";
 pub const DELETE_AGENT: &str = "DeleteAgent";
 pub const APPLY_PATCH: &str = "ApplyPatch";

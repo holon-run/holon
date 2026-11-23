@@ -626,10 +626,7 @@ pub(crate) fn operator_dispatch_can_replay_tx(
     tx: &Transaction<'_>,
     turn: &crate::types::TurnRecord,
 ) -> Result<bool> {
-    if !turn.operator_dispatch_fenced
-        || turn.external_side_effect_possible
-        || turn.destructive_operation_id.is_some()
-    {
+    if !turn.operator_dispatch_fenced || turn.external_side_effect_possible {
         return Ok(false);
     }
     let may_have_dispatched: bool = tx.query_row(
