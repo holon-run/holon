@@ -166,7 +166,7 @@ fn all_success_shapes_preserve_legacy_bytes_without_a_phase() -> Result<()> {
             for (detail, wire, _) in cases(verified, missing) {
                 let passes = AtomicUsize::new(0);
                 assert_eq!(
-                    verification_success_detail(&Counted {
+                    SYNC_TEST.verification_success_detail(&Counted {
                         detail: &detail,
                         passes: &passes
                     })?,
@@ -202,7 +202,7 @@ fn all_success_shapes_share_original_remainder_and_whole_last_holder() -> Result
             let _active = material.enter();
             for (index, (detail, wire, _)) in cases.iter().enumerate() {
                 let passes = AtomicUsize::new(0);
-                let result = verification_success_detail(&Counted {
+                let result = SYNC_TEST.verification_success_detail(&Counted {
                     detail,
                     passes: &passes,
                 })?;
@@ -268,7 +268,7 @@ fn each_success_shape_rejects_before_owning_serialization_and_rolls_back() -> Re
                 charge_owned_metadata(31, 3)?;
                 let transaction = connection.transaction()?;
                 for (index, (detail, wire, _)) in cases[..=gate].iter().enumerate() {
-                    let result = verification_success_detail(&Counted {
+                    let result = SYNC_TEST.verification_success_detail(&Counted {
                         detail,
                         passes: &passes,
                     });
@@ -323,7 +323,7 @@ fn success_detail_sql_errors_preserve_phase_and_release_only_at_last_holder() ->
         {
             let _active = phase.enter();
             let transaction = connection.transaction()?;
-            let detail = verification_success_detail(&detail)?;
+            let detail = SYNC_TEST.verification_success_detail(&detail)?;
             persist_verification(&transaction, "earlier", false, "now", &detail)?;
             assert!(persist_verification(&transaction, "reject", false, "now", &detail).is_err());
             assert!(Arc::ptr_eq(

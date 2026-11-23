@@ -26,7 +26,7 @@ pub struct AgentRegistryMaterial {
 }
 
 impl AgentRegistryMaterial {
-    fn admit_serialized_value(&self, value: &impl serde::Serialize) -> Result<()> {
+    pub(crate) fn admit_serialized_value(&self, value: &impl serde::Serialize) -> Result<()> {
         (self.admit_serialized)(&|writer| serde_json::to_writer(writer, value))
     }
 

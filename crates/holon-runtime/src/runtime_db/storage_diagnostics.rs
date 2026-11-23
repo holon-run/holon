@@ -24,6 +24,8 @@ fn record_stage(stage: StorageStage, elapsed: Duration) {
         StorageStage::ReaderOperation => &attribution::READER_OPERATION,
         StorageStage::ReaderAdmission => &attribution::READER_ADMISSION,
         StorageStage::ReaderBlockingAdmission => &attribution::READER_BLOCKING_ADMISSION,
+        StorageStage::RosterLatestBriefs => &attribution::ROSTER_LATEST_BRIEFS,
+        StorageStage::AgentLatestBrief => &attribution::AGENT_LATEST_BRIEF,
     };
     metric.record(elapsed, 0);
 }

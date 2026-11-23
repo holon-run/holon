@@ -416,7 +416,10 @@ fn legacy_snapshot_sql_failure_retries_on_original_phase_and_retains_its_holder(
         db.agent_projection_snapshot_rows(CHILD)?
     };
     assert_eq!(snapshot, baseline);
-    assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+    assert!(crate::runtime::agent_observation::same_observation_guard(
+        snapshot._material.as_ref().unwrap(),
+        &holder
+    ));
     let charged = phase.finish()?;
     assert!(charged.0 > failed_prefix.0);
     assert!(charged.1 > failed_prefix.1);

@@ -79,7 +79,7 @@ fn probe_body_uses_original_remainder_and_accumulates_across_rollbacks() -> Resu
         let _entry = phase.enter();
         charge_owned_metadata(31, 3)?;
         for attempt in 1..=2 {
-            assert!(probe_reservation_enforcement(&mut connection)?);
+            assert!(SYNC_TEST.probe_reservation_enforcement(&mut connection)?);
             assert_no_probe(&connection)?;
             assert!(Arc::ptr_eq(
                 &ResourceReadMaterial::active_guard()?.unwrap(),
@@ -118,7 +118,9 @@ fn probe_rejects_each_allocation_dimension_and_rolls_back_before_registry() -> R
             {
                 let _entry = phase.enter();
                 charge_owned_metadata(31, 3)?;
-                let error = probe_reservation_enforcement(&mut connection).unwrap_err();
+                let error = SYNC_TEST
+                    .probe_reservation_enforcement(&mut connection)
+                    .unwrap_err();
                 assert!(format!("{error:#}").contains("ResourceExhausted"));
                 assert!(ResourceReadMaterial::active_guard().is_err());
             }
@@ -264,7 +266,7 @@ fn probe_preserves_sql_errors_false_verdicts_and_unqualified_behavior() -> Resul
         let holder = phase.guard()?;
         {
             let _entry = phase.enter();
-            let result = probe_reservation_enforcement(&mut connection);
+            let result = SYNC_TEST.probe_reservation_enforcement(&mut connection);
             if admitted_body {
                 assert!(!result?);
             } else {
@@ -285,7 +287,7 @@ fn probe_preserves_sql_errors_false_verdicts_and_unqualified_behavior() -> Resul
         assert_eq!(ledger.report()?.observed_bytes, 0);
         connection.execute_batch("DROP TRIGGER reject_probe")?;
     }
-    assert!(probe_reservation_enforcement(&mut connection)?);
+    assert!(SYNC_TEST.probe_reservation_enforcement(&mut connection)?);
     assert_no_probe(&connection)?;
     Ok(())
 }

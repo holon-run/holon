@@ -380,6 +380,13 @@ The server owns these canonical facts:
   event; and
 - strict roster and projection snapshot consistency.
 
+Within the server, `holon-storage` owns the SQLite snapshot queries, event
+recovery windows, and durable capability verification. `holon-runtime` selects
+the connection and read transaction, supplies the resource budget, and
+throttles capability self-healing. The reservation probe uses the runtime's
+registry write path and rolls its transaction back. Audit event appends update
+the projection-effect proof in the same write transaction.
+
 The browser owns these derived facts:
 
 - roster sorting, selection, and presentation state;

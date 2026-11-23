@@ -89,7 +89,7 @@ fn real_probe_admits_timestamp_on_used_phase_and_always_rolls_back() -> Result<(
         {
             let _entry = phase.enter();
             charge_owned_metadata(37, 2)?;
-            let result = probe_reservation_enforcement(&mut connection);
+            let result = SYNC_TEST.probe_reservation_enforcement(&mut connection);
             if denied.is_none() {
                 assert!(result?);
                 assert!(Arc::ptr_eq(
