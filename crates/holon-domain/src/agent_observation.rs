@@ -20,7 +20,8 @@ impl ObservationMaterial {
         Self(guard)
     }
 
-    fn fork_owned(&self) -> Self {
+    /// Reserve a separate budget view for a cloned observation.
+    pub fn fork_owned(&self) -> Self {
         Self(self.0.fork_owned())
     }
 

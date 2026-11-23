@@ -87,13 +87,13 @@ fn streamed_error_preserves_exact_legacy_json_and_alternate_chain() -> Result<()
         let error = anyhow::anyhow!(text).context("middle").context("outer");
         for source in [None, Some("full_inventory"), Some("source 路\\\"\n")] {
             assert_eq!(
-                verification_error_detail(&error, source)?,
+                SYNC_TEST.verification_error_detail(&error, source)?,
                 legacy_detail(&error, source)
             );
         }
     }
     let (error, formats) = counted();
-    let detail = verification_error_detail(&error, None)?;
+    let detail = SYNC_TEST.verification_error_detail(&error, None)?;
     assert_eq!(formats.load(Ordering::Relaxed), 1);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&detail)?["error"],
@@ -129,7 +129,7 @@ fn error_details_share_original_allowance_tls_and_whole_last_holder() -> Result<
         {
             let _active = transaction.enter();
             for (i, source) in [None, Some("full_inventory")].into_iter().enumerate() {
-                let detail = verification_error_detail(&error, source)?;
+                let detail = SYNC_TEST.verification_error_detail(&error, source)?;
                 assert_eq!(detail, wires[i]);
                 persist_verification(&connection, &i.to_string(), false, "now", &detail)?;
             }
@@ -200,7 +200,7 @@ fn each_detail_rejects_bytes_and_records_before_owning_format_and_sql_write() ->
                 let transaction = connection.transaction()?;
                 let result = (|| -> Result<()> {
                     for (i, source) in [None, Some("full_inventory")].into_iter().enumerate() {
-                        let detail = verification_error_detail(&error, source)?;
+                        let detail = SYNC_TEST.verification_error_detail(&error, source)?;
                         persist_verification(&transaction, &i.to_string(), false, "now", &detail)?;
                     }
                     Ok(())
@@ -245,7 +245,7 @@ fn persistence_failure_rolls_back_without_detaching_detail_material() -> Result<
     {
         let _active = phase.enter();
         let transaction = connection.transaction()?;
-        let detail = verification_error_detail(&error, None)?;
+        let detail = SYNC_TEST.verification_error_detail(&error, None)?;
         persist_verification(&transaction, "earlier", false, "now", &detail)?;
         assert!(persist_verification(&transaction, "reject", false, "now", &detail).is_err());
         assert!(Arc::ptr_eq(
@@ -267,55 +267,5 @@ fn persistence_failure_rolls_back_without_detaching_detail_material() -> Result<
     assert_eq!(budget.report()?.observed_bytes, exact.0);
     drop(holder);
     assert_eq!(budget.report()?.observed_bytes, 0);
-    Ok(())
-}
-
-#[test]
-fn actual_foundation_verifier_persists_all_five_sql_error_branches_as_false() -> Result<()> {
-    for (alter, capabilities) in [
-        (
-            "ALTER TABLE audit_events RENAME COLUMN data_json TO saved_data_json",
-            vec![EVENT_PROJECTION_EFFECT_COMPLETE, BRIEF_ATOMIC_LINKAGE_VERIFIED],
-        ),
-        (
-            "ALTER TABLE briefs RENAME COLUMN preview TO saved_preview",
-            vec![ROSTER_SNAPSHOT_VERIFIED, PROJECTION_SNAPSHOT_VERIFIED],
-        ),
-        (
-            "ALTER TABLE conversation_source_revisions RENAME COLUMN source_kind TO saved_source_kind",
-            vec![CONVERSATION_READ_VERIFIED],
-        ),
-    ] {
-        let home = tempfile::tempdir()?;
-        let db = crate::runtime_db::RuntimeDb::open_and_migrate(
-            home.path().join("runtime.sqlite"),
-            home.path().join("runtime.lock"),
-        )?;
-        let mut connection = db.connection()?;
-        connection.execute(
-            "UPDATE observer_sync_capability_verifications SET verification_version = 0
-             WHERE capability = ?1",
-            [EVENT_PROJECTION_EFFECT_COMPLETE],
-        )?;
-        connection.execute_batch(alter)?;
-        verify_observer_sync_foundations(&mut connection)?;
-        assert!(connection.is_autocommit());
-        for capability in capabilities {
-            let (verified, detail): (bool, String) = connection.query_row(
-                "SELECT verified, detail FROM observer_sync_capability_verifications WHERE capability = ?1",
-                [capability],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            assert!(!verified, "{capability}");
-            let detail: serde_json::Value = serde_json::from_str(&detail)?;
-            assert!(detail["error"].as_str().is_some_and(|error| !error.is_empty()), "{capability}: {detail}");
-            if capability == EVENT_PROJECTION_EFFECT_COMPLETE {
-                assert_eq!(detail["source"], "full_inventory");
-                assert_eq!(detail.as_object().unwrap().len(), 2);
-            } else {
-                assert_eq!(detail.as_object().unwrap().len(), 1);
-            }
-        }
-    }
     Ok(())
 }

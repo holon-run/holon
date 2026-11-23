@@ -14,6 +14,7 @@ pub mod index_outbox;
 pub mod legacy_scheduler_wire;
 pub mod maintenance;
 pub mod migrations;
+pub mod observer_sync;
 pub mod persistence;
 pub mod read_block;
 mod read_scope;

@@ -172,10 +172,16 @@ fn roster_all_sql_and_collection_gates_reject_before_charge_on_original_phase() 
     };
     assert_eq!(rows, baseline);
     assert_eq!(phase.finish()?, before);
-    assert!(Arc::ptr_eq(rows._material.as_ref().unwrap(), &holder));
+    assert!(crate::runtime::agent_observation::same_observation_guard(
+        rows._material.as_ref().unwrap(),
+        &holder
+    ));
     let cloned = rows.clone();
     assert_eq!(cloned, rows);
-    assert!(!Arc::ptr_eq(cloned._material.as_ref().unwrap(), &holder));
+    assert!(!crate::runtime::agent_observation::same_observation_guard(
+        cloned._material.as_ref().unwrap(),
+        &holder
+    ));
     assert_eq!(ledger.report()?.observed_bytes, before.0 * 2);
     drop((phase, holder, rows));
     assert_eq!(ledger.report()?.observed_bytes, before.0);
@@ -210,7 +216,9 @@ fn roster_sql_failure_rolls_back_and_retries_with_null_and_empty_membership() ->
         let holder = phase.guard()?;
         {
             let _entry = phase.enter();
-            let error = collect_agent_roster_rows(&connection).unwrap_err();
+            let error = OBSERVER_SYNC
+                .collect_agent_roster_rows(&connection)
+                .unwrap_err();
             assert!(
                 error.downcast_ref::<rusqlite::Error>().is_some(),
                 "{error:#}"
@@ -221,8 +229,11 @@ fn roster_sql_failure_rolls_back_and_retries_with_null_and_empty_membership() ->
             );
             assert_eq!(phase.finish()?, before, "{refused}");
             connection.execute_batch("ROLLBACK; PRAGMA ignore_check_constraints = OFF;")?;
-            let rows = collect_agent_roster_rows(&connection)?;
-            assert!(Arc::ptr_eq(rows._material.as_ref().unwrap(), &holder));
+            let rows = OBSERVER_SYNC.collect_agent_roster_rows(&connection)?;
+            assert!(crate::runtime::agent_observation::same_observation_guard(
+                rows._material.as_ref().unwrap(),
+                &holder
+            ));
             let complete = gates.iter().fold((0, 0), |sum, (_, gate)| add(sum, *gate));
             assert_eq!(phase.finish()?, add(before, complete));
         }
@@ -236,7 +247,7 @@ fn roster_sql_failure_rolls_back_and_retries_with_null_and_empty_membership() ->
         let phase = ResourceReadMaterial::new(&ledger, &scope())?;
         let rows = {
             let _entry = phase.enter();
-            collect_agent_roster_rows(&connection)?
+            OBSERVER_SYNC.collect_agent_roster_rows(&connection)?
         };
         assert_eq!(
             rows.rows[0]
@@ -256,7 +267,7 @@ fn roster_sql_failure_rolls_back_and_retries_with_null_and_empty_membership() ->
     let phase = ResourceReadMaterial::new(&ledger, &scope())?;
     let rows = {
         let _entry = phase.enter();
-        collect_agent_roster_rows(&connection)?
+        OBSERVER_SYNC.collect_agent_roster_rows(&connection)?
     };
     assert!(rows.rows.is_empty());
     let metadata = gates

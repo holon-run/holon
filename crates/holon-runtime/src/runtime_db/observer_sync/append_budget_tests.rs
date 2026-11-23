@@ -428,7 +428,7 @@ fn verification_timestamp_admits_exact_string_metadata_before_formatting() -> Re
             )?;
             {
                 let _entry = phase.enter();
-                let result = observer_verification_timestamp(now);
+                let result = SYNC_TEST.observer_verification_timestamp(now);
                 if succeeds {
                     assert_eq!(result?, expected);
                 } else {

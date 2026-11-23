@@ -17,6 +17,8 @@ pub enum StorageStage {
     ReaderOperation,
     ReaderAdmission,
     ReaderBlockingAdmission,
+    RosterLatestBriefs,
+    AgentLatestBrief,
 }
 
 /// Observers travel with the connection owner and are shared by its readers.

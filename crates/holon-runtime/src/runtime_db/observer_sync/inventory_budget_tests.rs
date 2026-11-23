@@ -99,89 +99,14 @@ fn supported_inventory_borrows_text_without_consuming_original_remainder() -> Re
     let phase = ResourceReadMaterial::with_test_limits(&budget, &scope(), header().0, header().1)?;
     {
         let _active = phase.enter();
-        assert!(verify_event_projection_effect_inventory(&connection)?);
-        assert!(verify_event_projection_effect_inventory(&connection)?);
+        assert!(SYNC_TEST.verify_event_projection_effect_inventory(&connection)?);
+        assert!(SYNC_TEST.verify_event_projection_effect_inventory(&connection)?);
         assert_eq!(phase.finish()?, header());
     }
     assert!(ResourceReadMaterial::active_guard()?.is_none());
     assert!(connection.is_autocommit());
     drop(phase);
     assert_eq!(budget.report()?.observed_bytes, 0);
-    Ok(())
-}
-
-#[test]
-fn inventory_preserves_grouping_classification_and_diagnostic_text() -> Result<()> {
-    use crate::runtime_event::UnsupportedProjectionEvent;
-    assert!(!verify_event_projection_effect_inventory(
-        &Connection::open_in_memory()?
-    )?);
-    let connection = unsupported()?;
-    assert!(ResourceReadMaterial::active_guard()?.is_none());
-    assert!(!verify_event_projection_effect_inventory(&connection)?);
-    let a = inventory_diagnostic(format_args!(
-        "a_未知@schema\"路v-1/cv2/reason={:?}/count=2",
-        UnsupportedProjectionEvent::InvalidMetadata,
-    ))?;
-    let b = inventory_diagnostic(format_args!(
-        "z_future@typed.zv1/cv2/reason={:?}/count=1",
-        UnsupportedProjectionEvent::UnknownTypedKind,
-    ))?;
-    assert_eq!([a.clone(), b.clone()], diagnostics());
-    assert_eq!(
-        InventoryDiagnostics(&[a, b]).to_string(),
-        diagnostics().join(", ")
-    );
-    assert_eq!(InventoryDiagnostics(&[]).to_string(), "");
-    assert_eq!(
-        InventoryDiagnostics(&diagnostics()[..1]).to_string(),
-        diagnostics()[0],
-    );
-    let descriptor = crate::runtime_event::ALL_RUNTIME_EVENT_KINDS[0].descriptor();
-    for (kind, schema, version, contract, reason) in [
-        (
-            descriptor.wire_name,
-            "wrong",
-            1i64,
-            2i64,
-            UnsupportedProjectionEvent::PayloadSchemaMismatch,
-        ),
-        (
-            descriptor.wire_name,
-            descriptor.payload_schema,
-            i64::from(descriptor.payload_schema_version) + 1,
-            2,
-            UnsupportedProjectionEvent::FuturePayloadSchemaVersion,
-        ),
-        (
-            "unknown",
-            "typed",
-            i64::MIN,
-            i64::MAX,
-            UnsupportedProjectionEvent::InvalidMetadata,
-        ),
-    ] {
-        connection.execute("DELETE FROM audit_events", [])?;
-        insert(
-            &connection,
-            kind,
-            &serde_json::json!({
-                "payload_schema": schema,
-                "payload_schema_version": version,
-                "contract_version": contract,
-            })
-            .to_string(),
-        )?;
-        assert!(!verify_event_projection_effect_inventory(&connection)?);
-        let expected = format!("{kind}@{schema}v{version}/cv{contract}/reason={reason:?}/count=1");
-        assert_eq!(
-            inventory_diagnostic(format_args!(
-                "{kind}@{schema}v{version}/cv{contract}/reason={reason:?}/count=1"
-            ))?,
-            expected,
-        );
-    }
-    assert!(connection.is_autocommit());
     Ok(())
 }
 
@@ -202,7 +127,7 @@ fn inventory_uses_original_transaction_allowance_tls_and_group_last_holder() -> 
         let _outer = phase.enter();
         {
             let _active = transaction.enter();
-            assert!(!verify_event_projection_effect_inventory(&connection)?);
+            assert!(!SYNC_TEST.verify_event_projection_effect_inventory(&connection)?);
             assert!(Arc::ptr_eq(
                 &ResourceReadMaterial::active_guard()?.unwrap(),
                 &transaction.guard()?,
@@ -250,7 +175,9 @@ fn inventory_rejects_each_output_gate_before_later_rows_and_releases_on_error() 
             let holder = phase.guard()?;
             {
                 let _active = phase.enter();
-                let error = verify_event_projection_effect_inventory(&connection).unwrap_err();
+                let error = SYNC_TEST
+                    .verify_event_projection_effect_inventory(&connection)
+                    .unwrap_err();
                 assert!(
                     format!("{error:#}").contains("ResourceExhausted"),
                     "{error:#}"
@@ -283,7 +210,9 @@ fn inventory_rejects_each_output_gate_before_later_rows_and_releases_on_error() 
     let phase = ResourceReadMaterial::with_test_limits(&budget, &scope(), header().0, header().1)?;
     {
         let _active = phase.enter();
-        assert!(inventory_diagnostic(format_args!("{}", FormatPasses(&passes))).is_err());
+        assert!(SYNC_TEST
+            .inventory_diagnostic(format_args!("{}", FormatPasses(&passes)))
+            .is_err());
     }
     // The counting pass ran; rejection prevented the owning format pass.
     assert_eq!(passes.get(), 1);
@@ -311,7 +240,9 @@ fn inventory_sql_and_text_errors_restore_original_phase_and_release_rows() -> Re
             let _outer = phase.enter();
             {
                 let _active = transaction.enter();
-                let error = verify_event_projection_effect_inventory(&connection).unwrap_err();
+                let error = SYNC_TEST
+                    .verify_event_projection_effect_inventory(&connection)
+                    .unwrap_err();
                 assert!(!format!("{error:#}").contains("ResourceExhausted"));
             }
             assert!(Arc::ptr_eq(
@@ -326,9 +257,9 @@ fn inventory_sql_and_text_errors_restore_original_phase_and_release_rows() -> Re
         drop((phase, transaction));
         assert_eq!(budget.report()?.observed_bytes, used.0);
         connection.execute("DELETE FROM audit_events", [])?;
-        assert!(verify_event_projection_effect_inventory(&connection)?);
+        assert!(SYNC_TEST.verify_event_projection_effect_inventory(&connection)?);
         connection.execute("DROP TABLE audit_events", [])?;
-        assert!(!verify_event_projection_effect_inventory(&connection)?);
+        assert!(!SYNC_TEST.verify_event_projection_effect_inventory(&connection)?);
         drop(last);
         assert_eq!(budget.report()?.observed_bytes, 0);
     }

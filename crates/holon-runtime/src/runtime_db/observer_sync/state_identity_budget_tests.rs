@@ -68,33 +68,6 @@ fn bodies() -> [&'static str; 2] {
 }
 
 #[test]
-fn scalar_scan_preserves_json_identity_and_malformed_payload_semantics() -> Result<()> {
-    let connection = connection()?;
-    for (id, payload) in [
-        ("one", r#"{"id":"one","unknown":{"nested":[1,true]}}"#),
-        ("路\"{}", r#"{"id":"\u8def\"{}"}"#),
-        ("", r#"{"id":""}"#),
-        ("last", r#"{"id":"wrong","id":"last"}"#),
-        ("different", r#"{"id":"other"}"#),
-        ("missing", "{}"),
-        ("number", r#"{"id":42}"#),
-        ("null-id", r#"{"id":null}"#),
-        ("root-null", "null"),
-        ("array", r#"[{"id":"array"}]"#),
-        ("string", r#""string""#),
-        ("malformed", r#"{"id":"malformed","unfinished":["#),
-        ("last-wrong", r#"{"id":"last-wrong","id":"other"}"#),
-    ] {
-        insert(&connection, id, payload)?;
-    }
-    assert!(ResourceReadMaterial::active_guard()?.is_none());
-    assert_eq!(count_agent_state_identity_mismatches(&connection)?, 9);
-    assert_eq!(count_agent_state_identity_mismatches(&connection)?, 9);
-    assert!(connection.is_autocommit());
-    Ok(())
-}
-
-#[test]
 fn scalar_scan_uses_original_transaction_allowance_tls_and_last_holder() -> Result<()> {
     let connection = connection()?;
     let bodies = bodies();
@@ -114,7 +87,10 @@ fn scalar_scan_uses_original_transaction_allowance_tls_and_last_holder() -> Resu
         let _outer = phase.enter();
         {
             let _active = transaction.enter();
-            assert_eq!(count_agent_state_identity_mismatches(&connection)?, 1);
+            assert_eq!(
+                SYNC_TEST.count_agent_state_identity_mismatches(&connection)?,
+                1
+            );
             assert!(Arc::ptr_eq(
                 &ResourceReadMaterial::active_guard()?.unwrap(),
                 &transaction.guard()?,
@@ -165,7 +141,9 @@ fn scalar_scan_rejects_each_decode_before_later_rows_without_swallowing_budget_e
             let holder = phase.guard()?;
             {
                 let _active = phase.enter();
-                let error = count_agent_state_identity_mismatches(&connection).unwrap_err();
+                let error = SYNC_TEST
+                    .count_agent_state_identity_mismatches(&connection)
+                    .unwrap_err();
                 assert!(
                     format!("{error:#}").contains("ResourceExhausted"),
                     "{error:#}"
@@ -193,12 +171,17 @@ fn scalar_scan_rejects_each_decode_before_later_rows_without_swallowing_budget_e
     let phase = ResourceReadMaterial::with_test_limits(&budget, &scope(), header().0, header().1)?;
     {
         let _active = phase.enter();
-        let error = count_agent_state_identity_mismatches(&connection).unwrap_err();
+        let error = SYNC_TEST
+            .count_agent_state_identity_mismatches(&connection)
+            .unwrap_err();
         assert!(format!("{error:#}").contains("ResourceExhausted"));
     }
     drop(phase);
     assert_eq!(budget.report()?.observed_bytes, 0);
-    assert_eq!(count_agent_state_identity_mismatches(&connection)?, 1);
+    assert_eq!(
+        SYNC_TEST.count_agent_state_identity_mismatches(&connection)?,
+        1
+    );
     Ok(())
 }
 
@@ -222,7 +205,9 @@ fn scalar_scan_sql_and_text_errors_release_rows_and_restore_original_phase() -> 
             ResourceReadMaterial::with_test_limits(&budget, &scope(), expected.0, expected.1)?;
         {
             let _active = phase.enter();
-            let error = count_agent_state_identity_mismatches(&connection).unwrap_err();
+            let error = SYNC_TEST
+                .count_agent_state_identity_mismatches(&connection)
+                .unwrap_err();
             assert!(
                 !format!("{error:#}").contains("ResourceExhausted"),
                 "{error:#}"
@@ -235,7 +220,9 @@ fn scalar_scan_sql_and_text_errors_release_rows_and_restore_original_phase() -> 
         assert!(ResourceReadMaterial::active_guard()?.is_none());
         assert_eq!(phase.finish()?, expected);
         connection.execute("DROP TABLE agent_states", [])?;
-        assert!(count_agent_state_identity_mismatches(&connection).is_err());
+        assert!(SYNC_TEST
+            .count_agent_state_identity_mismatches(&connection)
+            .is_err());
         let first = phase.guard()?;
         let last = first.clone();
         drop((phase, first));

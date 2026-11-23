@@ -57,7 +57,7 @@ fn metadata_copies_use_exact_original_remainder_and_last_holder() -> Result<()> 
         {
             let _entry = phase.enter();
             charge_owned_metadata(19, 2)?;
-            assert_eq!(read_metadata(&connection, "fixture")?, value);
+            assert_eq!(SYNC_TEST.read_metadata(&connection, "fixture")?, value);
             assert!(Arc::ptr_eq(
                 &holder,
                 &ResourceReadMaterial::active_guard()?.unwrap(),
@@ -70,7 +70,7 @@ fn metadata_copies_use_exact_original_remainder_and_last_holder() -> Result<()> 
         assert_eq!(ledger.report()?.observed_bytes, exact.0);
         drop(last);
         assert_eq!(ledger.report()?.observed_bytes, 0);
-        assert_eq!(read_metadata(&connection, "fixture")?, value);
+        assert_eq!(SYNC_TEST.read_metadata(&connection, "fixture")?, value);
         assert!(ResourceReadMaterial::active_guard()?.is_none());
     }
     Ok(())
@@ -160,18 +160,20 @@ fn metadata_sql_key_and_type_errors_do_not_charge_or_disturb_outer_tls() -> Resu
         let phase = ResourceReadMaterial::new(&ledger, &scope())?;
         {
             let _entry = phase.enter();
-            assert!(read_metadata(&connection, "missing-table").is_err());
+            assert!(SYNC_TEST
+                .read_metadata(&connection, "missing-table")
+                .is_err());
             connection.execute_batch(
                 "CREATE TABLE runtime_metadata (key TEXT PRIMARY KEY, value);
                  INSERT INTO runtime_metadata VALUES ('blob', X'80'), ('null', NULL)",
             )?;
-            let missing = read_metadata(&connection, "absent").unwrap_err();
+            let missing = SYNC_TEST.read_metadata(&connection, "absent").unwrap_err();
             assert_eq!(
                 missing.to_string(),
                 "runtime metadata key absent is missing"
             );
-            assert!(read_metadata(&connection, "blob").is_err());
-            assert!(read_metadata(&connection, "null").is_err());
+            assert!(SYNC_TEST.read_metadata(&connection, "blob").is_err());
+            assert!(SYNC_TEST.read_metadata(&connection, "null").is_err());
             assert_eq!(phase.finish()?, header());
         }
         assert!(Arc::ptr_eq(

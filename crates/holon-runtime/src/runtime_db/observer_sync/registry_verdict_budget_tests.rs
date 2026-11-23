@@ -155,7 +155,7 @@ fn probe_post_write_denial_propagates_before_tombstone_verdict_and_rolls_back() 
         {
             let _entry = phase.enter();
             charge_owned_metadata(31, 3)?;
-            let result = probe_reservation_enforcement(&mut connection);
+            let result = SYNC_TEST.probe_reservation_enforcement(&mut connection);
             if denied.is_some() {
                 let error = result.unwrap_err();
                 assert_budget_error(&error);
@@ -181,7 +181,7 @@ fn probe_post_write_denial_propagates_before_tombstone_verdict_and_rolls_back() 
         assert_eq!(ledger.report()?.observed_bytes, 0);
     }
     connection.execute_batch("DROP TRIGGER fixed_probe_payload")?;
-    assert!(probe_reservation_enforcement(&mut connection)?);
+    assert!(SYNC_TEST.probe_reservation_enforcement(&mut connection)?);
     assert_eq!(snapshot(&connection)?, before_sql);
     Ok(())
 }
@@ -213,7 +213,9 @@ fn probe_pre_read_denial_propagates_before_availability_verdict() -> Result<()> 
         {
             let _entry = phase.enter();
             charge_owned_metadata(31, 3)?;
-            let error = probe_reservation_enforcement(&mut connection).unwrap_err();
+            let error = SYNC_TEST
+                .probe_reservation_enforcement(&mut connection)
+                .unwrap_err();
             assert_budget_error(&error);
             assert!(ResourceReadMaterial::active_guard().is_err());
         }
@@ -287,6 +289,6 @@ fn verifier_propagates_registry_denial_without_capability_writes() -> Result<()>
     connection.execute_batch("DROP TRIGGER fixed_probe_payload")?;
     verify_observer_sync_foundations(&mut connection)?;
     assert!(connection.is_autocommit());
-    assert!(probe_reservation_enforcement(&mut connection)?);
+    assert!(SYNC_TEST.probe_reservation_enforcement(&mut connection)?);
     Ok(())
 }

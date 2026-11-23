@@ -170,13 +170,16 @@ fn scalar_projection_exact_remainder_returns_original_holder_and_owning_clone() 
     };
     assert_eq!(snapshot, baseline);
     assert_eq!(phase.finish()?, exact);
-    assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+    assert!(crate::runtime::agent_observation::same_observation_guard(
+        snapshot._material.as_ref().unwrap(),
+        &holder
+    ));
     assert!(ResourceReadMaterial::active_guard()?.is_none());
     let cloned = snapshot.clone();
     assert_eq!(cloned, snapshot);
     assert!(!Arc::ptr_eq(
-        cloned._material.as_ref().unwrap(),
-        snapshot._material.as_ref().unwrap(),
+        cloned._material.as_ref().unwrap().guard(),
+        snapshot._material.as_ref().unwrap().guard(),
     ));
     assert_eq!(ledger.report()?.observed_bytes, exact.0 * 2);
     drop((phase, holder, snapshot));
@@ -268,16 +271,21 @@ fn scalar_projection_sql_type_error_rolls_back_and_retries_on_same_phase() -> Re
         let tx = connection.transaction()?;
         tx.execute(&format!("UPDATE {table} SET {column} = x'ff'"), [])?;
         assert!(
-            collect_agent_projection_anchors(&tx, AGENT).is_err(),
+            OBSERVER_SYNC
+                .collect_agent_projection_anchors(&tx, AGENT)
+                .is_err(),
             "{table}.{column}"
         );
         let index = index + if index >= 5 { canonical_steps } else { 0 };
         expected = ordered[..index].iter().copied().fold(expected, add);
         assert_eq!(phase.finish()?, expected);
         tx.rollback()?;
-        let restored = collect_agent_projection_anchors(&connection, AGENT)?;
+        let restored = OBSERVER_SYNC.collect_agent_projection_anchors(&connection, AGENT)?;
         assert_eq!(restored, baseline);
-        assert!(Arc::ptr_eq(restored._material.as_ref().unwrap(), &holder));
+        assert!(crate::runtime::agent_observation::same_observation_guard(
+            restored._material.as_ref().unwrap(),
+            &holder
+        ));
         expected = add(expected, total);
         assert_eq!(phase.finish()?, expected);
     }
@@ -313,7 +321,7 @@ fn scalar_projection_nulls_and_hidden_members_allocate_only_selected_text() -> R
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), exact.0, exact.1)?;
         let snapshot = {
             let _entry = phase.enter();
-            collect_agent_projection_anchors(&tx, AGENT)?
+            OBSERVER_SYNC.collect_agent_projection_anchors(&tx, AGENT)?
         };
         assert!(snapshot.row.is_none());
         assert_eq!(phase.finish()?, exact);
@@ -342,7 +350,7 @@ fn scalar_projection_nulls_and_hidden_members_allocate_only_selected_text() -> R
     let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), exact.0, exact.1)?;
     let snapshot = {
         let _entry = phase.enter();
-        collect_agent_projection_anchors(&connection, AGENT)?
+        OBSERVER_SYNC.collect_agent_projection_anchors(&connection, AGENT)?
     };
     let row = snapshot.row.as_ref().unwrap();
     assert!(row.agent_state_json.is_none());

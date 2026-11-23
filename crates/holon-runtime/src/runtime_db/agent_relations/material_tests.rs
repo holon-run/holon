@@ -460,10 +460,16 @@ fn typed_relations_raw_snapshot_retains_original_holder_through_owning_clone() -
     };
     assert_eq!(snapshot, baseline);
     assert_eq!(phase.finish()?, exact);
-    assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+    assert!(crate::runtime::agent_observation::same_observation_guard(
+        snapshot._material.as_ref().unwrap(),
+        &holder
+    ));
     let cloned = snapshot.clone();
     assert_eq!(cloned, snapshot);
-    assert!(!Arc::ptr_eq(cloned._material.as_ref().unwrap(), &holder));
+    assert!(!crate::runtime::agent_observation::same_observation_guard(
+        cloned._material.as_ref().unwrap(),
+        &holder
+    ));
     assert_eq!(ledger.report()?.observed_bytes, exact.0 * 2);
     drop((phase, holder, snapshot));
     assert_eq!(ledger.report()?.observed_bytes, exact.0);

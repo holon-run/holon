@@ -7949,7 +7949,10 @@ impl RuntimeHost {
             event_log_epoch: rows.event_log_epoch,
             visibility_policy_generation: rows.visibility_policy_generation,
             agents,
-            _material: rows._material,
+            _material: rows
+                ._material
+                .as_ref()
+                .map(crate::runtime::agent_observation::retain_observation_guard),
             acquisition: acquisition.clone(),
             agent_materials,
         })
@@ -8107,7 +8110,10 @@ impl RuntimeHost {
             },
             latest_brief,
             hydration_references,
-            _material: rows._material,
+            _material: rows
+                ._material
+                .as_ref()
+                .map(crate::runtime::agent_observation::retain_observation_guard),
             acquisition: acquisition.clone(),
         }))
     }
