@@ -2316,6 +2316,11 @@ async fn station_search_maps_zai_business_codes_by_its_own_contract() {
             "rate_limited",
         ),
         (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            json!({"code": 1113}),
+            "provider_unavailable",
+        ),
+        (
             axum::http::StatusCode::BAD_REQUEST,
             json!({"error": {"code": 1214}}),
             "invalid_request",
@@ -2363,6 +2368,11 @@ async fn station_search_maps_bigmodel_business_codes_by_its_own_contract() {
             "rate_limited",
         ),
         (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            json!({"code": 1113}),
+            "provider_unavailable",
+        ),
+        (
             axum::http::StatusCode::BAD_REQUEST,
             json!({"error": {"code": "1215"}}),
             "invalid_request",
@@ -2385,6 +2395,44 @@ async fn station_search_maps_bigmodel_business_codes_by_its_own_contract() {
             "unexpected kind for HTTP {status}"
         );
     }
+}
+
+#[tokio::test]
+async fn station_search_balance_exhaustion_is_not_retryable() {
+    // Business code 1113 (account out of balance or without a usable
+    // resource package) must not classify as retryable rate limiting even
+    // when the station reports it under HTTP 429.
+    let base_url = station_error_fixture(
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        json!({"code": 1113, "message": "insufficient balance"}),
+    )
+    .await;
+
+    let provider = test_provider(WebProviderKind::Zai, &format!("{base_url}/api"));
+    let error = zai_search("test", 5, "zai_test", &provider, &test_fetch_config())
+        .await
+        .unwrap_err();
+    let tool_error = crate::test_tool_error(&error);
+    assert_eq!(tool_error.kind, "provider_unavailable");
+    assert!(!tool_error.retryable);
+    assert!(tool_error.message.contains("business code 1113"));
+    let hint = tool_error.recovery_hint.as_deref().unwrap();
+    assert!(hint.contains("balance"));
+    assert!(hint.contains("resource package"));
+    assert!(!hint.to_lowercase().contains("retry"));
+
+    let provider = test_provider(WebProviderKind::BigModel, &format!("{base_url}/api"));
+    let error = bigmodel_search("test", 5, "bigmodel_test", &provider, &test_fetch_config())
+        .await
+        .unwrap_err();
+    let tool_error = crate::test_tool_error(&error);
+    assert_eq!(tool_error.kind, "provider_unavailable");
+    assert!(!tool_error.retryable);
+    assert!(tool_error.message.contains("business code 1113"));
+    let hint = tool_error.recovery_hint.as_deref().unwrap();
+    assert!(hint.contains("balance"));
+    assert!(hint.contains("resource package"));
+    assert!(!hint.to_lowercase().contains("retry"));
 }
 
 #[tokio::test]
