@@ -16,15 +16,7 @@ use crate::{
 
 use super::snapshot::ContextResources;
 
-pub(super) trait PlanArtifactLookup {
-    fn plan(&self, id: &str) -> Option<&WorkItemPlanArtifact>;
-}
-
-impl PlanArtifactLookup for BTreeMap<String, WorkItemPlanArtifact> {
-    fn plan(&self, id: &str) -> Option<&WorkItemPlanArtifact> {
-        self.get(id)
-    }
-}
+pub(super) use holon_context::render::work_items::PlanArtifactLookup;
 
 pub(super) enum ContextResourceInput<'a> {
     Filesystem(&'a dyn ContextResources),

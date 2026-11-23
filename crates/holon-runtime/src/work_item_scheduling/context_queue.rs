@@ -1,18 +1,5 @@
-use super::{WorkItemRecord, WorkItemSchedulingProjection, WorkQueueReadModel};
-
-/// Context owns only its existing display windows, not a second queue inventory.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct ContextWorkQueue {
-    pub current: Option<WorkItemRecord>,
-    pub current_runnable: Option<WorkItemSchedulingProjection>,
-    pub triggered_blocked: Vec<WorkItemSchedulingProjection>,
-    pub queued_runnable: Vec<WorkItemSchedulingProjection>,
-    pub yielded: Vec<WorkItemSchedulingProjection>,
-    pub waiting_for_operator: Vec<WorkItemSchedulingProjection>,
-    pub blocked: Vec<WorkItemSchedulingProjection>,
-    pub completing: Vec<WorkItemSchedulingProjection>,
-    pub completed_recent: Vec<WorkItemSchedulingProjection>,
-}
+use super::WorkQueueReadModel;
+pub(crate) use holon_context::render::work_items::ContextWorkQueue;
 
 impl From<WorkQueueReadModel> for ContextWorkQueue {
     fn from(queue: WorkQueueReadModel) -> Self {

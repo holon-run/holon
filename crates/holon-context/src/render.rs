@@ -8,6 +8,11 @@ use holon_domain::{
 };
 use holon_system::utf8::truncate_text;
 
+pub mod continuation;
+pub mod task_results;
+pub mod tasks;
+pub mod work_items;
+
 /// Create a section with `AgentScoped` stability.
 pub fn section(name: &'static str, content: String) -> PromptSection {
     PromptSection {

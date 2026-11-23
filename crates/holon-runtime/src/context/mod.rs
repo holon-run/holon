@@ -2,10 +2,9 @@
 pub(crate) mod inputs;
 use holon_context::episodes::{build_relevant_episode_memory_section, recent_turn_window_start};
 use holon_context::history::{
-    assistant_round_text_preview, compare_message_recency, history_turns_without_current_input,
-    is_trusted_operator_input, latest_trusted_operator_input,
-    render_recent_turns_with_budget_from_snapshot, render_turn_records_with_budget_from_snapshot,
-    runtime_continuation_label, turn_record_owns_object,
+    compare_message_recency, history_turns_without_current_input, is_trusted_operator_input,
+    latest_trusted_operator_input, render_recent_turns_with_budget_from_snapshot,
+    render_turn_records_with_budget_from_snapshot, turn_record_owns_object,
 };
 use holon_context::{budget, planner, render};
 mod replay_reference;
@@ -16,7 +15,18 @@ use inputs::{ContextHistoryBrief, ContextHistoryMessage, ContextInputs};
 pub(crate) use planner::ContextPlanEvidence;
 pub(crate) use planner::ContextPlanningError;
 pub(crate) use planner::{ContextPlanDecision, ContextPlanOutcome, ContextPlanReason};
+use render::continuation::{
+    continuation_context, render_continuation_anchor, render_message_body_for_anchor,
+    render_wake_hint_context,
+};
 pub(crate) use render::message_reply_expectation_context as render_message_reply_expectation_context;
+use render::tasks::{render_active_tasks, ACTIVE_TASKS_CONTEXT_LIMIT};
+pub(crate) use render::work_items::COMPLETION_SUMMARY_CHAR_LIMIT;
+use render::work_items::{
+    render_compact_current_work_item, render_current_work_item_process_trace,
+    render_current_work_refs, render_empty_current_work_item, render_work_item_candidates,
+    CompletionReport,
+};
 use resources::PlanArtifactLookup;
 #[cfg(test)]
 pub(crate) use snapshot::prepare_work_item_scoped_history;
@@ -38,14 +48,22 @@ use planner::{
 use replay_reference::{classify_message_reference, MessageReferenceClass};
 // Re-import render helpers for use within this module.
 use render::{
-    body_preview, bounded_inline, enum_label, message_body_text, message_header,
-    message_routing_context, render_current_input_section, sanitize_inline, section, turn_section,
+    message_body_text, message_header, render_current_input_section, sanitize_inline, section,
+    turn_section,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::runtime::input_consumption::projection::ProjectionView;
+use crate::runtime_db::task_result_settlement::TaskResultSettlementRecord;
+pub(crate) use render::task_results::{
+    pending_task_results_preview_bytes, pending_task_results_preview_measure,
+    render_pending_task_result_previews, PendingTaskResultPreview,
+    PENDING_TASK_RESULT_PREVIEW_LINES,
+};
+use render::task_results::{TaskResultHeader, TaskResultProjection};
+
 use anyhow::Result;
 #[cfg(test)]
 use serde_json::Value;
@@ -56,16 +74,15 @@ use crate::{
     },
     prompt::PromptSection,
     runtime::resident_input_evidence::ToolContextProjection,
-    storage::{is_active_task_status, AppStorage},
+    storage::AppStorage,
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::helpers::truncate_text,
     types::{
-        AgentState, AuthorityClass, BriefRecord, CallbackDeliveryMode, ChildSupervisionProjection,
-        CommandTaskStatusSnapshot, ContextEpisodeRecord, ContinuationClass, ContinuationResolution,
-        ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus, LiveInputBatchRecord,
-        MessageBody, MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TaskRecord,
-        TodoItemState, TranscriptEntry, TranscriptEntryKind, TurnRecord, WaitConditionRecord,
-        WorkItemRecord, WorkItemRefStatus,
+        AgentState, AuthorityClass, BriefRecord, CallbackDeliveryMode, ContextEpisodeRecord,
+        ContinuationClass, ContinuationResolution, ExternalTriggerRecord, ExternalTriggerScope,
+        ExternalTriggerStatus, LiveInputBatchRecord, MessageBody, MessageEnvelope, MessageKind,
+        MessageOrigin, SkillsRuntimeView, TaskRecord, TranscriptEntry, TranscriptEntryKind,
+        TurnRecord, WaitConditionRecord, WorkItemRecord, WorkItemRefStatus,
     },
 };
 
@@ -76,10 +93,6 @@ use holon_context::history::{
     command_task_id, render_turn_record_projection_with_transcript_from_snapshot, status_label,
     RecentTurnProjectionMode,
 };
-
-const ACTIVE_TASKS_CONTEXT_LIMIT: usize = 5;
-const ACTIVE_TASK_SUMMARY_CHAR_BUDGET: usize = 240;
-const ACTIVE_TASK_CMD_PREVIEW_CHAR_BUDGET: usize = 240;
 
 pub(crate) use holon_domain::model_values::{
     default_compaction_keep_recent_estimated_tokens, default_compaction_trigger_estimated_tokens,
@@ -444,7 +457,11 @@ fn build_context_inner(
         candidates.push(context_candidate(
             section(
                 "active_tasks",
-                render_active_tasks(&active_tasks, active_task_count),
+                render_active_tasks(
+                    active_tasks,
+                    active_task_count,
+                    crate::tool::helpers::command_preview,
+                ),
             ),
             None,
             false,
@@ -463,7 +480,9 @@ fn build_context_inner(
             )),
             true,
         ));
-        if let Some(content) = render_current_work_refs(work_item) {
+        if let Some(content) =
+            render_current_work_refs(work_item, crate::work_item_refs::MAX_ACTIVE_WORK_REFS)
+        {
             candidates.push(context_candidate(
                 turn_section("current_work_refs", content),
                 None,
@@ -506,9 +525,9 @@ fn build_context_inner(
     if let Some(content) = render_work_item_candidates(
         &work_queue_projection,
         current_work_item.map(|item| item.id.as_str()),
-        completion_reports,
+        |record| completion_report_for_work_item(completion_reports, record),
         plan_observations,
-    )? {
+    ) {
         candidates.push(context_candidate(
             turn_section("queued_blocked_work_items", content),
             None,
@@ -1323,90 +1342,6 @@ fn render_default_external_ingress(
     )
 }
 
-fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
-    let mut lines = vec![format!(
-        "Active managed tasks (bounded to {ACTIVE_TASKS_CONTEXT_LIMIT}; use ListTasks for the full list):"
-    )];
-
-    for task in tasks
-        .iter()
-        .filter(|task| is_active_task_status(&task.status))
-    {
-        let task_id = sanitize_inline(&task.id);
-        lines.push(format!("- task_id: {task_id}"));
-        lines.push(format!("  task_ref: task:{task_id}"));
-        lines.push(format!("  kind: {}", sanitize_inline(task.kind.as_str())));
-        if let Some(summary) = task
-            .summary
-            .as_deref()
-            .filter(|summary| !summary.trim().is_empty())
-        {
-            lines.push(format!(
-                "  summary: {}",
-                sanitize_inline(&truncate_text(summary, ACTIVE_TASK_SUMMARY_CHAR_BUDGET))
-            ));
-        }
-        if let Some(work_item_id) = task.effective_work_item_id() {
-            lines.push(format!(
-                "  associated_work_item: {}",
-                sanitize_inline(work_item_id)
-            ));
-        }
-
-        if let Some(command) = CommandTaskStatusSnapshot::from_task_record(task) {
-            lines.push("  command:".to_string());
-            render_active_task_command(&mut lines, &command);
-        }
-
-        if let Some(child) = ChildSupervisionProjection::from_task_record(task) {
-            lines.push("  child_agent:".to_string());
-            lines.push(format!(
-                "    child_agent_id: {}",
-                sanitize_inline(&child.child_agent_id)
-            ));
-            if let Some(workspace_mode) = child.workspace_mode {
-                lines.push(format!(
-                    "    workspace_mode: {}",
-                    sanitize_inline(workspace_mode.label())
-                ));
-            }
-            lines.push(format!(
-                "    followup_target: {}",
-                sanitize_inline(&child.followup_target)
-            ));
-            lines.push(format!(
-                "    cleanup_owner: {}",
-                sanitize_inline(&child.cleanup_owner)
-            ));
-            if let Some(worktree) = child.worktree {
-                if let Some(path) = worktree.worktree_path {
-                    lines.push(format!("    worktree_path: {}", sanitize_inline(&path)));
-                }
-            }
-        }
-
-        lines.push("  retrieval:".to_string());
-        lines.push(format!(
-            "    status: use TaskStatus({}) for lifecycle details",
-            task_id
-        ));
-        lines.push("    output: boundedly read only runtime-confirmed command files when available; observe agent progress with bounded holon tail --agent; neither is task completion".to_string());
-        lines.push(format!(
-            "    completion: use WaitFor(wake=task_result, resource={}) and result re-entry when only completion remains",
-            task_id
-        ));
-    }
-
-    if total_count > tasks.len() {
-        lines.push(format!(
-            "... {} more active tasks not shown; use ListTasks for the full active task list.",
-            total_count - tasks.len()
-        ));
-    }
-
-    lines.join("\n")
-}
-
 #[cfg(test)]
 pub(crate) fn render_pending_task_results_from_snapshot(
     pending: &[PendingTaskResult],
@@ -1433,160 +1368,15 @@ fn render_pending_task_results_excluding(
             )
         })
         .collect::<Vec<_>>();
-    let mut rendered = String::new();
-    write_pending_task_result_previews(
-        &mut rendered,
+    render::task_results::render_pending_task_result_previews_excluding(
         previews.iter(),
-        pending.len(),
         current_message,
         excluded_messages,
     )
-    .expect("String formatting cannot fail");
-    Some(rendered)
-}
-
-pub(crate) const PENDING_TASK_RESULT_PREVIEW_LINES: usize = 11;
-
-/// Immutable bounded text, shared by the prompt and idle capacity trials.
-pub(crate) struct PendingTaskResultPreview {
-    lines: Vec<String>,
-    result_identity: String,
-    source_id: Option<String>,
-    source_lines: std::ops::Range<usize>,
-    reply_id: Option<String>,
-    reply_lines: std::ops::Range<usize>,
-}
-
-struct PendingTaskResultInline<'a>(&'a str);
-
-impl std::fmt::Display for PendingTaskResultInline<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut words = self.0.split_whitespace();
-        if let Some(first) = words.next() {
-            formatter.write_str(first)?;
-            for word in words {
-                formatter.write_str(" ")?;
-                formatter.write_str(word)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-fn write_pending_task_result_header(
-    record: &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
-    mut line: impl FnMut(std::fmt::Arguments<'_>) -> std::fmt::Result,
-) -> std::fmt::Result {
-    line(format_args!(
-        "- result_identity: {}",
-        PendingTaskResultInline(&record.result_identity)
-    ))?;
-    line(format_args!(
-        "  task_id: {}",
-        PendingTaskResultInline(&record.task_id)
-    ))?;
-    line(format_args!(
-        "  task_status: {}",
-        PendingTaskResultInline(&record.task_status)
-    ))?;
-    if let Some(id) = record.work_item_id.as_deref() {
-        line(format_args!("  owner: work_item:{id}"))
-    } else {
-        line(format_args!("  owner: agent_lifecycle"))
-    }
-}
-
-fn write_pending_task_result_projection_header(
-    record: &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
-    mut line: impl FnMut(std::fmt::Arguments<'_>) -> std::fmt::Result,
-) -> std::fmt::Result {
-    use crate::domain::execution_protocol::TaskRejoinSource;
-    let (source_key, source_id) = match &record.source {
-        TaskRejoinSource::ParentTurn { parent_turn_id } => ("parent_turn_id", parent_turn_id),
-        TaskRejoinSource::CommandCreation {
-            command_creation_id,
-        } => ("command_creation_id", command_creation_id),
-    };
-    line(format_args!(
-        "  {source_key}: {}",
-        PendingTaskResultInline(source_id)
-    ))?;
-    line(format_args!(
-        "  rejoin_generation: {}",
-        record.rejoin_generation
-    ))
-}
-
-#[derive(Clone, Copy)]
-enum PendingTaskResultPreviewEntry<'a> {
-    Retained(&'a PendingTaskResultPreview),
-    Projected {
-        record: &'a crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
-        source: ProjectionView<'a>,
-        reply: Option<ProjectionView<'a>>,
-    },
-}
-
-impl<'a> PendingTaskResultPreviewEntry<'a> {
-    fn result_identity(self) -> &'a str {
-        match self {
-            Self::Retained(preview) => &preview.result_identity,
-            Self::Projected { record, .. } => &record.result_identity,
-        }
-    }
-
-    fn source_id(self) -> Option<&'a str> {
-        match self {
-            Self::Retained(preview) => preview.source_id.as_deref(),
-            Self::Projected { source, .. } => Some(source.message_id),
-        }
-    }
-
-    fn reply_id(self) -> Option<&'a str> {
-        match self {
-            Self::Retained(preview) => preview.reply_id.as_deref(),
-            Self::Projected { reply, .. } => reply.map(|reply| reply.message_id),
-        }
-    }
-
-    fn write(
-        self,
-        writer: &mut impl std::fmt::Write,
-        show_source: bool,
-        show_reply: bool,
-    ) -> std::fmt::Result {
-        match self {
-            Self::Retained(preview) => {
-                for (index, line) in preview.lines.iter().enumerate() {
-                    if (show_reply || !preview.reply_lines.contains(&index))
-                        && (show_source || !preview.source_lines.contains(&index))
-                    {
-                        write!(writer, "\n{line}")?;
-                    }
-                }
-            }
-            Self::Projected {
-                record,
-                source,
-                reply,
-            } => {
-                let mut line = |line: std::fmt::Arguments<'_>| write!(writer, "\n{line}");
-                write_pending_task_result_header(record, &mut line)?;
-                write_pending_task_result_projection_header(record, &mut line)?;
-                if show_source {
-                    line(format_args!("{}", source.rendered))?;
-                }
-                if let Some(reply) = reply.filter(|_| show_reply) {
-                    line(format_args!("{}", reply.rendered))?;
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 pub(crate) fn pending_task_result_preview(
-    record: &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+    record: &TaskResultSettlementRecord,
     message: Option<&MessageEnvelope>,
     reply: Option<&MessageEnvelope>,
 ) -> PendingTaskResultPreview {
@@ -1600,259 +1390,52 @@ pub(crate) fn pending_task_result_preview(
 }
 
 pub(crate) fn pending_task_result_preview_with_projections(
-    record: &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+    record: &TaskResultSettlementRecord,
     message: Option<&MessageEnvelope>,
     reply: Option<&MessageEnvelope>,
     source_projection: Option<&crate::types::IdleInputBatchItem>,
     reply_projection: Option<&crate::types::IdleInputBatchItem>,
 ) -> PendingTaskResultPreview {
-    // All optional fields fit this fixed shape; no growth copies prior lines.
-    let mut lines = Vec::with_capacity(PENDING_TASK_RESULT_PREVIEW_LINES);
-    write_pending_task_result_header(record, |line| {
-        lines.push(line.to_string());
-        Ok(())
-    })
-    .expect("String formatting cannot fail");
-    if let Some(projection) = source_projection {
-        write_pending_task_result_projection_header(record, |line| {
-            lines.push(line.to_string());
-            Ok(())
-        })
-        .expect("String formatting cannot fail");
-        let source_start = lines.len();
-        lines.push(projection.rendered.clone());
-        let source_lines = source_start..lines.len();
-        let reply_start = lines.len();
-        if let Some(reply) = reply_projection {
-            lines.push(reply.rendered.clone());
-        }
-        let reply_lines = reply_start..lines.len();
-        return PendingTaskResultPreview {
-            lines,
-            result_identity: record.result_identity.clone(),
-            source_id: Some(projection.message_id.clone()),
-            source_lines,
-            reply_id: reply_projection.map(|reply| reply.message_id.clone()),
-            reply_lines,
-        };
-    }
-    let mut reply_lines = 0..0;
-    let reply_id = message.and_then(crate::wake_contract::agent_message_reply_reference);
-    if let Some(id) = reply_id {
-        lines.push(format!(
-            "  reply_source_ref: message:{}",
-            sanitize_inline(id)
-        ));
-        let start = lines.len();
-        if let Some(reply) = reply {
-            lines.push(format!(
-                "  received_agent_message: {}",
-                message_header(reply)
-            ));
-            if let Some(route) = message_routing_context(reply) {
-                lines.push(route);
-            }
-            lines.push(format!(
-                "  reply_preview: {}",
-                sanitize_inline(&body_preview(&reply.body))
-            ));
-        }
-        reply_lines = start..lines.len();
-    }
-    let source_start = lines.len();
-    if let Some(message) = message {
-        lines.push(format!(
-            "  summary: {}",
-            sanitize_inline(&body_preview(&message.body))
-        ));
-        if let Some(output_ref) = message
-            .source_refs
-            .get("output_ref")
-            .or_else(|| message.source_refs.get("stdout_ref"))
-        {
-            lines.push(format!("  output_ref: {}", sanitize_inline(output_ref)));
-        }
-    }
-    let source_lines = source_start..lines.len();
-    lines.push(format!(
-        "  retrieval: use TaskStatus with task_id={} for exact lifecycle/result evidence; read only confirmed output refs/files boundedly",
-        sanitize_inline(&record.task_id)
-    ));
-    PendingTaskResultPreview {
-        lines,
-        result_identity: record.result_identity.clone(),
-        source_id: message.map(|message| message.id.clone()),
-        source_lines,
-        reply_id: reply_id.map(str::to_owned),
-        reply_lines,
-    }
-}
-
-fn write_pending_task_result_previews<'a>(
-    writer: &mut impl std::fmt::Write,
-    pending: impl Iterator<Item = &'a PendingTaskResultPreview> + Clone,
-    count: usize,
-    current_message: &MessageEnvelope,
-    excluded_messages: &BTreeSet<String>,
-) -> std::fmt::Result {
-    write_pending_task_result_preview_entries(
-        writer,
-        pending.map(PendingTaskResultPreviewEntry::Retained),
-        count,
-        current_message,
-        excluded_messages,
+    render::task_results::pending_task_result_preview(
+        task_result_header(record),
+        message,
+        reply,
+        source_projection,
+        reply_projection,
     )
 }
 
-fn write_pending_task_result_preview_entries<'a>(
-    writer: &mut impl std::fmt::Write,
-    pending: impl Iterator<Item = PendingTaskResultPreviewEntry<'a>> + Clone,
-    count: usize,
-    current_message: &MessageEnvelope,
-    excluded_messages: &BTreeSet<String>,
-) -> std::fmt::Result {
-    if count == 0 {
-        return Ok(());
+fn task_result_header(record: &TaskResultSettlementRecord) -> TaskResultHeader<'_> {
+    TaskResultHeader {
+        result_identity: &record.result_identity,
+        task_id: &record.task_id,
+        task_status: &record.task_status,
+        work_item_id: record.work_item_id.as_deref(),
+        source: &record.source,
+        rejoin_generation: record.rejoin_generation,
     }
-    write!(writer, "Previously received terminal task results admitted to this execution (each result identity appears once):")?;
-    // Revisit borrowed fragments instead of allocating dedup trees for each
-    // capacity trial. Duplicate identities must not introduce new Message IDs.
-    let unique = pending.clone().enumerate().filter(|(index, entry)| {
-        !pending
-            .clone()
-            .take(*index)
-            .any(|prior| prior.result_identity() == entry.result_identity())
-    });
-    for (index, entry) in unique.clone() {
-        let seen = |id: &str| {
-            pending
-                .clone()
-                .take(index)
-                .enumerate()
-                .any(|(prior_index, prior)| {
-                    (prior.source_id() == Some(id) || prior.reply_id() == Some(id))
-                        && !pending
-                            .clone()
-                            .take(prior_index)
-                            .any(|first| first.result_identity() == prior.result_identity())
-                })
-        };
-        let show_source = entry.source_id().is_some_and(|id| {
-            id != current_message.id && !excluded_messages.contains(id) && !seen(id)
-        });
-        let show_reply = entry.reply_id().is_some_and(|id| {
-            id != current_message.id
-                && !excluded_messages.contains(id)
-                && !seen(id)
-                && !(show_source && entry.source_id() == Some(id))
-        });
-        entry.write(writer, show_source, show_reply)?;
-    }
-    Ok(())
-}
-
-pub(crate) fn render_pending_task_result_previews<'a>(
-    pending: impl ExactSizeIterator<Item = &'a PendingTaskResultPreview> + Clone,
-    current_message: &MessageEnvelope,
-) -> Option<String> {
-    let count = pending.len();
-    if count == 0 {
-        return None;
-    }
-    let mut rendered = String::new();
-    write_pending_task_result_previews(
-        &mut rendered,
-        pending,
-        count,
-        current_message,
-        &BTreeSet::new(),
-    )
-    .expect("String formatting cannot fail");
-    Some(rendered)
-}
-
-pub(crate) fn pending_task_results_preview_bytes<'a>(
-    pending: impl ExactSizeIterator<Item = &'a PendingTaskResultPreview> + Clone,
-    current_message: &MessageEnvelope,
-) -> usize {
-    pending_task_results_preview_measure(pending, current_message).0
-}
-
-/// Exact bytes and Unicode scalar count from the final prompt formatter.
-pub(crate) fn pending_task_results_preview_measure<'a>(
-    pending: impl Iterator<Item = &'a PendingTaskResultPreview> + Clone,
-    current_message: &MessageEnvelope,
-) -> (usize, usize) {
-    pending_task_result_preview_entries_measure(
-        pending.map(PendingTaskResultPreviewEntry::Retained),
-        current_message,
-    )
-}
-
-/// Trial one projected candidate without materializing its retained preview.
-#[cfg(test)]
-pub(crate) fn pending_task_results_preview_measure_with_projected_candidate<'a>(
-    pending: impl Iterator<Item = &'a PendingTaskResultPreview> + Clone,
-    current_message: &MessageEnvelope,
-    candidate: &'a crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
-    source_projection: &'a crate::types::IdleInputBatchItem,
-    reply_projection: Option<&'a crate::types::IdleInputBatchItem>,
-) -> (usize, usize) {
-    pending_task_results_preview_measure_with_projection_views(
-        pending,
-        current_message,
-        candidate,
-        source_projection.into(),
-        reply_projection.map(ProjectionView::from),
-    )
 }
 
 pub(crate) fn pending_task_results_preview_measure_with_projection_views<'a>(
     pending: impl Iterator<Item = &'a PendingTaskResultPreview> + Clone,
     current_message: &MessageEnvelope,
-    candidate: &'a crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
-    source_projection: ProjectionView<'a>,
-    reply_projection: Option<ProjectionView<'a>>,
+    candidate: &TaskResultSettlementRecord,
+    source_projection: ProjectionView<'_>,
+    reply_projection: Option<ProjectionView<'_>>,
 ) -> (usize, usize) {
-    pending_task_result_preview_entries_measure(
-        pending
-            .map(PendingTaskResultPreviewEntry::Retained)
-            .chain(std::iter::once(PendingTaskResultPreviewEntry::Projected {
-                record: candidate,
-                source: source_projection,
-                reply: reply_projection,
-            })),
-        current_message,
-    )
-}
-
-fn pending_task_result_preview_entries_measure<'a>(
-    pending: impl Iterator<Item = PendingTaskResultPreviewEntry<'a>> + Clone,
-    current_message: &MessageEnvelope,
-) -> (usize, usize) {
-    struct TextCount(usize, usize);
-    impl std::fmt::Write for TextCount {
-        fn write_str(&mut self, value: &str) -> std::fmt::Result {
-            self.0 = self.0.checked_add(value.len()).ok_or(std::fmt::Error)?;
-            self.1 = self
-                .1
-                .checked_add(value.chars().count())
-                .ok_or(std::fmt::Error)?;
-            Ok(())
-        }
-    }
-    let count = pending.clone().count();
-    let mut text = TextCount(0, 0);
-    match write_pending_task_result_preview_entries(
-        &mut text,
+    render::task_results::measure_with_projected_result(
         pending,
-        count,
         current_message,
-        &BTreeSet::new(),
-    ) {
-        Ok(()) => (text.0, text.1),
-        Err(_) => (usize::MAX, usize::MAX),
-    }
+        task_result_header(candidate),
+        TaskResultProjection {
+            message_id: source_projection.message_id,
+            rendered: &source_projection.rendered,
+        },
+        reply_projection.as_ref().map(|reply| TaskResultProjection {
+            message_id: reply.message_id,
+            rendered: &reply.rendered,
+        }),
+    )
 }
 
 fn render_recovery_input_batches(
@@ -1939,39 +1522,6 @@ fn render_live_input_batches(
     (!text.is_empty()).then_some(text)
 }
 
-fn render_active_task_command(lines: &mut Vec<String>, command: &CommandTaskStatusSnapshot) {
-    if let Some(cmd) = command.cmd.as_deref().filter(|cmd| !cmd.trim().is_empty()) {
-        lines.push(format!(
-            "    cmd_preview: {}",
-            sanitize_inline(&truncate_text(
-                &crate::tool::helpers::command_preview(cmd),
-                ACTIVE_TASK_CMD_PREVIEW_CHAR_BUDGET
-            ))
-        ));
-    }
-    if let Some(cmd_digest) = command.cmd_digest.as_deref() {
-        lines.push(format!("    cmd_digest: {}", sanitize_inline(cmd_digest)));
-    }
-    if let Some(workdir) = command.workdir.as_deref() {
-        lines.push(format!("    workdir: {}", sanitize_inline(workdir)));
-    }
-    if command.tty == Some(true) {
-        lines.push("    tty: true".to_string());
-    }
-    if command.accepts_input == Some(true) {
-        lines.push("    accepts_input: true".to_string());
-        if let Some(input_target) = command.input_target.as_deref() {
-            lines.push(format!(
-                "    input_target: {}",
-                sanitize_inline(input_target)
-            ));
-        }
-    }
-    if let Some(output_path) = command.output_path.as_deref() {
-        lines.push(format!("    output_path: {}", sanitize_inline(output_path)));
-    }
-}
-
 fn render_current_work_item(
     work_item: &WorkItemRecord,
     plan_observations: &impl PlanArtifactLookup,
@@ -1986,353 +1536,33 @@ fn render_current_work_item(
             trigger_delivery_by_id: &BTreeMap::new(),
         },
     );
-    let mut lines = vec![
-        "Current work item:".to_string(),
-        format!("- Id: {}", work_item.id),
-        format!("- State: {:?}", work_item.state),
-        format!("- Scheduling state: {:?}", scheduling.scheduling_state),
-        format!("- Readiness: {:?}", scheduling.readiness),
-        format!("- Reason: {:?}", scheduling.reason_code),
-        format!("- Objective: {}", work_item.objective),
-        format!(
-            "- Plan status: {}",
-            work_item_plan_status_label(work_item.plan_status)
-        ),
-    ];
-    lines.extend(render_work_item_plan_artifact_lines(
+    render::work_items::render_current_work_item(
         work_item,
-        plan_observations,
-        "- ",
-    ));
-    if !work_item.todo_list.is_empty() {
-        lines.push("- Todo list:".to_string());
-        lines.extend(work_item.todo_list.iter().map(|item| {
-            let state = match item.state {
-                TodoItemState::Pending => "pending",
-                TodoItemState::InProgress => "in_progress",
-                TodoItemState::Completed => "completed",
-            };
-            format!("  - [{state}] {}", item.text)
-        }));
-    }
-    if let Some(blocked_by) = work_item.blocked_by.as_deref() {
-        lines.push(format!("- Blocked by: {blocked_by}"));
-    }
-    let waits = active_wait_conditions
-        .iter()
-        .filter(|condition| condition.work_item_id.as_deref() == Some(work_item.id.as_str()))
-        .collect::<Vec<_>>();
-    if !waits.is_empty() {
-        lines.push("- Active waits:".to_string());
-        lines.extend(waits.into_iter().take(4).map(|condition| {
-            let subject = condition
-                .subject_ref
-                .as_deref()
-                .map(|subject| format!(" :: subject_ref={subject}"))
-                .unwrap_or_default();
-            format!("  - {}{subject}", condition.waiting_for)
-        }));
-    }
-    lines.join("\n")
-}
-
-fn render_compact_current_work_item(work_item: &WorkItemRecord) -> String {
-    format!(
-        "Current work item:\n- Id: {}\n- Objective: {}",
-        work_item.id,
-        bounded_inline(&work_item.objective, 96)
+        &scheduling,
+        plan_observations.plan(&work_item.id),
+        active_wait_conditions,
     )
 }
 
-fn render_empty_current_work_item() -> String {
-    "Current work item: none.\nNo focused WorkItem is attached to this turn.".to_string()
-}
-
-fn render_current_work_refs(work_item: &WorkItemRecord) -> Option<String> {
-    let refs = work_item
-        .work_refs
-        .iter()
-        .filter(|work_ref| work_ref.status == WorkItemRefStatus::Active)
-        .take(crate::work_item_refs::MAX_ACTIVE_WORK_REFS)
-        .collect::<Vec<_>>();
-    if refs.is_empty() {
-        return None;
-    }
-    let mut lines = vec!["Current WorkItem refs. Reopen only when needed:".to_string()];
-    for work_ref in refs {
-        let title = work_ref
-            .title
-            .as_deref()
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or(&work_ref.ref_id);
-        let source = work_ref
-            .source_ref
-            .as_deref()
-            .map(|source_ref| format!(" :: source_ref={source_ref}"))
-            .unwrap_or_default();
-        lines.push(format!(
-            "- [{}] {} :: ref={} :: reason={}{}",
-            work_ref_kind_label(work_ref.kind),
-            truncate_text(title, 120),
-            work_ref.ref_id,
-            truncate_text(&work_ref.reason, 140),
-            source
-        ));
-    }
-    Some(lines.join("\n"))
-}
-
-fn work_ref_kind_label(kind: crate::types::WorkItemRefKind) -> &'static str {
-    match kind {
-        crate::types::WorkItemRefKind::File => "file",
-        crate::types::WorkItemRefKind::ToolExecution => "tool_execution",
-        crate::types::WorkItemRefKind::Issue => "issue",
-        crate::types::WorkItemRefKind::Pr => "pr",
-        crate::types::WorkItemRefKind::Url => "url",
-        crate::types::WorkItemRefKind::Memory => "memory",
-        crate::types::WorkItemRefKind::Task => "task",
-        crate::types::WorkItemRefKind::Wait => "wait",
-        crate::types::WorkItemRefKind::Workspace => "workspace",
-        crate::types::WorkItemRefKind::Other => "other",
-    }
-}
-
-fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'static str {
-    match status {
-        crate::types::WorkItemPlanStatus::Draft => "draft",
-        crate::types::WorkItemPlanStatus::Ready => "ready",
-        crate::types::WorkItemPlanStatus::NeedsInput => "needs_input",
-    }
-}
-
-fn render_current_work_item_process_trace(
-    work_item: &WorkItemRecord,
-    briefs: &[impl std::borrow::Borrow<BriefRecord>],
-    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
-    transcript: &[impl std::borrow::Borrow<TranscriptEntry>],
-) -> Option<String> {
-    let mut lines = vec!["Recent current WorkItem process trace:".to_string()];
-    let mut added = 0usize;
-    for brief in briefs
-        .iter()
-        .map(std::borrow::Borrow::<BriefRecord>::borrow)
-        .rev()
-        .filter(|brief| brief.agent_id == work_item.agent_id)
-        .filter(|brief| brief.work_item_id.as_deref() == Some(work_item.id.as_str()))
-        .take(3)
-    {
-        lines.push(format!(
-            "- brief:{:?} {}",
-            brief.kind,
-            truncate_text(&brief.text.replace('\n', " "), 180)
-        ));
-        added += 1;
-    }
-    for tool in tools
-        .iter()
-        .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
-        .rev()
-        .filter(|tool| tool.agent_id == work_item.agent_id)
-        .filter(|tool| tool.work_item_id.as_deref() == Some(work_item.id.as_str()))
-        .take(4)
-    {
-        lines.push(format!(
-            "- tool:{} {}",
-            tool.tool_name,
-            truncate_text(&tool.summary.replace('\n', " "), 180)
-        ));
-        added += 1;
-    }
-    for entry in transcript
-        .iter()
-        .map(std::borrow::Borrow::<TranscriptEntry>::borrow)
-        .rev()
-        .filter(|entry| entry.agent_id == work_item.agent_id)
-        .filter(|entry| entry.kind == TranscriptEntryKind::AssistantRound)
-        .filter(|entry| entry.data["work_item_id"].as_str() == Some(work_item.id.as_str()))
-        .take(2)
-    {
-        if let Some(text) = assistant_round_text_preview(entry) {
-            lines.push(format!("- assistant_round: {}", truncate_text(&text, 180)));
-            added += 1;
-        }
-    }
-    (added > 0).then(|| lines.join("\n"))
-}
-
-fn render_work_item_candidates(
-    projection: &crate::work_item_scheduling::ContextWorkQueue,
-    displayed_work_item_id: Option<&str>,
-    completion_reports: &BTreeMap<String, CompletionReportProjection>,
-    plan_observations: &impl PlanArtifactLookup,
-) -> Result<Option<String>> {
-    let mut lines = vec!["Work item candidates by scheduler ranking:".to_string()];
-    append_candidate_group(
-        &mut lines,
-        "Triggered work items:",
-        &projection.triggered_blocked,
-        displayed_work_item_id,
-        completion_reports,
-        plan_observations,
-    )?;
-    append_candidate_group(
-        &mut lines,
-        "Focused runnable work items:",
-        projection.current_runnable.as_slice(),
-        displayed_work_item_id,
-        completion_reports,
-        plan_observations,
-    )?;
-    append_candidate_group(
-        &mut lines,
-        "Queued runnable work items:",
-        &projection.queued_runnable,
-        displayed_work_item_id,
-        completion_reports,
-        plan_observations,
-    )?;
-    append_candidate_group(
-        &mut lines,
-        "Parked/Yielded work items:",
-        &projection.yielded,
-        displayed_work_item_id,
-        completion_reports,
-        plan_observations,
-    )?;
-    append_candidate_group(
-        &mut lines,
-        "Waiting for operator:",
-        &projection.waiting_for_operator,
-        displayed_work_item_id,
-        completion_reports,
-        plan_observations,
-    )?;
-    append_candidate_group(
-        &mut lines,
-        "Blocked work items:",
-        &projection.blocked,
-        displayed_work_item_id,
-        completion_reports,
-        plan_observations,
-    )?;
-    append_candidate_group(
-        &mut lines,
-        "Completing work items:",
-        &projection.completing,
-        displayed_work_item_id,
-        completion_reports,
-        plan_observations,
-    )?;
-    append_candidate_group(
-        &mut lines,
-        "Recently completed work items:",
-        &projection.completed_recent,
-        displayed_work_item_id,
-        completion_reports,
-        plan_observations,
-    )?;
-    if lines.len() == 1 {
-        return Ok(None);
-    }
-    Ok(Some(lines.join("\n")))
-}
-
-fn append_candidate_group(
-    lines: &mut Vec<String>,
-    title: &str,
-    items: &[crate::storage::WorkItemSchedulingProjection],
-    displayed_work_item_id: Option<&str>,
-    completion_reports: &BTreeMap<String, CompletionReportProjection>,
-    plan_observations: &impl PlanArtifactLookup,
-) -> Result<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
-    let items = items
-        .iter()
-        .filter(|item| Some(item.record().id.as_str()) != displayed_work_item_id)
-        .collect::<Vec<_>>();
-    if items.is_empty() {
-        return Ok(());
-    }
-    let mut title_pushed = false;
-    for item in items {
-        let record = item.record();
-        let completion_report = if record.state == crate::types::WorkItemState::Completed {
-            let report = completion_report_for_work_item(completion_reports, record);
-            if report.is_none() {
-                continue;
-            }
-            report
-        } else {
-            None
-        };
-        if !title_pushed {
-            lines.push(title.to_string());
-            title_pushed = true;
-        }
-        let view = match item.candidate_class {
-            crate::storage::WorkItemCandidateClass::TriggeredBlocked => "triggered_blocked",
-            crate::storage::WorkItemCandidateClass::QueuedRunnable => "queued_runnable",
-            crate::storage::WorkItemCandidateClass::Yielded => "yielded",
-            crate::storage::WorkItemCandidateClass::WaitingForOperator => "waiting_for_operator",
-            crate::storage::WorkItemCandidateClass::Blocked => "blocked",
-            crate::storage::WorkItemCandidateClass::Completing => "completing",
-            crate::storage::WorkItemCandidateClass::CompletedRecent => "completed_recent",
-            crate::storage::WorkItemCandidateClass::CurrentRunnable => "current_runnable",
-        };
-        let mut summary = format!("- [{view}] {} :: {}", record.id, record.objective);
-        if let Some(todo) = item.current_todo.as_ref() {
-            summary.push_str(&format!(" :: current_todo={}", todo.text));
-        }
-        if let Some(triggered_at) = item.last_triggered_at {
-            summary.push_str(&format!(" :: last_triggered_at={triggered_at}"));
-        }
-        if let Some(blocked_by) = record.blocked_by.as_deref() {
-            summary.push_str(&format!(" :: blocked_by={blocked_by}"));
-        }
-        lines.push(summary);
-        if let Some(report) = completion_report {
-            if let Some(brief_id) = report.brief_id.as_deref() {
-                lines.push(format!("  - Result ref: brief:{brief_id}"));
-            }
-            lines.push(format!(
-                "  - Completion summary: {}",
-                truncate_text(
-                    &report.text.replace('\n', " "),
-                    COMPLETION_SUMMARY_CHAR_LIMIT
-                )
-            ));
-        }
-        if let Some(plan_ref) = render_work_item_plan_ref(record, plan_observations) {
-            lines.push(format!("  - {plan_ref}"));
-        }
-    }
-    Ok(())
-}
-
-fn completion_report_for_work_item(
-    completion_reports: &BTreeMap<String, CompletionReportProjection>,
-    record: &WorkItemRecord,
-) -> Option<CompletionReportProjection> {
+fn completion_report_for_work_item<'a>(
+    completion_reports: &'a BTreeMap<String, CompletionReportProjection>,
+    record: &'a WorkItemRecord,
+) -> Option<CompletionReport<'a>> {
     if let Some(report) = completion_reports.get(&record.id) {
-        return Some(report.clone());
-    }
-    if let Some(summary) = record
-        .result_summary
-        .as_ref()
-        .filter(|text| !text.is_empty())
-    {
-        return Some(CompletionReportProjection {
-            text: summary.clone(),
-            brief_id: None,
-            source_brief: None,
+        return Some(CompletionReport {
+            text: &report.text,
+            brief_id: report.brief_id.as_deref(),
         });
     }
-    None
+    record
+        .result_summary
+        .as_deref()
+        .filter(|text| !text.is_empty())
+        .map(|text| CompletionReport {
+            text,
+            brief_id: None,
+        })
 }
-
-pub(crate) const COMPLETION_SUMMARY_CHAR_LIMIT: usize = 160;
 
 #[derive(Debug, Clone)]
 struct CompletionReportProjection {
@@ -2390,48 +1620,6 @@ fn latest_completion_report_by_work_item(
             });
     }
     Ok(summaries)
-}
-
-fn render_work_item_plan_artifact_lines(
-    work_item: &WorkItemRecord,
-    plan_observations: &impl PlanArtifactLookup,
-    prefix: &str,
-) -> Vec<String> {
-    let plan_artifact = plan_observations.plan(&work_item.id);
-    let Some(plan_artifact) = plan_artifact else {
-        return Vec::new();
-    };
-    let preview_indent = " ".repeat(prefix.chars().count());
-    let mut lines = vec![
-        format!("{prefix}Plan artifact: {}", plan_artifact.path.display()),
-        format!(
-            "{prefix}Plan preview complete: {}",
-            plan_artifact.preview_complete
-        ),
-    ];
-    if !plan_artifact.preview.is_empty() {
-        lines.push(format!("{prefix}Plan preview:"));
-        lines.extend(
-            plan_artifact
-                .preview
-                .lines()
-                .map(|line| format!("{preview_indent}{line}")),
-        );
-    }
-    lines
-}
-
-fn render_work_item_plan_ref(
-    work_item: &WorkItemRecord,
-    plan_observations: &impl PlanArtifactLookup,
-) -> Option<String> {
-    if let Some(artifact) = work_item.plan_artifact.as_ref() {
-        return Some(format!("Plan ref: {}", artifact.path.display()));
-    }
-
-    plan_observations
-        .plan(&work_item.id)
-        .map(|artifact| format!("Plan ref: {}", artifact.path.display()))
 }
 
 fn scope_label(scope: &crate::types::SkillScope) -> &'static str {
@@ -2533,306 +1721,6 @@ fn resolved_brief_text_from_values(
             crate::diagnostics::resource_io::admit_cloned_value(&brief.text)?;
             Ok(brief.text.clone())
         }
-    }
-}
-
-fn render_continuation_anchor(
-    historical_operator: Option<&MessageEnvelope>,
-    current_message: &MessageEnvelope,
-    continuation: Option<&ContinuationResolution>,
-    current_work_item: Option<&WorkItemRecord>,
-    budget: usize,
-) -> Option<String> {
-    let latest_operator =
-        resolve_latest_trusted_operator_input(historical_operator, current_message);
-    let relation = current_input_relation(current_message, latest_operator);
-    if latest_operator.is_none() && relation.is_none() {
-        return None;
-    }
-
-    let mut lines = vec!["Continuation anchor:".to_string()];
-    if let Some(operator) = latest_operator {
-        if same_message_identity(current_message, operator) {
-            lines.push("Latest trusted operator input: current_input.".to_string());
-        } else if current_work_item.is_some() {
-            lines.push(format!(
-                "Latest trusted operator input: {}.",
-                operator
-                    .message_seq
-                    .map(|seq| format!("message_seq {seq}"))
-                    .unwrap_or_else(|| operator.id.clone())
-            ));
-        } else if continuation_needs_full_anchor(continuation) {
-            let prefix = "Latest trusted operator input:\n";
-            let reserved = estimate_text_tokens("Continuation anchor:\nCurrent input relation:");
-            let body_budget = budget.saturating_sub(reserved).max(32);
-            lines.push(truncate_section_content(
-                prefix,
-                &render_message_body_for_anchor(&operator.body),
-                body_budget,
-                Some("\n[truncated trusted operator input]"),
-            ));
-        } else {
-            lines.push(format!(
-                "Latest trusted operator input: {}.",
-                operator
-                    .message_seq
-                    .map(|seq| format!("message_seq {seq}"))
-                    .unwrap_or_else(|| operator.id.clone())
-            ));
-        }
-    }
-
-    if let Some(relation) = relation {
-        lines.push(format!("Current input relation: {relation}"));
-    }
-
-    if is_self_enqueued_followup(current_message) {
-        lines.push(
-            "Self-enqueued follow-up: this body was generated by you in an earlier turn and is your own text, not external or operator instruction.".to_string(),
-        );
-    }
-
-    Some(lines.join("\n"))
-}
-
-fn is_self_enqueued_followup(message: &MessageEnvelope) -> bool {
-    matches!(
-        &message.origin,
-        MessageOrigin::System { subsystem } if subsystem == "tool_enqueue"
-    )
-}
-
-/// Returns true when the continuation genuinely needs the full operator message
-/// body to reconstruct lost context. Routine continuations (system_tick,
-/// task_result, timer, etc.) only need a lightweight message_seq reference
-/// because the model already has recent turns and continuation context.
-fn continuation_needs_full_anchor(continuation: Option<&ContinuationResolution>) -> bool {
-    let Some(continuation) = continuation else {
-        return false;
-    };
-    // ResumeOverride means the prior wait was overridden — the agent needs
-    // full context to understand what changed. All other continuation classes
-    // (ResumeExpectedWait, LocalContinuation, LivenessOnly) are routine
-    // resumptions where recent turns provide sufficient context.
-    matches!(continuation.class, ContinuationClass::ResumeOverride)
-}
-
-/// Resolves the continuation anchor operator from the targeted storage lookup.
-///
-/// Semantics match `latest_trusted_operator_input`: the current input wins
-/// when it is trusted operator input, otherwise the latest historical trusted
-/// operator message (loaded via `read_latest_trusted_operator_message`) is
-/// used. `latest_trusted_operator_input` still backs window-scoped lookups
-/// over hydrated recent messages.
-fn resolve_latest_trusted_operator_input<'a>(
-    historical: Option<&'a MessageEnvelope>,
-    current_message: &'a MessageEnvelope,
-) -> Option<&'a MessageEnvelope> {
-    if is_trusted_operator_input(current_message) {
-        return Some(current_message);
-    }
-    historical
-}
-
-fn current_input_relation(
-    current_message: &MessageEnvelope,
-    latest_operator: Option<&MessageEnvelope>,
-) -> Option<String> {
-    if is_trusted_operator_input(current_message) {
-        let boundary = if latest_operator
-            .is_some_and(|operator| same_message_identity(current_message, operator))
-        {
-            "current_input is the latest trusted operator input and the only new operator task for this turn."
-        } else {
-            "current_input is a trusted operator override newer than previous state and the only new operator task for this turn."
-        };
-        return Some(format!(
-            "{boundary} Treat recent_turns as historical/background evidence; do not resume old tasks or waits unless current_input or the current WorkItem explicitly requires it."
-        ));
-    }
-
-    if latest_operator.is_some() {
-        Some(format!(
-            "current_input is {}, not a new operator request. Continue the latest trusted operator input above unless the current WorkItem projection is more specific.",
-            runtime_continuation_label(current_message)
-        ))
-    } else {
-        Some(format!(
-            "current_input is {}, not a trusted operator request.",
-            runtime_continuation_label(current_message)
-        ))
-    }
-}
-
-fn render_message_body_for_anchor(body: &MessageBody) -> String {
-    match body {
-        MessageBody::Text { text } => text.clone(),
-        MessageBody::Json { value } => {
-            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
-        }
-        MessageBody::Brief { text, .. } => text.clone(),
-    }
-}
-
-fn same_message_identity(left: &MessageEnvelope, right: &MessageEnvelope) -> bool {
-    left.id == right.id
-        || (left.message_seq.is_some()
-            && right.message_seq.is_some()
-            && left.message_seq == right.message_seq)
-}
-
-fn continuation_context(
-    message: &MessageEnvelope,
-    continuation: Option<&ContinuationResolution>,
-) -> Option<String> {
-    let continuation = continuation?;
-    if !continuation.model_reentry {
-        return None;
-    }
-
-    let mut lines = vec![
-        "Continuation context:".to_string(),
-        format!(
-            " - Trigger kind: {}",
-            enum_label(&continuation.trigger_kind)
-        ),
-        format!(" - Continuation class: {}", enum_label(&continuation.class)),
-        format!(
-            " - Prior closure outcome: {}",
-            enum_label(&continuation.prior_closure_outcome)
-        ),
-        format!(
-            " - Prior waiting reason: {}",
-            continuation
-                .prior_waiting_reason
-                .map(|reason| enum_label(&reason))
-                .unwrap_or_else(|| "none".to_string())
-        ),
-        format!(
-            " - Waiting reason matched: {}",
-            continuation.matched_waiting_reason
-        ),
-    ];
-
-    if let Some(wake_hint) = render_wake_hint_context(message) {
-        lines.push(wake_hint);
-    }
-
-    if let Some(work_queue) = render_work_queue_tick_context(message) {
-        lines.push(work_queue);
-    }
-
-    if continuation.class == ContinuationClass::ResumeOverride {
-        lines.push(" - This continuation overrides the prior wait.".to_string());
-    }
-
-    Some(lines.join("\n"))
-}
-
-fn render_wake_hint_context(message: &MessageEnvelope) -> Option<String> {
-    if message.kind != MessageKind::SystemTick {
-        return None;
-    }
-    let wake_hint = message.metadata.as_ref()?.get("wake_hint")?;
-    let reason = wake_hint
-        .get("reason")
-        .and_then(serde_json::Value::as_str)?;
-    let source = wake_hint
-        .get("source")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown");
-    let resource = wake_hint
-        .get("resource")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("none");
-    let content_type = wake_hint
-        .get("content_type")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("none");
-    let payload = wake_hint
-        .get("body")
-        .and_then(|value| serde_json::from_value::<MessageBody>(value.clone()).ok())
-        .map(render_continuation_body)
-        .unwrap_or_else(|| "none".to_string());
-    let mut lines = vec![" - Wake hint:".to_string(), format!("- Source: {source}")];
-    if let Some(scope) = wake_hint.get("scope").and_then(serde_json::Value::as_str) {
-        lines.push(format!("- Scope: {scope}"));
-    }
-    if let Some(external_trigger_id) = wake_hint
-        .get("external_trigger_id")
-        .and_then(serde_json::Value::as_str)
-    {
-        lines.push(format!("- External trigger id: {external_trigger_id}"));
-    }
-    if let Some(work_item_id) = wake_hint
-        .get("work_item_id")
-        .and_then(serde_json::Value::as_str)
-    {
-        lines.push(format!("- Work item id: {work_item_id}"));
-    }
-    if let Some(description) = wake_hint
-        .get("description")
-        .and_then(serde_json::Value::as_str)
-    {
-        lines.push(format!("- Description: {description}"));
-    }
-    lines.extend([
-        format!("- Resource: {resource}"),
-        format!("- Reason: {reason}"),
-        format!("- Content-Type: {content_type}"),
-        format!("- Payload:\n{payload}"),
-    ]);
-    Some(lines.join("\n"))
-}
-
-fn render_work_queue_tick_context(message: &MessageEnvelope) -> Option<String> {
-    if message.kind != MessageKind::SystemTick {
-        return None;
-    }
-    let work_queue = message.metadata.as_ref()?.get("work_queue")?;
-    let reason = work_queue
-        .get("reason")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown");
-    let work_item_id = work_queue
-        .get("work_item_id")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown");
-    let objective = work_queue
-        .get("objective")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown");
-    let runtime_switched_current = work_queue
-        .get("runtime_switched_current_item")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    Some(format!(
-        " - Work queue:\n\
-         - Reason: {reason}\n\
-         - Work item id: {work_item_id}\n\
-         - Objective: {objective}\n\
-         - Runtime switched current item: {runtime_switched_current}"
-    ))
-}
-
-fn render_continuation_body(body: MessageBody) -> String {
-    let rendered = match body {
-        MessageBody::Text { text } => text,
-        MessageBody::Json { value } => {
-            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
-        }
-        MessageBody::Brief { text, .. } => text,
-    };
-    truncate_continuation_body(&rendered)
-}
-
-fn truncate_continuation_body(text: &str) -> String {
-    const MAX_CHARS: usize = 4000;
-    if text.chars().count() <= MAX_CHARS {
-        text.to_string()
-    } else {
-        format!("{}...", text.chars().take(MAX_CHARS).collect::<String>())
     }
 }
 
@@ -7291,6 +6179,7 @@ mod tests {
             completion_report_for_work_item(reports, &work)
                 .unwrap()
                 .text
+                .to_owned()
         };
         assert_eq!(report(&BTreeMap::new()), "WORK_FALLBACK");
         storage
@@ -7712,17 +6601,6 @@ mod tests {
         let rendered = render_pending_task_results(&storage, &agent, &current_message)
             .unwrap()
             .expect("pending task result context");
-        let pending =
-            snapshot::load_pending_task_results(&storage, &agent, &current_message).unwrap();
-        for entry in &pending {
-            let preview = pending_task_result_preview(
-                &entry.record,
-                entry.message.as_deref(),
-                entry.reply.as_deref(),
-            );
-            assert!(preview.lines.len() <= PENDING_TASK_RESULT_PREVIEW_LINES);
-            assert_eq!(preview.lines.capacity(), PENDING_TASK_RESULT_PREVIEW_LINES);
-        }
         assert!(rendered.contains("result_identity:"));
         assert!(rendered.contains("task_id: task-pending"));
         assert!(rendered.contains("summary: completed verification"));
@@ -7771,512 +6649,6 @@ mod tests {
                 .is_none(),
             "live evidence must not also appear in cumulative pending results"
         );
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn pending_preview_borrowed_dedup_matches_original_formatter() {
-        let previews = (0..12)
-            .map(|index| PendingTaskResultPreview {
-                lines: vec![
-                    format!("result-{index}: é\n你好"),
-                    format!("source-body-{index}"),
-                    format!("reply-body-{index}"),
-                ],
-                result_identity: format!("result-{}", index % 8),
-                source_id: Some(format!("message-{}", index % 3)),
-                source_lines: 1..2,
-                reply_id: Some(format!("message-{}", index % 2)),
-                reply_lines: 2..3,
-            })
-            .collect::<Vec<_>>();
-        let mut current = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "current".into(),
-            },
-        );
-        for anchor in ["unrelated", "message-0", "message-1"] {
-            current.id = anchor.into();
-            for excluded in [BTreeSet::new(), BTreeSet::from(["message-2".into()])] {
-                for count in [0, 1, 2, 8, 12] {
-                    let pending = &previews[..count];
-                    let mut expected = String::new();
-                    let mut seen = BTreeSet::new();
-                    let mut identities = BTreeSet::new();
-                    if count != 0 {
-                        expected.push_str("Previously received terminal task results admitted to this execution (each result identity appears once):");
-                    }
-                    for entry in pending {
-                        if !identities.insert(entry.result_identity.as_str()) {
-                            continue;
-                        }
-                        let source = entry.source_id.as_deref().is_some_and(|id| {
-                            id != current.id && !excluded.contains(id) && seen.insert(id)
-                        });
-                        let reply = entry.reply_id.as_deref().is_some_and(|id| {
-                            id != current.id && !excluded.contains(id) && seen.insert(id)
-                        });
-                        for (index, line) in entry.lines.iter().enumerate() {
-                            if (source || !entry.source_lines.contains(&index))
-                                && (reply || !entry.reply_lines.contains(&index))
-                            {
-                                expected.push('\n');
-                                expected.push_str(line);
-                            }
-                        }
-                    }
-                    let mut rendered = String::new();
-                    write_pending_task_result_previews(
-                        &mut rendered,
-                        pending.iter(),
-                        count,
-                        &current,
-                        &excluded,
-                    )
-                    .unwrap();
-                    assert_eq!(rendered, expected);
-                    if excluded.is_empty() {
-                        assert_eq!(
-                            pending_task_results_preview_measure(pending.iter(), &current),
-                            (expected.len(), expected.chars().count())
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn projected_pending_preview_fixture(
-        index: usize,
-    ) -> (
-        crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
-        MessageEnvelope,
-        crate::types::IdleInputBatchItem,
-        crate::types::IdleInputBatchItem,
-    ) {
-        let task = active_task(
-            &format!("projected-task-{index}"),
-            "default",
-            TaskStatus::Completed,
-            Some(json!({
-                "rejoin_obligation_id": format!("projected-task-{index}"),
-                "rejoin_generation": 1,
-                "parent_turn_id": "parent-turn",
-            })),
-        );
-        let mut message = MessageEnvelope::new(
-            "default",
-            MessageKind::TaskResult,
-            MessageOrigin::Task {
-                task_id: task.id.clone(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: format!("legacy-source-{index}"),
-            },
-        );
-        message.id = format!("projected-source-{index}");
-        message.work_item_id = task.work_item_id.clone();
-        let record =
-            crate::runtime_db::task_result_settlement::TaskResultSettlementRecord::pending(
-                &task,
-                &message,
-                chrono::Utc::now(),
-            )
-            .unwrap()
-            .unwrap();
-        let source = crate::types::IdleInputBatchItem {
-            message_id: message.id.clone(),
-            source_ref: format!("message:{}", message.id),
-            rendered: format!("projected-source-body-{index}\nsecond source line\n"),
-        };
-        let reply = crate::types::IdleInputBatchItem {
-            message_id: format!("projected-reply-{index}"),
-            source_ref: format!("message:projected-reply-{index}"),
-            rendered: format!("projected-reply-body-{index}\nsecond reply line\n"),
-        };
-        (record, message, source, reply)
-    }
-
-    fn assert_projected_pending_preview_equivalent(
-        pending: &[PendingTaskResultPreview],
-        current: &MessageEnvelope,
-        candidate: &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
-        source: &crate::types::IdleInputBatchItem,
-        reply: Option<&crate::types::IdleInputBatchItem>,
-    ) -> String {
-        let retained = pending_task_result_preview_with_projections(
-            candidate,
-            None,
-            None,
-            Some(source),
-            reply,
-        );
-        let mut expected = String::new();
-        write_pending_task_result_previews(
-            &mut expected,
-            pending.iter().chain(std::iter::once(&retained)),
-            pending.len() + 1,
-            current,
-            &BTreeSet::new(),
-        )
-        .unwrap();
-        let mut borrowed = String::new();
-        write_pending_task_result_preview_entries(
-            &mut borrowed,
-            pending
-                .iter()
-                .map(PendingTaskResultPreviewEntry::Retained)
-                .chain(std::iter::once(PendingTaskResultPreviewEntry::Projected {
-                    record: candidate,
-                    source: source.into(),
-                    reply: reply.map(ProjectionView::from),
-                })),
-            pending.len() + 1,
-            current,
-            &BTreeSet::new(),
-        )
-        .unwrap();
-        assert_eq!(borrowed, expected);
-        // Filter deliberately removes ExactSizeIterator, as in selection trials.
-        assert_eq!(
-            pending_task_results_preview_measure_with_projected_candidate(
-                pending.iter().filter(|_| true),
-                current,
-                candidate,
-                source,
-                reply,
-            ),
-            (expected.len(), expected.chars().count())
-        );
-        expected
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn pending_projected_candidate_measure_matches_retained_formatter() {
-        use crate::domain::execution_protocol::TaskRejoinSource;
-        let (mut record, mut current, source, reply) = projected_pending_preview_fixture(0);
-        current.id = "unrelated-anchor".into();
-        for command in [false, true] {
-            record.source = if command {
-                TaskRejoinSource::CommandCreation {
-                    command_creation_id: "command-creation".into(),
-                }
-            } else {
-                TaskRejoinSource::ParentTurn {
-                    parent_turn_id: "parent-turn".into(),
-                }
-            };
-            for owner in [None, Some("work-current".to_string())] {
-                record.work_item_id = owner;
-                for reply in [None, Some(&reply)] {
-                    let rendered = assert_projected_pending_preview_equivalent(
-                        &[],
-                        &current,
-                        &record,
-                        &source,
-                        reply,
-                    );
-                    let source_header = if command {
-                        "command_creation_id: command-creation"
-                    } else {
-                        "parent_turn_id: parent-turn"
-                    };
-                    let owner = record
-                        .work_item_id
-                        .as_ref()
-                        .map(|id| format!("work_item:{id}"))
-                        .unwrap_or_else(|| "agent_lifecycle".into());
-                    assert_eq!(
-                        rendered,
-                        format!(
-                            "Previously received terminal task results admitted to this execution (each result identity appears once):\n- result_identity: {}\n  task_id: {}\n  task_status: completed\n  owner: {owner}\n  {source_header}\n  rejoin_generation: 1\n{}{}",
-                            record.result_identity,
-                            record.task_id,
-                            source.rendered,
-                            reply.map(|reply| format!("\n{}", reply.rendered)).unwrap_or_default(),
-                        )
-                    );
-                }
-            }
-        }
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn pending_projected_candidate_measure_matches_mixed_preview_paths() {
-        let (legacy, message, _, _) = projected_pending_preview_fixture(0);
-        let (projected, _, prior_source, prior_reply) = projected_pending_preview_fixture(1);
-        let (mut candidate, mut current, source, reply) = projected_pending_preview_fixture(2);
-        current.id = "unrelated-anchor".into();
-        // Explicit trial projections, not stale projections on the Result, win.
-        candidate.source_projection = Some(prior_source.clone());
-        candidate.reply_projection = Some(prior_reply.clone());
-        let pending = [
-            pending_task_result_preview_with_projections(&legacy, Some(&message), None, None, None),
-            pending_task_result_preview_with_projections(
-                &projected,
-                None,
-                None,
-                Some(&prior_source),
-                Some(&prior_reply),
-            ),
-        ];
-        let rendered = assert_projected_pending_preview_equivalent(
-            &pending,
-            &current,
-            &candidate,
-            &source,
-            Some(&reply),
-        );
-        assert!(rendered.contains("summary: legacy-source-0"));
-        assert!(rendered.contains("retrieval: use TaskStatus"));
-        assert!(
-            rendered.find(&prior_reply.rendered).unwrap()
-                < rendered.find(&source.rendered).unwrap()
-        );
-        assert!(rendered.find(&source.rendered).unwrap() < rendered.find(&reply.rendered).unwrap());
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn pending_projected_candidate_measure_preserves_identity_dedup() {
-        let (mut candidate, mut current, source, reply) = projected_pending_preview_fixture(0);
-        current.id = "unrelated-anchor".into();
-        let pending = [
-            PendingTaskResultPreview {
-                lines: vec!["retained-result".into()],
-                result_identity: candidate.result_identity.clone(),
-                source_id: None,
-                source_lines: 0..0,
-                reply_id: None,
-                reply_lines: 0..0,
-            },
-            PendingTaskResultPreview {
-                lines: vec!["suppressed-duplicate".into()],
-                result_identity: candidate.result_identity.clone(),
-                source_id: Some(source.message_id.clone()),
-                source_lines: 0..0,
-                reply_id: Some(reply.message_id.clone()),
-                reply_lines: 0..0,
-            },
-        ];
-        let duplicate = assert_projected_pending_preview_equivalent(
-            &pending,
-            &current,
-            &candidate,
-            &source,
-            Some(&reply),
-        );
-        assert!(!duplicate.contains("suppressed-duplicate"));
-        assert!(!duplicate.contains(&source.rendered));
-        assert_eq!(
-            pending_task_results_preview_measure_with_projected_candidate(
-                pending.iter(),
-                &current,
-                &candidate,
-                &source,
-                Some(&reply),
-            ),
-            pending_task_results_preview_measure(pending.iter(), &current)
-        );
-        candidate.result_identity.push_str("-distinct");
-        let distinct = assert_projected_pending_preview_equivalent(
-            &pending,
-            &current,
-            &candidate,
-            &source,
-            Some(&reply),
-        );
-        assert!(
-            distinct.contains(&source.rendered),
-            "duplicate identities cannot reserve Message IDs"
-        );
-        assert!(distinct.contains(&reply.rendered));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn pending_projected_candidate_measure_preserves_shared_messages_and_order() {
-        let (prior, _, mut prior_source, mut prior_reply) = projected_pending_preview_fixture(0);
-        let (candidate, mut current, source, mut reply) = projected_pending_preview_fixture(1);
-        current.id = "unrelated-anchor".into();
-        for share_source in [false, true] {
-            for share_reply in [false, true] {
-                prior_source.message_id = if share_source {
-                    source.message_id.clone()
-                } else {
-                    "prior-only-source".into()
-                };
-                prior_reply.message_id = if share_reply {
-                    reply.message_id.clone()
-                } else {
-                    "prior-only-reply".into()
-                };
-                let pending = [pending_task_result_preview_with_projections(
-                    &prior,
-                    None,
-                    None,
-                    Some(&prior_source),
-                    Some(&prior_reply),
-                )];
-                let rendered = assert_projected_pending_preview_equivalent(
-                    &pending,
-                    &current,
-                    &candidate,
-                    &source,
-                    Some(&reply),
-                );
-                assert_eq!(rendered.contains(&source.rendered), !share_source);
-                assert_eq!(rendered.contains(&reply.rendered), !share_reply);
-            }
-        }
-        // Cross-role dedup and same-entry source-before-reply are unchanged.
-        prior_reply.message_id = source.message_id.clone();
-        prior_source.message_id = reply.message_id.clone();
-        let pending = [pending_task_result_preview_with_projections(
-            &prior,
-            None,
-            None,
-            Some(&prior_source),
-            Some(&prior_reply),
-        )];
-        let rendered = assert_projected_pending_preview_equivalent(
-            &pending,
-            &current,
-            &candidate,
-            &source,
-            Some(&reply),
-        );
-        assert!(!rendered.contains(&source.rendered));
-        assert!(!rendered.contains(&reply.rendered));
-        reply.message_id = source.message_id.clone();
-        let rendered = assert_projected_pending_preview_equivalent(
-            &[],
-            &current,
-            &candidate,
-            &source,
-            Some(&reply),
-        );
-        assert!(rendered.contains(&source.rendered));
-        assert!(!rendered.contains(&reply.rendered));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn pending_projected_candidate_measure_preserves_anchor_and_exclusions() {
-        let (record, mut current, source, reply) = projected_pending_preview_fixture(0);
-        let retained = pending_task_result_preview_with_projections(
-            &record,
-            None,
-            None,
-            Some(&source),
-            Some(&reply),
-        );
-        for anchor in ["unrelated-anchor", &source.message_id, &reply.message_id] {
-            current.id = anchor.into();
-            let rendered = assert_projected_pending_preview_equivalent(
-                &[],
-                &current,
-                &record,
-                &source,
-                Some(&reply),
-            );
-            assert_eq!(
-                rendered.contains(&source.rendered),
-                anchor != source.message_id
-            );
-            assert_eq!(
-                rendered.contains(&reply.rendered),
-                anchor != reply.message_id
-            );
-            for excluded in [
-                BTreeSet::new(),
-                BTreeSet::from([source.message_id.clone()]),
-                BTreeSet::from([reply.message_id.clone()]),
-            ] {
-                let mut expected = String::new();
-                write_pending_task_result_previews(
-                    &mut expected,
-                    std::iter::once(&retained),
-                    1,
-                    &current,
-                    &excluded,
-                )
-                .unwrap();
-                let mut borrowed = String::new();
-                write_pending_task_result_preview_entries(
-                    &mut borrowed,
-                    std::iter::once(PendingTaskResultPreviewEntry::Projected {
-                        record: &record,
-                        source: (&source).into(),
-                        reply: Some((&reply).into()),
-                    }),
-                    1,
-                    &current,
-                    &excluded,
-                )
-                .unwrap();
-                assert_eq!(borrowed, expected);
-            }
-        }
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn pending_projected_candidate_measure_preserves_unicode_inline_sanitization() {
-        use crate::domain::execution_protocol::TaskRejoinSource;
-        for value in [
-            "",
-            " \t\r\n",
-            "plain",
-            "  é\u{a0}你好\u{2003}🙂\r\n  fin  ",
-            "\u{85}a\u{b}\u{c}b\u{2028}c\u{2029}",
-            "a\u{200b}b\0c",
-        ] {
-            assert_eq!(
-                PendingTaskResultInline(value).to_string(),
-                sanitize_inline(value)
-            );
-        }
-        let (mut record, mut current, mut source, mut reply) = projected_pending_preview_fixture(0);
-        current.id = "unrelated-anchor".into();
-        record.result_identity = "  résultat\u{a0}你好\n🙂  ".into();
-        record.task_id = "\t任务\r\né\u{2003}🙂 ".into();
-        record.task_status = "  完成\u{2028}é ".into();
-        record.work_item_id = Some("  任务\n原样  ".into());
-        record.source = TaskRejoinSource::CommandCreation {
-            command_creation_id: "  création\u{85}你好\n🙂 ".into(),
-        };
-        record.rejoin_generation = u64::MAX;
-        source.rendered = "  source: é\u{a0}你好\n🙂\tkeep whitespace\r\n".into();
-        reply.rendered = "\nréponse: 你好🙂\n".into();
-        let rendered = assert_projected_pending_preview_equivalent(
-            &[],
-            &current,
-            &record,
-            &source,
-            Some(&reply),
-        );
-        assert!(rendered.contains("- result_identity: résultat 你好 🙂\n"));
-        assert!(rendered.contains("  task_id: 任务 é 🙂\n"));
-        assert!(rendered.contains("  task_status: 完成 é\n"));
-        assert!(rendered.contains("  owner: work_item:  任务\n原样  \n"));
-        assert!(rendered.contains("  command_creation_id: création 你好 🙂\n"));
-        assert!(rendered.contains("  rejoin_generation: 18446744073709551615\n"));
-        assert!(rendered.contains(&source.rendered));
-        assert!(rendered.contains(&reply.rendered));
-        assert!(rendered.len() > rendered.chars().count());
     }
 
     #[cfg(holon_lib_test_shard = "d")]
@@ -10805,70 +9177,6 @@ mod tests {
         assert!(current_input
             .content
             .contains("Keep the current input visible"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn resolve_latest_trusted_operator_input_prefers_current_operator_input() {
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "new request".into(),
-            },
-        );
-        let mut historical = current_message.clone();
-        historical.id = "msg-historical".into();
-        historical.message_seq = Some(7);
-
-        let resolved = resolve_latest_trusted_operator_input(Some(&historical), &current_message);
-        assert_eq!(
-            resolved.map(|message| message.id.clone()),
-            Some(current_message.id)
-        );
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn resolve_latest_trusted_operator_input_falls_back_to_historical_anchor() {
-        let mut historical = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "older request".into(),
-            },
-        );
-        historical.id = "msg-historical".into();
-        historical.message_seq = Some(7);
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::TaskResult,
-            MessageOrigin::System {
-                subsystem: "task".into(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "task completed".into(),
-            },
-        );
-
-        assert!(resolve_latest_trusted_operator_input(None, &current_message).is_none());
-        let resolved = resolve_latest_trusted_operator_input(Some(&historical), &current_message)
-            .expect("historical anchor expected");
-        assert_eq!(resolved.id, "msg-historical");
     }
 
     pub(super) fn execution_snapshot_for(session: &AgentState) -> ExecutionSnapshot {

@@ -1765,6 +1765,12 @@ their own cost.
 Existing captured snapshots retain their immutable observation version when a
 later invalidation blocks new captures.
 
+The `holon-context` renderers format active Tasks, admitted Task Result previews,
+WorkItem sections, and continuation hints from captured inputs. `holon-runtime`
+supplies the selected records, observed plans, scheduling projections, and
+command preview redaction. Task Result capacity trials and final prompt text
+use the same formatter.
+
 Plan creation belongs to the WorkItem/file workflow. The renderer consumes an
 already observed plan preview and locator. Workspace identity participates in
 resource keys so switching roots cannot reuse another root's instructions.
