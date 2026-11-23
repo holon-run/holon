@@ -387,12 +387,14 @@ pub(super) fn capture_input_evidence_upgrade_tx(
         return Ok(());
     }
     let seeds = {
-        let mut s = tx.prepare("SELECT seed_id FROM episode_continuity_seeds ORDER BY seed_id")?;
-        let rows = s.query_map([], |r| r.get::<_, String>(0))?;
+        let mut s =
+            tx.prepare("SELECT seed_id,agent_id FROM episode_continuity_seeds ORDER BY seed_id")?;
+        let rows = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
-    for seed in seeds {
-        capture_input_evidence_seed_tx(tx, &seed, "upgrade", true)?;
+    for (seed, agent_id) in seeds {
+        capture_input_evidence_seed_tx(tx, &seed, "upgrade", true)
+            .with_context(|| format!("capture upgrade input evidence for {agent_id}"))?;
     }
     tx.execute(
         "INSERT INTO runtime_metadata(key,value,created_at,updated_at) VALUES(?1,'1',?2,?2)",
@@ -3652,40 +3654,28 @@ fn extend_metadata_selection(
     }
     Ok(())
 }
-fn enqueue_metadata_key(
-    selected: &mut BTreeSet<Key>,
-    pending: &mut VecDeque<(Key, usize)>,
-    bytes: &mut usize,
-    key: Key,
-    depth: usize,
-) -> Result<()> {
-    if selected.contains(&key) {
-        return Ok(());
+fn admit_metadata_key(selected: &mut BTreeSet<Key>, pending: &mut VecDeque<Key>, key: Key) {
+    if selected.insert(key.clone()) {
+        pending.push_back(key);
     }
-    if depth > MAX_DEPTH {
-        return Err(
-            InputEvidenceSnapshotError::ResourceExhausted("eligibility closure depth").into(),
-        );
-    }
-    extend_metadata_selection(selected, bytes, [key.clone()])?;
-    pending.push_back((key, depth));
-    Ok(())
 }
 /// Metadata-only BFS follows the same typed lineage edges needed by actual
-/// input/evidence consumers. It never scans arbitrary body strings.
+/// input/evidence consumers. It never scans arbitrary body strings, and for the
+/// frozen upgrade/import boundary it walks the complete closure to convergence:
+/// historical depth or size is never a reason to truncate or fail. Online
+/// snapshot reads keep their own strict reference/lineage depth limits.
 fn metadata_closure(
     tx: &Transaction<'_>,
     agent: &str,
     roots: BTreeSet<Key>,
     captured_tables: Option<&BTreeSet<String>>,
 ) -> Result<BTreeSet<Key>> {
-    let mut result = BTreeSet::new();
+    let mut selected = BTreeSet::new();
     let mut pending = VecDeque::new();
-    let mut bytes = 0usize;
     for key in roots {
-        enqueue_metadata_key(&mut result, &mut pending, &mut bytes, key, 0)?;
+        admit_metadata_key(&mut selected, &mut pending, key);
     }
-    while let Some((key, depth)) = pending.pop_front() {
+    while let Some(key) = pending.pop_front() {
         let (table, id) = table(key.family);
         if captured_tables.is_some_and(|tables| !tables.contains(table)) {
             continue;
@@ -3730,17 +3720,9 @@ fn metadata_closure(
                 .optional()?
                 .flatten();
             if let Some(value) = value {
-                bytes = bytes.saturating_add(value.len());
-
                 let ids: Vec<Option<String>> = serde_json::from_str(&value)?;
                 for id in ids.into_iter().flatten() {
-                    enqueue_metadata_key(
-                        &mut result,
-                        &mut pending,
-                        &mut bytes,
-                        Key::new(*family, id),
-                        depth + 1,
-                    )?;
+                    admit_metadata_key(&mut selected, &mut pending, Key::new(*family, id));
                 }
             }
         }
@@ -3749,23 +3731,15 @@ fn metadata_closure(
                 .is_some_and(|tables| !tables.contains("conversation_input_assignments"))
             {
                 if let Some(turn) = actual_input_turn_on(tx, agent, &key.id)? {
-                    enqueue_metadata_key(
-                        &mut result,
-                        &mut pending,
-                        &mut bytes,
-                        Key::new(Family::Turn, turn),
-                        depth + 1,
-                    )?;
+                    admit_metadata_key(&mut selected, &mut pending, Key::new(Family::Turn, turn));
                 }
             }
             if let Some(reply) = task_reply_reference_on(tx, agent, &key.id)? {
-                enqueue_metadata_key(
-                    &mut result,
+                admit_metadata_key(
+                    &mut selected,
                     &mut pending,
-                    &mut bytes,
                     Key::new(Family::Message, reply),
-                    depth + 1,
-                )?;
+                );
             }
         }
         if key.family == Family::Attempt {
@@ -3773,7 +3747,7 @@ fn metadata_closure(
             let attempt: ExecutionAttempt = serde_json::from_str(&payload)?;
             let proof = attempt_turn::observe(tx, None, &attempt, None)?;
             for turn in proof.turn_keys {
-                enqueue_metadata_key(&mut result, &mut pending, &mut bytes, turn, depth + 1)?;
+                admit_metadata_key(&mut selected, &mut pending, turn);
             }
         }
         // Full transcript for selected/recovery Turns is part of the existing history
@@ -3783,17 +3757,15 @@ fn metadata_closure(
         {
             let mut statement=tx.prepare("SELECT evidence_id FROM transcript_entries WHERE agent_id=?1 AND turn_id=?2 ORDER BY transcript_seq,created_at,evidence_id")?;
             for row in statement.query_map(params![agent, key.id], |r| r.get::<_, String>(0))? {
-                enqueue_metadata_key(
-                    &mut result,
+                admit_metadata_key(
+                    &mut selected,
                     &mut pending,
-                    &mut bytes,
                     Key::new(Family::Transcript, row?),
-                    depth + 1,
-                )?;
+                );
             }
         }
     }
-    Ok(result)
+    Ok(selected)
 }
 fn decode_canonical_on(
     tx: &Transaction<'_>,
