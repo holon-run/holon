@@ -45,8 +45,8 @@ used in existing `provider/model` refs and config shortcuts.
 | `deepseek` | `default` | `deepseek` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
 | `fireworks` | `default` | `fireworks` | OpenAI Chat Completions | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
 | `gemini` | `default` | `gemini` | Gemini Generate Content | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
-| `github-copilot` | `default` | `github-copilot` | OpenAI Chat Completions | `https://api.githubcopilot.com` | `—` |
-| `github-copilot` | `responses` | `github-copilot-responses` | OpenAI Responses | `https://api.githubcopilot.com` | `—` |
+| `github-copilot` | `default` | `github-copilot` | OpenAI Responses | `https://api.githubcopilot.com` | `—` |
+| `github-copilot` | `chat-completions` | `github-copilot-chat-completions` | OpenAI Chat Completions | `https://api.githubcopilot.com` | `—` |
 | `huggingface` | `default` | `huggingface` | OpenAI Chat Completions | `https://router.huggingface.co/v1` | `HUGGINGFACE_API_KEY or HF_TOKEN` |
 | `kilocode` | `default` | `kilocode` | OpenAI Chat Completions | `https://api.kilo.ai/api/gateway` | `KILOCODE_API_KEY` |
 | `litellm` | `default` | `litellm` | OpenAI Chat Completions | `http://localhost:4000` | `LITELLM_API_KEY` |

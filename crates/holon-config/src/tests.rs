@@ -99,7 +99,7 @@ fn built_in_github_copilot_defaults_to_oauth_profile() {
 
     assert_eq!(
         github_copilot.transport,
-        ProviderTransportKind::OpenAiChatCompletions
+        ProviderTransportKind::OpenAiResponses
     );
     assert_eq!(github_copilot.base_url, "https://api.githubcopilot.com");
     assert_eq!(github_copilot.auth.source, CredentialSource::AuthProfile);
@@ -463,6 +463,42 @@ fn opencode_go_registers_messages_and_legacy_chat_but_not_responses() {
                 "opencode-go-messages".to_string(),
                 ProviderTransportKind::AnthropicMessages,
                 "https://opencode.ai/inference/go/anthropic/v1".to_string(),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn github_copilot_registers_responses_default_and_chat_completions_fallback() {
+    let entries = built_in_provider_doc_entries().unwrap();
+    let mut endpoints = entries
+        .into_iter()
+        .filter(|entry| entry.provider.as_str() == "github-copilot")
+        .map(|entry| {
+            (
+                entry.endpoint.as_str().to_string(),
+                entry.legacy_provider.as_str().to_string(),
+                entry.transport,
+                entry.base_url,
+            )
+        })
+        .collect::<Vec<_>>();
+    endpoints.sort_by(|left, right| left.0.cmp(&right.0));
+
+    assert_eq!(
+        endpoints,
+        [
+            (
+                "chat-completions".to_string(),
+                "github-copilot-chat-completions".to_string(),
+                ProviderTransportKind::OpenAiChatCompletions,
+                "https://api.githubcopilot.com".to_string(),
+            ),
+            (
+                "default".to_string(),
+                "github-copilot".to_string(),
+                ProviderTransportKind::OpenAiResponses,
+                "https://api.githubcopilot.com".to_string(),
             ),
         ]
     );

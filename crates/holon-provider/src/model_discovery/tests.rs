@@ -1810,13 +1810,15 @@ fn openai_compatible_discovery_keeps_only_non_empty_server_model_ids() {
 }
 
 #[test]
-fn github_copilot_discovery_routes_declared_responses_models_to_responses_endpoint() {
+fn github_copilot_discovery_defaults_to_responses_and_keeps_chat_completions_fallback() {
     let payload: OpenAiCompatibleModelsResponse = serde_json::from_str(
         r#"{"object":"list","data":[
                 {"id":"gpt-6.2-sol","supported_endpoints":["/responses","ws:/responses"]},
                 {"id":"mai-code-2-flash","supported_endpoints":["/chat/completions","/responses"]},
                 {"id":"claude-fable-5.1","supported_endpoints":["/chat/completions","/v1/messages"]},
                 {"id":"copilot-search-a","supported_endpoints":["/chat/completions"]},
+                {"id":"gpt-6-luna-decisions","supported_endpoints":["/v1/decisions"]},
+                {"id":"websocket-only","supported_endpoints":["ws:/responses"]},
                 {"id":"gpt-4o-mini-2024-07-18"}
             ]}"#,
     )
@@ -1826,14 +1828,89 @@ fn github_copilot_discovery_routes_declared_responses_models_to_responses_endpoi
         models
             .iter()
             .find(|model| model.model_ref.model == id)
-            .and_then(|model| model.endpoint.as_ref())
-            .map(|endpoint| endpoint.as_str().to_string())
+            .unwrap()
+            .endpoint
+            .as_ref()
+            .unwrap()
+            .as_str()
     };
-    assert_eq!(endpoint("gpt-6.2-sol").as_deref(), Some("responses"));
-    assert_eq!(endpoint("mai-code-2-flash").as_deref(), Some("responses"));
-    assert_eq!(endpoint("claude-fable-5.1"), None);
-    assert_eq!(endpoint("copilot-search-a"), None);
-    assert_eq!(endpoint("gpt-4o-mini-2024-07-18"), None);
+    assert_eq!(endpoint("gpt-6.2-sol"), "default");
+    assert_eq!(endpoint("mai-code-2-flash"), "default");
+    for id in [
+        "claude-fable-5.1",
+        "copilot-search-a",
+        "gpt-6-luna-decisions",
+        "websocket-only",
+        "gpt-4o-mini-2024-07-18",
+    ] {
+        assert_eq!(endpoint(id), "chat-completions", "{id}");
+    }
+}
+
+#[test]
+fn github_copilot_discovery_cache_load_preserves_previous_transports() {
+    let provider = ProviderId::parse("github-copilot").unwrap();
+    let other_provider = ProviderId::parse("vllm").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = discovery_cache_path(dir.path());
+    let mut cache = ModelDiscoveryCacheFile::default();
+    for id in [&provider, &other_provider] {
+        let models = [
+            ("old-chat", None),
+            ("old-responses", Some("responses")),
+            ("new-responses", Some("default")),
+            ("new-chat", Some("chat-completions")),
+        ]
+        .into_iter()
+        .map(|(name, endpoint)| {
+            let mut model = OpenAiCompatibleModel {
+                id: name.to_string(),
+                supported_endpoints: Vec::new(),
+            }
+            .into_model_metadata(id)
+            .unwrap();
+            model.endpoint = endpoint.map(|value| ProviderEndpointId::parse(value).unwrap());
+            model
+        })
+        .collect();
+        cache.providers.insert(
+            id.clone(),
+            ProviderModelDiscoveryCache {
+                provider: id.clone(),
+                fetched_at: Utc::now(),
+                source_url: None,
+                response_hash: None,
+                models,
+            },
+        );
+    }
+    save_discovery_cache_at(&path, &cache).unwrap();
+    let loaded = load_discovery_cache_at(&path).unwrap();
+    let endpoints = |id: &ProviderId| {
+        loaded.providers[id]
+            .models
+            .iter()
+            .map(|model| model.endpoint.as_ref().map(ProviderEndpointId::as_str))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        endpoints(&provider),
+        [
+            Some("chat-completions"),
+            Some("default"),
+            Some("default"),
+            Some("chat-completions"),
+        ]
+    );
+    assert_eq!(
+        endpoints(&other_provider),
+        [
+            None,
+            Some("responses"),
+            Some("default"),
+            Some("chat-completions")
+        ]
+    );
 }
 
 #[test]

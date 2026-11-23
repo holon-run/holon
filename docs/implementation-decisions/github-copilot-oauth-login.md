@@ -3,7 +3,7 @@
 ## Decision
 
 Holon exposes GitHub Copilot as an experimental bring-your-own-credential
-provider (`github-copilot@default` and `github-copilot@responses`) that
+provider (`github-copilot@default` and `github-copilot@chat-completions`) that
 authenticates through the official GitHub device flow with a bundled public
 third-party OAuth app (the opencode project's app) by default, and calls the
 official `api.githubcopilot.com` surface. Holon does not embed the

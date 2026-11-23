@@ -94,8 +94,12 @@ Holon 将凭据和 client ID 存入自己的
 此直连 provider 属于实验性支持：GitHub 登录成功不代表 Copilot 订阅权益、
 App／integration 准入或模型访问已验证。发现当前账户可用的模型后，选择返回的
 路由；Holon 不提供静态模型清单。目录中声明 `/responses` 端点的模型通过
-`github-copilot@responses/<model-id>` 路由；其余模型使用
-`github-copilot@default/<model-id>`。
+`github-copilot@default/<model-id>` 路由（与不带端点后缀的
+`github-copilot/<model-id>` 等价）；未声明 `/responses` 的目录条目保留旧路由
+`github-copilot@chat-completions/<model-id>`。
+升级后，请把已保存的 `github-copilot@responses/<model-id>` 改成
+`github-copilot/<model-id>`。对原先使用 Chat Completions 的模型，请重新选择发现的
+路由，或在斜杠前加上 `@chat-completions`。
 请求使用真实身份 `Copilot-Integration-Id: holon`，不冒充编辑器。
 可接受的身份、模型、策略与用量限制由 GitHub 决定。删除本地凭据不会撤销
 GitHub 上的授权；停止访问时，还应在 GitHub 设置中撤销 App 授权。

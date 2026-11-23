@@ -23,6 +23,7 @@ use holon_domain::model_values::{
 const OPENAI_COMPATIBLE_MODELS_PATH: &str = "/models";
 const OLLAMA_TAGS_PATH: &str = "/api/tags";
 const OLLAMA_SHOW_PATH: &str = "/api/show";
+const COPILOT_CHAT_ENDPOINT: &str = "chat-completions";
 pub const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Transport-level default discovery used for `openai_chat_completions`
@@ -200,8 +201,21 @@ pub fn load_discovery_cache_at(path: &Path) -> Result<ModelDiscoveryCacheFile> {
     }
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read model discovery cache {}", path.display()))?;
-    serde_json::from_str(&contents)
-        .with_context(|| format!("failed to parse model discovery cache {}", path.display()))
+    let mut cache: ModelDiscoveryCacheFile = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse model discovery cache {}", path.display()))?;
+    let copilot = ProviderId::parse(GITHUB_COPILOT_PROVIDER_ID)?;
+    if let Some(entry) = cache.providers.get_mut(&copilot) {
+        for model in &mut entry.models {
+            // Old Copilot caches used an absent endpoint for Chat and
+            // "responses" for Responses. New entries record both explicitly.
+            match model.endpoint.as_ref().map(ProviderEndpointId::as_str) {
+                None => model.endpoint = Some(ProviderEndpointId::parse(COPILOT_CHAT_ENDPOINT)?),
+                Some("responses") => model.endpoint = Some(ProviderEndpointId::default_endpoint()),
+                _ => {}
+            }
+        }
+    }
+    Ok(cache)
 }
 
 pub fn save_discovery_cache_at(path: &Path, cache: &ModelDiscoveryCacheFile) -> Result<()> {
@@ -705,16 +719,19 @@ impl OpenAiCompatibleModel {
         if id.is_empty() {
             return None;
         }
-        // Copilot's catalog declares the inference endpoint per model; modern
-        // models only serve `/responses`. Other OpenAI-compatible servers may
-        // send the same field, but their models stay on the default endpoint.
-        let endpoint = (provider.as_str() == GITHUB_COPILOT_PROVIDER_ID
-            && self
+        // Only Copilot uses supported_endpoints to select a transport. Record
+        // its default explicitly to distinguish it from old cached Chat models.
+        let endpoint = (provider.as_str() == GITHUB_COPILOT_PROVIDER_ID).then(|| {
+            if self
                 .supported_endpoints
                 .iter()
-                .any(|endpoint| endpoint == "/responses"))
-        .then(|| {
-            ProviderEndpointId::parse("responses").expect("valid Copilot responses endpoint id")
+                .any(|endpoint| endpoint == "/responses")
+            {
+                ProviderEndpointId::default_endpoint()
+            } else {
+                ProviderEndpointId::parse(COPILOT_CHAT_ENDPOINT)
+                    .expect("valid Copilot chat-completions endpoint id")
+            }
         });
         Some(BuiltInModelMetadata {
             model_ref: ModelRef::new(provider.clone(), id.to_string()),
