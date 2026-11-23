@@ -287,3 +287,81 @@ fn provider_lineage_replay_rejects_incomplete_canonical_proofs() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn provider_lineage_replay_compares_predecessor_binding_within_agent_partition() -> Result<()> {
+    let (_directory, db, incoming) = fixture()?;
+    let snapshot = current(db.transaction(|tx| {
+        prepare_input_evidence_snapshot_tx(tx, &scope(), &provider_lineage_request(&incoming))
+    })?);
+    let captured = snapshot.resident.capture()?;
+    let baseline = captured
+        .records
+        .iter()
+        .map(|record| (record.locator.key.clone(), record.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let cases = [
+        (
+            "legacy and canonical representations of one attribution match",
+            ExecutionBinding::Agent {
+                agent_id: "agent-a".into(),
+                attribution: TurnAttribution {
+                    work_item_id: None,
+                    interaction_id: Some("claim-source".into()),
+                },
+            },
+            true,
+        ),
+        (
+            "canonical predecessor for another attribution",
+            ExecutionBinding::Agent {
+                agent_id: "agent-a".into(),
+                attribution: TurnAttribution {
+                    work_item_id: None,
+                    interaction_id: Some("another-interaction".into()),
+                },
+            },
+            false,
+        ),
+        (
+            "canonical predecessor in another agent partition",
+            ExecutionBinding::Agent {
+                agent_id: "agent-b".into(),
+                attribution: TurnAttribution {
+                    work_item_id: None,
+                    interaction_id: None,
+                },
+            },
+            false,
+        ),
+        (
+            "legacy work item predecessor for a conversation successor",
+            ExecutionBinding::WorkItem {
+                work_item_id: "work-a".into(),
+            },
+            false,
+        ),
+    ];
+    for (case, binding, accepted) in cases {
+        let mut records = baseline.clone();
+        let PreparedInputEvidence::Attempt(attempt) = &mut Arc::make_mut(
+            records
+                .get_mut(&Key::new(Family::Attempt, "claim-attempt"))
+                .unwrap(),
+        )
+        .record
+        else {
+            unreachable!()
+        };
+        attempt.binding = binding;
+        let result = provider_replay::validate(
+            &records,
+            &captured.execution,
+            "claim-source",
+            "claim-replayed-turn",
+            "claim-turn",
+        );
+        assert_eq!(result.is_ok(), accepted, "{case}");
+    }
+    Ok(())
+}

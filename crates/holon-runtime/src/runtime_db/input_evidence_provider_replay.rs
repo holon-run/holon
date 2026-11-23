@@ -102,7 +102,9 @@ pub(super) fn validate(
             || prior.source_message_id != current_attempt.source_message_id
             || prior.turn_id != current_attempt.turn_id
             || prior.source != current_attempt.source
-            || prior.binding != current_attempt.binding
+            || !prior
+                .binding
+                .matches_in_agent(&current_attempt.binding, &current_attempt.agent_id)
             || prior.provenance != current_attempt.provenance
             || !record(Family::Attempt, &current_attempt.attempt_id)?
                 .attempt_turn_keys
