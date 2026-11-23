@@ -975,7 +975,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "web.providers.<name>.engine_id",
             kind: "string",
-            description: "Programmable Search engine id (`cx`) for kind=google; required for that kind and not supported by any other kind. The engine must be created at programmablesearchengine.google.com.",
+            description: "Engine selector. For kind=google it is the required Programmable Search engine id (`cx`) created at programmablesearchengine.google.com. For kind=zai it selects the Z.AI search engine (`search-prime`). For kind=bigmodel it selects the BigModel search engine (`search_std`, `search_pro`, `search_pro_sogou`, `search_pro_quark`). Not supported by any other kind.",
             default: Value::Null,
             allowed_values: vec![],
         },

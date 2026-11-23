@@ -706,3 +706,170 @@ fn derived_providers_stay_out_of_serialized_config() {
     let restored: WebSearchConfig = serde_json::from_value(json).unwrap();
     assert!(restored.derived_providers.is_empty());
 }
+
+#[test]
+fn derived_standalone_search_providers_discover_zai_and_bigmodel_once_each() {
+    let providers = model_provider_registry(&["zai", "bigmodel"]);
+
+    let derived = derived_standalone_search_providers(&WebConfig::default(), &providers);
+    let ids = derived
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<Vec<_>>();
+    // Both stations bind, so both derive exactly once.
+    assert_eq!(
+        ids,
+        [
+            DERIVED_ZAI_SEARCH_PROVIDER_ID,
+            DERIVED_BIGMODEL_SEARCH_PROVIDER_ID
+        ]
+    );
+
+    let zai = &derived[0].1;
+    assert_eq!(zai.kind, WebProviderKind::Zai);
+    assert_eq!(zai.api_key, "test-credential");
+    // The discovered key stays pinned to the official endpoint.
+    assert_eq!(zai.base_url, None);
+    assert_eq!(zai.engine_id, None);
+
+    let bigmodel = &derived[1].1;
+    assert_eq!(bigmodel.kind, WebProviderKind::BigModel);
+    assert_eq!(bigmodel.base_url, None);
+    assert_eq!(bigmodel.engine_id, None);
+}
+
+#[test]
+fn derived_standalone_search_providers_reject_proxy_and_cross_station_sources() {
+    let default_config = WebConfig::default();
+
+    // Third-party compatible/proxy endpoints and plain-http must not derive.
+    for base_url in [
+        "https://proxy.example.com/api/anthropic",
+        "https://api.z.ai.evil.example/api/anthropic",
+        "http://api.z.ai/api/anthropic",
+    ] {
+        let mut providers = model_provider_registry(&["zai"]);
+        let id = crate::ProviderId::parse("zai").unwrap();
+        providers.get_mut(&id).unwrap().base_url = base_url.to_string();
+        assert!(
+            derived_standalone_search_providers(&default_config, &providers).is_empty(),
+            "base_url {base_url} must not derive a Z.AI entry"
+        );
+    }
+
+    // A BigModel provider pointed at the Z.AI host must not borrow that station.
+    let mut providers = model_provider_registry(&["bigmodel"]);
+    let id = crate::ProviderId::parse("bigmodel").unwrap();
+    providers.get_mut(&id).unwrap().base_url = "https://api.z.ai/api/anthropic".into();
+    assert!(derived_standalone_search_providers(&default_config, &providers).is_empty());
+
+    // No credential, and a disabled global search switch, derive nothing.
+    let id = crate::ProviderId::parse("zai").unwrap();
+    let mut providers = model_provider_registry(&["zai"]);
+    providers.get_mut(&id).unwrap().credential = Some("   ".into());
+    assert!(derived_standalone_search_providers(&default_config, &providers).is_empty());
+
+    let mut disabled = WebConfig::default();
+    disabled.search.enabled = false;
+    assert!(derived_standalone_search_providers(
+        &disabled,
+        &model_provider_registry(&["zai", "bigmodel"])
+    )
+    .is_empty());
+}
+
+#[test]
+fn zai_and_bigmodel_kind_and_endpoint_contracts() {
+    for (kind, name, endpoint) in [
+        (
+            WebProviderKind::Zai,
+            "zai",
+            "https://api.z.ai/api/paas/v4/web_search",
+        ),
+        (
+            WebProviderKind::BigModel,
+            "bigmodel",
+            "https://open.bigmodel.cn/api/paas/v4/web_search",
+        ),
+    ] {
+        let mut provider = WebProviderConfig::from_file(name, &provider_file(kind)).unwrap();
+        assert_eq!(serde_json::to_value(kind).unwrap(), name);
+        assert_eq!(
+            serde_json::from_str::<WebProviderKind>(&format!("\"{name}\"")).unwrap(),
+            kind
+        );
+        let built = if kind == WebProviderKind::Zai {
+            zai_web_search_url(&provider).unwrap()
+        } else {
+            bigmodel_web_search_url(&provider).unwrap()
+        };
+        assert_eq!(built.as_str(), endpoint);
+
+        // A bare official host and an explicit `/api` root resolve to the same
+        // documented endpoint.
+        let official = if kind == WebProviderKind::Zai {
+            "https://api.z.ai"
+        } else {
+            "https://open.bigmodel.cn"
+        };
+        provider.base_url = Some(official.into());
+        let built = if kind == WebProviderKind::Zai {
+            zai_web_search_url(&provider).unwrap()
+        } else {
+            bigmodel_web_search_url(&provider).unwrap()
+        };
+        assert_eq!(built.as_str(), endpoint);
+
+        provider.base_url = Some("https://user:secret@example.com".into());
+        let error = if kind == WebProviderKind::Zai {
+            zai_web_search_url(&provider).unwrap_err().to_string()
+        } else {
+            bigmodel_web_search_url(&provider).unwrap_err().to_string()
+        };
+        assert!(
+            error.contains("no credentials"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn station_engine_ids_are_validated_per_station() {
+    // Defaults are accepted when engine_id is absent.
+    assert!(WebProviderConfig::from_file("zai", &provider_file(WebProviderKind::Zai)).is_ok());
+    assert!(
+        WebProviderConfig::from_file("bigmodel", &provider_file(WebProviderKind::BigModel)).is_ok()
+    );
+
+    // Each station's own enum is accepted.
+    let mut zai = provider_file(WebProviderKind::Zai);
+    zai.engine_id = Some("search-prime".into());
+    assert!(WebProviderConfig::from_file("zai", &zai).is_ok());
+    let mut bigmodel = provider_file(WebProviderKind::BigModel);
+    bigmodel.engine_id = Some("search_std".into());
+    assert!(WebProviderConfig::from_file("bigmodel", &bigmodel).is_ok());
+
+    // Engines are not shared across stations: BigModel's codes are rejected on
+    // Z.AI and the Z.AI engine is rejected on BigModel.
+    zai.engine_id = Some("search_pro".into());
+    let error = WebProviderConfig::from_file("zai", &zai)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not supported"), "unexpected error: {error}");
+    bigmodel.engine_id = Some("search-prime".into());
+    let error = WebProviderConfig::from_file("bigmodel", &bigmodel)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not supported"), "unexpected error: {error}");
+
+    // Other kinds still reject engine_id outright.
+    let mut brave = provider_file(WebProviderKind::Brave);
+    brave.engine_id = Some("search-prime".into());
+    let error = WebProviderConfig::from_file("brave", &brave)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("must not configure engine_id"),
+        "unexpected error: {error}"
+    );
+}

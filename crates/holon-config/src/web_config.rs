@@ -37,6 +37,72 @@ pub fn deepseek_tool_url(provider: &WebProviderConfig, tool: &str) -> Result<url
     Ok(url)
 }
 
+/// Official API roots for the Z.AI and BigModel standalone search endpoints.
+/// The derived entries pin these roots, so a discovered model credential is
+/// never sent to a custom address.
+const ZAI_OFFICIAL_SEARCH_BASE: &str = "https://api.z.ai/api";
+const BIGMODEL_OFFICIAL_SEARCH_BASE: &str = "https://open.bigmodel.cn/api";
+
+/// Search engines accepted by Z.AI's `POST /paas/v4/web_search`.
+///
+/// Z.AI's OpenAPI reference lists `search-prime` as the only accepted
+/// `search_engine` value. Its `count` and filter fields are documented as
+/// supported only by `search_pro_jina`, which is not an accepted engine, so
+/// those fields are not part of this contract.
+pub const ZAI_SEARCH_ENGINES: [&str; 1] = ["search-prime"];
+pub const ZAI_DEFAULT_SEARCH_ENGINE: &str = "search-prime";
+
+/// Search engines accepted by BigModel's `POST /paas/v4/web_search`.
+///
+/// Kept separate from the Z.AI list on purpose: engine codes are station
+/// contracts and must not be assumed to be interchangeable.
+pub const BIGMODEL_SEARCH_ENGINES: [&str; 4] = [
+    "search_std",
+    "search_pro",
+    "search_pro_sogou",
+    "search_pro_quark",
+];
+pub const BIGMODEL_DEFAULT_SEARCH_ENGINE: &str = "search_pro";
+
+/// Builds the documented Z.AI standalone search endpoint from a provider's
+/// base URL, defaulting to the official API root.
+pub fn zai_web_search_url(provider: &WebProviderConfig) -> Result<url::Url> {
+    station_web_search_url(provider, ZAI_OFFICIAL_SEARCH_BASE, "Z.AI")
+}
+
+/// Builds the documented BigModel standalone search endpoint from a provider's
+/// base URL, defaulting to the official API root.
+pub fn bigmodel_web_search_url(provider: &WebProviderConfig) -> Result<url::Url> {
+    station_web_search_url(provider, BIGMODEL_OFFICIAL_SEARCH_BASE, "BigModel")
+}
+
+fn station_web_search_url(
+    provider: &WebProviderConfig,
+    official_base: &str,
+    label: &str,
+) -> Result<url::Url> {
+    let base = provider.base_url.as_deref().unwrap_or(official_base);
+    let mut url = url::Url::parse(base).map_err(|_| anyhow!("invalid {label} base URL"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(anyhow!(
+            "{label} base URL must be HTTP(S) with a host and no credentials, query, or fragment"
+        ));
+    }
+    let path = url.path().trim_end_matches('/');
+    // Empty paths get the documented `/api` root; an existing `/api` prefix is
+    // kept so both `https://api.z.ai` and `https://api.z.ai/api` resolve to the
+    // documented endpoint.
+    let prefix = if path.is_empty() { "/api" } else { path };
+    url.set_path(&format!("{prefix}/paas/v4/web_search"));
+    Ok(url)
+}
+
 /// Builds the documented Tavily Extract endpoint from a provider's base URL.
 ///
 /// Mirrors `deepseek_tool_url` so provider discovery and the outbound call share
@@ -596,24 +662,52 @@ fn native_search_derivation_kind(provider: &ProviderRuntimeConfig) -> Option<Web
         })
 }
 
-/// Stable WebSearch provider id derived from an official DeepSeek model
-/// credential.
+/// Stable WebSearch provider ids derived from official model credentials.
 pub const DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID: &str = "deepseek";
+pub const DERIVED_ZAI_SEARCH_PROVIDER_ID: &str = "zai";
+pub const DERIVED_BIGMODEL_SEARCH_PROVIDER_ID: &str = "bigmodel";
 
-/// Official DeepSeek API host. A discovered credential is pinned to this host;
+/// Official API hosts. A discovered credential is pinned to its station host;
 /// keys resolved for proxies or compatible-protocol endpoints never derive a
-/// standalone search entry.
+/// standalone search entry, and one station never borrows another's key.
 const DEEPSEEK_OFFICIAL_HOST: &str = "api.deepseek.com";
+const ZAI_OFFICIAL_HOST: &str = "api.z.ai";
+const BIGMODEL_OFFICIAL_HOST: &str = "open.bigmodel.cn";
 
-/// Derive a standalone `deepseek` WebSearch entry from an official DeepSeek
-/// model credential, so an existing official key is callable without a
-/// separate `web.providers` declaration.
+struct StandaloneSearchSource {
+    provider_id: &'static str,
+    official_host: &'static str,
+    kind: WebProviderKind,
+}
+
+const STANDALONE_SEARCH_SOURCES: [StandaloneSearchSource; 3] = [
+    StandaloneSearchSource {
+        provider_id: DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID,
+        official_host: DEEPSEEK_OFFICIAL_HOST,
+        kind: WebProviderKind::DeepSeek,
+    },
+    StandaloneSearchSource {
+        provider_id: DERIVED_ZAI_SEARCH_PROVIDER_ID,
+        official_host: ZAI_OFFICIAL_HOST,
+        kind: WebProviderKind::Zai,
+    },
+    StandaloneSearchSource {
+        provider_id: DERIVED_BIGMODEL_SEARCH_PROVIDER_ID,
+        official_host: BIGMODEL_OFFICIAL_HOST,
+        kind: WebProviderKind::BigModel,
+    },
+];
+
+/// Derive standalone WebSearch entries from official model credentials, so an
+/// existing official key is callable without a separate `web.providers`
+/// declaration. Each station derives at most once; binding both Z.AI and
+/// BigModel yields one entry each.
 ///
-/// The derived entry never carries the discovered endpoint: it pins the
+/// A derived entry never carries the discovered endpoint: it pins the station's
 /// official search endpoint, so a discovered key is never sent to a custom
-/// address. It is explicit-only — callers hold it out of the default, `auto`,
-/// and `aggregate` chains — and explicit `web.providers` entries win, so
-/// callers must skip an id that is already configured.
+/// address. Entries are explicit-only — callers hold them out of the default,
+/// `auto`, and `aggregate` chains — and explicit `web.providers` entries win,
+/// so callers must skip an id that is already configured.
 pub fn derived_standalone_search_providers(
     web_config: &WebConfig,
     providers: &ProviderRegistry,
@@ -621,16 +715,16 @@ pub fn derived_standalone_search_providers(
     if !web_config.search.enabled {
         return Vec::new();
     }
-    for provider in providers.values() {
-        if provider.id.as_str() != DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID
-            && provider.route_provider.as_str() != DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID
-        {
+    let mut derived = Vec::new();
+    for source in STANDALONE_SEARCH_SOURCES {
+        let Some(provider) = providers.values().find(|provider| {
+            (provider.id.as_str() == source.provider_id
+                || provider.route_provider.as_str() == source.provider_id)
+                && provider_has_usable_auth(provider)
+                && is_official_endpoint(&provider.base_url, source.official_host)
+        }) else {
             continue;
-        }
-        if !provider_has_usable_auth(provider) || !is_official_deepseek_endpoint(&provider.base_url)
-        {
-            continue;
-        }
+        };
         let Some(api_key) = provider
             .credential
             .as_deref()
@@ -639,10 +733,10 @@ pub fn derived_standalone_search_providers(
         else {
             continue;
         };
-        return vec![(
-            DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID.to_string(),
+        derived.push((
+            source.provider_id.to_string(),
             WebProviderConfig {
-                kind: WebProviderKind::DeepSeek,
+                kind: source.kind,
                 // Pinned to the official endpoint: never the discovered base URL.
                 base_url: None,
                 engine_id: None,
@@ -652,36 +746,78 @@ pub fn derived_standalone_search_providers(
                 output: None,
                 limits: Default::default(),
             },
-        )];
+        ));
     }
-    Vec::new()
+    derived
 }
 
-/// True only for the official DeepSeek API host, so proxy or compatible-
-/// protocol endpoints cannot borrow the derivation. Plain-`http` endpoints are
-/// rejected too: the discovered key must never travel in cleartext.
-fn is_official_deepseek_endpoint(base_url: &str) -> bool {
+/// True only for the official station host, so proxy or compatible-protocol
+/// endpoints cannot borrow the derivation. Plain-`http` endpoints are rejected
+/// too: the discovered key must never travel in cleartext.
+fn is_official_endpoint(base_url: &str, official_host: &str) -> bool {
     url::Url::parse(base_url).ok().is_some_and(|url| {
         url.scheme() == "https"
             && url
                 .host_str()
-                .is_some_and(|host| host.eq_ignore_ascii_case(DEEPSEEK_OFFICIAL_HOST))
+                .is_some_and(|host| host.eq_ignore_ascii_case(official_host))
     })
 }
 
-fn validate_provider_config(id: &str, provider: &crate::WebProviderConfigFile) -> Result<()> {
-    if provider.kind == WebProviderKind::Google {
-        let engine_id = provider.engine_id.as_deref().map(str::trim).unwrap_or("");
-        if engine_id.is_empty() {
-            return Err(anyhow!(
-                "web provider `{id}` kind=google requires engine_id (the Programmable Search engine id, `cx`)"
-            ));
-        }
-    } else if provider.engine_id.is_some() {
+/// Validate an optional station-specific search engine against that station's
+/// published enum. An absent value keeps the station default.
+fn validate_station_engine(
+    id: &str,
+    engine_id: Option<&str>,
+    supported: &[&str],
+    default_engine: &str,
+) -> Result<()> {
+    let Some(engine_id) = engine_id else {
+        return Ok(());
+    };
+    if engine_id.is_empty() {
         return Err(anyhow!(
-            "web provider `{id}` kind={} must not configure engine_id; engine_id is only supported for kind=google",
-            provider.kind.as_str()
+            "web provider `{id}` engine_id must not be empty; omit it to use `{default_engine}`"
         ));
+    }
+    if !supported.contains(&engine_id) {
+        return Err(anyhow!(
+            "web provider `{id}` engine_id `{engine_id}` is not supported; use one of {}",
+            supported.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn validate_provider_config(id: &str, provider: &crate::WebProviderConfigFile) -> Result<()> {
+    let engine_id = provider.engine_id.as_deref().map(str::trim);
+    match provider.kind {
+        WebProviderKind::Google => {
+            if engine_id.unwrap_or("").is_empty() {
+                return Err(anyhow!(
+                    "web provider `{id}` kind=google requires engine_id (the Programmable Search engine id, `cx`)"
+                ));
+            }
+        }
+        WebProviderKind::Zai => validate_station_engine(
+            id,
+            engine_id,
+            &ZAI_SEARCH_ENGINES,
+            ZAI_DEFAULT_SEARCH_ENGINE,
+        )?,
+        WebProviderKind::BigModel => validate_station_engine(
+            id,
+            engine_id,
+            &BIGMODEL_SEARCH_ENGINES,
+            BIGMODEL_DEFAULT_SEARCH_ENGINE,
+        )?,
+        _ => {
+            if provider.engine_id.is_some() {
+                return Err(anyhow!(
+                    "web provider `{id}` kind={} must not configure engine_id; engine_id is only supported for kind=google, zai, and bigmodel",
+                    provider.kind.as_str()
+                ));
+            }
+        }
     }
     if provider.kind != WebProviderKind::Command {
         if provider.command.is_some() {
@@ -761,6 +897,9 @@ pub enum WebProviderKind {
     Google,
     #[serde(rename = "deepseek")]
     DeepSeek,
+    Zai,
+    #[serde(rename = "bigmodel")]
+    BigModel,
     TencentCloudWsa,
     Bocha,
     Tavily,
@@ -779,12 +918,14 @@ impl WebProviderKind {
     ///
     /// Missing entries are not caught at compile time, so keep this in sync
     /// when adding or removing enum variants.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 18] = [
         Self::DuckDuckGo,
         Self::Searxng,
         Self::Brave,
         Self::Google,
         Self::DeepSeek,
+        Self::Zai,
+        Self::BigModel,
         Self::TencentCloudWsa,
         Self::Bocha,
         Self::Tavily,
@@ -814,6 +955,8 @@ impl WebProviderKind {
             WebProviderKind::Brave => "brave",
             WebProviderKind::Google => "google",
             WebProviderKind::DeepSeek => "deepseek",
+            WebProviderKind::Zai => "zai",
+            WebProviderKind::BigModel => "bigmodel",
             WebProviderKind::TencentCloudWsa => "tencent_cloud_wsa",
             WebProviderKind::Bocha => "bocha",
             WebProviderKind::Tavily => "tavily",
@@ -843,6 +986,35 @@ impl WebProviderKind {
                 supports_full_content: false,
                 supports_native_citations: false,
                 default_priority: 75,
+                status: WebProviderSupportStatus::Supported,
+            },
+            // Z.AI's accepted `search-prime` engine documents no filter or
+            // count surface: its filter fields apply only to `search_pro_jina`,
+            // which is not an accepted engine. Do not advertise them.
+            WebProviderKind::Zai => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Research,
+                supports_domain_filter: false,
+                supports_freshness: false,
+                supports_region_or_language: false,
+                supports_full_content: false,
+                supports_native_citations: false,
+                default_priority: 74,
+                status: WebProviderSupportStatus::Supported,
+            },
+            // BigModel's documented request supports `count`, a domain filter,
+            // and a recency filter; it has no language/region surface.
+            WebProviderKind::BigModel => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Research,
+                supports_domain_filter: true,
+                supports_freshness: true,
+                supports_region_or_language: false,
+                supports_full_content: false,
+                supports_native_citations: false,
+                default_priority: 73,
                 status: WebProviderSupportStatus::Supported,
             },
             WebProviderKind::DuckDuckGo => WebProviderCapabilityMetadata {

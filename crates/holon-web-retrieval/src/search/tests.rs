@@ -2162,6 +2162,347 @@ async fn deepseek_search_response_byte_limit() {
     assert_eq!(crate::test_tool_error(&error).kind, "response_too_large");
 }
 
+async fn station_error_fixture(status: axum::http::StatusCode, body: Value) -> String {
+    let router: axum::Router = axum::Router::new().route(
+        "/api/paas/v4/web_search",
+        axum::routing::post(move || {
+            let body = body.clone();
+            async move { (status, axum::Json(body)) }
+        }),
+    );
+    deepseek_mock_server(router).await
+}
+
+#[tokio::test]
+async fn zai_search_request_mapping_and_result_normalization() {
+    let router = axum::Router::new().route(
+        "/api/paas/v4/web_search",
+        axum::routing::post(
+            |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| async move {
+                assert_eq!(headers["authorization"], "Bearer test-key-123");
+                // `search-prime` has no documented `count`/filter surface, so
+                // the request carries only the documented inputs.
+                assert_eq!(
+                    body,
+                    json!({"search_engine": "search-prime", "search_query": "搜索🦀"})
+                );
+                axum::Json(json!({
+                    "search_result": [
+                        {"title": "Unsafe", "link": "javascript:alert(1)"},
+                        {
+                            "title": " First ",
+                            "link": "https://user:secret@example.com/one#section",
+                            "content": " Summary ",
+                            "media": "Example",
+                            "publish_date": "2026-10-18"
+                        },
+                        {"title": "No date", "link": "https://example.com/two"},
+                        {"title": "Third", "link": "https://example.com/three"}
+                    ]
+                }))
+            },
+        ),
+    );
+    let base_url = deepseek_mock_server(router).await;
+    let provider = test_provider(WebProviderKind::Zai, &format!("{base_url}/api"));
+    let results = zai_search("搜索🦀", 2, "zai_test", &provider, &test_fetch_config())
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    let first = &results[0];
+    assert_eq!(first.title, "First");
+    assert_eq!(first.url, "https://example.com/one#section");
+    assert_eq!(first.snippet.as_deref(), Some("Summary"));
+    assert_eq!(first.published_at.as_deref(), Some("2026-10-18"));
+    assert_eq!(
+        first.canonical_url.as_deref(),
+        Some("https://example.com/one")
+    );
+    assert_eq!(first.source, "zai_test");
+    assert_eq!(first.rank, Some(2));
+    // A missing publication date is tolerated.
+    assert!(results[1].published_at.is_none());
+}
+
+#[tokio::test]
+async fn bigmodel_search_request_mapping_uses_station_engine_and_count() {
+    let router = axum::Router::new().route(
+        "/api/paas/v4/web_search",
+        axum::routing::post(
+            |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| async move {
+                assert_eq!(headers["authorization"], "Bearer test-key-123");
+                assert_eq!(
+                    body,
+                    json!({
+                        "search_engine": "search_std",
+                        "search_query": "test",
+                        "count": 50
+                    })
+                );
+                axum::Json(json!({
+                    "search_result": [
+                        {
+                            "title": "BigModel",
+                            "link": "https://example.com/bigmodel",
+                            "content": "content",
+                            "publish_date": "2025-05-23"
+                        }
+                    ]
+                }))
+            },
+        ),
+    );
+    let base_url = deepseek_mock_server(router).await;
+    let mut provider = test_provider(WebProviderKind::BigModel, &format!("{base_url}/api"));
+    provider.engine_id = Some("search_std".into());
+    let results = bigmodel_search("test", 99, "bigmodel_test", &provider, &test_fetch_config())
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].title, "BigModel");
+    assert_eq!(results[0].published_at.as_deref(), Some("2025-05-23"));
+}
+
+#[tokio::test]
+async fn bigmodel_search_defaults_to_search_pro_engine() {
+    let router = axum::Router::new().route(
+        "/api/paas/v4/web_search",
+        axum::routing::post(|axum::Json(body): axum::Json<Value>| async move {
+            assert_eq!(body["search_engine"], "search_pro");
+            axum::Json(json!({"search_result": []}))
+        }),
+    );
+    let base_url = deepseek_mock_server(router).await;
+    let provider = test_provider(WebProviderKind::BigModel, &format!("{base_url}/api"));
+    let results = bigmodel_search("test", 5, "bigmodel_test", &provider, &test_fetch_config())
+        .await
+        .unwrap();
+    // A successful empty result is distinct from an error.
+    assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn station_search_rejects_unsupported_engine_without_request() {
+    let mut zai = test_provider(WebProviderKind::Zai, "http://127.0.0.1:1/api");
+    zai.engine_id = Some("search_pro".into());
+    let error = zai_search("test", 5, "zai_test", &zai, &test_fetch_config())
+        .await
+        .unwrap_err();
+    let tool_error = crate::test_tool_error(&error);
+    assert_eq!(tool_error.kind, "invalid_request");
+    assert!(tool_error.message.contains("Z.AI search engine"));
+
+    let mut bigmodel = test_provider(WebProviderKind::BigModel, "http://127.0.0.1:1/api");
+    bigmodel.engine_id = Some("search-prime".into());
+    let error = bigmodel_search("test", 5, "bigmodel_test", &bigmodel, &test_fetch_config())
+        .await
+        .unwrap_err();
+    let tool_error = crate::test_tool_error(&error);
+    assert_eq!(tool_error.kind, "invalid_request");
+    assert!(tool_error.message.contains("BigModel search engine"));
+}
+
+#[tokio::test]
+async fn station_search_maps_zai_business_codes_by_its_own_contract() {
+    let cases = [
+        (
+            axum::http::StatusCode::UNAUTHORIZED,
+            json!({"error": {"code": "1001", "message": "auth"}}),
+            "provider_unavailable",
+        ),
+        (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            json!({"code": 1302}),
+            "rate_limited",
+        ),
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            json!({"error": {"code": 1214}}),
+            "invalid_request",
+        ),
+        (
+            axum::http::StatusCode::OK,
+            json!({"code": 1221}),
+            "engine_unavailable",
+        ),
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            json!({"code": 1230}),
+            "network_failed",
+        ),
+    ];
+    for (status, body, expected) in cases {
+        let base_url = station_error_fixture(status, body).await;
+        let provider = test_provider(WebProviderKind::Zai, &format!("{base_url}/api"));
+        let error = zai_search("test", 5, "zai_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        let tool_error = crate::test_tool_error(&error);
+        assert_eq!(
+            tool_error.kind, expected,
+            "unexpected kind for HTTP {status}"
+        );
+        assert!(
+            !format!("{tool_error:?}").contains("test-key-123"),
+            "error must not leak the API key"
+        );
+    }
+}
+
+#[tokio::test]
+async fn station_search_maps_bigmodel_business_codes_by_its_own_contract() {
+    let cases = [
+        (
+            axum::http::StatusCode::UNAUTHORIZED,
+            json!({"code": 1001}),
+            "provider_unavailable",
+        ),
+        (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            json!({"error": {"code": "1308"}}),
+            "rate_limited",
+        ),
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            json!({"error": {"code": "1215"}}),
+            "invalid_request",
+        ),
+        (
+            axum::http::StatusCode::OK,
+            json!({"error": {"code": "1211"}}),
+            "engine_unavailable",
+        ),
+    ];
+    for (status, body, expected) in cases {
+        let base_url = station_error_fixture(status, body).await;
+        let provider = test_provider(WebProviderKind::BigModel, &format!("{base_url}/api"));
+        let error = bigmodel_search("test", 5, "bigmodel_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        let tool_error = crate::test_tool_error(&error);
+        assert_eq!(
+            tool_error.kind, expected,
+            "unexpected kind for HTTP {status}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn station_search_distinguishes_auth_rate_and_parse_failures() {
+    // HTTP status without a business code still classifies.
+    let base_url = station_error_fixture(axum::http::StatusCode::UNAUTHORIZED, json!({})).await;
+    let provider = test_provider(WebProviderKind::BigModel, &format!("{base_url}/api"));
+    let error = bigmodel_search("test", 5, "bigmodel_test", &provider, &test_fetch_config())
+        .await
+        .unwrap_err();
+    assert_eq!(crate::test_tool_error(&error).kind, "provider_unavailable");
+
+    let base_url =
+        station_error_fixture(axum::http::StatusCode::TOO_MANY_REQUESTS, json!({})).await;
+    let provider = test_provider(WebProviderKind::BigModel, &format!("{base_url}/api"));
+    let error = bigmodel_search("test", 5, "bigmodel_test", &provider, &test_fetch_config())
+        .await
+        .unwrap_err();
+    assert_eq!(crate::test_tool_error(&error).kind, "rate_limited");
+
+    // A successful response without `search_result` is a protocol error, not an
+    // empty result.
+    let base_url =
+        station_error_fixture(axum::http::StatusCode::OK, json!({"unexpected": true})).await;
+    let provider = test_provider(WebProviderKind::Zai, &format!("{base_url}/api"));
+    let error = zai_search("test", 5, "zai_test", &provider, &test_fetch_config())
+        .await
+        .unwrap_err();
+    assert_eq!(crate::test_tool_error(&error).kind, "parse_failed");
+}
+
+#[tokio::test]
+async fn station_search_requires_an_api_key() {
+    let mut provider = test_provider(WebProviderKind::Zai, "http://127.0.0.1:1/api");
+    provider.api_key = "   ".into();
+    let error = zai_search("test", 5, "zai_test", &provider, &test_fetch_config())
+        .await
+        .unwrap_err();
+    let tool_error = crate::test_tool_error(&error);
+    assert_eq!(tool_error.kind, "provider_unavailable");
+    assert!(tool_error.message.contains("Z.AI Web Search"));
+}
+
+#[tokio::test]
+async fn derived_zai_and_bigmodel_stay_out_of_default_order_and_never_cross_fallback() {
+    let calls = RoutingCalls::default();
+    let route_calls = Arc::clone(&calls);
+    let router = axum::Router::new().route(
+        "/api/paas/v4/web_search",
+        axum::routing::post(move |headers: axum::http::HeaderMap| {
+            let calls = Arc::clone(&route_calls);
+            async move {
+                if headers["authorization"] == "Bearer zai-key" {
+                    calls.lock().unwrap().push("zai");
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(json!({"code": 1200})),
+                    )
+                } else {
+                    calls.lock().unwrap().push("bigmodel");
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(json!({
+                            "search_result": [{
+                                "title": "BigModel",
+                                "link": "https://example.com/bigmodel"
+                            }]
+                        })),
+                    )
+                }
+            }
+        }),
+    );
+    let base_url = deepseek_mock_server(router).await;
+
+    let mut zai = test_provider(WebProviderKind::Zai, &format!("{base_url}/api"));
+    zai.api_key = "zai-key".into();
+    let mut bigmodel = test_provider(WebProviderKind::BigModel, &format!("{base_url}/api"));
+    bigmodel.api_key = "bigmodel-key".into();
+    let mut config = test_search_config(
+        vec![("zai", zai), ("bigmodel", bigmodel)],
+        vec![],
+        WebSearchMode::Single,
+    );
+    config.search.derived_providers.insert("zai".to_string());
+    config
+        .search
+        .derived_providers
+        .insert("bigmodel".to_string());
+
+    // Discovery keeps both listable and callable but out of the default,
+    // `auto`, and `aggregate` candidate chain.
+    assert!(list_search_providers(&config).iter().any(|id| id == "zai"));
+    assert!(list_search_providers(&config)
+        .iter()
+        .any(|id| id == "bigmodel"));
+    for id in ["zai", "bigmodel"] {
+        assert!(!default_provider_order(&config)
+            .iter()
+            .any(|entry| entry == id));
+    }
+    assert!(take_routing_calls(&calls).is_empty());
+
+    // A failing named Z.AI call is terminal: no cross-station fallback.
+    let error = search(routing_request(Some("zai")), &config)
+        .await
+        .unwrap_err();
+    assert_eq!(crate::test_tool_error(&error).kind, "network_failed");
+    assert_eq!(take_routing_calls(&calls), ["zai"]);
+
+    // Naming BigModel sends exactly one request to its own station.
+    let response = search(routing_request(Some("bigmodel")), &config)
+        .await
+        .unwrap();
+    assert_eq!(take_routing_calls(&calls), ["bigmodel"]);
+    assert_eq!(response.results[0].source, "bigmodel");
+}
+
 #[tokio::test]
 async fn tavily_search_integration_success() {
     let router = axum::Router::new().route(
