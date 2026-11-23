@@ -97,9 +97,15 @@ current bundled app; token refreshes keep the recorded app.
 This direct provider is experimental: successful GitHub login does not
 confirm Copilot entitlement, app/integration admission, or model access.
 Discover the models available to your account and select a returned
-route; there is no static model list. Models whose catalog entry declares the
-`/responses` endpoint route through `github-copilot@responses/<model-id>`;
-the rest use `github-copilot@default/<model-id>`.
+route; there is no static model list. The provider default is OpenAI Responses:
+models whose catalog entry declares the `/responses` endpoint use
+`github-copilot@default/<model-id>` (the same as the unqualified
+`github-copilot/<model-id>`), while catalog entries that do not declare
+`/responses` retain the legacy route,
+`github-copilot@chat-completions/<model-id>`.
+After upgrading, replace saved `github-copilot@responses/<model-id>` references
+with `github-copilot/<model-id>`. For saved Chat Completions models, re-select the
+discovered route or add the `@chat-completions` suffix before the slash.
 Holon sends `Copilot-Integration-Id: holon`, never an editor impersonation.
 GitHub controls the accepted identities, models, policies, and usage limits.
 Removing a local credential does not revoke its authorization at GitHub;

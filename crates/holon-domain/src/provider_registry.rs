@@ -203,14 +203,14 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
     ),
     provider!(
         "github-copilot" => "github-copilot" @ "default",
-        OpenAiChatCompletions, "https://api.githubcopilot.com", [],
+        OpenAiResponses, "https://api.githubcopilot.com", [],
         GitHubCopilot, Default, None, None,
         discovery!(Optional, ModelDiscoveryRoute::OpenAiCompatible, OpenAiCompatible),
         DiscoveryOnly
     ),
     provider!(
-        "github-copilot-responses" => "github-copilot" @ "responses",
-        OpenAiResponses, "https://api.githubcopilot.com", [],
+        "github-copilot-chat-completions" => "github-copilot" @ "chat-completions",
+        OpenAiChatCompletions, "https://api.githubcopilot.com", [],
         GitHubCopilot, Default, None, None, None, StaticOnly
     ),
     provider!(
