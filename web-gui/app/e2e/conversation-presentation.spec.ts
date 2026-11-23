@@ -111,11 +111,75 @@ test("live growth follows the bottom but preserves history reading, including on
   const process = page.locator('[data-turn-id="live"] .conversation-detail-toggle');
   await process.click();
   await expect(process).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator('[data-turn-id="live"] .conversation-detail-clip')).toHaveJSProperty("offsetHeight", 0);
-  const triggerTop = (await process.boundingBox())!.y;
+  const geometry = await process.evaluateHandle((button) => {
+    const list = button.closest<HTMLElement>(".message-list")!;
+    const collapse = button.closest("[data-turn-id]")!.querySelector(".conversation-detail-collapse")!;
+    const clip = collapse.querySelector(".conversation-detail-clip")!;
+    const sample = () => ({
+      buttonY: button.getBoundingClientRect().top,
+      listY: list.getBoundingClientRect().top,
+      scrollTop: list.scrollTop,
+      maxScrollTop: list.scrollHeight - list.clientHeight,
+      clipHeight: clip.getBoundingClientRect().height,
+    });
+    type Sample = ReturnType<typeof sample>;
+    async function settledFrames(expanded: boolean, frames: Sample[] = []) {
+      let previous: Sample | undefined;
+      let stableFrames = 0;
+      while (stableFrames < 3) {
+        // Sample after rendering so the app's ResizeObserver has had its
+        // chance to restore the reading anchor before this frame is measured.
+        const current = await new Promise<Sample>((resolve) => {
+          requestAnimationFrame(() => {
+            const channel = new MessageChannel();
+            channel.port1.onmessage = () => {
+              channel.port1.close();
+              channel.port2.close();
+              resolve(sample());
+            };
+            channel.port2.postMessage(null);
+          });
+        });
+        frames.push(current);
+        const changingLayout = collapse.getAnimations().some((animation) =>
+          animation instanceof CSSTransition && animation.transitionProperty === "grid-template-rows");
+        const atEndpoint = button.getAttribute("aria-expanded") === String(expanded)
+          && (expanded ? current.clipHeight > 0 : current.clipHeight === 0)
+          && !changingLayout;
+        const unchanged = previous && Object.keys(current).every((key) =>
+          current[key as keyof Sample] === previous![key as keyof Sample]);
+        stableFrames = !atEndpoint ? 0 : unchanged ? stableFrames + 1 : 1;
+        previous = current;
+      }
+      return frames;
+    }
+    let expansion: Promise<Sample[]>;
+    return {
+      async armExpansion() {
+        const collapsed = await settledFrames(false);
+        // Start at the actual click, before the app updates the disclosure.
+        expansion = new Promise((resolve) => {
+          button.addEventListener("click", () => resolve(settledFrames(true, [sample()])),
+            { capture: true, once: true });
+        });
+        return collapsed;
+      },
+      expandedFrames: () => expansion,
+    };
+  });
+  const collapsed = await geometry.evaluate((probe) => probe.armExpansion());
   await process.click();
   await expect(process).toHaveAttribute("aria-expanded", "true");
-  await expect.poll(async () => (await process.boundingBox())!.y).toBeCloseTo(triggerTop, 0);
+  const expanded = await geometry.evaluate((probe) => probe.expandedFrames());
+  await geometry.dispose();
+  await info.attach("disclosure-anchor-frames", {
+    body: JSON.stringify({ collapsed, expanded }, null, 2),
+    contentType: "application/json",
+  });
+  const triggerTop = collapsed.at(-1)!.buttonY;
+  for (const [frame, { buttonY }] of expanded.entries()) {
+    expect(buttonY, `disclosure anchor at expansion frame ${frame}`).toBeCloseTo(triggerTop, 0);
+  }
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator("form.composer")).toBeVisible();
