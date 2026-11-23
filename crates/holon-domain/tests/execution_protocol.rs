@@ -1582,3 +1582,49 @@ fn finalize_interrupted_execution_releases_replay_anchor_only() {
     .unwrap_err();
     assert!(error.contains("complete identity"));
 }
+
+#[test]
+fn binding_partition_equivalence_matches_legacy_and_canonical_representations() {
+    let lifecycle = ExecutionBinding::AgentLifecycle {
+        agent_id: "agent-a".into(),
+    };
+    let canonical_unattributed = ExecutionBinding::Agent {
+        agent_id: "agent-a".into(),
+        attribution: TurnAttribution {
+            work_item_id: None,
+            interaction_id: None,
+        },
+    };
+    let conversation = ExecutionBinding::Conversation {
+        interaction_id: "interaction-a".into(),
+    };
+    let canonical_conversation = ExecutionBinding::Agent {
+        agent_id: "agent-a".into(),
+        attribution: TurnAttribution {
+            work_item_id: None,
+            interaction_id: Some("interaction-a".into()),
+        },
+    };
+    let canonical_other_conversation = ExecutionBinding::Agent {
+        agent_id: "agent-a".into(),
+        attribution: TurnAttribution {
+            work_item_id: None,
+            interaction_id: Some("interaction-b".into()),
+        },
+    };
+
+    assert!(lifecycle.matches_in_agent(&canonical_unattributed, "agent-a"));
+    assert!(canonical_unattributed.matches_in_agent(&lifecycle, "agent-a"));
+    assert!(conversation.matches_in_agent(&canonical_conversation, "agent-a"));
+
+    // Different ownership, command status, or agent partition stays distinct.
+    assert!(!lifecycle.matches_in_agent(
+        &ExecutionBinding::WorkItem {
+            work_item_id: "work-a".into(),
+        },
+        "agent-a"
+    ));
+    assert!(!conversation.matches_in_agent(&canonical_other_conversation, "agent-a"));
+    assert!(!lifecycle.matches_in_agent(&canonical_unattributed, "agent-b"));
+    assert!(!lifecycle.matches_in_agent(&ExecutionBinding::Command, "agent-a"));
+}
