@@ -6515,6 +6515,7 @@ mod tests {
         let skills = SkillsRuntimeView {
             agent_templates_catalog: Vec::new(),
             discovered_roots: Vec::new(),
+            catalog_only_roots: Vec::new(),
             discoverable_skills: vec![
                 crate::types::SkillCatalogEntry {
                     skill_id: "agent:demo".into(),

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use tempfile::tempdir;
 
@@ -622,50 +622,65 @@ fn agent_skill_discovery_merges_compatible_roots() {
 }
 
 #[test]
-fn workspace_skill_discovery_merges_bare_and_compatible_roots() {
+fn workspace_skill_discovery_prefers_nonempty_curated_roots() {
     let dir = tempdir().unwrap();
     let workspace = dir.path().join("workspace");
     let agent_home = dir.path().join("agent");
-    let bare_root = workspace.join("skills");
-    let compat_root = workspace.join(".codex/skills");
-    for (root, name) in [(&bare_root, "alpha"), (&compat_root, "beta")] {
-        fs::create_dir_all(root.join(name)).unwrap();
-        fs::write(
-            root.join(name).join(SKILL_ENTRYPOINT),
-            format!("---\nname: {name}\ndescription: {name}\n---\nbody"),
+    let write = |relative: &str, content: &str| {
+        let path = workspace.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, content).unwrap();
+        path
+    };
+    let view = || {
+        load_skills_runtime_view(
+            &crate::TestIo,
+            SkillVisibility::NonDefaultAgent,
+            None,
+            &agent_home,
+            Some(&workspace),
+            &[],
         )
-        .unwrap();
-    }
+        .unwrap()
+    };
+    let paths = |view: &SkillsRuntimeView| {
+        view.discoverable_skills
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<BTreeSet<_>>()
+    };
 
-    let view = load_skills_runtime_view(
-        &crate::TestIo,
-        SkillVisibility::NonDefaultAgent,
-        None,
-        &agent_home,
-        Some(&workspace),
-        &[],
+    let product = write("skills/product-a/SKILL.md", "product");
+    assert_eq!(paths(&view()), BTreeSet::from([product.clone()]));
+    fs::create_dir_all(workspace.join(".agents/skills/empty")).unwrap();
+    write(".codex/skills/README.md", "not a skill");
+    #[cfg(unix)]
+    create_symlink(
+        Path::new("missing"),
+        &workspace.join(".codex/skills/broken"),
     )
     .unwrap();
+    assert_eq!(paths(&view()), BTreeSet::from([product.clone()]));
+    assert!(view().catalog_only_roots.is_empty());
 
-    assert_eq!(view.discovered_roots.len(), 2);
-    assert_eq!(
-        view.discovered_roots
-            .iter()
-            .map(|root| root.path.as_path())
-            .collect::<Vec<_>>(),
-        vec![bare_root.as_path(), compat_root.as_path()]
-    );
-    let mut names = view
-        .discoverable_skills
+    for root in COMPAT_SKILL_ROOT_SUFFIXES {
+        let curated = write(
+            &format!("{root}/product-a/SKILL.md"),
+            "same name, no front matter",
+        );
+        let selected = view();
+        assert_eq!(paths(&selected), BTreeSet::from([curated.clone()]));
+        assert_eq!(selected.catalog_only_roots[0].path, "skills/");
+        assert_eq!(selected.discoverable_skills, selected.attached_skills);
+        fs::remove_file(curated).unwrap();
+    }
+    assert_eq!(paths(&view()), BTreeSet::from([product]));
+    let curated = COMPAT_SKILL_ROOT_SUFFIXES
         .iter()
-        .map(|skill| skill.name.as_str())
-        .collect::<Vec<_>>();
-    names.sort();
-    assert_eq!(names, vec!["alpha", "beta"]);
-    assert!(view
-        .discoverable_skills
-        .iter()
-        .all(|skill| skill.scope == SkillScope::Workspace));
+        .enumerate()
+        .map(|(i, root)| write(&format!("{root}/curated-{i}/SKILL.md"), "curated"))
+        .collect();
+    assert_eq!(paths(&view()), curated);
 }
 
 #[cfg(unix)]
@@ -693,6 +708,48 @@ fn workspace_skill_roots_deduplicate_symlink_aliases() {
     assert_eq!(registrations.len(), 1);
     assert_eq!(registrations[0].root_path, bare_root);
     assert_eq!(registrations[0].source_kind, SkillRootSourceKind::Workspace);
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_skill_discovery_respects_whole_root_and_single_skill_links() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    for skill in ["included", "other"] {
+        let path = root.join("skills").join(skill);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("SKILL.md"), "original").unwrap();
+    }
+    let view = || {
+        load_skills_runtime_view(
+            &crate::TestIo,
+            SkillVisibility::NonDefaultAgent,
+            None,
+            &root.join("agent"),
+            Some(root),
+            &[],
+        )
+        .unwrap()
+    };
+    let initial = view();
+    let alias = root.join(".codex/skills");
+    fs::create_dir_all(alias.parent().unwrap()).unwrap();
+    create_symlink(Path::new("../skills"), &alias).unwrap();
+    let aliased = view();
+    assert_eq!(initial.discoverable_skills.len(), 2);
+    assert_eq!(aliased.discoverable_skills, initial.discoverable_skills);
+    assert!(aliased.catalog_only_roots.is_empty());
+    fs::remove_file(&alias).unwrap();
+
+    fs::create_dir(&alias).unwrap();
+    create_symlink(Path::new("../../skills/included"), &alias.join("included")).unwrap();
+    let selected = view();
+    assert_eq!(selected.discoverable_skills.len(), 1);
+    assert_eq!(
+        selected.discoverable_skills[0].path,
+        alias.join("included/SKILL.md")
+    );
+    assert_eq!(selected.catalog_only_roots[0].path, "skills/");
 }
 
 #[test]
@@ -947,15 +1004,18 @@ fn catalog_runtime_view_filters_active_skills_to_effective_catalog_snapshot() {
     let visible_path = PathBuf::from("/agent/skills/demo/SKILL.md");
     let view = skills_runtime_view_from_catalog(
         &crate::TestIo,
-        vec![SkillCatalogEntry {
-            skill_id: "agent_home:test-root:demo".into(),
-            root_id: "agent_home:test-root".into(),
-            skill_dir: "demo".into(),
-            name: "demo".into(),
-            description: "visible".into(),
-            path: visible_path.clone(),
-            scope: SkillScope::Agent,
-        }],
+        EffectiveSkillCatalog {
+            entries: vec![SkillCatalogEntry {
+                skill_id: "agent_home:test-root:demo".into(),
+                root_id: "agent_home:test-root".into(),
+                skill_dir: "demo".into(),
+                name: "demo".into(),
+                description: "visible".into(),
+                path: visible_path.clone(),
+                scope: SkillScope::Agent,
+            }],
+            catalog_only_roots: vec![],
+        },
         &[skill_root_registration(
             SkillRootSourceKind::AgentHome,
             Some("default".into()),

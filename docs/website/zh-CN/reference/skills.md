@@ -18,9 +18,24 @@ order: 34
 仓库内的 skill 通常放在：
 
 ```text
+.agents/skills/<skill-name>/SKILL.md
 .codex/skills/<skill-name>/SKILL.md
+.claude/skills/<skill-name>/SKILL.md
 skills/<skill-name>/SKILL.md
 ```
+
+Holon 以 agent 当前的执行根为准，包括当前 worktree。前三个协作目录中只要
+有一个产出可发现的 skill，三个目录仍都参与选择，但独立的 `skills/` 只作
+安装来源，不进入提示。扫描只检查直接子目录中可读的 `SKILL.md`；空目录、
+README 和断链都不触发这条规则。协作目录若整根链接到 `skills/`，两者视为
+同一个根；若只链接到其中一个 skill，则只选入这一项。
+
+用 `holon skills list --agent <id>` 查看实际可见项。此命令与
+`GET /agents/{agent_id}/skills` 在规则生效时都返回
+`catalog_only_roots: [{"path":"skills/","reason":"curated_roots_present"}]`，
+否则返回空数组。规则不会自动把 skill 加入 Skill Library。如需选入某个
+产品 skill，在仓库内执行 `holon skills add ./skills/foo`，再执行
+`holon skills enable foo --agent <id>`。
 
 本仓库中的示例 skill 有：
 

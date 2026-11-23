@@ -3562,6 +3562,92 @@ mod resource_read_tests {
     }
 
     #[tokio::test]
+    async fn workspace_skill_prompt_refresh_hides_and_restores_historical_activation() -> Result<()>
+    {
+        use crate::types::{ActiveSkillRecord, SkillActivationSource, SkillActivationState};
+        use holon_system::{WorkspaceAccessMode, WorkspaceProjectionKind};
+
+        let (_home, host, runtime) = resource_host().await?;
+        let workspace = tempfile::tempdir()?;
+        let root = workspace.path().canonicalize()?;
+        let entry = host.ensure_workspace_entry(root.clone())?;
+        runtime.attach_workspace(&entry).await?;
+        runtime
+            .enter_workspace(
+                &entry,
+                WorkspaceProjectionKind::CanonicalRoot,
+                WorkspaceAccessMode::SharedRead,
+                Some(root.clone()),
+                None,
+            )
+            .await?;
+
+        let product = root.join("skills/product-a/SKILL.md");
+        std::fs::create_dir_all(product.parent().unwrap())?;
+        std::fs::write(&product, "PRODUCT_A_DESCRIPTION")?;
+        let preview =
+            || runtime.preview_prompt("inspect skills".into(), AuthorityClass::OperatorInstruction);
+        let initial = preview().await?.rendered_context_attachment;
+        assert!(initial.contains("Discovered skills catalog"));
+        assert!(initial.contains("PRODUCT_A_DESCRIPTION"));
+        assert!(initial.contains(product.to_str().unwrap()));
+
+        // Preserve a real, persisted activation across both policy transitions.
+        let mut mutation = runtime.begin_mutation().await?;
+        let skill = crate::skills::load_catalog_for_scope(
+            crate::types::SkillScope::Workspace,
+            &root.join("skills"),
+        )?
+        .pop()
+        .expect("product skill fixture");
+        let agent_id = mutation.state.id.clone();
+        mutation.state.active_skills.push(ActiveSkillRecord {
+            skill_id: skill.skill_id.clone(),
+            name: skill.name,
+            path: skill.path,
+            scope: skill.scope,
+            agent_id,
+            activation_source: SkillActivationSource::ImplicitFromCatalog,
+            activation_state: SkillActivationState::SessionActive,
+            activated_at_turn: 0,
+        });
+        mutation.persist_state(&runtime.inner.storage).await?;
+        drop(mutation);
+        let active = preview().await?.rendered_context_attachment;
+        assert!(active.contains("Active skills ("));
+        assert!(active.contains(&skill.skill_id));
+
+        let curated = root.join(".codex/skills/curated/SKILL.md");
+        std::fs::create_dir_all(curated.parent().unwrap())?;
+        std::fs::write(&curated, "CURATED_DESCRIPTION")?;
+        runtime.refresh_context_resources().await?;
+        let hidden = preview().await?.rendered_context_attachment;
+        assert!(hidden.contains("CURATED_DESCRIPTION"));
+        for omitted in [
+            "product-a",
+            "PRODUCT_A_DESCRIPTION",
+            product.to_str().unwrap(),
+            &skill.skill_id,
+            "curated_roots_present",
+        ] {
+            assert!(
+                !hidden.contains(omitted),
+                "{omitted} leaked into the prompt"
+            );
+        }
+        assert!(!hidden.contains("Active skills ("));
+
+        std::fs::remove_file(curated)?;
+        runtime.refresh_context_resources().await?;
+        let restored = preview().await?.rendered_context_attachment;
+        assert!(restored.contains("PRODUCT_A_DESCRIPTION"));
+        assert!(restored.contains(&skill.skill_id));
+        assert!(!restored.contains("CURATED_DESCRIPTION"));
+        host.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn loaded_context_keeps_one_resource_guard_through_prompt_clones() -> Result<()> {
         let home = tempfile::tempdir()?;
         let runtime = RuntimeHandle::new(

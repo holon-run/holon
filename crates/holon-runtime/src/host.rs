@@ -4490,7 +4490,7 @@ impl RuntimeHost {
             crate::diagnostics::resource_io::admit_cloned_value(&skill_roots)?;
             registry.sync_effective_roots(skill_roots.clone())?;
             let mut skills = skills_runtime_view_from_catalog(
-                registry.catalog_for_roots(&skill_roots, None),
+                registry.effective_catalog_for_roots(&skill_roots),
                 &skill_roots,
                 &state.active_skills,
             )?;
@@ -8319,7 +8319,7 @@ impl RuntimeHost {
         let mut skill_registry = self.inner.skills_registry.write().await;
         skill_registry.sync_effective_roots(skill_roots.clone())?;
         let mut skills = skills_runtime_view_from_catalog(
-            skill_registry.catalog_for_roots(&skill_roots, None),
+            skill_registry.effective_catalog_for_roots(&skill_roots),
             &skill_roots,
             &state.active_skills,
         )?;
