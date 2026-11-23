@@ -31,6 +31,39 @@ fn write_json_response(stream: &mut TcpStream, body: &str) {
 }
 
 #[test]
+fn skills_list_prints_root_level_catalog_only_diagnostic() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock control plane");
+    let addr = listener.local_addr().expect("mock control plane address");
+    let expected = serde_json::json!({
+        "ok": true,
+        "agent_id": "worker",
+        "skills": [],
+        "catalog_only_roots": [{"path": "skills/", "reason": "curated_roots_present"}]
+    });
+    let body = expected.to_string();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept list request");
+        let request = read_http_request(&mut stream);
+        assert!(request.starts_with("GET /api/agents/worker/skills "));
+        write_json_response(&mut stream, &body);
+    });
+
+    let (mut command, _home) = isolated_holon_command();
+    let output = command
+        .env("HOLON_HTTP_ADDR", addr.to_string())
+        .args(["skills", "list", "--agent", "worker"])
+        .output()
+        .expect("run holon");
+    handle.join().expect("mock control plane thread");
+    let (stdout, stderr) = output_text(&output);
+    assert_eq!(output.status.code(), Some(0), "stderr:\n{stderr}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout).unwrap(),
+        expected
+    );
+}
+
+#[test]
 fn skills_update_waits_for_job_and_prints_result() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock control plane");
     let addr = listener.local_addr().expect("mock control plane address");

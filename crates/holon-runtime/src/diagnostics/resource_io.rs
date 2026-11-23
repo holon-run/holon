@@ -2364,6 +2364,7 @@ mod tests {
             source_kind: SkillRootSourceKind::AgentHome,
             owner_agent_id: None,
             root_path: root.clone(),
+            standalone_workspace_skills: false,
             scan_status: SkillRootScanStatus::NeverScanned,
             watch_status: SkillRootWatchStatus::NotWatched,
         }];
@@ -2377,7 +2378,7 @@ mod tests {
         let project = |phase: &ResourceReadMaterial| {
             let _entry = phase.enter();
             crate::skills::skills_runtime_view_from_catalog(
-                registry.catalog_for_roots(&roots, None),
+                registry.effective_catalog_for_roots(&roots),
                 &roots,
                 &[],
             )
@@ -2436,6 +2437,7 @@ mod tests {
             source_kind: SkillRootSourceKind::AgentHome,
             owner_agent_id: None,
             root_path: root.clone(),
+            standalone_workspace_skills: false,
             scan_status: SkillRootScanStatus::NeverScanned,
             watch_status: SkillRootWatchStatus::NotWatched,
         };

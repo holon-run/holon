@@ -499,6 +499,34 @@ impl SkillsRegistry {
         )
     }
 
+    /// Agent-visible catalog; the shared inventory still contains install sources.
+    pub fn effective_catalog_for_roots(
+        &self,
+        roots: &[SkillRootRegistration],
+    ) -> super::EffectiveSkillCatalog {
+        let catalog_only = super::workspace_catalog_only_root(roots, &self.entries);
+        let entries = self.catalog_from_entries(
+            self.entries.iter().filter(|entry| {
+                if entry.scope == SkillScope::Workspace {
+                    roots.iter().any(|root| {
+                        root.source_kind == SkillRootSourceKind::Workspace
+                            && Some(root.root_path.as_path()) != catalog_only
+                            && super::workspace_skill_from_root(entry, &root.root_path)
+                    })
+                } else {
+                    roots
+                        .iter()
+                        .any(|root| entry.path.starts_with(&root.root_path))
+                }
+            }),
+            None,
+        );
+        super::EffectiveSkillCatalog {
+            entries,
+            catalog_only_roots: super::catalog_only_workspace_diagnostics(catalog_only),
+        }
+    }
+
     fn catalog_from_entries<'a>(
         &self,
         entries: impl Iterator<Item = &'a SkillCatalogEntry>,
@@ -542,6 +570,7 @@ impl SkillsRegistry {
 fn same_root_registration(left: &SkillRootRegistration, right: &SkillRootRegistration) -> bool {
     left.source_kind == right.source_kind
         && left.owner_agent_id == right.owner_agent_id
+        && left.standalone_workspace_skills == right.standalone_workspace_skills
         && normalize_path(&left.root_path) == normalize_path(&right.root_path)
 }
 
@@ -580,6 +609,7 @@ mod tests {
             source_kind,
             owner_agent_id: None,
             root_path,
+            standalone_workspace_skills: false,
             scan_status: SkillRootScanStatus::NeverScanned,
             watch_status: SkillRootWatchStatus::NotWatched,
         }
@@ -907,6 +937,7 @@ mod shared_candidate_budget_tests {
             root_path: dir.path().into(),
             source_kind: SkillRootSourceKind::AgentHome,
             owner_agent_id: Some("test".into()),
+            standalone_workspace_skills: false,
             scan_status: Default::default(),
             watch_status: Default::default(),
         };

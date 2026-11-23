@@ -28,6 +28,7 @@ pub async fn list_skills(
         "ok": true,
         "agent_id": agent_id,
         "skills": skills.discoverable_skills,
+        "catalog_only_roots": skills.catalog_only_roots,
     })))
 }
 

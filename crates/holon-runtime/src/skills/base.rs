@@ -12,6 +12,11 @@ use std::path::Path;
 #[cfg(test)]
 pub(crate) use package::skill_root_id_for_scope;
 
+pub use package::EffectiveSkillCatalog;
+pub(crate) use package::{
+    catalog_only_workspace_diagnostics, skill_root_id, skill_wins_catalog_selection,
+    workspace_catalog_only_root, workspace_skill_from_root, SKILL_ROOT_SUFFIXES,
+};
 pub use package::{
     disable_agent_skill, effective_skill_root_registrations, find_skill_by_entrypoint,
     find_skill_by_script_path, skill_root_registration, uninstall_skill, GithubSkillInstallRequest,
@@ -24,7 +29,6 @@ pub use package::{
     existing_skill_roots, user_global_skill_root_candidates, RemoteSkillArchiveFetchFailed,
     COMPAT_SKILL_ROOT_SUFFIXES,
 };
-pub(crate) use package::{skill_root_id, skill_wins_catalog_selection, SKILL_ROOT_SUFFIXES};
 
 pub fn load_skills_runtime_view(
     visibility: SkillVisibility,
@@ -56,7 +60,7 @@ pub(crate) fn load_catalog_for_root(
 }
 
 pub fn skills_runtime_view_from_catalog(
-    catalog: Vec<SkillCatalogEntry>,
+    catalog: EffectiveSkillCatalog,
     roots: &[SkillRootRegistration],
     active_skills: &[ActiveSkillRecord],
 ) -> Result<SkillsRuntimeView> {
@@ -284,7 +288,14 @@ mod tests {
                 assert_eq!(ledger.report()?.observed_bytes, 0);
             }
         }
-        let view = skills_runtime_view_from_catalog(catalog, &roots, &active)?;
+        let view = skills_runtime_view_from_catalog(
+            EffectiveSkillCatalog {
+                entries: catalog,
+                catalog_only_roots: Vec::new(),
+            },
+            &roots,
+            &active,
+        )?;
         assert!(std::sync::Arc::ptr_eq(
             &view.discoverable_skills,
             &view.attached_skills,

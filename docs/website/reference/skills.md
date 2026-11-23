@@ -20,9 +20,28 @@ and authority boundaries. The entry file is `SKILL.md`.
 Repository-local skills commonly live under:
 
 ```text
+.agents/skills/<skill-name>/SKILL.md
 .codex/skills/<skill-name>/SKILL.md
+.claude/skills/<skill-name>/SKILL.md
 skills/<skill-name>/SKILL.md
 ```
+
+Holon uses the agent's current execution root, including its active worktree.
+If any of the first three directories yields a discoverable skill, all three
+remain eligible, but a separate `skills/` directory becomes an install source
+only. The scan checks direct subdirectories for readable `SKILL.md` files;
+empty directories, README files, and broken links do not trigger the rule.
+The rule does not apply when AgentHome is the current execution root.
+A curated root linked to `skills/` counts as the same root. A link to just one
+skill selects only that skill from `skills/`.
+
+Run `holon skills list --agent <id>` to see the effective list. Both this
+command and `GET /agents/{agent_id}/skills` report
+`catalog_only_roots: [{"path":"skills/","reason":"curated_roots_present"}]`
+when the rule applies, and an empty array otherwise. No skills are added to the
+Skill Library automatically. To opt in to a product skill, run
+`holon skills add ./skills/foo` from the repository, then
+`holon skills enable foo --agent <id>`.
 
 Example skills in this repository include:
 

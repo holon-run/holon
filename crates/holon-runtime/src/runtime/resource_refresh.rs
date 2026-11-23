@@ -1219,7 +1219,7 @@ impl RuntimeHandle {
             }
             let catalogue = Arc::new(catalogue);
             let mut skills = skills_runtime_view_from_catalog(
-                catalogue.catalog_for_roots(&roots, None),
+                catalogue.effective_catalog_for_roots(&roots),
                 &roots,
                 &state.active_skills,
             )?;

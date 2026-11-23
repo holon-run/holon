@@ -1960,6 +1960,34 @@ pub async fn agent_skills_endpoint_uses_effective_registry_snapshot() -> Result<
         .collect::<std::collections::BTreeSet<_>>();
     assert!(listed_names.contains("shared-demo"));
     assert!(listed_names.contains("workspace-demo"));
+    assert_eq!(list_payload["catalog_only_roots"], serde_json::json!([]));
+
+    let curated = host
+        .config()
+        .workspace_dir
+        .join(".agents/skills/workspace-demo/SKILL.md");
+    std::fs::create_dir_all(curated.parent().unwrap())?;
+    std::fs::write(&curated, "curated replacement")?;
+    let curated_payload: serde_json::Value = client
+        .get(format!("{base}/api/agents/default/skills"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        curated_payload["catalog_only_roots"],
+        serde_json::json!([{"path":"skills/","reason":"curated_roots_present"}])
+    );
+    let same_name = curated_payload["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|skill| skill["name"] == "workspace-demo")
+        .collect::<Vec<_>>();
+    assert_eq!(same_name.len(), 1);
+    assert_eq!(same_name[0]["path"], curated.to_string_lossy().as_ref());
+    std::fs::remove_file(curated)?;
 
     std::fs::remove_dir_all(&agent_skill_dir)?;
     let list_payload: serde_json::Value = client
@@ -1968,6 +1996,12 @@ pub async fn agent_skills_endpoint_uses_effective_registry_snapshot() -> Result<
         .await?
         .json()
         .await?;
+    assert_eq!(list_payload["catalog_only_roots"], serde_json::json!([]));
+    assert!(list_payload["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|skill| { skill["name"] == "workspace-demo" && skill["description"] == "workspace" }));
     assert!(!list_payload["skills"]
         .as_array()
         .expect("skills should be an array")
@@ -2081,6 +2115,26 @@ pub async fn agent_skill_detail_follows_active_execution_root_without_canonical_
         .unwrap_or_default()
         .contains("canonical body"));
 
+    let curated = workspace_root.join(".claude/skills/curated/SKILL.md");
+    std::fs::create_dir_all(curated.parent().unwrap())?;
+    std::fs::write(&curated, "only at the canonical root")?;
+    let curated_catalog: serde_json::Value = client
+        .get(format!("{base}/api/agents/default/skills"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        curated_catalog["catalog_only_roots"],
+        serde_json::json!([{"path":"skills/","reason":"curated_roots_present"}])
+    );
+    assert!(!curated_catalog["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|skill| { skill["name"] == "shared-detail" || skill["name"] == "canonical-only" }));
+
     let worktree_dir = tempdir()?;
     let worktree_root = worktree_dir.path().to_path_buf();
     let worktree_shared = worktree_root.join("skills/shared-detail");
@@ -2113,6 +2167,10 @@ pub async fn agent_skill_detail_follows_active_execution_root_without_canonical_
     let worktree_skills = worktree_catalog["skills"]
         .as_array()
         .expect("worktree skills should be an array");
+    assert_eq!(
+        worktree_catalog["catalog_only_roots"],
+        serde_json::json!([])
+    );
     assert!(worktree_skills
         .iter()
         .any(|skill| skill["name"] == "worktree-only"));

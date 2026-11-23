@@ -32,9 +32,9 @@ User-global discovery remains limited to the three hidden compatibility roots
 and does not search a bare `~/skills` directory.
 
 Discovery searches agent scope and workspace scope separately. Within one
-scope, all physically distinct roots are merged. If multiple configured paths
-resolve to the same physical directory, discovery keeps the first path in the
-order above and scans that directory only once.
+scope, discovery considers all physically distinct roots. If multiple
+configured paths resolve to the same physical directory, it keeps the first
+path in the order above and scans that directory only once.
 
 ## Root Selection
 
@@ -52,6 +52,16 @@ Worktree discovery does not merge or fall back to `workspace_anchor`: a skill
 removed from the worktree must not reappear from the canonical checkout, and an
 untracked canonical skill must not leak into the worktree. Skill discovery
 should not drift with shell cwd.
+
+When any of `.agents/skills`, `.codex/skills`, or `.claude/skills` produces a
+discoverable entry, a distinct bare `skills/` root is available only as an
+install source. This filter applies before name precedence and also governs
+attachments and the projection of existing activations. A whole-root alias
+retains curated visibility without changing its existing root or skill IDs.
+The filter does not apply when AgentHome is the current execution root.
+The agent skills list API reports the excluded `skills/` root with reason
+`curated_roots_present` in `catalog_only_roots`; the diagnostic is not shown
+to the model and does not register anything in the Skill Library.
 
 Skills created or changed during a turn become available on the next runtime
 skill-view or prompt-context build; Holon does not mutate an already-built

@@ -73,11 +73,26 @@ pub struct SkillsRuntimeView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discovered_roots: Vec<SkillRootView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub catalog_only_roots: Vec<CatalogOnlySkillRoot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discoverable_skills: std::sync::Arc<Vec<SkillCatalogEntry>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attached_skills: std::sync::Arc<Vec<SkillCatalogEntry>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_skills: Vec<ActiveSkillRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CatalogOnlySkillRoot {
+    /// Path relative to the current execution root.
+    pub path: String,
+    pub reason: CatalogOnlySkillRootReason,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogOnlySkillRootReason {
+    CuratedRootsPresent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -228,6 +243,9 @@ pub struct SkillRootRegistration {
     pub owner_agent_id: Option<String>,
     /// Root path on disk.
     pub root_path: PathBuf,
+    /// A bare project workspace skills/ root with no whole-root curated alias.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub standalone_workspace_skills: bool,
     /// Last scan status.
     #[serde(default)]
     pub scan_status: SkillRootScanStatus,

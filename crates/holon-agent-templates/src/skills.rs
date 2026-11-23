@@ -13,9 +13,9 @@ use tracing::warn;
 use crate::PackageIo;
 
 use holon_domain::{
-    ActiveSkillRecord, SkillCatalogEntry, SkillInstallMode, SkillRootRegistration,
-    SkillRootScanStatus, SkillRootSourceKind, SkillRootView, SkillRootWatchStatus, SkillScope,
-    SkillsRuntimeView,
+    ActiveSkillRecord, CatalogOnlySkillRoot, CatalogOnlySkillRootReason, SkillCatalogEntry,
+    SkillInstallMode, SkillRootRegistration, SkillRootScanStatus, SkillRootSourceKind,
+    SkillRootView, SkillRootWatchStatus, SkillScope, SkillsRuntimeView,
 };
 use holon_github::archive::{ArchiveHttpFailure, GitHubArchive, DEFAULT_ARCHIVE_BASE};
 use holon_github::client::{BlockingClient, GitHubAuth, RateLimit};
@@ -70,12 +70,22 @@ pub fn load_skills_runtime_view(
         });
     }
 
-    for root in workspace_skill_roots(workspace_anchor) {
-        discoverable_skills.extend(load_catalog_for_scope(io, SkillScope::Workspace, &root)?);
+    let workspace_roots = workspace_skill_root_registrations(workspace_anchor, Some(agent_home));
+    for root in &workspace_roots {
+        discoverable_skills.extend(load_catalog_for_scope(
+            io,
+            SkillScope::Workspace,
+            &root.root_path,
+        )?);
         discovered_roots.push(SkillRootView {
             scope: SkillScope::Workspace,
-            path: root,
+            path: root.root_path.clone(),
         });
+    }
+
+    let catalog_only = workspace_catalog_only_root(&workspace_roots, &discoverable_skills);
+    if let Some(root) = catalog_only {
+        discoverable_skills.retain(|entry| !workspace_skill_from_root(entry, root));
     }
 
     discoverable_skills = retain_highest_precedence_skills(discoverable_skills);
@@ -91,6 +101,7 @@ pub fn load_skills_runtime_view(
     Ok(SkillsRuntimeView {
         agent_templates_catalog: Vec::new(),
         discovered_roots,
+        catalog_only_roots: catalog_only_workspace_diagnostics(catalog_only),
         discoverable_skills,
         attached_skills,
         active_skills,
@@ -137,12 +148,12 @@ pub fn existing_skill_roots(base: Option<&Path>, suffixes: &[&str]) -> Vec<PathB
         .iter()
         .map(|suffix| base.join(suffix))
         .filter(|candidate| candidate.is_dir())
-        .filter(|candidate| {
-            let identity = fs::canonicalize(candidate)
-                .unwrap_or_else(|_| candidate.components().collect::<PathBuf>());
-            seen.insert(identity)
-        })
+        .filter(|candidate| seen.insert(skill_root_identity(candidate)))
         .collect()
+}
+
+fn skill_root_identity(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.components().collect())
 }
 
 pub fn user_global_skill_roots(user_home: Option<&Path>) -> Vec<PathBuf> {
@@ -162,7 +173,79 @@ pub fn agent_skill_roots(agent_home: &Path) -> Vec<PathBuf> {
 }
 
 pub fn workspace_skill_roots(workspace_anchor: Option<&Path>) -> Vec<PathBuf> {
-    existing_skill_roots(workspace_anchor, &SKILL_ROOT_SUFFIXES)
+    workspace_skill_root_registrations(workspace_anchor, None)
+        .into_iter()
+        .map(|root| root.root_path)
+        .collect()
+}
+
+fn workspace_skill_root_registrations(
+    workspace_anchor: Option<&Path>,
+    agent_home: Option<&Path>,
+) -> Vec<SkillRootRegistration> {
+    let Some(anchor) = workspace_anchor else {
+        return Vec::new();
+    };
+    let mut identities = BTreeMap::<PathBuf, usize>::new();
+    let mut roots: Vec<SkillRootRegistration> = Vec::new();
+    for suffix in SKILL_ROOT_SUFFIXES {
+        let path = anchor.join(suffix);
+        if !path.is_dir() {
+            continue;
+        }
+        let identity = skill_root_identity(&path);
+        let is_bare = suffix == "skills";
+        if let Some(index) = identities.get(&identity) {
+            // Keep the first path (and thus its ID), but honor a curated alias.
+            if !is_bare {
+                roots[*index].standalone_workspace_skills = false;
+            }
+            continue;
+        }
+        identities.insert(identity, roots.len());
+        let mut root = skill_root_registration(SkillRootSourceKind::Workspace, None, path);
+        // AgentHome may also be the execution root. Keep its existing
+        // registrations and IDs, but don't treat its skills as a publish directory.
+        root.standalone_workspace_skills = is_bare
+            && !agent_home.is_some_and(|home| {
+                anchor == home || skill_root_identity(anchor) == skill_root_identity(home)
+            });
+        roots.push(root);
+    }
+    roots
+}
+
+/// Apply workspace policy to the scan results before any same-name selection.
+pub fn workspace_catalog_only_root<'a>(
+    roots: &'a [SkillRootRegistration],
+    entries: &[SkillCatalogEntry],
+) -> Option<&'a Path> {
+    let standalone = roots.iter().find(|root| root.standalone_workspace_skills)?;
+    roots
+        .iter()
+        .filter(|root| {
+            root.source_kind == SkillRootSourceKind::Workspace && !root.standalone_workspace_skills
+        })
+        .any(|root| {
+            entries
+                .iter()
+                .any(|entry| workspace_skill_from_root(entry, &root.root_path))
+        })
+        .then_some(standalone.root_path.as_path())
+}
+
+/// Use the scanned source, not the physical target of a skill link.
+pub fn workspace_skill_from_root(entry: &SkillCatalogEntry, root: &Path) -> bool {
+    entry.scope == SkillScope::Workspace && entry.path.parent().and_then(Path::parent) == Some(root)
+}
+
+pub fn catalog_only_workspace_diagnostics(root: Option<&Path>) -> Vec<CatalogOnlySkillRoot> {
+    root.map(|_| CatalogOnlySkillRoot {
+        path: "skills/".to_string(),
+        reason: CatalogOnlySkillRootReason::CuratedRootsPresent,
+    })
+    .into_iter()
+    .collect()
 }
 
 pub fn load_catalog_for_scope(
@@ -272,22 +355,28 @@ pub fn effective_skill_root_registrations(
             root_path,
         )
     }));
-    roots.extend(
-        workspace_skill_roots(workspace_anchor)
-            .into_iter()
-            .map(|root_path| {
-                skill_root_registration(SkillRootSourceKind::Workspace, None, root_path)
-            }),
-    );
+    roots.extend(workspace_skill_root_registrations(
+        workspace_anchor,
+        Some(agent_home),
+    ));
     roots
+}
+
+pub struct EffectiveSkillCatalog {
+    pub entries: Vec<SkillCatalogEntry>,
+    pub catalog_only_roots: Vec<CatalogOnlySkillRoot>,
 }
 
 pub fn skills_runtime_view_from_catalog(
     io: &'static dyn PackageIo,
-    mut catalog: Vec<SkillCatalogEntry>,
+    catalog: EffectiveSkillCatalog,
     roots: &[SkillRootRegistration],
     active_skills: &[ActiveSkillRecord],
 ) -> Result<SkillsRuntimeView> {
+    let EffectiveSkillCatalog {
+        entries: mut catalog,
+        catalog_only_roots,
+    } = catalog;
     catalog.sort_by(|left, right| {
         left.name
             .cmp(&right.name)
@@ -303,6 +392,7 @@ pub fn skills_runtime_view_from_catalog(
     Ok(SkillsRuntimeView {
         agent_templates_catalog: Vec::new(),
         discovered_roots: collect_discovered_roots_from_registrations(io, roots)?,
+        catalog_only_roots,
         discoverable_skills: catalog.clone(),
         attached_skills: catalog,
         active_skills,
@@ -353,6 +443,7 @@ pub fn skill_root_registration(
         source_kind,
         owner_agent_id,
         root_path,
+        standalone_workspace_skills: false,
         scan_status: SkillRootScanStatus::NeverScanned,
         watch_status: SkillRootWatchStatus::NotWatched,
     }

@@ -4361,7 +4361,7 @@ impl RuntimeHandle {
             let _resource_io = material.map(|material| material.enter());
             registry.sync_effective_roots(skill_roots.clone())?;
             skills_runtime_view_from_catalog(
-                registry.catalog_for_roots(&skill_roots, None),
+                registry.effective_catalog_for_roots(&skill_roots),
                 &skill_roots,
                 &state.active_skills,
             )?
@@ -4370,7 +4370,7 @@ impl RuntimeHandle {
             let mut registry = crate::skills::SkillsRegistry::new();
             registry.replace_roots(skill_roots.clone())?;
             skills_runtime_view_from_catalog(
-                registry.catalog(),
+                registry.effective_catalog_for_roots(&skill_roots),
                 &skill_roots,
                 &state.active_skills,
             )?
