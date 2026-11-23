@@ -750,6 +750,7 @@ pub(in super::super) fn parse_native_web_search_output(
     }
     crate::provider::ProviderNativeSearchOutcome {
         search_executed,
+        output_budget_exhausted: false,
         citations,
     }
 }
