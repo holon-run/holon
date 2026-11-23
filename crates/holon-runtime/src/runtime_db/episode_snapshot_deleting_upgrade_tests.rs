@@ -2,10 +2,10 @@ use super::*;
 use crate::{
     config::StateMemoryLimits,
     domain::execution_protocol::{
-        admit_execution, AdmitExecution, AdmittedFences, ConversationOutcome, ExecutionAttempt,
-        ExecutionAttemptState, ExecutionBinding, ExecutionOrigin, ExecutionOutcome,
-        ExecutionPriority, ExecutionProtocolState, ExecutionProvenance, ExecutionSource,
-        ExecutionSourceIdentity, ExecutionTrust,
+        admit_execution, AdmitExecution, AdmittedFences, ExecutionAttempt, ExecutionAttemptState,
+        ExecutionBinding, ExecutionOrigin, ExecutionOutcome, ExecutionPriority,
+        ExecutionProtocolState, ExecutionProvenance, ExecutionSource, ExecutionSourceIdentity,
+        ExecutionTrust, TurnInterruption, TurnOutcome, TurnSettlement,
     },
     runtime::{
         input_evidence_budget::InputEvidenceBudgetLedger,
@@ -419,10 +419,17 @@ impl Fixture {
                 attempt.terminal_outcome_id.as_deref(),
                 Some(outcome_id.as_str())
             );
-            assert!(matches!(
-                &protocol.outcomes[&outcome_id].outcome,
-                ExecutionOutcome::Conversation(ConversationOutcome::Interrupted { .. })
-            ));
+            assert_eq!(
+                protocol.outcomes[&outcome_id].outcome,
+                ExecutionOutcome::Turn(TurnSettlement {
+                    outcome: TurnOutcome::Interrupted {
+                        interruption: TurnInterruption::Interrupted {
+                            reason: "startup_recovery/daemon_restart".into(),
+                        },
+                    },
+                    work_item_effect: None,
+                })
+            );
             let turn = captured
                 .lookup(&InputEvidenceKey::new(
                     InputEvidenceFamily::Turn,

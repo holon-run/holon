@@ -1700,22 +1700,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     _ => None,
                 })
                 .ok_or_else(|| anyhow!("canonical claim has no execution admission"))?;
-            let owner = match &attempt.binding {
-                ExecutionBinding::WorkItem { work_item_id } => crate::types::TurnOwner::WorkItem {
-                    work_item_id: work_item_id.clone(),
-                },
-                ExecutionBinding::Conversation { interaction_id } => {
-                    crate::types::TurnOwner::Conversation {
-                        interaction_id: interaction_id.clone(),
-                    }
-                }
-                ExecutionBinding::AgentLifecycle { agent_id } => {
-                    crate::types::TurnOwner::AgentLifecycle {
-                        agent_id: agent_id.clone(),
-                    }
-                }
-                ExecutionBinding::Command => crate::types::TurnOwner::Command,
-            };
+            let owner = attempt.turn_owner();
             // Charge the owner this Claim will admit, never the unrelated focus.
             admission_state.current_execution_binding =
                 Some(crate::types::WorkItemExecutionBinding {
@@ -3430,7 +3415,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             if execution_attempt_matches_scenario(existing_attempt, message, &scenario)
                 && provider_source.as_ref().is_none_or(|source| {
-                    existing_attempt.binding == source.predecessor.binding
+                    existing_attempt
+                        .binding
+                        .matches_in_agent(&source.predecessor.binding, &message.agent_id)
                         && existing_attempt.recovery_of_attempt_id.as_deref()
                             == Some(source.predecessor.attempt_id.as_str())
                 })
@@ -4217,13 +4204,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 .ok_or_else(|| {
                     anyhow!("provider recovery requires validated predecessor binding")
                 })?;
-            predecessor.binding.clone()
+            predecessor
+                .binding
+                .canonical_in_agent(&message.agent_id)
+                .ok_or_else(|| anyhow!("provider recovery predecessor belongs to another agent"))?
         } else {
             work_item.map_or_else(
                 || unbound_execution_binding(message, admitted_wait_id),
-                |(work_item, _)| ExecutionBinding::WorkItem {
-                    work_item_id: work_item.id.clone(),
-                },
+                |(work_item, _)| ExecutionBinding::for_work_item(&message.agent_id, &work_item.id),
             )
         };
         // Retained queue input resumes the interrupted lineage leaf, including
@@ -4257,7 +4245,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     && (prior.source.identity == source_identity
                         || execution_attempt_matches_scenario(prior, message, scenario))
                     && prior.source.generation == source_revision
-                    && prior.binding == binding
+                    && prior.binding.matches_in_agent(&binding, &message.agent_id)
                     && prior.provenance.origin
                         == canonical_execution_origin_for_scenario(message, scenario)
                     && prior.provenance.trust
@@ -4644,12 +4632,10 @@ fn align_execution_claim_with_wait_transition(
     else {
         unreachable!("admit index was selected by variant");
     };
-    let crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } =
-        &admit.attempt.binding
-    else {
+    let Some(work_item_id) = admit.attempt.binding.work_item_id() else {
         return Ok(());
     };
-    if work_item_id != &record.id {
+    if work_item_id != record.id {
         return Err(anyhow!(
             "wait transition WorkItem does not match execution admission binding"
         ));
@@ -4708,9 +4694,10 @@ fn execution_attempt_matches_scenario(
     message: &MessageEnvelope,
     scenario: &scheduler::CanonicalActivationScenario,
 ) -> bool {
-    use crate::domain::execution_protocol::{ExecutionBinding, ExecutionSourceIdentity};
+    use crate::domain::execution_protocol::ExecutionSourceIdentity;
 
     if attempt.agent_id != message.agent_id
+        || !attempt.binding.matches_agent_partition(&attempt.agent_id)
         || attempt.source_message_id.as_deref() != Some(message.id.as_str())
         || attempt.provenance.origin != canonical_execution_origin_for_scenario(message, scenario)
         || attempt.provenance.trust != canonical_execution_trust_for_scenario(message, scenario)
@@ -4726,12 +4713,17 @@ fn execution_attempt_matches_scenario(
             return false;
         }
     }
-    match (&attempt.source.identity, &attempt.binding, scenario) {
+    let lifecycle = attempt.has_agent_lifecycle_binding();
+    match (
+        &attempt.source.identity,
+        attempt.binding.work_item_id(),
+        scenario,
+    ) {
         (
             ExecutionSourceIdentity::WorkItemContinuation {
                 work_item_id: source_work_item_id,
             },
-            ExecutionBinding::WorkItem { work_item_id },
+            Some(work_item_id),
             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
                 work_item_id: expected,
                 ..
@@ -4739,21 +4731,19 @@ fn execution_attempt_matches_scenario(
         ) => source_work_item_id == expected && work_item_id == expected,
         (
             ExecutionSourceIdentity::RuntimeRecovery { recovery_id },
-            ExecutionBinding::WorkItem { work_item_id },
+            Some(work_item_id),
             scheduler::CanonicalActivationScenario::ProviderRecovery {
                 work_item_id: expected,
             },
         ) => recovery_id == &message.id && work_item_id == expected,
         (
             ExecutionSourceIdentity::RuntimeRecovery { recovery_id },
-            ExecutionBinding::Conversation { .. }
-            | ExecutionBinding::AgentLifecycle { .. }
-            | ExecutionBinding::Command,
+            None,
             scheduler::CanonicalActivationScenario::UnboundProviderRecovery { agent_id },
         ) => recovery_id == &message.id && agent_id == &message.agent_id,
         (
             ExecutionSourceIdentity::InternalFollowup { message_id },
-            ExecutionBinding::WorkItem { work_item_id },
+            Some(work_item_id),
             scheduler::CanonicalActivationScenario::InternalFollowup {
                 work_item_id: expected,
             },
@@ -4763,7 +4753,7 @@ fn execution_attempt_matches_scenario(
                 task_id,
                 result_message_id,
             },
-            ExecutionBinding::WorkItem { work_item_id },
+            Some(work_item_id),
             scheduler::CanonicalActivationScenario::ExactTaskRejoin {
                 task_id: expected_task,
                 work_item_id: expected_work_item,
@@ -4780,7 +4770,7 @@ fn execution_attempt_matches_scenario(
                 trigger_message_id,
                 ..
             },
-            ExecutionBinding::WorkItem { work_item_id },
+            Some(work_item_id),
             scheduler::CanonicalActivationScenario::ExactWaitResume {
                 owner:
                     crate::domain::scheduler::SchedulerOwner::WorkItem {
@@ -4799,7 +4789,7 @@ fn execution_attempt_matches_scenario(
                 trigger_message_id,
                 ..
             },
-            ExecutionBinding::AgentLifecycle { agent_id },
+            None,
             scheduler::CanonicalActivationScenario::ExactWaitResume {
                 owner:
                     crate::domain::scheduler::SchedulerOwner::AgentLifecycle {
@@ -4810,30 +4800,36 @@ fn execution_attempt_matches_scenario(
         ) => {
             wait_id == expected_wait
                 && trigger_message_id == &message.id
-                && agent_id == expected_agent
+                && lifecycle
+                && &attempt.agent_id == expected_agent
         }
         (
             ExecutionSourceIdentity::QueueMessage { message_id }
             | ExecutionSourceIdentity::InternalFollowup { message_id },
-            ExecutionBinding::AgentLifecycle { agent_id },
+            None,
             scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
                 agent_id: expected_agent,
             },
-        ) => message_id == &message.id && agent_id == expected_agent,
+        ) if lifecycle => message_id == &message.id && &attempt.agent_id == expected_agent,
         (
             ExecutionSourceIdentity::QueueMessage { message_id },
-            ExecutionBinding::Conversation { interaction_id },
+            None,
             scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
                 agent_id: expected_agent,
             },
         ) => {
             message_id == &message.id
                 && expected_agent == &message.agent_id
-                && message.trusted_interaction_id().as_ref() == Some(interaction_id)
+                && attempt
+                    .binding
+                    .interaction_id()
+                    .is_some_and(|interaction_id| {
+                        message.trusted_interaction_id().as_deref() == Some(interaction_id)
+                    })
         }
         (
             ExecutionSourceIdentity::QueueMessage { message_id },
-            ExecutionBinding::WorkItem { work_item_id },
+            Some(work_item_id),
             scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
                 work_item_id: expected,
                 wait_id: None,
@@ -4845,7 +4841,7 @@ fn execution_attempt_matches_scenario(
                 trigger_message_id,
                 ..
             },
-            ExecutionBinding::WorkItem { work_item_id },
+            Some(work_item_id),
             scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
                 work_item_id: expected,
                 wait_id: Some(expected_wait),
@@ -4863,25 +4859,24 @@ pub(crate) fn canonical_lifecycle_scenario_for_attempt(
     message: &MessageEnvelope,
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
 ) -> Option<scheduler::CanonicalActivationScenario> {
-    use crate::domain::execution_protocol::{ExecutionBinding, ExecutionSourceIdentity};
+    use crate::domain::execution_protocol::ExecutionSourceIdentity;
 
-    match (&attempt.source.identity, &attempt.binding) {
-        (
-            ExecutionSourceIdentity::TriggeredWait { wait_id, .. },
-            ExecutionBinding::AgentLifecycle { agent_id },
-        ) => Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
-            owner: crate::domain::scheduler::SchedulerOwner::AgentLifecycle {
-                agent_id: agent_id.clone(),
-            },
-            wait_id: wait_id.clone(),
-        }),
-        (
-            ExecutionSourceIdentity::QueueMessage { .. }
-            | ExecutionSourceIdentity::InternalFollowup { .. },
-            ExecutionBinding::AgentLifecycle { agent_id },
-        ) => Some(
+    if !attempt.has_agent_lifecycle_binding() {
+        return None;
+    }
+    match &attempt.source.identity {
+        ExecutionSourceIdentity::TriggeredWait { wait_id, .. } => {
+            Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+                owner: crate::domain::scheduler::SchedulerOwner::AgentLifecycle {
+                    agent_id: attempt.agent_id.clone(),
+                },
+                wait_id: wait_id.clone(),
+            })
+        }
+        ExecutionSourceIdentity::QueueMessage { .. }
+        | ExecutionSourceIdentity::InternalFollowup { .. } => Some(
             scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
-                agent_id: agent_id.clone(),
+                agent_id: attempt.agent_id.clone(),
             },
         ),
         _ => None,
@@ -4995,12 +4990,10 @@ fn unbound_execution_binding(
 ) -> ExecutionBinding {
     if admitted_wait_id.is_none() {
         if let Some(interaction_id) = message.trusted_interaction_id() {
-            return ExecutionBinding::Conversation { interaction_id };
+            return ExecutionBinding::for_conversation(&message.agent_id, interaction_id);
         }
     }
-    ExecutionBinding::AgentLifecycle {
-        agent_id: message.agent_id.clone(),
-    }
+    ExecutionBinding::agent_lifecycle(&message.agent_id)
 }
 
 fn canonical_execution_origin_for_scenario(
@@ -5225,6 +5218,22 @@ mod tests {
             &message,
             &scenario
         ));
+        for binding in [
+            ExecutionBinding::AgentLifecycle {
+                agent_id: "different-agent".into(),
+            },
+            ExecutionBinding::Conversation {
+                interaction_id: "unrelated-interaction".into(),
+            },
+            ExecutionBinding::Command,
+        ] {
+            let mut attempt = command.attempt.clone();
+            attempt.binding = binding;
+            assert!(!execution_attempt_matches_scenario(
+                &attempt, &message, &scenario
+            ));
+            assert!(canonical_lifecycle_scenario_for_attempt(&message, &attempt).is_none());
+        }
         let restored: AdmitExecution =
             serde_json::from_value(serde_json::to_value(command).unwrap()).unwrap();
         assert_eq!(&restored, command.as_ref());
@@ -6778,19 +6787,14 @@ mod tests {
     fn unbound_trusted_operator_prompt_uses_stable_conversation_owner() {
         let first = operator_prompt("first");
         let second = operator_prompt("second");
-        let ExecutionBinding::Conversation {
-            interaction_id: first_id,
-        } = unbound_execution_binding(&first, None)
-        else {
-            panic!("trusted operator prompt should use Conversation owner");
-        };
-        let ExecutionBinding::Conversation {
-            interaction_id: second_id,
-        } = unbound_execution_binding(&second, None)
-        else {
-            panic!("trusted operator prompt should use Conversation owner");
-        };
-        assert_eq!(first_id, second_id);
+        let first_binding = unbound_execution_binding(&first, None);
+        let second_binding = unbound_execution_binding(&second, None);
+        assert!(matches!(first_binding, ExecutionBinding::Agent { .. }));
+        assert!(first_binding.interaction_id().is_some());
+        assert_eq!(
+            first_binding.interaction_id(),
+            second_binding.interaction_id()
+        );
     }
 
     #[tokio::test]
@@ -6895,10 +6899,10 @@ mod tests {
     #[test]
     fn exact_wait_and_untrusted_input_do_not_use_conversation_owner() {
         let trusted = operator_prompt("wait resume");
-        assert!(matches!(
+        assert_eq!(
             unbound_execution_binding(&trusted, Some("wait-1")),
-            ExecutionBinding::AgentLifecycle { .. }
-        ));
+            ExecutionBinding::agent_lifecycle(&trusted.agent_id),
+        );
 
         let mut untrusted = operator_prompt("forged interaction");
         untrusted.authority_class = AuthorityClass::ExternalEvidence;
@@ -6906,10 +6910,10 @@ mod tests {
         untrusted
             .source_refs
             .insert("interaction_id".into(), "forged".into());
-        assert!(matches!(
+        assert_eq!(
             unbound_execution_binding(&untrusted, None),
-            ExecutionBinding::AgentLifecycle { .. }
-        ));
+            ExecutionBinding::agent_lifecycle(&untrusted.agent_id),
+        );
     }
 
     async fn queue_candidate(runtime: &RuntimeHandle) -> QueueCandidate {
@@ -7434,12 +7438,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let attempt = execution.open_attempt().unwrap();
-        assert_ne!(
-            attempt.binding,
-            ExecutionBinding::WorkItem {
-                work_item_id: "work-caller".into(),
-            }
-        );
+        assert_ne!(attempt.binding.work_item_id(), Some("work-caller"));
         crate::runtime::input_consumption::projection::validate_projection(
             &stored,
             attempt.input_projection.as_ref().unwrap(),

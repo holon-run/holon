@@ -4476,9 +4476,7 @@ impl PreparedInputTransition {
             return crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof::prepare_tx(
                 tx, scope, BTreeSet::new(), BTreeSet::new());
         }
-        use crate::domain::execution_protocol::{
-            ExecutionBinding, ExecutionProtocolCommand as Command,
-        };
+        use crate::domain::execution_protocol::ExecutionProtocolCommand as Command;
         use crate::runtime::resident_input_evidence::{
             InputEvidenceFamily as Family, InputEvidenceKey as Key,
         };
@@ -4707,7 +4705,7 @@ impl PreparedInputTransition {
                             "cleanup Attempt differs from its original queue admission"
                         );
                         roots.insert(Key::new(Family::Attempt, attempt_id));
-                        if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
+                        if let Some(work_item_id) = attempt.binding.work_item_id() {
                             roots.insert(Key::new(Family::WorkExecution, work_item_id));
                         }
                         if let Some(outcome_id) = outcome_id {

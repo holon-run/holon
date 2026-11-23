@@ -207,30 +207,9 @@ fn live_activation_tx(
     if turn.agent_id != agent_id || turn.turn_id != turn_id || turn.terminal.is_some() {
         return Ok(None);
     }
-    let owner_matches = match (&attempt.binding, turn.effective_owner()) {
-        (
-            crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id },
-            crate::types::TurnOwner::WorkItem {
-                work_item_id: owner,
-            },
-        ) => work_item_id == &owner,
-        (
-            crate::domain::execution_protocol::ExecutionBinding::Conversation { interaction_id },
-            crate::types::TurnOwner::Conversation {
-                interaction_id: owner,
-            },
-        ) => interaction_id == &owner,
-        (
-            crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle { agent_id },
-            crate::types::TurnOwner::AgentLifecycle { agent_id: owner },
-        ) => agent_id == &owner,
-        (
-            crate::domain::execution_protocol::ExecutionBinding::Command,
-            crate::types::TurnOwner::Command,
-        ) => true,
-        _ => false,
-    };
-    if !owner_matches {
+    if !attempt.binding.matches_agent_partition(agent_id)
+        || attempt.turn_owner() != turn.effective_owner()
+    {
         return Ok(None);
     }
     if !turn

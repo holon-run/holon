@@ -270,8 +270,8 @@ blocker, and do not grant this authority to unwaited or stale task results.
 Admission and settlement preserve independent business blockers and do not
 authorize unrelated autonomous WorkItem execution.
 
-When no new wait is registered and a business blocker remains, terminal
-settlement produces `WorkItemOutcome::Pause`. Recovery of an interrupted exact
+When no new wait is registered and a business blocker requires suspension,
+terminal settlement applies a paused WorkItem transition. Recovery of an interrupted exact
 task-result claim restores `Waiting` on its resolved wait, preserving bounded
 reentry without exposing a general `Runnable` state. Both advanced and
 unadvanced revision recovery keep the attempt/rejoin/provenance and wait fences;
@@ -282,25 +282,33 @@ attempt at an allowed boundary. It does not create a second open attempt.
 
 ## Settlement
 
-`SettleExecution(attempt_id, outcome, expected_facts)` accepts an
-owner-specific outcome:
+`SettleExecution` records one model `TurnOutcome`, independent of whether the
+attempt carries WorkItem or interaction attribution. Command results remain
+separate.
 
 ```text
-ConversationOutcome =
-  Replied | Wait(wait) | Paused(reason) | Interrupted(reason) | Failed(policy)
-
-WorkItemOutcome =
-  Continue | Wait(wait) | Complete(completion) | Pause(reason)
-  | Yield(target) | Failed(policy) | Interrupted(reason)
+TurnOutcome = Completed | Wait(wait) | Failed(policy) | Interrupted(reason)
 ```
+
+An optional WorkItem transition is separately fenced and committed: runnable,
+waiting, paused, or terminal. Historical Conversation and WorkItem outcomes
+decode to the same model, retaining any pause, yield, completion, or recovery
+facts needed to reproduce the WorkItem transition.
+
+A text-only settlement on a runnable WorkItem continuation advances its
+generation exactly once and leaves it runnable. A text-only event Turn does
+not mutate a waiting or paused focus. `CompleteWorkItem` and `WaitFor` retain
+their existing target and wait fences on either kind of model Turn.
 
 One transaction:
 
 1. compare-and-swap the open attempt;
-2. validate owner/outcome compatibility;
+2. validate the outcome and any WorkItem transition against their durable
+   agent, source, revision, and wait fences;
 3. terminalize the source queue claim;
 4. update WorkItem execution state;
-5. consume, resolve, create, or transfer waits;
+5. consume, resolve, create, or transfer waits and record consumption of task
+   results delivered to this Turn;
 6. perform continuation or yield handoff;
 7. bind Run and Turn terminal facts;
 8. write immutable outcome and audit evidence;

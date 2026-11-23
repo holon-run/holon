@@ -2,7 +2,7 @@
 //! A Message/Attempt turn_id alone remains only a preallocated/replay hint.
 use super::*;
 use crate::domain::execution_protocol::{
-    AdmittedFences, ExecutionAttemptState, ExecutionBinding, ExecutionSource,
+    AdmittedFences, ExecutionAttemptState, ExecutionSource, StoredExecutionBinding,
 };
 use crate::types::{
     AgentMessageDeliveryState, AgentState, AgentStatus, QueueEntryRecord, QueueEntryStatus,
@@ -16,10 +16,7 @@ fn isolated_delivery_hint_tx(
     attempt: &ExecutionAttempt,
     message: &MessageEnvelope,
 ) -> Result<bool> {
-    if attempt.turn_id.is_some()
-        || !matches!(&attempt.binding, ExecutionBinding::AgentLifecycle { agent_id }
-            if agent_id == &attempt.agent_id)
-    {
+    if attempt.turn_id.is_some() || !attempt.has_agent_lifecycle_binding() {
         return Ok(false);
     }
     let Some(delivery) =
@@ -45,7 +42,7 @@ struct ClosedClaimObservation {
 pub(super) struct AttemptTurnProof {
     source_message_id: Option<String>,
     source: ExecutionSource,
-    binding: ExecutionBinding,
+    binding: StoredExecutionBinding,
     fences: AdmittedFences,
     admitted_at: String,
     hint_turn_id: Option<String>,
@@ -56,11 +53,28 @@ pub(super) struct AttemptTurnProof {
     closed_claim: Option<ClosedClaimObservation>,
 }
 impl AttemptTurnProof {
+    pub(super) fn equivalent(owner: &str, left: Option<&Self>, right: Option<&Self>) -> bool {
+        match (left, right) {
+            (None, None) => true,
+            (Some(left), Some(right)) => {
+                left.source_message_id == right.source_message_id
+                    && left.source == right.source
+                    && left.binding.matches_in_agent(&right.binding, owner)
+                    && left.fences == right.fences
+                    && left.admitted_at == right.admitted_at
+                    && left.hint_turn_id == right.hint_turn_id
+                    && left.turn_keys == right.turn_keys
+                    && left.closed_claim == right.closed_claim
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn for_output(attempt: &ExecutionAttempt, turn_keys: BTreeSet<Key>) -> Self {
         Self {
             source_message_id: attempt.source_message_id.clone(),
             source: attempt.source.clone(),
-            binding: attempt.binding.clone(),
+            binding: (&attempt.binding).into(),
             fences: attempt.admitted_fences.clone(),
             admitted_at: attempt.admitted_at.clone(),
             hint_turn_id: attempt.turn_id.clone(),
@@ -71,7 +85,7 @@ impl AttemptTurnProof {
     fn matches_attempt(&self, attempt: &ExecutionAttempt) -> bool {
         self.source_message_id == attempt.source_message_id
             && self.source == attempt.source
-            && self.binding == attempt.binding
+            && self.binding.matches_attempt(attempt)
             && self.fences == attempt.admitted_fences
             && self.admitted_at == attempt.admitted_at
             && self.closed_claim.as_ref().is_none_or(|closed| {
@@ -370,7 +384,7 @@ pub(super) fn observe(
     Ok(AttemptTurnProof {
         source_message_id: attempt.source_message_id.clone(),
         source: attempt.source.clone(),
-        binding: attempt.binding.clone(),
+        binding: (&attempt.binding).into(),
         fences: attempt.admitted_fences.clone(),
         admitted_at: attempt.admitted_at.clone(),
         hint_turn_id: attempt.turn_id.clone(),
@@ -532,7 +546,9 @@ mod tests {
                         identity: ExecutionSourceIdentity::QueueMessage { message_id: message.id.clone() },
                         generation: message.message_seq.unwrap(),
                     },
-                    binding: ExecutionBinding::AgentLifecycle { agent_id: "target".into() },
+                    binding: crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
+                        agent_id: "target".into(),
+                    },
                     provenance: ExecutionProvenance {
                         origin: ExecutionOrigin::Task, trust: ExecutionTrust::RuntimeInstruction,
                         priority: ExecutionPriority::Normal, correlation_id: None, causation_id: None,

@@ -12,8 +12,8 @@ use crate::domain::execution_protocol::TaskRejoinSource;
 use crate::types::{
     AdmissionContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryRecord,
     AgentMessageDeliveryState, AuthorityClass, MessageDeliverySurface, MessageEnvelope,
-    MessageKind, MessageOrigin, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TurnOwner,
-    TurnRecord, TurnTerminalKind,
+    MessageKind, MessageOrigin, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TurnRecord,
+    TurnTerminalKind,
 };
 
 const LIVE_TASK_RESULT_CANDIDATE_LIMIT: usize = 64;
@@ -593,8 +593,6 @@ fn turn_matches_attempt_source(
     turn: &TurnRecord,
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
 ) -> bool {
-    use crate::domain::execution_protocol::ExecutionBinding;
-
     if turn.agent_id != attempt.agent_id
         || attempt
             .run_id
@@ -613,19 +611,7 @@ fn turn_matches_attempt_source(
     {
         return false;
     }
-    let owner = match &attempt.binding {
-        ExecutionBinding::Conversation { interaction_id } => TurnOwner::Conversation {
-            interaction_id: interaction_id.clone(),
-        },
-        ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
-            work_item_id: work_item_id.clone(),
-        },
-        ExecutionBinding::AgentLifecycle { agent_id } => TurnOwner::AgentLifecycle {
-            agent_id: agent_id.clone(),
-        },
-        ExecutionBinding::Command => TurnOwner::Command,
-    };
-    turn.effective_owner() == owner
+    turn.effective_owner() == attempt.turn_owner()
 }
 
 /// Only dynamic source cutoffs use this clock. Historical admission cutoffs
@@ -852,8 +838,6 @@ fn initial_source_is_recoverable_tx(
     now: SourceTime<'_>,
     recovery: &RecoverySources,
 ) -> Result<bool> {
-    use crate::domain::execution_protocol::ExecutionBinding;
-
     if !result_typed_source_matches_tx(
         tx,
         record,
@@ -871,18 +855,15 @@ fn initial_source_is_recoverable_tx(
     let Some(message) = message_tx(tx, &record.message_id)? else {
         return Ok(false);
     };
-    let owner = match &current.binding {
-        ExecutionBinding::WorkItem { work_item_id } => Some(work_item_id.as_str()),
-        ExecutionBinding::AgentLifecycle { agent_id } if agent_id == &current.agent_id => None,
-        _ => {
-            return Ok(
-                current.source_message_id.as_deref() == Some(message.id.as_str())
-                    && message.work_item_id == record.work_item_id
-                    && matches!(task.kind, TaskKind::CommandTask | TaskKind::ChildAgentTask)
-                    && crate::wake_contract::agent_message_reply_reference(&message).is_none(),
-            );
-        }
-    };
+    if !current.has_scheduler_attribution() {
+        return Ok(
+            current.source_message_id.as_deref() == Some(message.id.as_str())
+                && message.work_item_id == record.work_item_id
+                && matches!(task.kind, TaskKind::CommandTask | TaskKind::ChildAgentTask)
+                && crate::wake_contract::agent_message_reply_reference(&message).is_none(),
+        );
+    }
+    let owner = current.binding.work_item_id();
     let exact_wait: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM wait_conditions waits,
                          json_each(waits.wake_sources_json) wake

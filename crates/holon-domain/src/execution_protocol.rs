@@ -20,6 +20,64 @@ pub enum ExecutionSettlementConflict {
     },
 }
 
+impl TurnSettlement {
+    fn matches_binding(&self, binding: &ExecutionBinding) -> bool {
+        use TurnOutcome::{Completed, Failed, Interrupted, Wait};
+        use TurnWorkItemEffect as Effect;
+
+        if binding.is_command() {
+            return false;
+        }
+        let bound = binding.work_item_id().is_some();
+        match (&self.outcome, &self.work_item_effect, bound) {
+            (Completed | Wait { .. }, None | Some(Effect::Handoff { .. }), false)
+            | (Failed { .. }, None, false)
+            | (
+                Interrupted {
+                    interruption:
+                        TurnInterruption::Interrupted { .. } | TurnInterruption::Aborted { .. },
+                },
+                None,
+                false,
+            )
+            | (
+                Completed,
+                Some(
+                    Effect::Continue
+                    | Effect::Complete { .. }
+                    | Effect::Pause { .. }
+                    | Effect::Yield { .. },
+                ),
+                true,
+            )
+            | (Wait { .. }, Some(Effect::Wait), true)
+            | (
+                Interrupted {
+                    interruption:
+                        TurnInterruption::Interrupted { .. } | TurnInterruption::Reentry { .. },
+                },
+                Some(Effect::ResumeInterrupted),
+                true,
+            )
+            | (
+                Interrupted {
+                    interruption: TurnInterruption::Aborted { .. },
+                },
+                Some(Effect::Continue),
+                true,
+            ) => true,
+            (
+                Failed {
+                    failure: TurnFailure::Policy { policy },
+                },
+                Some(Effect::Pause { reason }),
+                true,
+            ) => policy == reason,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionProtocolState {
     pub agent_id: String,
@@ -62,12 +120,23 @@ pub fn resume_work_item_continuation(
     if command.source.work_item_revision < command.expected.source_revision {
         return Err("continuation resume cannot rewind the WorkItem source revision".into());
     }
+    // A continuation resumes business state without settling a model Turn.
+    let transition = match &command.outcome {
+        WorkItemOutcome::Continue => WorkItemTurnTransition::Runnable { recovery_ref: None },
+        WorkItemOutcome::Wait { wait } => WorkItemTurnTransition::Waiting {
+            wait_id: &wait.wait_id,
+        },
+        WorkItemOutcome::Pause { reason } => WorkItemTurnTransition::Paused { reason },
+        _ => {
+            return Err("continuation resume requires a runnable, waiting, or paused state".into())
+        }
+    };
     let mut next = state.clone();
     let record = next
         .work_items
         .get_mut(&command.work_item_id)
         .expect("continuation resume preserved WorkItem");
-    record.state = plan_work_item_outcome(record.generation(), &command.outcome)?;
+    record.state = plan_work_item_transition(record.generation(), transition)?;
     // The resume is the single canonical transition for the suspended
     // WorkItem in its atomic batch: its source fence carries the projected
     // revision that batch writes, so the canonical source revision advances
@@ -221,10 +290,10 @@ pub fn complete_work_item_execution(
         .work_items
         .get_mut(&command.work_item_id)
         .expect("WorkItem completion preserved WorkItem");
-    record.state = plan_work_item_outcome(
+    record.state = plan_work_item_transition(
         record.generation(),
-        &WorkItemOutcome::Complete {
-            completion: command.completion.clone(),
+        WorkItemTurnTransition::Terminal {
+            completion: &command.completion,
         },
     )?;
     assert_invariants(&next)?;
@@ -279,6 +348,29 @@ pub struct ExecutionAttempt {
     pub admitted_at: String,
     #[serde(default)]
     pub terminal_at: Option<String>,
+}
+
+impl ExecutionAttempt {
+    /// An unattributed model binding in its own agent partition.
+    pub fn has_agent_lifecycle_binding(&self) -> bool {
+        self.binding.is_agent_lifecycle()
+            && self.binding.explicit_agent_id() == Some(self.agent_id.as_str())
+    }
+
+    /// The owner categories accepted by existing scheduler recovery paths.
+    pub fn has_scheduler_attribution(&self) -> bool {
+        self.binding.work_item_id().is_some() || self.has_agent_lifecycle_binding()
+    }
+
+    /// Legacy query owner, not an execution or scheduling authority.
+    pub fn turn_owner(&self) -> crate::TurnOwner {
+        self.binding
+            .turn_attribution()
+            .map_or(crate::TurnOwner::Command, |attribution| {
+                attribution
+                    .into_turn_owner(self.binding.explicit_agent_id().unwrap_or(&self.agent_id))
+            })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,10 +434,251 @@ pub enum ExecutionWaitIngress {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecutionBinding {
-    Conversation { interaction_id: String },
-    WorkItem { work_item_id: String },
-    AgentLifecycle { agent_id: String },
+    Agent {
+        agent_id: String,
+        attribution: TurnAttribution,
+    },
+    Conversation {
+        interaction_id: String,
+    },
+    WorkItem {
+        work_item_id: String,
+    },
+    AgentLifecycle {
+        agent_id: String,
+    },
     Command,
+}
+
+/// Context and history attribution for a model turn. Neither identifier
+/// grants scheduling authority or changes the owning agent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnAttribution {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interaction_id: Option<String>,
+}
+
+impl TurnAttribution {
+    pub(crate) fn into_turn_owner(self, agent_id: &str) -> crate::TurnOwner {
+        if let Some(work_item_id) = self.work_item_id {
+            crate::TurnOwner::WorkItem { work_item_id }
+        } else if let Some(interaction_id) = self.interaction_id {
+            crate::TurnOwner::Conversation { interaction_id }
+        } else {
+            crate::TurnOwner::AgentLifecycle {
+                agent_id: agent_id.to_owned(),
+            }
+        }
+    }
+}
+
+impl ExecutionBinding {
+    pub fn agent_lifecycle(agent_id: impl Into<String>) -> Self {
+        Self::Agent {
+            agent_id: agent_id.into(),
+            attribution: TurnAttribution::default(),
+        }
+    }
+
+    pub fn for_work_item(agent_id: impl Into<String>, work_item_id: impl Into<String>) -> Self {
+        Self::Agent {
+            agent_id: agent_id.into(),
+            attribution: TurnAttribution {
+                work_item_id: Some(work_item_id.into()),
+                interaction_id: None,
+            },
+        }
+    }
+
+    pub fn for_conversation(
+        agent_id: impl Into<String>,
+        interaction_id: impl Into<String>,
+    ) -> Self {
+        Self::Agent {
+            agent_id: agent_id.into(),
+            attribution: TurnAttribution {
+                work_item_id: None,
+                interaction_id: Some(interaction_id.into()),
+            },
+        }
+    }
+
+    pub fn work_item_id(&self) -> Option<&str> {
+        match self {
+            Self::Agent { attribution, .. } => attribution.work_item_id.as_deref(),
+            Self::WorkItem { work_item_id } => Some(work_item_id),
+            _ => None,
+        }
+    }
+
+    pub fn interaction_id(&self) -> Option<&str> {
+        match self {
+            Self::Agent { attribution, .. } => attribution.interaction_id.as_deref(),
+            Self::Conversation { interaction_id } => Some(interaction_id),
+            _ => None,
+        }
+    }
+
+    pub fn is_command(&self) -> bool {
+        matches!(self, Self::Command)
+    }
+
+    /// Legacy scoped bindings have no explicit agent ID; the durable attempt
+    /// or source still has to be checked against the trusted agent partition.
+    pub fn matches_agent_partition(&self, agent_id: &str) -> bool {
+        self.explicit_agent_id().is_none_or(|id| id == agent_id)
+    }
+
+    /// Compare legacy and canonical bindings using the enclosing agent partition.
+    pub fn matches_in_agent(&self, other: &Self, agent_id: &str) -> bool {
+        self.matches_agent_partition(agent_id)
+            && other.matches_agent_partition(agent_id)
+            && self.is_command() == other.is_command()
+            && self.work_item_id() == other.work_item_id()
+            && self.interaction_id() == other.interaction_id()
+    }
+
+    /// Upgrade a binding with the trusted owner supplied by its attempt.
+    pub fn canonical_in_agent(&self, agent_id: &str) -> Option<Self> {
+        if !self.matches_agent_partition(agent_id) {
+            return None;
+        }
+        Some(match self.turn_attribution() {
+            Some(attribution) => Self::Agent {
+                agent_id: agent_id.to_owned(),
+                attribution,
+            },
+            None => Self::Command,
+        })
+    }
+
+    fn explicit_agent_id(&self) -> Option<&str> {
+        match self {
+            Self::Agent { agent_id, .. } | Self::AgentLifecycle { agent_id } => Some(agent_id),
+            _ => None,
+        }
+    }
+
+    pub fn is_agent_lifecycle(&self) -> bool {
+        !self.is_command() && self.work_item_id().is_none() && self.interaction_id().is_none()
+    }
+
+    fn is_conversation_only(&self) -> bool {
+        self.work_item_id().is_none() && self.interaction_id().is_some()
+    }
+
+    pub fn turn_attribution(&self) -> Option<TurnAttribution> {
+        (!self.is_command()).then(|| TurnAttribution {
+            work_item_id: self.work_item_id().map(str::to_owned),
+            interaction_id: self.interaction_id().map(str::to_owned),
+        })
+    }
+}
+
+/// Wire forms found in durable attempts and independently persisted evidence.
+/// Legacy work and conversation bindings have no agent identity of their own.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StoredExecutionBinding {
+    Agent {
+        agent_id: String,
+        attribution: TurnAttribution,
+    },
+    Conversation {
+        interaction_id: String,
+    },
+    WorkItem {
+        work_item_id: String,
+    },
+    AgentLifecycle {
+        agent_id: String,
+    },
+    Command,
+}
+
+impl StoredExecutionBinding {
+    /// Decode a binding in the scope of its durable attempt or event.
+    /// An explicit foreign agent never inherits the supplied scope.
+    pub fn into_execution_binding(self, owner: &str) -> Option<ExecutionBinding> {
+        match self {
+            Self::Agent {
+                agent_id,
+                attribution,
+            } if agent_id == owner => Some(ExecutionBinding::Agent {
+                agent_id,
+                attribution,
+            }),
+            Self::WorkItem { work_item_id } => {
+                Some(ExecutionBinding::for_work_item(owner, work_item_id))
+            }
+            Self::Conversation { interaction_id } => {
+                Some(ExecutionBinding::for_conversation(owner, interaction_id))
+            }
+            Self::AgentLifecycle { agent_id } if agent_id == owner => {
+                Some(ExecutionBinding::agent_lifecycle(agent_id))
+            }
+            Self::Command => Some(ExecutionBinding::Command),
+            _ => None,
+        }
+    }
+
+    fn scoped_attribution(&self, owner: &str) -> Option<(Option<&str>, Option<&str>)> {
+        match self {
+            Self::Agent {
+                agent_id,
+                attribution,
+            } if agent_id == owner => Some((
+                attribution.work_item_id.as_deref(),
+                attribution.interaction_id.as_deref(),
+            )),
+            Self::WorkItem { work_item_id } => Some((Some(work_item_id), None)),
+            Self::Conversation { interaction_id } => Some((None, Some(interaction_id))),
+            Self::AgentLifecycle { agent_id } if agent_id == owner => Some((None, None)),
+            _ => None,
+        }
+    }
+
+    /// Compare bindings within their trusted durable row/attempt owner. Legacy
+    /// WorkItem and Conversation bindings get their missing owner from this scope.
+    pub fn matches_in_agent(&self, other: &Self, owner: &str) -> bool {
+        match (self, other) {
+            (Self::Command, Self::Command) => true,
+            _ => self
+                .scoped_attribution(owner)
+                .is_some_and(|attribution| other.scoped_attribution(owner) == Some(attribution)),
+        }
+    }
+
+    pub fn matches_attempt(&self, attempt: &ExecutionAttempt) -> bool {
+        self.matches_in_agent(&(&attempt.binding).into(), &attempt.agent_id)
+    }
+}
+
+impl From<&ExecutionBinding> for StoredExecutionBinding {
+    fn from(binding: &ExecutionBinding) -> Self {
+        match binding {
+            ExecutionBinding::Agent {
+                agent_id,
+                attribution,
+            } => Self::Agent {
+                agent_id: agent_id.clone(),
+                attribution: attribution.clone(),
+            },
+            ExecutionBinding::Conversation { interaction_id } => Self::Conversation {
+                interaction_id: interaction_id.clone(),
+            },
+            ExecutionBinding::WorkItem { work_item_id } => Self::WorkItem {
+                work_item_id: work_item_id.clone(),
+            },
+            ExecutionBinding::AgentLifecycle { agent_id } => Self::AgentLifecycle {
+                agent_id: agent_id.clone(),
+            },
+            ExecutionBinding::Command => Self::Command,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -553,6 +886,8 @@ pub struct WaitReference {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "owner", content = "outcome", rename_all = "snake_case")]
 pub enum ExecutionOutcome {
+    Turn(TurnSettlement),
+    // Historical model outcome encodings. New settlements store Turn instead.
     Conversation(ConversationOutcome),
     WorkItem(WorkItemOutcome),
     Command(CommandResult),
@@ -618,6 +953,193 @@ pub enum WorkItemOutcome {
     },
 }
 
+/// The model Turn's result, regardless of its WorkItem or interaction attribution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnOutcome {
+    Completed,
+    Wait { wait: WaitReference },
+    Failed { failure: TurnFailure },
+    Interrupted { interruption: TurnInterruption },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnFailure {
+    Policy { policy: String },
+    Paused { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnInterruption {
+    Interrupted { reason: String },
+    Aborted { reason: String },
+    Reentry { recovery_ref: String },
+}
+
+/// A model terminal and its business effect are independent. In particular a
+/// lifecycle Turn can end without changing focus, or hand off to a WorkItem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnSettlement {
+    pub outcome: TurnOutcome,
+    pub work_item_effect: Option<TurnWorkItemEffect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnWorkItemEffect {
+    Continue,
+    Wait,
+    Complete { completion: String },
+    Pause { reason: String },
+    Yield { target_work_item_id: String },
+    ResumeInterrupted,
+    Handoff { work_item_id: String },
+}
+
+impl ExecutionOutcome {
+    /// Read a model settlement in either the current or historical encoding.
+    pub fn model_turn(&self) -> Option<TurnSettlement> {
+        use TurnOutcome::{Completed, Failed, Interrupted, Wait};
+        use TurnWorkItemEffect as Effect;
+
+        let (outcome, work_item_effect) = match self {
+            Self::Turn(turn) => return Some(turn.clone()),
+            Self::Command(_) => return None,
+            Self::Conversation(legacy) => match legacy {
+                ConversationOutcome::Replied => (Completed, None),
+                ConversationOutcome::HandoffToWorkItemContinue { work_item_id } => (
+                    Completed,
+                    Some(Effect::Handoff {
+                        work_item_id: work_item_id.clone(),
+                    }),
+                ),
+                ConversationOutcome::Wait { wait } => (Wait { wait: wait.clone() }, None),
+                ConversationOutcome::HandoffToWorkItemWait { work_item_id, wait } => (
+                    Wait { wait: wait.clone() },
+                    Some(Effect::Handoff {
+                        work_item_id: work_item_id.clone(),
+                    }),
+                ),
+                ConversationOutcome::Paused { reason } => (
+                    Failed {
+                        failure: TurnFailure::Paused {
+                            reason: reason.clone(),
+                        },
+                    },
+                    None,
+                ),
+                ConversationOutcome::Failed { policy } => (
+                    Failed {
+                        failure: TurnFailure::Policy {
+                            policy: policy.clone(),
+                        },
+                    },
+                    None,
+                ),
+                ConversationOutcome::Interrupted { reason } => (
+                    Interrupted {
+                        interruption: TurnInterruption::Interrupted {
+                            reason: reason.clone(),
+                        },
+                    },
+                    None,
+                ),
+                ConversationOutcome::Aborted { reason } => (
+                    Interrupted {
+                        interruption: TurnInterruption::Aborted {
+                            reason: reason.clone(),
+                        },
+                    },
+                    None,
+                ),
+            },
+            Self::WorkItem(legacy) => {
+                let (outcome, effect) = match legacy {
+                    WorkItemOutcome::Continue => (Completed, Effect::Continue),
+                    WorkItemOutcome::Wait { wait } => (Wait { wait: wait.clone() }, Effect::Wait),
+                    WorkItemOutcome::Complete { completion } => (
+                        Completed,
+                        Effect::Complete {
+                            completion: completion.clone(),
+                        },
+                    ),
+                    WorkItemOutcome::Pause { reason } => (
+                        Completed,
+                        Effect::Pause {
+                            reason: reason.clone(),
+                        },
+                    ),
+                    WorkItemOutcome::Yield {
+                        target_work_item_id,
+                    } => (
+                        Completed,
+                        Effect::Yield {
+                            target_work_item_id: target_work_item_id.clone(),
+                        },
+                    ),
+                    WorkItemOutcome::Failed { policy } => (
+                        Failed {
+                            failure: TurnFailure::Policy {
+                                policy: policy.clone(),
+                            },
+                        },
+                        Effect::Pause {
+                            reason: policy.clone(),
+                        },
+                    ),
+                    WorkItemOutcome::Interrupted { reason } => (
+                        Interrupted {
+                            interruption: TurnInterruption::Interrupted {
+                                reason: reason.clone(),
+                            },
+                        },
+                        Effect::ResumeInterrupted,
+                    ),
+                    WorkItemOutcome::Aborted { reason } => (
+                        Interrupted {
+                            interruption: TurnInterruption::Aborted {
+                                reason: reason.clone(),
+                            },
+                        },
+                        Effect::Continue,
+                    ),
+                    WorkItemOutcome::Reentry { recovery_ref } => (
+                        Interrupted {
+                            interruption: TurnInterruption::Reentry {
+                                recovery_ref: recovery_ref.clone(),
+                            },
+                        },
+                        Effect::ResumeInterrupted,
+                    ),
+                };
+                (outcome, Some(effect))
+            }
+        };
+        Some(TurnSettlement {
+            outcome,
+            work_item_effect,
+        })
+    }
+
+    pub fn same_terminal_as(&self, other: &Self) -> bool {
+        self == other
+            || self
+                .model_turn()
+                .is_some_and(|turn| other.model_turn().as_ref() == Some(&turn))
+    }
+
+    pub fn matches_binding(&self, binding: &ExecutionBinding) -> bool {
+        match self {
+            Self::Turn(turn) => turn.matches_binding(binding),
+            Self::WorkItem(_) => binding.work_item_id().is_some(),
+            Self::Conversation(_) => !binding.is_command() && binding.work_item_id().is_none(),
+            Self::Command(_) => binding.is_command(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CommandResult {
@@ -632,6 +1154,15 @@ pub struct ExecutionOutcomeRecord {
     pub attempt_id: String,
     pub outcome: ExecutionOutcome,
     pub created_at: String,
+}
+
+impl ExecutionOutcomeRecord {
+    pub fn same_terminal_as(&self, other: &Self) -> bool {
+        self.outcome_id == other.outcome_id
+            && self.attempt_id == other.attempt_id
+            && self.created_at == other.created_at
+            && self.outcome.same_terminal_as(&other.outcome)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -885,13 +1416,14 @@ pub fn set_work_item_waiting(
     if state.work_items.get(&command.work_item_id) != command.expected.as_ref() {
         return Err("WorkItem waiting transition fence is stale".into());
     }
-    if state.open_attempt().is_some_and(|attempt| {
-        matches!(&attempt.binding, ExecutionBinding::WorkItem { work_item_id }
-            if work_item_id == &command.work_item_id)
-    }) || command.expected.as_ref().is_some_and(|record| {
-        matches!(record.state, WorkItemExecutionState::Terminal { .. })
-            || command.record.generation() <= record.generation()
-    }) {
+    if state
+        .open_attempt()
+        .is_some_and(|attempt| attempt.binding.work_item_id() == Some(&command.work_item_id))
+        || command.expected.as_ref().is_some_and(|record| {
+            matches!(record.state, WorkItemExecutionState::Terminal { .. })
+                || command.record.generation() <= record.generation()
+        })
+    {
         return Err("WorkItem is not eligible for lifecycle wait handoff".into());
     }
     let mut next = state.clone();
@@ -1135,37 +1667,22 @@ pub fn validate_source_binding(
     binding: &ExecutionBinding,
     fences: &AdmittedFences,
 ) -> Result<(), String> {
-    use ExecutionBinding::*;
     use ExecutionSourceIdentity::*;
-    let allowed = match (&source.identity, binding) {
-        (
-            QueueMessage { .. } | InternalFollowup { .. },
-            Conversation { .. } | WorkItem { .. } | AgentLifecycle { .. },
-        ) => true,
-        (
-            RuntimeRecovery { .. },
-            WorkItem { .. } | Command | Conversation { .. } | AgentLifecycle { .. },
-        ) => true,
-        (TaskResult { .. }, Conversation { .. } | WorkItem { .. } | Command) => true,
-        (ChildResult { .. }, Conversation { .. } | WorkItem { .. } | Command) => true,
-        (TriggeredWait { .. }, Conversation { .. } | WorkItem { .. } | AgentLifecycle { .. }) => {
-            true
+    let allowed = match &source.identity {
+        QueueMessage { .. } | InternalFollowup { .. } | TriggeredWait { .. } => {
+            !binding.is_command()
         }
-        (
-            WorkItemContinuation {
-                work_item_id: source_work_item_id,
-            },
-            WorkItem { work_item_id },
-        ) => source_work_item_id == work_item_id,
-        (
-            TargetedContinuation {
-                target_work_item_id,
-                ..
-            },
-            WorkItem { work_item_id },
-        ) => target_work_item_id == work_item_id,
-        (TargetedContinuation { .. }, Conversation { .. } | Command) => true,
-        _ => false,
+        RuntimeRecovery { .. } => true,
+        TaskResult { .. } | ChildResult { .. } => !binding.is_agent_lifecycle(),
+        WorkItemContinuation { work_item_id } => binding.work_item_id() == Some(work_item_id),
+        TargetedContinuation {
+            target_work_item_id,
+            ..
+        } => {
+            binding.work_item_id() == Some(target_work_item_id)
+                || binding.is_conversation_only()
+                || binding.is_command()
+        }
     };
     if !allowed {
         return Err(format!(
@@ -1218,21 +1735,17 @@ pub fn validate_provenance(attempt: &ExecutionAttempt) -> Result<(), String> {
     // Runtime-owned followups retain their ingress identity through exact waits,
     // preserving, never upgrading, the original message trust.
     let runtime_owned_followup = matches!(
-        (
-            &attempt.source.identity,
-            &attempt.binding,
-            provenance.origin
-        ),
+        (&attempt.source.identity, provenance.origin),
         (
             ExecutionSourceIdentity::InternalFollowup { .. }
                 | ExecutionSourceIdentity::TriggeredWait {
                     ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
                     ..
                 },
-            ExecutionBinding::WorkItem { .. } | ExecutionBinding::AgentLifecycle { .. },
             System | Task
         )
-    );
+    ) && (attempt.binding.work_item_id().is_some()
+        || attempt.binding.is_agent_lifecycle());
     if !valid && !runtime_owned_followup {
         return Err("execution provenance origin and trust are incompatible".into());
     }
@@ -1263,10 +1776,8 @@ pub fn admit_execution(
     {
         return Err("admission source and control fences must match nonzero revisions".into());
     }
-    if let ExecutionBinding::AgentLifecycle { agent_id } = &attempt.binding {
-        if agent_id != &attempt.agent_id {
-            return Err("agent lifecycle binding does not match attempt partition".into());
-        }
+    if !attempt.binding.matches_agent_partition(&attempt.agent_id) {
+        return Err("agent lifecycle binding does not match attempt partition".into());
     }
     if attempt.state != ExecutionAttemptState::Open
         || attempt.terminal_outcome_id.is_some()
@@ -1291,22 +1802,24 @@ pub fn admit_execution(
         if matches!(
             attempt.source.identity,
             ExecutionSourceIdentity::RuntimeRecovery { .. }
-        ) && (prior.agent_id != attempt.agent_id || prior.binding != attempt.binding)
+        ) && (prior.agent_id != attempt.agent_id
+            || !prior
+                .binding
+                .matches_in_agent(&attempt.binding, &attempt.agent_id))
         {
             return Err("runtime recovery must inherit its predecessor binding".into());
         }
     } else if matches!(
         attempt.source.identity,
         ExecutionSourceIdentity::RuntimeRecovery { .. }
-    ) && matches!(
-        attempt.binding,
-        ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. }
-    ) {
+    ) && !attempt.binding.is_command()
+        && attempt.binding.work_item_id().is_none()
+    {
         return Err("unbound runtime recovery requires a validated predecessor".into());
     }
 
     let mut next = state.clone();
-    if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
+    if let Some(work_item_id) = attempt.binding.work_item_id() {
         let expected_source_revision = attempt
             .admitted_fences
             .work_item_source_revision
@@ -1357,9 +1870,12 @@ pub fn settle_execution(
     if attempt.state != ExecutionAttemptState::Open {
         return Err("only an open attempt may settle".into());
     }
-    validate_outcome_binding(&attempt.binding, &outcome.outcome)?;
+    if !outcome.outcome.matches_binding(&attempt.binding) {
+        return Err("execution outcome is incompatible with attempt binding".into());
+    }
+    let turn = outcome.outcome.model_turn();
 
-    if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
+    if let Some(work_item_id) = attempt.binding.work_item_id() {
         let work_record = next
             .work_items
             .get_mut(work_item_id)
@@ -1370,36 +1886,20 @@ pub fn settle_execution(
         ) {
             return Err("WorkItem generation does not match the settling attempt".into());
         }
-        let ExecutionOutcome::WorkItem(work_item_outcome) = &outcome.outcome else {
-            unreachable!("WorkItem binding validated above");
-        };
-        let generation = work_record.generation();
-        work_record.state = match (
-            &work_record.state,
-            &attempt.source.identity,
-            work_item_outcome,
-        ) {
-            (
-                WorkItemExecutionState::Waiting { .. },
-                ExecutionSourceIdentity::TriggeredWait { wait_id, .. },
-                WorkItemOutcome::Interrupted { .. },
-            ) => plan_work_item_outcome(
-                generation,
-                &WorkItemOutcome::Wait {
-                    wait: WaitReference {
-                        wait_id: wait_id.clone(),
-                    },
-                },
-            )?,
-            _ => plan_work_item_outcome(generation, work_item_outcome)?,
-        };
+        let turn = turn.as_ref().expect("WorkItem binding validated above");
+        let transition =
+            plan_bound_turn_transition(turn, &work_record.state, &attempt.source.identity)?;
+        work_record.state = plan_work_item_transition(work_record.generation(), transition)?;
     }
 
     attempt.state = ExecutionAttemptState::Settled;
     attempt.terminal_outcome_id = Some(outcome.outcome_id.clone());
     attempt.terminal_at = Some(outcome.created_at.clone());
-    next.outcomes
-        .insert(outcome.outcome_id.clone(), outcome.clone());
+    let mut settled = outcome.clone();
+    if let Some(turn) = turn {
+        settled.outcome = ExecutionOutcome::Turn(turn);
+    }
+    next.outcomes.insert(settled.outcome_id.clone(), settled);
     assert_invariants(&next)?;
     Ok(ExecutionTransition {
         state: next,
@@ -1417,26 +1917,24 @@ pub fn interrupt_execution(
     let outcome = ExecutionOutcomeRecord {
         outcome_id: command.outcome_id.clone(),
         attempt_id: command.attempt_id.clone(),
-        outcome: match state
-            .attempts
-            .get(&command.attempt_id)
-            .map(|attempt| &attempt.binding)
-        {
-            Some(ExecutionBinding::WorkItem { .. }) => {
+        outcome: {
+            let attempt = state
+                .attempts
+                .get(&command.attempt_id)
+                .ok_or("interruption references an unknown attempt")?;
+            if attempt.binding.is_command() {
+                ExecutionOutcome::Command(CommandResult::Applied {
+                    references: vec![format!("interrupted:{}", command.attempt_id)],
+                })
+            } else if attempt.binding.work_item_id().is_some() {
                 ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
                     reason: command.reason.clone(),
                 })
-            }
-            Some(ExecutionBinding::Conversation { .. })
-            | Some(ExecutionBinding::AgentLifecycle { .. }) => {
+            } else {
                 ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
                     reason: command.reason.clone(),
                 })
             }
-            Some(ExecutionBinding::Command) => ExecutionOutcome::Command(CommandResult::Applied {
-                references: vec![format!("interrupted:{}", command.attempt_id)],
-            }),
-            None => return Err("interruption references an unknown attempt".into()),
         },
         created_at: command.interrupted_at.clone(),
     };
@@ -1513,10 +2011,7 @@ pub fn recover_interrupted_task_result_claim(
                 task_id: command.task_id.clone(),
                 result_message_id: command.result_message_id.clone(),
             })
-        || attempt.binding
-            != (ExecutionBinding::WorkItem {
-                work_item_id: command.work_item_id.clone(),
-            })
+        || attempt.binding.work_item_id() != Some(&command.work_item_id)
         || attempt.admitted_fences.work_item_source_revision
             != Some(command.expected_source_revision)
         || attempt.admitted_fences.rejoin.as_ref() != Some(&command.rejoin)
@@ -1593,10 +2088,7 @@ pub fn recover_unadvanced_task_result_claim(
                 task_id: command.task_id.clone(),
                 result_message_id: command.result_message_id.clone(),
             })
-        || attempt.binding
-            != (ExecutionBinding::WorkItem {
-                work_item_id: command.work_item_id.clone(),
-            })
+        || attempt.binding.work_item_id() != Some(&command.work_item_id)
         || attempt.admitted_fences.work_item_source_revision
             != Some(command.expected_source_revision)
         || attempt.admitted_fences.rejoin.as_ref() != Some(&command.rejoin)
@@ -1641,64 +2133,98 @@ pub fn recover_unadvanced_task_result_claim(
     Ok(transition)
 }
 
-fn validate_outcome_binding(
-    binding: &ExecutionBinding,
-    outcome: &ExecutionOutcome,
-) -> Result<(), String> {
-    match (binding, outcome) {
-        (ExecutionBinding::WorkItem { .. }, ExecutionOutcome::WorkItem(_))
-        | (
-            ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. },
-            ExecutionOutcome::Conversation(_),
-        )
-        | (ExecutionBinding::Command, ExecutionOutcome::Command(_)) => Ok(()),
-        _ => Err("execution outcome is incompatible with attempt binding".into()),
-    }
+/// The business state change, independent of how the model turn ended.
+enum WorkItemTurnTransition<'a> {
+    Runnable { recovery_ref: Option<&'a str> },
+    Waiting { wait_id: &'a str },
+    Paused { reason: &'a str },
+    Terminal { completion: &'a str },
+    Yield { target_work_item_id: &'a str },
 }
 
-fn plan_work_item_outcome(
+fn plan_bound_turn_transition<'a>(
+    turn: &'a TurnSettlement,
+    state: &WorkItemExecutionState,
+    source: &'a ExecutionSourceIdentity,
+) -> Result<WorkItemTurnTransition<'a>, String> {
+    use TurnWorkItemEffect as Effect;
+    use WorkItemTurnTransition as Transition;
+
+    let transition = match (&turn.work_item_effect, &turn.outcome) {
+        (Some(Effect::Continue), _) => Transition::Runnable { recovery_ref: None },
+        (Some(Effect::Wait), TurnOutcome::Wait { wait }) => Transition::Waiting {
+            wait_id: &wait.wait_id,
+        },
+        (Some(Effect::Pause { reason }), _) => Transition::Paused { reason },
+        (Some(Effect::Complete { completion }), _) => Transition::Terminal { completion },
+        (
+            Some(Effect::Yield {
+                target_work_item_id,
+            }),
+            _,
+        ) => Transition::Yield {
+            target_work_item_id,
+        },
+        (
+            Some(Effect::ResumeInterrupted),
+            TurnOutcome::Interrupted {
+                interruption: TurnInterruption::Interrupted { .. },
+            },
+        ) => match (state, source) {
+            (
+                WorkItemExecutionState::Waiting { .. },
+                ExecutionSourceIdentity::TriggeredWait { wait_id, .. },
+            ) => Transition::Waiting { wait_id },
+            _ => Transition::Runnable {
+                recovery_ref: Some("interrupted"),
+            },
+        },
+        (
+            Some(Effect::ResumeInterrupted),
+            TurnOutcome::Interrupted {
+                interruption: TurnInterruption::Reentry { recovery_ref },
+            },
+        ) => Transition::Runnable {
+            recovery_ref: Some(recovery_ref),
+        },
+        _ => return Err("model Turn has an incompatible bound WorkItem effect".into()),
+    };
+    Ok(transition)
+}
+
+fn plan_work_item_transition(
     generation: u64,
-    outcome: &WorkItemOutcome,
+    transition: WorkItemTurnTransition<'_>,
 ) -> Result<WorkItemExecutionState, String> {
     let next_generation = generation
         .checked_add(1)
         .ok_or_else(|| "WorkItem scheduling generation overflow".to_string())?;
-    match outcome {
-        WorkItemOutcome::Continue | WorkItemOutcome::Aborted { .. } => {
-            Ok(WorkItemExecutionState::Runnable {
-                generation: next_generation,
-                recovery_ref: None,
-            })
-        }
-        WorkItemOutcome::Interrupted { .. } => Ok(WorkItemExecutionState::Runnable {
+    Ok(match transition {
+        WorkItemTurnTransition::Runnable { recovery_ref } => WorkItemExecutionState::Runnable {
             generation: next_generation,
-            recovery_ref: Some("interrupted".into()),
-        }),
-        WorkItemOutcome::Wait { wait } => Ok(WorkItemExecutionState::Waiting {
+            recovery_ref: recovery_ref.map(str::to_owned),
+        },
+        WorkItemTurnTransition::Waiting { wait_id } => WorkItemExecutionState::Waiting {
             generation: next_generation,
-            wait: wait.clone(),
-        }),
-        WorkItemOutcome::Pause { reason } | WorkItemOutcome::Failed { policy: reason } => {
-            Ok(WorkItemExecutionState::Paused {
-                generation: next_generation,
-                reason: reason.clone(),
-            })
-        }
-        WorkItemOutcome::Reentry { recovery_ref } => Ok(WorkItemExecutionState::Runnable {
+            wait: WaitReference {
+                wait_id: wait_id.to_owned(),
+            },
+        },
+        WorkItemTurnTransition::Paused { reason } => WorkItemExecutionState::Paused {
             generation: next_generation,
-            recovery_ref: Some(recovery_ref.clone()),
-        }),
-        WorkItemOutcome::Complete { completion } => Ok(WorkItemExecutionState::Terminal {
+            reason: reason.to_owned(),
+        },
+        WorkItemTurnTransition::Terminal { completion } => WorkItemExecutionState::Terminal {
             generation: next_generation,
-            completion: completion.clone(),
-        }),
-        WorkItemOutcome::Yield {
+            completion: completion.to_owned(),
+        },
+        WorkItemTurnTransition::Yield {
             target_work_item_id,
-        } => Ok(WorkItemExecutionState::Paused {
+        } => WorkItemExecutionState::Paused {
             generation: next_generation,
             reason: format!("yielded_to:{target_work_item_id}"),
-        }),
-    }
+        },
+    })
 }
 
 pub fn assert_invariants(state: &ExecutionProtocolState) -> Result<(), String> {
@@ -1757,7 +2283,7 @@ pub fn validate_attempt_invariants(
             return Err("terminal attempt outcome evidence is inconsistent".into());
         }
     }
-    if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
+    if let Some(work_item_id) = attempt.binding.work_item_id() {
         if attempt.state == ExecutionAttemptState::Open
             && !works.get(work_item_id).is_some_and(|record| {
                 eligible_work_item_at_generation(

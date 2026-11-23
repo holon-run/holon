@@ -991,9 +991,9 @@ fn execution_protocol_completion_transition_from_prepared(
     prepared: &PreparedWorkItemCompletion,
 ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
     use crate::domain::execution_protocol::{
-        CompleteWorkItemExecution, ConversationOutcome, ExecutionAttemptState, ExecutionBinding,
-        ExecutionOutcome, ExecutionOutcomeRecord, ExecutionProtocolCommand,
-        RegisterWorkItemExecution, SettleExecution, WorkItemExecutionState, WorkItemOutcome,
+        CompleteWorkItemExecution, ConversationOutcome, ExecutionAttemptState, ExecutionOutcome,
+        ExecutionOutcomeRecord, ExecutionProtocolCommand, RegisterWorkItemExecution,
+        SettleExecution, WorkItemExecutionState, WorkItemOutcome,
     };
 
     anyhow::ensure!(
@@ -1049,10 +1049,15 @@ fn execution_protocol_completion_transition_from_prepared(
         "completion commit brief evidence is invalid"
     );
 
-    let commands = match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => {
+    anyhow::ensure!(
+        attempt.agent_id == record.agent_id
+            && attempt.binding.matches_agent_partition(&record.agent_id),
+        "completion commit execution binding does not match the agent"
+    );
+    let commands = match (attempt.binding.work_item_id(), attempt.binding.is_command()) {
+        (Some(work_item_id), false) => {
             anyhow::ensure!(
-                work_item_id == &prepared.record.id,
+                work_item_id == prepared.record.id,
                 "completion commit WorkItem binding mismatch"
             );
             anyhow::ensure!(
@@ -1073,11 +1078,10 @@ fn execution_protocol_completion_transition_from_prepared(
                 },
             })]
         }
-        ExecutionBinding::AgentLifecycle { agent_id } => {
+        (None, false) => {
             anyhow::ensure!(
-                agent_id == &record.agent_id
-                    && !matches!(authoritative.state, WorkItemExecutionState::Terminal { .. }),
-                "completion commit lifecycle WorkItem fence is stale"
+                !matches!(authoritative.state, WorkItemExecutionState::Terminal { .. }),
+                "completion commit detached WorkItem fence is stale"
             );
             let mut commands = Vec::with_capacity(3);
             if !state.work_items.contains_key(&prepared.record.id) {
@@ -1106,40 +1110,7 @@ fn execution_protocol_completion_transition_from_prepared(
             ]);
             commands
         }
-        ExecutionBinding::Conversation { .. } => {
-            anyhow::ensure!(
-                attempt.agent_id == record.agent_id
-                    && !matches!(authoritative.state, WorkItemExecutionState::Terminal { .. }),
-                "completion commit conversation WorkItem fence is stale"
-            );
-            let mut commands = Vec::with_capacity(3);
-            if !state.work_items.contains_key(&prepared.record.id) {
-                commands.push(ExecutionProtocolCommand::RegisterWorkItem(Box::new(
-                    RegisterWorkItemExecution {
-                        work_item_id: prepared.record.id.clone(),
-                        record: authoritative.clone(),
-                    },
-                )));
-            }
-            commands.extend([
-                ExecutionProtocolCommand::Settle(SettleExecution {
-                    outcome: ExecutionOutcomeRecord {
-                        outcome_id: format!("outcome:complete:{}", attempt.attempt_id),
-                        attempt_id: attempt.attempt_id.clone(),
-                        outcome: ExecutionOutcome::Conversation(ConversationOutcome::Replied),
-                        created_at: record.updated_at.to_rfc3339(),
-                    },
-                }),
-                ExecutionProtocolCommand::CompleteWorkItem(Box::new(CompleteWorkItemExecution {
-                    command_id: format!("completion:work_item:{}", attempt.attempt_id),
-                    work_item_id: prepared.record.id.clone(),
-                    expected: authoritative.clone(),
-                    completion: prepared.brief.id.clone(),
-                })),
-            ]);
-            commands
-        }
-        ExecutionBinding::Command => {
+        (_, true) => {
             bail!(
                 "completion commit requires a WorkItem, conversation, or agent-lifecycle execution"
             )
@@ -1349,10 +1320,11 @@ fn execution_protocol_settlement_transition_from_facts(
     terminal_turn: Option<&TurnRecord>,
 ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
     use crate::domain::execution_protocol::{
-        CommandResult, ConversationOutcome, ExecutionAttemptState, ExecutionBinding,
-        ExecutionOutcome, ExecutionOutcomeRecord, ExecutionProtocolCommand, InterruptExecution,
-        SettleExecution, WaitReference, WorkItemOutcome,
+        CommandResult, ConversationOutcome, ExecutionAttemptState, ExecutionOutcome,
+        ExecutionOutcomeRecord, ExecutionProtocolCommand, InterruptExecution, SettleExecution,
+        WaitReference, WorkItemOutcome,
     };
+    use crate::types::TurnOwner;
 
     let Some(state) = runtime_db
         .transitions()
@@ -1412,20 +1384,7 @@ fn execution_protocol_settlement_transition_from_facts(
     let Some(message) = storage.read_message_by_id(&record.message_id)? else {
         return Ok(interrupted("source_message_missing"));
     };
-    let owner = match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => crate::types::TurnOwner::WorkItem {
-            work_item_id: work_item_id.clone(),
-        },
-        ExecutionBinding::Conversation { interaction_id } => {
-            crate::types::TurnOwner::Conversation {
-                interaction_id: interaction_id.clone(),
-            }
-        }
-        ExecutionBinding::AgentLifecycle { agent_id } => crate::types::TurnOwner::AgentLifecycle {
-            agent_id: agent_id.clone(),
-        },
-        ExecutionBinding::Command => crate::types::TurnOwner::Command,
-    };
+    let owner = attempt.turn_owner();
     let matching_terminal_turn =
         canonical_matching_terminal_turn(runtime_db, record, &message, &owner, terminal_turn)?;
     let Some(terminal_turn) = matching_terminal_turn else {
@@ -1439,8 +1398,8 @@ fn execution_protocol_settlement_transition_from_facts(
         );
     };
 
-    let outcome = match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => {
+    let outcome = match &owner {
+        TurnOwner::WorkItem { work_item_id } => {
             let Some(authoritative_work) = state.work_items.get(work_item_id) else {
                 return Ok(interrupted("work_item_execution_missing"));
             };
@@ -1609,7 +1568,7 @@ fn execution_protocol_settlement_transition_from_facts(
                 _ => return Ok(interrupted("yield_continuation_ambiguous")),
             }
         }
-        ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
+        TurnOwner::Conversation { .. } | TurnOwner::AgentLifecycle { .. } => {
             let active_waits = storage
                 .latest_wait_conditions_for_agent(&record.agent_id)?
                 .into_iter()
@@ -1629,7 +1588,7 @@ fn execution_protocol_settlement_transition_from_facts(
                 _ => return Ok(interrupted("ambiguous_lifecycle_waits")),
             }
         }
-        ExecutionBinding::Command => ExecutionOutcome::Command(CommandResult::Applied {
+        TurnOwner::Command => ExecutionOutcome::Command(CommandResult::Applied {
             references: vec![
                 format!("message:{}", record.message_id),
                 format!("turn:{}", terminal_turn.turn_id),
@@ -2072,11 +2031,7 @@ fn scheduler_task_result_claim_recovery_candidates(
         })
         .filter(|attempt| execution_attempt_has_task_result_source(attempt))
         .filter_map(|attempt| {
-            let crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } =
-                &attempt.binding
-            else {
-                return None;
-            };
+            let work_item_id = attempt.binding.work_item_id()?;
             let message_id = attempt.source_message_id.as_deref()?;
             let entry = queue_entries.iter().find(|entry| {
                 entry.message_id == message_id && entry.status == QueueEntryStatus::Dequeued
@@ -2087,7 +2042,7 @@ fn scheduler_task_result_claim_recovery_candidates(
             let mut candidate = SchedulerTaskResultClaimRecoveryCandidate {
                 message_id: entry.message_id.clone(),
                 activation_id: attempt.attempt_id.clone(),
-                work_item_id: work_item_id.clone(),
+                work_item_id: work_item_id.to_owned(),
                 queue_status: entry.status.clone(),
                 health: SchedulerUnsettledClaimHealth::Unhealthy,
                 lane_blocked: true,
@@ -2541,12 +2496,7 @@ pub fn scheduler_recovery_report(
                     kind: SchedulerRecoveryCandidateKind::UnsettledExecution,
                     message_id: message_id.to_string(),
                     activation_id: attempt.attempt_id.clone(),
-                    work_item_id: match &attempt.binding {
-                        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-                            work_item_id,
-                        } => Some(work_item_id.clone()),
-                        _ => None,
-                    },
+                    work_item_id: attempt.binding.work_item_id().map(str::to_owned),
                     queue_status: QueueEntryStatus::Processed,
                     terminal_turn_id: None,
                     eligible: false,
@@ -2559,12 +2509,7 @@ pub fn scheduler_recovery_report(
                 });
                 continue;
             };
-            let work_item_id = match &attempt.binding {
-                crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } => {
-                    Some(work_item_id.clone())
-                }
-                _ => None,
-            };
+            let work_item_id = attempt.binding.work_item_id().map(str::to_owned);
             if attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open {
                 let mut proposed = entry.clone();
                 proposed.status = QueueEntryStatus::Processed;
@@ -4646,22 +4591,8 @@ impl RuntimeHandle {
                         && attempt.source_message_id.as_deref() == Some(message.id.as_str()),
                     "canonical turn admission source differs from the original claim"
                 );
-                let claimed_work_revision = attempt.admitted_fences.work_item_source_revision;
-                let owner = match attempt.binding {
-                    crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-                        work_item_id,
-                    } => crate::types::TurnOwner::WorkItem { work_item_id },
-                    crate::domain::execution_protocol::ExecutionBinding::Conversation {
-                        interaction_id,
-                    } => crate::types::TurnOwner::Conversation { interaction_id },
-                    crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
-                        agent_id,
-                    } => crate::types::TurnOwner::AgentLifecycle { agent_id },
-                    crate::domain::execution_protocol::ExecutionBinding::Command => {
-                        crate::types::TurnOwner::Command
-                    }
-                };
-                Some((activation_id.clone(), owner, claimed_work_revision))
+                let owner = attempt.turn_owner();
+                Some((attempt, owner))
             }
             Some(ExecutionAdmissionProvenance::LegacyCompat { .. }) => {
                 return Err(anyhow!(
@@ -4709,8 +4640,7 @@ impl RuntimeHandle {
                     .await?;
             }
         }
-        let projected_turn_work_item_id = if let Some((_, owner, _)) = &canonical_execution_binding
-        {
+        let projected_turn_work_item_id = if let Some((_, owner)) = &canonical_execution_binding {
             owner.work_item_id().map(ToString::to_string)
         } else if let Some((_, source_turn)) = &replay_source {
             source_turn
@@ -4735,7 +4665,7 @@ impl RuntimeHandle {
         });
         let fallback_work_revision = if canonical_execution_binding
             .as_ref()
-            .and_then(|(_, _, revision)| *revision)
+            .and_then(|(attempt, _)| attempt.admitted_fences.work_item_source_revision)
             .is_none()
         {
             if let Some(work_item_id) = &binding_work_item_id {
@@ -4813,7 +4743,7 @@ impl RuntimeHandle {
             let state = &mut guard.state;
             state.current_turn_id = Some(turn_id.clone());
             state.last_turn_terminal = None;
-            if let Some((_, owner, _)) = canonical_execution_binding.as_ref() {
+            if let Some((_, owner)) = canonical_execution_binding.as_ref() {
                 state.current_turn_work_item_id = owner.work_item_id().map(ToString::to_string);
             } else if let Some((_, source_turn)) = replay_source.as_ref() {
                 state.current_turn_work_item_id = source_turn
@@ -4826,7 +4756,7 @@ impl RuntimeHandle {
                 let work_item_id = if canonical_execution_binding.is_some() {
                     canonical_execution_binding
                         .as_ref()
-                        .and_then(|(_, owner, _)| owner.work_item_id().map(ToString::to_string))
+                        .and_then(|(_, owner)| owner.work_item_id().map(ToString::to_string))
                 } else {
                     message
                         .work_item_id
@@ -4835,11 +4765,11 @@ impl RuntimeHandle {
                 };
                 let claimed_work_revision = canonical_execution_binding
                     .as_ref()
-                    .and_then(|(_, _, claimed_work_revision)| *claimed_work_revision)
+                    .and_then(|(attempt, _)| attempt.admitted_fences.work_item_source_revision)
                     .or(fallback_work_revision);
                 let activation_id = canonical_execution_binding
                     .as_ref()
-                    .map(|(activation_id, _, _)| activation_id.clone());
+                    .map(|(attempt, _)| attempt.attempt_id.clone());
                 WorkItemExecutionBinding {
                     activation_id,
                     admission_provenance: execution_admission_provenance.clone(),
@@ -4847,7 +4777,7 @@ impl RuntimeHandle {
                     turn_id,
                     owner: canonical_execution_binding
                         .as_ref()
-                        .map(|(_, owner, _)| owner.clone()),
+                        .map(|(_, owner)| owner.clone()),
                     work_item_id,
                     claimed_work_revision,
                 }
@@ -4883,6 +4813,9 @@ impl RuntimeHandle {
                 prior_terminal.clone(),
                 self.now(),
             )?;
+            if let Some((attempt, _)) = &canonical_execution_binding {
+                started_turn.attribution = attempt.binding.turn_attribution();
+            }
             started_turn.operator_dispatch_fenced = dispatch_prior_closure.is_some()
                 && message.is_some_and(|source| source.kind == MessageKind::OperatorPrompt)
                 && canonical_execution_binding.is_some();
@@ -6684,7 +6617,10 @@ impl RuntimeHandle {
                             && attempt.terminal_outcome_id.as_deref()
                                 == Some(expected_outcome.outcome_id.as_str())
                     })
-                    && state.outcomes.get(&expected_outcome.outcome_id) == Some(expected_outcome)
+                    && state
+                        .outcomes
+                        .get(&expected_outcome.outcome_id)
+                        .is_some_and(|stored| stored.same_terminal_as(expected_outcome))
             })
         });
         if durable_queue
@@ -7872,39 +7808,11 @@ impl RuntimeHandle {
             };
             let attempt = attempt.clone();
             let activation_id = attempt.attempt_id.clone();
-            let owner = match &attempt.binding {
-                crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } => {
-                    crate::types::TurnOwner::WorkItem {
-                        work_item_id: work_item_id.clone(),
-                    }
-                }
-                crate::domain::execution_protocol::ExecutionBinding::Conversation {
-                    interaction_id,
-                } => crate::types::TurnOwner::Conversation {
-                    interaction_id: interaction_id.clone(),
-                },
-                crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
-                    agent_id: owner_agent_id,
-                } => crate::types::TurnOwner::AgentLifecycle {
-                    agent_id: owner_agent_id.clone(),
-                },
-                crate::domain::execution_protocol::ExecutionBinding::Command => {
-                    crate::types::TurnOwner::Command
-                }
-            };
-            let work_item_id = match &attempt.binding {
-                crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } => {
-                    Some(work_item_id.clone())
-                }
-                crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
-                    agent_id: owner_agent_id,
-                } if owner_agent_id == &agent_id => None,
-                crate::domain::execution_protocol::ExecutionBinding::Conversation { .. }
-                | crate::domain::execution_protocol::ExecutionBinding::Command => None,
-                crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle { .. } => {
-                    continue;
-                }
-            };
+            if !attempt.binding.matches_agent_partition(&agent_id) {
+                continue;
+            }
+            let owner = attempt.turn_owner();
+            let work_item_id = attempt.binding.work_item_id().map(str::to_owned);
             let work_queue_claim = work_item_id.as_deref().is_some_and(|work_item_id| {
                 matches!(
                     (&message.kind, &message.origin),
@@ -8093,10 +8001,7 @@ impl RuntimeHandle {
             };
             let canonical_first_attempt = attempt.attempt_id
                 == scheduler_executor::canonical_activation_id(&entry.message_id);
-            let current_canonical_lifecycle = if matches!(
-                &attempt.binding,
-                crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle { .. }
-            ) {
+            let current_canonical_lifecycle = if attempt.has_agent_lifecycle_binding() {
                 let delivery = self
                     .inner
                     .runtime_db

@@ -93,7 +93,11 @@ impl RuntimeTransitionRepository<'_> {
             |id| message_tx(tx, id),
             |id| turn_tx(tx, id),
         )?;
-        if expected.binding != source.predecessor.binding {
+        if source.predecessor.agent_id != *agent_id
+            || !expected
+                .binding
+                .matches_in_agent(&source.predecessor.binding, agent_id)
+        {
             return Ok(TransitionCommit::default());
         }
         let mut predecessors: BTreeSet<_> = source
@@ -120,7 +124,7 @@ impl RuntimeTransitionRepository<'_> {
                 || !predecessors.insert(id.clone())
                 || prior.state != ExecutionAttemptState::Interrupted
                 || prior.agent_id != *agent_id
-                || prior.binding != expected.binding
+                || !prior.binding.matches_in_agent(&expected.binding, agent_id)
                 || prior.source_message_id != expected.source_message_id
             {
                 return Ok(TransitionCommit::default());

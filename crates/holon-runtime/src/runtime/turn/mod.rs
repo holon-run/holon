@@ -272,6 +272,7 @@ impl RuntimeHandle {
                     agent_id: state.id.clone(),
                 }),
         );
+        record.attribution = record.effective_attribution();
         if let Some(message) = message {
             record.trigger = Some(TurnTriggerSummary::from_message(message));
             record.input_message_ids = vec![message.id.clone()];

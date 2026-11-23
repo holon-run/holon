@@ -162,7 +162,9 @@ fn verified_replay_reference(
             || prior.state != ExecutionAttemptState::Interrupted
             || prior.source_message_id != attempt.source_message_id
             || prior.source.identity != attempt.source.identity
-            || prior.binding != attempt.binding
+            || !prior
+                .binding
+                .matches_in_agent(&attempt.binding, &attempt.agent_id)
             || !attempt_stamp_matches(prior.turn_id.as_deref(), &source, &anchor)
         {
             return Ok(false);

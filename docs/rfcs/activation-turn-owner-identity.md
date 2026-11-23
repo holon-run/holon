@@ -12,17 +12,19 @@ projection. It follows
 
 ## Scope
 
-Every canonical execution attempt already has one `ExecutionBinding`. Phase 1
-uses that binding as the authority and materializes the same owner on its Turn:
+Every model Turn is owned by its agent. Its `ExecutionBinding::Agent` carries
+the agent ID and a `TurnAttribution` with optional WorkItem and interaction IDs.
+Either, both, or neither ID may be present. `ExecutionBinding::Command` remains
+an independent non-model binding.
 
-- `WorkItem { work_item_id }`
-- `Conversation { interaction_id }`
-- `AgentLifecycle { agent_id }`
-- `Command`
-
-`TurnRecord.owner` is a query and retention relation. It is not a second
-scheduler authority. `current_work_item_id` remains a compatibility projection
-and must agree with a WorkItem owner.
+`TurnRecord.owner` retains the query and retention projection: WorkItem takes
+precedence over Conversation, otherwise the owner is AgentLifecycle (or
+Command for command turns). The Turn stores the full model admission
+attribution separately; older records recover only the attribution represented
+by their historical owner. Attribution is identity metadata and does not affect
+content deletion. The owner projection and
+`AgentState.current_execution_binding` are not separate scheduler authorities.
+`current_work_item_id` must still agree with a projected WorkItem owner.
 
 This phase does not replace prompt sections, select historical Turns by owner,
 or change provider request content. Those are Phase 2 concerns.
@@ -41,8 +43,8 @@ Owner selection follows trusted admission facts:
 Typed provider recovery is a source-bound exception, not an ordinary lifecycle
 wake. After validating runtime provenance, the same-agent source message,
 provider-failure terminal Turn, and terminal predecessor attempt, admission
-inherits that attempt's entire `ExecutionBinding`. This includes a Conversation
-interaction id or an explicit AgentLifecycle binding without a WorkItem.
+inherits that attempt's entire `ExecutionBinding`, including both attribution
+fields. A missing WorkItem or interaction stays missing.
 Recovery cannot choose an owner from current focus or message metadata.
 Conflicting queued WorkItem bindings fail closed; absence of a source WorkItem
 is not permission to adopt the focused one.
@@ -53,17 +55,20 @@ interaction scope. Remote operator transport uses the validated transport
 binding plus its optional `conversation_ref`. Arbitrary message metadata cannot
 choose an interaction.
 
-Conversation expresses continuity only. Its interaction id owns no WorkItem,
-task, wait, completion, or scheduling authority. An agent execution with a
-Conversation owner may still use the existing agent-scoped WorkItem tools, but
-the target must pass the same agent, source-revision, state, and report-binding
-fences; matching an interaction id never satisfies or weakens those fences.
+An interaction ID expresses continuity only. It owns no WorkItem, task, wait,
+completion, or scheduling authority. Any model Turn may use the existing
+agent-scoped WorkItem tools. The target must pass the same agent,
+source-revision, state, and report-binding fences; matching an interaction ID
+never satisfies or weakens those fences.
 
 ## Persistence And Compatibility
 
-New Turns persist the canonical owner and indexed `(owner_kind, owner_id)`.
-Restart reconstruction reads the durable owner rather than process-local
-conversation state.
+New model Turns persist attribution and retain their indexed
+`(owner_kind, owner_id)` projection. Restart reconstructs from durable facts,
+not process-local conversation state. Historical WorkItem and Conversation
+bindings acquire their agent ID from the owning durable attempt or event
+envelope, never from ingress metadata. A historical AgentLifecycle binding must
+agree with that owner.
 
 Legacy Turns have no owner field. Their conservative fallback is:
 
@@ -78,12 +83,13 @@ An existing explicit owner is immutable.
 
 ## Authority Invariants
 
-- admission binding, current execution owner, and new Turn owner agree
+- admission binding and new model Turn retain the same agent and attribution;
+  current execution and Turn owner projections agree
 - Conversation cannot resume a wait or task solely because interaction ids
   match
 - exact wait and task-result admission retain their existing authority fences
 - untrusted or external metadata cannot create or merge Conversation identity
-- WorkItem owner semantics and settlement remain unchanged
+- WorkItem scheduling and settlement fences remain unchanged
 - owner reconstruction is deterministic across restart
 - provider recovery binding equals its validated predecessor binding; this
   narrow rule does not change task-result or exact-wait reentry admission

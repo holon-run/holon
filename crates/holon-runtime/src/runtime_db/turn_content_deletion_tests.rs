@@ -1019,6 +1019,28 @@ fn deleted_turn_reads_keep_placeholder_without_bodies() -> Result<()> {
     seed_agent_state(&db)?;
     seed_turn(&db, "turn-a", 1)?;
     seed_turn(&db, "turn-b", 2)?;
+    let attribution = holon_domain::execution_protocol::TurnAttribution {
+        work_item_id: None,
+        interaction_id: Some("interaction-b".into()),
+    };
+    db.transaction(|tx| {
+        let payload: String = tx.query_row(
+            "SELECT payload_json FROM turn_records WHERE turn_id = 'turn-b'",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut record: holon_domain::TurnRecord = serde_json::from_str(&payload)?;
+        record.owner = Some(holon_domain::TurnOwner::Conversation {
+            interaction_id: "interaction-b".into(),
+        });
+        record.attribution = Some(attribution.clone());
+        tx.execute(
+            "UPDATE turn_records SET payload_json = ?1, owner_kind = 'conversation',
+                 owner_id = 'interaction-b' WHERE turn_id = 'turn-b'",
+            [serde_json::to_string(&record)?],
+        )?;
+        Ok(())
+    })?;
 
     let before = db.with_read(|connection| {
         holon_storage::conversation::summary_page_in(connection, "agent-a", 10, None, None)
@@ -1033,6 +1055,19 @@ fn deleted_turn_reads_keep_placeholder_without_bodies() -> Result<()> {
     assert_eq!(before_turn_b.brief_ids.len(), 1);
 
     delete_turn_content(&db, "agent-a", "turn-b", None, Utc::now())?.expect("deletes");
+
+    let erased = db.with_read(|connection| {
+        let payload: String = connection.query_row(
+            "SELECT payload_json FROM turn_records WHERE turn_id = 'turn-b'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(serde_json::from_str::<holon_domain::TurnRecord>(&payload)?)
+    })?;
+    assert_eq!(erased.attribution, Some(attribution));
+    assert!(erased.idle_input_batch.unwrap().items[0]
+        .rendered
+        .is_empty());
 
     let after = db.with_read(|connection| {
         holon_storage::conversation::summary_page_in(connection, "agent-a", 10, None, None)

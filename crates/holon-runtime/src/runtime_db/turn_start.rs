@@ -3,13 +3,10 @@
 use anyhow::{anyhow, ensure, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
 
-use crate::domain::execution_protocol::{
-    ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
-};
+use crate::domain::execution_protocol::{ExecutionAttempt, ExecutionAttemptState};
 use crate::runtime::resident_input_evidence::InputEvidenceScope;
 use crate::types::{
-    AgentIdentityRecord, AgentRegistryStatus, AgentState, ExecutionAdmissionProvenance, TurnOwner,
-    TurnRecord,
+    AgentIdentityRecord, AgentRegistryStatus, AgentState, ExecutionAdmissionProvenance, TurnRecord,
 };
 
 #[cfg(test)]
@@ -208,18 +205,12 @@ pub(super) fn validate_start_admission_tx(
         |row| row.get(0),
     )?;
     let attempt: ExecutionAttempt = serde_json::from_str(&payload)?;
-    let owner = match attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem { work_item_id },
-        ExecutionBinding::Conversation { interaction_id } => {
-            TurnOwner::Conversation { interaction_id }
-        }
-        ExecutionBinding::AgentLifecycle { agent_id } => TurnOwner::AgentLifecycle { agent_id },
-        ExecutionBinding::Command => TurnOwner::Command,
-    };
+    let owner = attempt.turn_owner();
     // An attempt retains its ingress turn across recovery; the replay execution
     // gets a new turn identity, so those two turn ids must not be equated here.
     ensure!(
         attempt.agent_id == state.id
+            && attempt.binding.matches_agent_partition(&state.id)
             && attempt.attempt_id == *activation_id
             && attempt.state == ExecutionAttemptState::Open
             && attempt.source_message_id.as_ref() == Some(&binding.source_message_id)
@@ -228,6 +219,7 @@ pub(super) fn validate_start_admission_tx(
                 .as_ref()
                 .is_none_or(|id| Some(id) == state.current_run_id.as_ref())
             && record.owner.as_ref() == Some(&owner)
+            && record.attribution == attempt.binding.turn_attribution()
             && binding.claimed_work_revision == attempt.admitted_fences.work_item_source_revision,
         "turn start canonical execution admission is stale or conflicting"
     );

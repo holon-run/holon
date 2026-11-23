@@ -2575,6 +2575,60 @@ fn recovery_requires_an_interrupted_predecessor_with_the_same_source_and_binding
 }
 
 #[test]
+fn recovery_compares_legacy_and_agent_bindings_in_the_attempt_owner_scope() {
+    let (_dir, db) = runtime_db();
+    let record = live_result(&db, 0, TaskKind::CommandTask, "live-parent", None);
+    prepare_recovery(&db, &[record.clone()], false);
+    let admitted = db
+        .task_result_settlements()
+        .latest_for_message(&record.message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(admitted.activation_id.as_deref(), Some("live-activation"));
+    let legacy = serde_json::json!({"kind": "work_item", "work_item_id": "work-a"});
+    let canonical = serde_json::json!({
+        "kind": "agent", "agent_id": "agent-a", "attribution": {"work_item_id": "work-a"}
+    });
+    let mut other_agent = canonical.clone();
+    other_agent["agent_id"] = "agent-b".into();
+    let mut extra_interaction = canonical.clone();
+    extra_interaction["attribution"]["interaction_id"] = "interaction-a".into();
+    for (prior, successor, expected) in [
+        (&legacy, &canonical, true),
+        (&canonical, &legacy, true),
+        (&legacy, &other_agent, false),
+        (&other_agent, &other_agent, false),
+        (&legacy, &extra_interaction, false),
+    ] {
+        db.transaction(|tx| {
+            for (id, binding) in [("live-activation", prior), ("recovery-a", successor)] {
+                assert_eq!(
+                    tx.execute(
+                        "UPDATE execution_protocol_attempts
+                         SET payload_json=json_set(payload_json,'$.binding',json(?2))
+                         WHERE agent_id='agent-a' AND attempt_id=?1",
+                        params![id, binding.to_string()],
+                    )?,
+                    1
+                );
+            }
+            assert_eq!(
+                super::super::interrupted_predecessor_matches_tx(
+                    tx,
+                    &admitted,
+                    "recovery-a",
+                    Some("live-anchor"),
+                )?,
+                expected,
+                "{prior} -> {successor}"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+#[test]
 fn recovery_rechecks_original_fences_provenance_attachment_and_reply_claims() {
     for invalid in [
         "parent",

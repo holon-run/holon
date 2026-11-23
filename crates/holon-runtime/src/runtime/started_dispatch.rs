@@ -12,7 +12,7 @@ use super::{
     RuntimeHandle,
 };
 use crate::{
-    domain::execution_protocol::{ExecutionAttempt, ExecutionAttemptState, ExecutionBinding},
+    domain::execution_protocol::{ExecutionAttempt, ExecutionAttemptState},
     runtime_db::{
         dispatch_memory::load_dispatch_memory_binding_tx,
         input_evidence_snapshot::validate_existing_input_evidence_tx,
@@ -484,20 +484,8 @@ impl RuntimeHandle {
                     && attempt.run_id.as_deref().is_none_or(|id| id == run),
                 StartedDispatchConflict("original dispatch claim observation differs")
             );
-            let owner = match &attempt.binding {
-                ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
-                    work_item_id: work_item_id.clone(),
-                },
-                ExecutionBinding::Conversation { interaction_id } => TurnOwner::Conversation {
-                    interaction_id: interaction_id.clone(),
-                },
-                ExecutionBinding::AgentLifecycle { agent_id } => TurnOwner::AgentLifecycle {
-                    agent_id: agent_id.clone(),
-                },
-                ExecutionBinding::Command => TurnOwner::Command,
-            };
             (
-                Some(owner),
+                Some(attempt.turn_owner()),
                 attempt.admitted_fences.work_item_source_revision,
             )
         } else {

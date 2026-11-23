@@ -12,8 +12,8 @@ mod tests;
 
 use crate::{
     domain::execution_protocol::{
-        ConversationOutcome, ExecutionOutcome, ExecutionProtocolState, ExecutionSourceIdentity,
-        WorkItemOutcome,
+        ExecutionProtocolState, ExecutionSourceIdentity, TurnOutcome, TurnSettlement,
+        TurnWorkItemEffect,
     },
     runtime_db::{evidence::append_message_tx, RuntimeIndexChange},
     types::{
@@ -614,9 +614,11 @@ pub(crate) fn commit_final_brief_reply_tx(
         })
         || outcome.attempt_id != attempt.attempt_id
         || !matches!(
-            outcome.outcome,
-            ExecutionOutcome::Conversation(ConversationOutcome::Replied)
-                | ExecutionOutcome::WorkItem(WorkItemOutcome::Complete { .. })
+            outcome.outcome.model_turn(),
+            Some(TurnSettlement {
+                outcome: TurnOutcome::Completed,
+                work_item_effect: None | Some(TurnWorkItemEffect::Complete { .. }),
+            })
         )
     {
         return Ok(Vec::new());

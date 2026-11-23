@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::domain::execution_protocol::{
-    ContextBudgetStop, ExecutionAttempt, ExecutionBinding, ExecutionOutcome,
-    ExecutionOutcomeRecord, ExecutionProtocolCommand, RecheckContextBudgetStop, SettleExecution,
-    WorkItemExecutionState, WorkItemOutcome,
+    ContextBudgetStop, ExecutionAttempt, ExecutionOutcome, ExecutionOutcomeRecord,
+    ExecutionProtocolCommand, RecheckContextBudgetStop, SettleExecution, WorkItemExecutionState,
+    WorkItemOutcome,
 };
 use crate::runtime_db::transitions::ExecutionProtocolTransition;
 use crate::runtime_error::RuntimeErrorDomain;
@@ -16,14 +16,14 @@ pub(super) fn context_budget_failure_settlement(
     terminal_turn: Option<&TurnRecord>,
     attempt: &ExecutionAttempt,
 ) -> Result<Option<ExecutionProtocolTransition>> {
-    let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding else {
+    let Some(work_item_id) = attempt.binding.work_item_id() else {
         return Ok(None);
     };
     let Some(message) = storage.read_message_by_id(&record.message_id)? else {
         return Ok(None);
     };
     let owner = crate::types::TurnOwner::WorkItem {
-        work_item_id: work_item_id.clone(),
+        work_item_id: work_item_id.to_owned(),
     };
     let Some(turn) =
         canonical_matching_terminal_turn(runtime_db, record, &message, &owner, terminal_turn)?

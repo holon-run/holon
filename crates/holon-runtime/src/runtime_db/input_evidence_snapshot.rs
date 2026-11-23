@@ -1666,7 +1666,11 @@ fn observe_input_qualification_tx(
             alias.digest.as_deref() == Some(actual_digest.as_str()),
             "prepared evidence raw/normalized digest mismatch"
         );
-        if alias.attempt_turn_proof == attempt_turn_proof {
+        if AttemptTurnProof::equivalent(
+            &scope.agent_id,
+            alias.attempt_turn_proof.as_ref(),
+            attempt_turn_proof.as_ref(),
+        ) {
             (alias.revision, false)
         } else {
             if !allow_qualification {
@@ -3033,7 +3037,11 @@ fn upsert_alias_tx(
         if old.fingerprint == *fingerprint
             && old.digest.as_deref() == digest
             && old.present == present
-            && old.attempt_turn_proof.as_ref() == attempt_turn_proof
+            && AttemptTurnProof::equivalent(
+                &scope.agent_id,
+                old.attempt_turn_proof.as_ref(),
+                attempt_turn_proof,
+            )
         {
             // An actual writer can confirm an unchanged legacy-prepared body
             // without inventing a new content revision. Reads cannot promote it.
@@ -3700,6 +3708,11 @@ fn metadata_closure(
                 ("$.recovery_of_attempt_id", Family::Attempt, false),
                 ("$.terminal_outcome_id", Family::Outcome, false),
                 ("$.binding.work_item_id", Family::WorkExecution, false),
+                (
+                    "$.binding.attribution.work_item_id",
+                    Family::WorkExecution,
+                    false,
+                ),
             ],
             Family::Outcome => &[("$.attempt_id", Family::Attempt, false)],
             Family::WorkExecution => &[("$.state.attempt_id", Family::Attempt, false)],

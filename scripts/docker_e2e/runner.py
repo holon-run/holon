@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from .turn_protocol import agent_attribution, agent_binding, turn_settlement
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "tests/e2e/docker/manifest.json"
@@ -2333,11 +2335,15 @@ def execution_outcome(row: dict[str, Any]) -> dict[str, Any]:
     return json.loads(row["payload_json"])
 
 
-def execution_binding_work_item(attempt: dict[str, Any]) -> str | None:
-    binding = attempt.get("binding", {})
-    if binding.get("kind") == "work_item":
-        return binding.get("work_item_id")
-    return None
+def execution_binding_work_item(attempt: dict[str, Any], agent_id: str) -> str | None:
+    return (agent_attribution(attempt.get("binding", {}), agent_id) or {}).get("work_item_id")
+
+
+def execution_binding_interaction(attempt: dict[str, Any], agent_id: str) -> str | None:
+    attribution = agent_attribution(attempt.get("binding", {}), agent_id)
+    if attribution is None or "work_item_id" in attribution:
+        return None
+    return attribution.get("interaction_id")
 
 
 def require_execution_work_items_terminal(
@@ -2375,15 +2381,13 @@ def require_execution_attempt_chain(
     work_item_attempts = [
         (row, attempt)
         for row, attempt in attempts
-        if execution_binding_work_item(attempt) == work_item_id
+        if execution_binding_work_item(attempt, agent_id) == work_item_id
     ]
     conversation_attempts = [
         (row, attempt)
         for row, attempt in attempts
         if attempt.get("source_message_id") in conversation_message_ids
-        and attempt.get("binding", {}).get("kind") == "conversation"
-        and isinstance(attempt.get("binding", {}).get("interaction_id"), str)
-        and attempt["binding"]["interaction_id"]
+        and execution_binding_interaction(attempt, agent_id) is not None
     ]
     require(
         len(conversation_attempts) == len(conversation_message_ids)
@@ -2448,7 +2452,7 @@ def require_checkpoint_restart_activation_lineage(
     before_restart_attempts = [
         execution_attempt(row)
         for row in before_restart_snapshot["execution_protocol_attempts"]
-        if execution_binding_work_item(execution_attempt(row)) == work_item_id
+        if execution_binding_work_item(execution_attempt(row), row["agent_id"]) == work_item_id
     ]
     require(
         len(before_restart_attempts) == 1
@@ -2462,7 +2466,7 @@ def require_checkpoint_restart_activation_lineage(
         (
             execution_attempt(row)
             for row in snapshot["execution_protocol_attempts"]
-            if execution_binding_work_item(execution_attempt(row)) == work_item_id
+            if execution_binding_work_item(execution_attempt(row), row["agent_id"]) == work_item_id
         ),
         key=lambda attempt: attempt["admitted_fences"]["work_item_generation"],
     )
@@ -2534,14 +2538,15 @@ def require_lifecycle_wait_adoption(
     owner_kind = source_turn.get("owner_kind")
     owner_id = source_turn.get("owner_id")
     if owner_kind == "conversation":
-        expected_binding = {"kind": "conversation", "interaction_id": owner_id}
+        require(isinstance(owner_id, str) and owner_id, "source Conversation lacks its interaction ID")
+        expected_binding = agent_binding(agent_id, interaction_id=owner_id)
     else:
         require(
             owner_kind in {None, "agent_lifecycle"}
             and owner_id in {None, agent_id},
             f"adopted wait source turn has an invalid owner: {source_turn}",
         )
-        expected_binding = {"kind": "agent_lifecycle", "agent_id": agent_id}
+        expected_binding = agent_binding(agent_id)
     attempts = [
         (row, execution_attempt(row))
         for row in snapshot["execution_protocol_attempts"]
@@ -2565,14 +2570,10 @@ def require_lifecycle_wait_adoption(
         len(outcomes) == 1
         and outcome.get("attempt_id") == attempts[0][0]["attempt_id"]
         and outcome.get("outcome")
-        == {
-            "owner": "conversation",
-            "outcome": {
-                "kind": "handoff_to_work_item_wait",
-                "work_item_id": work_item_id,
-                "wait": {"wait_id": wait["wait_condition_id"]},
-            },
-        },
+        == turn_settlement(
+            {"kind": "wait", "wait": {"wait_id": wait["wait_condition_id"]}},
+            {"kind": "handoff", "work_item_id": work_item_id},
+        ),
         f"lifecycle wait handoff outcome is missing or mismatched: {outcomes}",
     )
 
@@ -4082,13 +4083,13 @@ def require_provider_retry_parking(
     ]
     owned_attempts = [
         (row, attempt) for row, attempt in attempts
-        if execution_binding_work_item(attempt) == work_item_id
+        if execution_binding_work_item(attempt, agent_id) == work_item_id
         or attempt.get("source_message_id") in messages
     ]
     require(
         len(owned_attempts) == 1
         and owned_attempts[0][1].get("source_message_id") == root_id
-        and execution_binding_work_item(owned_attempts[0][1]) == work_item_id
+        and execution_binding_work_item(owned_attempts[0][1], agent_id) == work_item_id
         and owned_attempts[0][1].get("turn_id") == root_turn_id
         and owned_attempts[0][1].get("recovery_of_attempt_id") is None
         and owned_attempts[0][0]["lifecycle_state"] == "settled",
@@ -4377,7 +4378,7 @@ def run_scheduler_task_wait_resume_case(
     activation_causes = [
         execution_attempt(row)["source"]["identity"]["kind"]
         for row in snapshot["execution_protocol_attempts"]
-        if execution_binding_work_item(execution_attempt(row)) == work_item_id
+        if execution_binding_work_item(execution_attempt(row), row["agent_id"]) == work_item_id
     ]
     require(
         sorted(activation_causes)
@@ -5230,12 +5231,12 @@ def require_scheduler_interject_setup(
     conversation = next(
         attempt for attempt in attempts
         if attempt.get("source_message_id") == create_message_id
-        and attempt["binding"]["kind"] == "conversation"
+        and execution_binding_interaction(attempt, harness.agent_id) is not None
     )
     seed = turns.get(conversation.get("turn_id"), {})
     require(
         seed.get("owner_kind") == "conversation"
-        and seed.get("owner_id") == conversation["binding"]["interaction_id"]
+        and seed.get("owner_id") == execution_binding_interaction(conversation, harness.agent_id)
         and seed.get("current_work_item_id") is None
         and seed.get("trigger_message_id") == create_message_id
         and conversation["source"]["identity"]
@@ -5256,7 +5257,7 @@ def require_scheduler_interject_setup(
             setup.get("owner_id") == work_item_id
             and setup.get("current_work_item_id") == work_item_id
             and setup_attempt["binding"]
-            == {"kind": "work_item", "work_item_id": work_item_id}
+            == agent_binding(harness.agent_id, work_item_id=work_item_id)
             and setup_attempt["source"]["identity"]
             == {"kind": "work_item_continuation", "work_item_id": work_item_id}
             and setup_attempt["source_message_id"] == setup["trigger_message_id"]
@@ -5268,25 +5269,18 @@ def require_scheduler_interject_setup(
             setup_attempt == conversation,
             f"interject wait belongs to an unrelated Conversation: {setup_attempt}",
         )
+    wait_outcome = {"kind": "wait", "wait": {"wait_id": wait["wait_condition_id"]}}
     expected_outcomes = {
-        conversation["attempt_id"]: ({
-            "owner": "conversation", "outcome": {"kind": "replied"}
-        } if autonomous_setup else {
-            "owner": "conversation",
-            "outcome": {
-                "kind": "handoff_to_work_item_wait",
-                "work_item_id": work_item_id,
-                "wait": {"wait_id": wait["wait_condition_id"]},
-            },
-        }),
+        conversation["attempt_id"]: (
+            turn_settlement({"kind": "completed"})
+            if autonomous_setup else
+            turn_settlement(wait_outcome, {"kind": "handoff", "work_item_id": work_item_id})
+        ),
     }
     if autonomous_setup:
-        expected_outcomes[setup_attempt["attempt_id"]] = {
-            "owner": "work_item",
-            "outcome": {
-                "kind": "wait", "wait": {"wait_id": wait["wait_condition_id"]}
-            },
-        }
+        expected_outcomes[setup_attempt["attempt_id"]] = turn_settlement(
+            wait_outcome, {"kind": "wait"}
+        )
     outcome_by_id = {
         row["outcome_id"]: execution_outcome(row)
         for row in snapshot["execution_protocol_outcomes"]

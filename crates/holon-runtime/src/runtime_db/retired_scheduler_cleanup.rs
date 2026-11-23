@@ -6,8 +6,8 @@ use rusqlite::{OptionalExtension, Transaction};
 use serde::Serialize;
 
 use crate::domain::execution_protocol::{
-    self, CommandResult, ConversationOutcome, ExecutionAttemptState, ExecutionBinding,
-    ExecutionOutcome, ExecutionOutcomeRecord, WorkItemExecutionState, WorkItemOutcome,
+    self, CommandResult, ConversationOutcome, ExecutionAttemptState, ExecutionOutcome,
+    ExecutionOutcomeRecord, WorkItemExecutionState, WorkItemOutcome,
 };
 use crate::ids;
 use crate::runtime_db::evidence::{append_audit_event_tx, append_message_tx};
@@ -261,20 +261,18 @@ pub(super) fn fallback_outcome(
     ExecutionOutcomeRecord {
         outcome_id: format!("retired-scheduler-cleanup:{}", attempt.attempt_id),
         attempt_id: attempt.attempt_id.clone(),
-        outcome: match &attempt.binding {
-            ExecutionBinding::WorkItem { .. } => {
-                ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
-                    reason: "retired_scheduler_cleanup".into(),
-                })
-            }
-            ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
-                ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
-                    reason: "retired_scheduler_cleanup".into(),
-                })
-            }
-            ExecutionBinding::Command => ExecutionOutcome::Command(CommandResult::Quarantined {
+        outcome: if attempt.binding.is_command() {
+            ExecutionOutcome::Command(CommandResult::Quarantined {
                 reason: "retired_scheduler_cleanup".into(),
-            }),
+            })
+        } else if attempt.binding.work_item_id().is_some() {
+            ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
+                reason: "retired_scheduler_cleanup".into(),
+            })
+        } else {
+            ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
+                reason: "retired_scheduler_cleanup".into(),
+            })
         },
         created_at: now.into(),
     }

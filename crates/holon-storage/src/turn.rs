@@ -284,6 +284,7 @@ pub fn validate_turn_record_identity(existing: &TurnRecord, record: &TurnRecord)
         && existing.run_id == record.run_id
         && existing.current_work_item_id == record.current_work_item_id
         && (existing.owner == record.owner || existing.owner.is_none())
+        && (existing.attribution == record.attribution || existing.attribution.is_none())
         && existing
             .trigger
             .as_ref()

@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from .runner import require, sqlite_rows, write_json
+from .turn_protocol import agent_binding
 
 
 def snapshot(harness: Any, label: str, *, stopped: bool = False) -> dict[str, Any]:
@@ -139,7 +140,7 @@ def require_dispatch(
     identity = attempt["source"]["identity"]
     require(
         row["agent_id"] == agent_id and row["lifecycle_state"] == "settled"
-        and attempt["binding"] == {"kind": "work_item", "work_item_id": work_item_id}
+        and attempt["binding"] == agent_binding(agent_id, work_item_id=work_item_id)
         and identity.get("kind") == "triggered_wait"
         and identity.get("wait_id") == wait_id
         and identity.get("trigger_message_id") == trigger,

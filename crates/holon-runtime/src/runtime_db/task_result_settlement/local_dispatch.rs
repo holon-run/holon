@@ -3,13 +3,12 @@
 use super::*;
 use crate::{
     domain::execution_protocol::{
-        ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionSourceIdentity,
-        ExecutionWaitIngress,
+        ExecutionAttempt, ExecutionAttemptState, ExecutionSourceIdentity, ExecutionWaitIngress,
     },
     runtime_error::RuntimeErrorDomain,
     types::{
         AdmissionContext, AuthorityClass, MessageDeliverySurface, MessageEnvelope, MessageKind,
-        MessageOrigin, QueueEntryRecord, QueueEntryStatus, TurnOwner, TurnRecord, TurnTerminalKind,
+        MessageOrigin, QueueEntryRecord, QueueEntryStatus, TurnRecord, TurnTerminalKind,
         WaitConditionRecord, WaitConditionStatus,
     },
 };
@@ -103,17 +102,10 @@ fn batchless_exact_root_matches_tx(
     if !direct && *ingress != Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup) {
         return Ok(false);
     }
-    let owner = match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
-            work_item_id: work_item_id.clone(),
-        },
-        ExecutionBinding::AgentLifecycle { agent_id } if agent_id == &attempt.agent_id => {
-            TurnOwner::AgentLifecycle {
-                agent_id: agent_id.clone(),
-            }
-        }
-        _ => return Ok(false),
-    };
+    if !attempt.has_scheduler_attribution() {
+        return Ok(false);
+    }
+    let owner = attempt.turn_owner();
     if attempt.state != ExecutionAttemptState::Settled
         || record.state != TaskResultSettlementState::CallerAdmitted
         || record.agent_id != attempt.agent_id

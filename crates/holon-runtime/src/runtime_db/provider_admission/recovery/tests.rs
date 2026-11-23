@@ -1,7 +1,8 @@
 use super::*;
 use crate::domain::execution_protocol::{
-    ExecutionAttemptState, ExecutionOrigin, ExecutionPriority, ExecutionProvenance,
-    ExecutionSourceIdentity, ExecutionTrust, WorkItemExecutionState,
+    ExecutionAttemptState, ExecutionBinding, ExecutionOrigin, ExecutionPriority,
+    ExecutionProvenance, ExecutionSourceIdentity, ExecutionTrust, TurnAttribution,
+    WorkItemExecutionState,
 };
 
 mod auth_contract;
@@ -285,6 +286,110 @@ fn canonical_dispatch_survives_restart_and_benign_control_revision_changes() -> 
         ProviderRecoveryDispatchResult::Charged(_)
     ));
     assert_eq!(refresh(&db, &episode)?.request_count, 1);
+    Ok(())
+}
+
+#[test]
+fn recovery_episode_accepts_equivalent_owner_encodings() -> Result<()> {
+    let (_dir, db) = database()?;
+    let attempt = canonical_root(&db)?;
+    let mut binding = ProviderRecoveryBinding::from_root_attempt(&attempt, "chain-v1")?;
+    assert_eq!(
+        serde_json::to_value(&binding)?["owner"],
+        serde_json::json!({"kind": "work_item", "work_item_id": "work-a"})
+    );
+    let mut attribution = TurnAttribution {
+        work_item_id: Some("work-a".into()),
+        interaction_id: None,
+    };
+    binding.owner = StoredExecutionBinding::Agent {
+        agent_id: attempt.agent_id.clone(),
+        attribution: attribution.clone(),
+    };
+    let episode =
+        db.open_provider_recovery_episode(&binding, ProviderRecoveryBudgetKind::Network, now())?;
+    let admission = lease(&db, &[transport("mixed-binding")])?;
+    assert!(matches!(
+        db.charge_provider_recovery_dispatch_for_attempt(
+            &episode,
+            &admission,
+            "mixed-binding-request",
+            1,
+            &attempt,
+            now(),
+        )?,
+        ProviderRecoveryDispatchResult::Charged(_)
+    ));
+    assert_eq!(refresh(&db, &episode)?.request_count, 1);
+
+    attribution.interaction_id = Some("other-interaction".into());
+    binding.owner = StoredExecutionBinding::Agent {
+        agent_id: attempt.agent_id.clone(),
+        attribution,
+    };
+    assert!(!binding.owner.matches_attempt(&attempt));
+    assert!(!binding.matches_root(&attempt));
+    Ok(())
+}
+
+#[test]
+fn canonical_owner_encoding_reopens_historical_episode_without_renewing_budget() -> Result<()> {
+    let (dir, db) = database()?;
+    let attempt = canonical_root(&db)?;
+    let historical = ProviderRecoveryBinding {
+        owner: StoredExecutionBinding::WorkItem {
+            work_item_id: "work-a".into(),
+        },
+        ..ProviderRecoveryBinding::from_root_attempt(&attempt, "chain-v1")?
+    };
+    let episode =
+        db.open_provider_recovery_episode(&historical, ProviderRecoveryBudgetKind::Network, now())?;
+    let admission = lease(&db, &[transport("historical-binding")])?;
+    assert!(matches!(
+        db.charge_provider_recovery_dispatch_for_attempt(
+            &episode,
+            &admission,
+            "historical-binding-request",
+            1,
+            &attempt,
+            now(),
+        )?,
+        ProviderRecoveryDispatchResult::Charged(_)
+    ));
+    drop(db);
+
+    let db = reopen(&dir)?;
+    let mut attribution = TurnAttribution {
+        work_item_id: Some("work-a".into()),
+        interaction_id: None,
+    };
+    let normalized = ProviderRecoveryBinding {
+        owner: stable_episode_owner(
+            StoredExecutionBinding::Agent {
+                agent_id: attempt.agent_id.clone(),
+                attribution: attribution.clone(),
+            },
+            &attempt.agent_id,
+        ),
+        ..historical
+    };
+    let reopened =
+        db.open_provider_recovery_episode(&normalized, ProviderRecoveryBudgetKind::Network, now())?;
+    assert_eq!(reopened.key, episode.key);
+    assert_eq!(reopened.request_count, 1);
+    assert_eq!(reopened.total_requests, 1);
+
+    attribution.interaction_id = Some("interaction-a".into());
+    let both = StoredExecutionBinding::Agent {
+        agent_id: attempt.agent_id.clone(),
+        attribution,
+    };
+    assert_eq!(stable_episode_owner(both.clone(), &attempt.agent_id), both);
+    let dual_attribution = ProviderRecoveryBinding {
+        owner: both,
+        ..normalized
+    };
+    assert_ne!(dual_attribution.key()?, episode.key);
     Ok(())
 }
 
@@ -615,7 +720,7 @@ fn episode_binding_and_root_mismatches_do_not_change_authorization_or_charge() -
         let admission = lease(&db, &[transport(case)])?;
         if case == "binding" {
             let mut invalid = ProviderRecoveryBinding::from_root_attempt(&attempt, "chain-v1")?;
-            invalid.owner = ExecutionBinding::Command;
+            invalid.owner = StoredExecutionBinding::Command;
             db.transaction(|tx| {
                 tx.execute(
                     "UPDATE provider_recovery_episodes SET binding_json = ?1 WHERE episode_key = ?2",

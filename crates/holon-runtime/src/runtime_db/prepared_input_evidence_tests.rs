@@ -63,6 +63,7 @@ fn idle_batch_validation_borrows_all_unchanged_fields_and_preserves_fences() -> 
         "run_id",
         "tool_execution_ids",
         "external_side_effect_possible",
+        "attribution",
     ]
     .into_iter()
     .enumerate()
@@ -71,7 +72,14 @@ fn idle_batch_validation_borrows_all_unchanged_fields_and_preserves_fences() -> 
         match field {
             "run_id" => changed.run_id = Some("different-run".into()),
             "tool_execution_ids" => changed.tool_execution_ids.clear(),
-            _ => changed.external_side_effect_possible = true,
+            "external_side_effect_possible" => changed.external_side_effect_possible = true,
+            "attribution" => {
+                changed.attribution = Some(holon_domain::execution_protocol::TurnAttribution {
+                    work_item_id: None,
+                    interaction_id: Some("different-interaction".into()),
+                });
+            }
+            _ => unreachable!(),
         }
         let error = PreparedInputEvidence::turn_idle_batch(
             f.scope.clone(),
