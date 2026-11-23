@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .fallback_storm import FaultRun, SCRIPT, command, require_build
 from .runner import redact_evidence, require, write_json
+from .turn_protocol import agent_binding
 from .task_result_oracle import (
     IDENTITY_FIELDS, payload, recovery_ledger, recovery_root,
     require_coexisting_fairness, require_first_admission,
@@ -131,9 +132,11 @@ def provider_barrier_identity(snapshot, record, source_message_ids, *, activatio
     ancestors = attempts
     ancestor = attempt["attempt_id"]
     while True:
-        require(ancestors[ancestor].get("binding") == {
-            "kind": "work_item", "work_item_id": record["work_item_id"],
-        }, "provider barrier belongs to another owner")
+        require(
+            ancestors[ancestor].get("binding")
+            == agent_binding(record["agent_id"], work_item_id=record["work_item_id"]),
+            "provider barrier belongs to another owner",
+        )
         if ancestor == root:
             break
         ancestor = ancestors[ancestor]["recovery_of_attempt_id"]

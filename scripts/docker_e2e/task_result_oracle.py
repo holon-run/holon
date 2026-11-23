@@ -6,6 +6,8 @@ import re
 from datetime import datetime
 from typing import Any
 
+from .turn_protocol import agent_attribution, agent_binding, turn_settlement
+
 
 IDENTITY_FIELDS = (
     "result_identity", "agent_id", "task_id", "message_id",
@@ -192,9 +194,8 @@ def require_live_task_owner(
             "task-result owner has no live execution attempt")
     attempt = payload(attempts[0])
     require(
-        attempt.get("binding") == {
-            "kind": "work_item", "work_item_id": captured["work_item_id"],
-        },
+        attempt.get("binding")
+        == agent_binding(captured["agent_id"], work_item_id=captured["work_item_id"]),
         "live attempt is not bound to the captured task-result owner",
     )
     turns = [
@@ -377,11 +378,9 @@ def require_task_reentry(
     )
     turn = turns[0]
     binding = attempt.get("binding", {})
+    attribution = agent_attribution(binding, agent_id)
     require(
-        (binding.get("kind") == "work_item"
-         and binding.get("work_item_id") == record["work_item_id"])
-        if record["work_item_id"] is not None else
-        binding.get("kind") in {"agent_lifecycle", "conversation"},
+        attribution is not None and attribution.get("work_item_id") == record["work_item_id"],
         f"settlement activation owner migrated: {binding}",
     )
     outcomes = [
@@ -397,14 +396,34 @@ def require_task_reentry(
     )
     outcome = payload(outcomes[0])
     terminal = outcome.get("outcome", {})
+    settlement = terminal.get("outcome") or {}
+    model_outcome = settlement.get("outcome") or {}
+    effect = settlement.get("work_item_effect")
+    wait_id = (model_outcome.get("wait") or {}).get("wait_id")
+    if record["work_item_id"] is not None:
+        completion = (effect or {}).get("completion")
+        successful = terminal == turn_settlement({"kind": "completed"}, {"kind": "continue"})
+        if isinstance(completion, str):
+            successful |= terminal == turn_settlement(
+                {"kind": "completed"}, {"kind": "complete", "completion": completion}
+            )
+        if isinstance(wait_id, str) and wait_id:
+            successful |= terminal == turn_settlement(
+                {"kind": "wait", "wait": {"wait_id": wait_id}}, {"kind": "wait"}
+            )
+    else:
+        successful = terminal == turn_settlement({"kind": "completed"})
+        handoff_id = (effect or {}).get("work_item_id")
+        if isinstance(handoff_id, str) and handoff_id:
+            handoff = {"kind": "handoff", "work_item_id": handoff_id}
+            successful |= terminal == turn_settlement({"kind": "completed"}, handoff)
+            if isinstance(wait_id, str) and wait_id:
+                successful |= terminal == turn_settlement(
+                    {"kind": "wait", "wait": {"wait_id": wait_id}}, handoff
+                )
     require(
         outcome.get("outcome_id") == outcomes[0]["outcome_id"]
-        and terminal.get("owner")
-        == ("work_item" if record["work_item_id"] is not None else "conversation")
-        and terminal.get("outcome", {}).get("kind") in {
-            "replied", "complete", "continue", "wait",
-            "handoff_to_work_item_continue", "handoff_to_work_item_wait",
-        },
+        and successful,
         f"activation did not settle a successful typed owner outcome: {outcome}",
     )
     source_message_id = attempt.get("source_message_id")
@@ -656,9 +675,8 @@ def require_first_admission(before, *, captured, order, held, scanner, released,
     winners = [attempt for attempt in attempts if attempt["attempt_id"] == record["activation_id"]]
     require(len(winners) == 1 and winners[0].get("source_message_id") == source_id
             and not winners[0].get("recovery_of_attempt_id")
-            and winners[0].get("binding") == {
-                "kind": "work_item", "work_item_id": captured["work_item_id"],
-            }
+            and winners[0].get("binding")
+            == agent_binding(captured["agent_id"], work_item_id=captured["work_item_id"])
             and recovery_root(before, record["agent_id"], record["activation_id"])
             == record["activation_id"],
             "first canonical claim was not won by the selected immutable source")
