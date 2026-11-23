@@ -4073,3 +4073,155 @@ fn canonical_outcome_decode_converges_the_retired_needs_repair_encoding() -> Res
     assert!(decode_canonical(&key, &damaged, None).is_err());
     Ok(())
 }
+
+fn seed_schema_through(connection: &mut Connection, version: u32) -> Result<()> {
+    ensure_migration_table(connection)?;
+    for migration in MIGRATIONS
+        .iter()
+        .take_while(|migration| migration.version <= i64::from(version))
+    {
+        apply_migration(connection, migration)?;
+    }
+    Ok(())
+}
+
+/// Build `turn-000 -> msg-000 -> turn-001 -> ... -> turn-{depth}` with no
+/// window selectors involved, so only the lineage traversal can reach the tail.
+fn deep_turn_chain_tx(tx: &Transaction<'_>, depth: usize) -> Result<()> {
+    // Create every owning Turn first so each message assignment below has a
+    // persisted target; `upsert_turn_record_tx` validates that target.
+    for index in 0..=depth {
+        let mut turn =
+            TurnRecord::new("agent-a", format!("turn-{index:03}"), u64::try_from(index)?);
+        turn.created_at = time();
+        upsert_turn_record_tx(tx, &turn)?;
+    }
+    // msg-{k} is assigned to turn-{k+1}. The only typed lineage path is then
+    // turn-{k} -> msg-{k} -> turn-{k+1}, so the assignment must exist before
+    // the message is attached to its turn below.
+    for index in 0..depth {
+        tx.execute(
+            "INSERT INTO conversation_input_assignments(
+               message_id,agent_id,turn_id,revision,assigned_at
+             ) VALUES(?1,'agent-a',?2,1,?3)",
+            params![
+                format!("msg-{index:03}"),
+                format!("turn-{:03}", index + 1),
+                time().to_rfc3339()
+            ],
+        )?;
+    }
+    // Attaching an already-assigned message keeps that original target, so this
+    // second pass only adds the Turn->Message edges without breaking the chain.
+    for index in 0..=depth {
+        let mut turn =
+            TurnRecord::new("agent-a", format!("turn-{index:03}"), u64::try_from(index)?);
+        turn.created_at = time();
+        turn.input_message_ids = vec![format!("msg-{index:03}")];
+        upsert_turn_record_tx(tx, &turn)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn metadata_closure_completes_deep_lineage_without_truncation() -> Result<()> {
+    let mut connection = Connection::open_in_memory()?;
+    seed_schema_through(&mut connection, 96)?;
+    let tx = connection.transaction()?;
+    // 40 alternating Turn->Message->Turn hops reach an edge depth of 80, well
+    // past the retired 64-depth cap.
+    deep_turn_chain_tx(&tx, 40)?;
+    let roots = BTreeSet::from([Key::new(Family::Turn, "turn-000")]);
+
+    let selected = metadata_closure(&tx, "agent-a", roots, None)?;
+    for index in 0..=40 {
+        assert!(
+            selected.contains(&Key::new(Family::Turn, format!("turn-{index:03}"))),
+            "missing turn-{index:03}"
+        );
+    }
+    for index in 0..40 {
+        assert!(
+            selected.contains(&Key::new(Family::Message, format!("msg-{index:03}"))),
+            "missing msg-{index:03}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn qualified_input_evidence_upgrade_finishes_over_deep_metadata_closure() -> Result<()> {
+    let mut connection = Connection::open_in_memory()?;
+    seed_schema_through(&mut connection, 95)?;
+    {
+        let tx = connection.transaction()?;
+        // The chain lives below the 512-turn GlobalTurns window so the upgrade
+        // must reach it through typed lineage instead of direct window roots.
+        // 40 Turn->Message->Turn hops exceed the old 64-depth hard limit.
+        deep_turn_chain_tx(&tx, 40)?;
+        for index in 0..512u64 {
+            let mut filler =
+                TurnRecord::new("agent-a", format!("filler-{index:04}"), 10_000 + index);
+            filler.created_at = time();
+            upsert_turn_record_tx(&tx, &filler)?;
+        }
+        for index in 0..40 {
+            append_message_tx(&tx, &message(&format!("msg-{index:03}")))?;
+        }
+        // Keep the single TrustedOperator window slot away from the chain.
+        append_message_tx(&tx, &message("newest-operator"))?;
+        tx.execute(
+            "INSERT INTO episode_continuity_seeds(
+               seed_id,agent_id,policy_version,boundary_id,identity_incarnation,
+               source_kind,roots_json,candidate_payloads_json,import_required,captured_at
+             ) VALUES(
+               'seed-a','agent-a',1,'fixture',1,'upgrade_identity',?1,'[]',0,?2
+             )",
+            params![
+                serde_json::json!({"record_digests": {"turn:turn-000": "fixture"}}).to_string(),
+                time().to_rfc3339()
+            ],
+        )?;
+        tx.commit()?;
+    }
+
+    let migration = MIGRATIONS
+        .iter()
+        .find(|migration| migration.version == 96)
+        .context("missing qualified_input_evidence migration")?;
+    apply_migration(&mut connection, migration)?;
+
+    assert_eq!(
+        connection.query_row(
+            "SELECT name FROM schema_migrations WHERE version=96",
+            [],
+            |row| row.get::<_, String>(0)
+        )?,
+        "qualified_input_evidence"
+    );
+    let eligible = |family: &str, id: &str| -> Result<bool> {
+        Ok(connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM input_evidence_eligibility
+               WHERE seed_id='seed-a' AND capture_phase='upgrade'
+                 AND family=?1 AND record_id=?2
+             )",
+            params![family, id],
+            |row| row.get(0),
+        )?)
+    };
+    // The over-deep chain is fully qualified: no key is dropped for depth.
+    for index in 0..=40 {
+        assert!(
+            eligible("turn", &format!("turn-{index:03}"))?,
+            "turn-{index:03} missing from eligibility"
+        );
+    }
+    for index in 0..40 {
+        assert!(
+            eligible("message", &format!("msg-{index:03}"))?,
+            "msg-{index:03} missing from eligibility"
+        );
+    }
+    Ok(())
+}
