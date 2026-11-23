@@ -17,6 +17,8 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+from scripts.docker_e2e.turn_protocol import agent_binding, turn_settlement
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_PATH = ROOT / "scripts/docker_e2e/runner.py"
@@ -498,7 +500,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                     "source": {"identity": {"kind": (
                         "work_item_continuation" if mid == "root" else "runtime_recovery"
                     )}},
-                    "binding": {"kind": "work_item", "work_item_id": "work-1"},
+                    "binding": agent_binding("main", work_item_id="work-1"),
                     # Runtime-owned recovery envelopes carry no turn hint.
                     "turn_id": "turn-root" if mid == "root" else None,
                     "recovery_of_attempt_id": (
@@ -662,7 +664,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                     elif evidence == "stale_hint":
                         payload["turn_id"] = "turn-root"
                     else:
-                        payload["binding"]["work_item_id"] = "foreign-work"
+                        payload["binding"]["attribution"]["work_item_id"] = "foreign-work"
                     row["payload_json"] = json.dumps(payload)
                 with self.assertRaises(AssertionError):
                     runner.require_provider_retry_recovery(
@@ -3118,13 +3120,13 @@ class DockerE2ERunnerTests(unittest.TestCase):
         def attempt(name, source, outcome, *, conversation=False):
             turn_id, message_id = f"turn-{name}", f"message-{name}"
             binding = (
-                {"kind": "conversation", "interaction_id": "interaction-seed"}
-                if conversation else {"kind": "work_item", "work_item_id": "work-a"}
+                agent_binding("default", interaction_id="interaction-seed")
+                if conversation else agent_binding("default", work_item_id="work-a")
             )
             snapshot["turn_records"].append({
                 "agent_id": "default", "turn_id": turn_id,
                 "turn_index": len(snapshot["turn_records"]) + 1,
-                "owner_kind": binding["kind"],
+                "owner_kind": "conversation" if conversation else "work_item",
                 "owner_id": "interaction-seed" if conversation else "work-a",
                 "current_work_item_id": None if conversation else "work-a",
                 "trigger_message_id": message_id,
@@ -3145,26 +3147,23 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
         attempt(
             "seed", {"kind": "queue_message", "message_id": "message-seed"},
-            {"owner": "conversation", "outcome": (
-                {"kind": "replied"} if autonomous else {
-                    "kind": "handoff_to_work_item_wait", "work_item_id": "work-a",
-                    "wait": {"wait_id": "wait-a"},
-                }
-            )}, conversation=True,
+            turn_settlement({"kind": "completed"}) if autonomous else turn_settlement(
+                {"kind": "wait", "wait": {"wait_id": "wait-a"}},
+                {"kind": "handoff", "work_item_id": "work-a"},
+            ),
+            conversation=True,
         )
         if autonomous:
             attempt(
                 "setup", {"kind": "work_item_continuation", "work_item_id": "work-a"},
-                {"owner": "work_item", "outcome": {
-                    "kind": "wait", "wait": {"wait_id": "wait-a"},
-                }},
+                turn_settlement({"kind": "wait", "wait": {"wait_id": "wait-a"}}, {"kind": "wait"}),
             )
         attempt(
             "resume", {
                 "kind": "triggered_wait", "wait_id": "wait-a",
                 "trigger_message_id": "message-resume",
             },
-            {"owner": "work_item", "outcome": {"kind": "complete", "completion": "done"}},
+            turn_settlement({"kind": "completed"}, {"kind": "complete", "completion": "done"}),
         )
         events = [
             {"type": "tool_executed", "event_seq": index, "payload": {
@@ -3273,7 +3272,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                     elif fault == "wrong-outcome":
                         row = snapshot["execution_protocol_outcomes"][-2]
                         payload = json.loads(row["payload_json"])
-                        payload["outcome"]["outcome"]["wait"]["wait_id"] = "wait-b"
+                        model_outcome = payload["outcome"]["outcome"]["outcome"]
+                        model_outcome["wait"]["wait_id"] = "wait-b"
                         row["payload_json"] = json.dumps(payload)
                     elif fault in {"wrong-resume-source", "wrong-setup-source"}:
                         row = snapshot["execution_protocol_attempts"][
@@ -3771,10 +3771,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                                     "message_id": "message-create",
                                 }
                             },
-                            "binding": {
-                                "kind": "conversation",
-                                "interaction_id": "interaction-1",
-                            },
+                            "binding": agent_binding("default", interaction_id="interaction-1"),
                         }
                     ),
                 },
@@ -3794,10 +3791,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                                     "trigger_message_id": "message-resume",
                                 }
                             },
-                            "binding": {
-                                "kind": "work_item",
-                                "work_item_id": "work-1",
-                            },
+                            "binding": agent_binding("default", work_item_id="work-1"),
                         }
                     ),
                 },
@@ -3827,7 +3821,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
         conversation = json.loads(
             snapshot["execution_protocol_attempts"][0]["payload_json"]
         )
-        conversation["binding"] = {"kind": "work_item", "work_item_id": "work-1"}
+        conversation["binding"] = agent_binding("default", work_item_id="work-1")
         snapshot["execution_protocol_attempts"][0]["payload_json"] = json.dumps(
             conversation
         )
@@ -3864,10 +3858,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                         {
                             "attempt_id": "attempt-conversation",
                             "source_message_id": "message-conversation",
-                            "binding": {
-                                "kind": "conversation",
-                                "interaction_id": "interaction-1",
-                            },
+                            "binding": agent_binding("default", interaction_id="interaction-1"),
                         }
                     ),
                 }
@@ -3879,14 +3870,10 @@ class DockerE2ERunnerTests(unittest.TestCase):
                     "payload_json": json.dumps(
                         {
                             "attempt_id": "attempt-conversation",
-                            "outcome": {
-                                "owner": "conversation",
-                                "outcome": {
-                                    "kind": "handoff_to_work_item_wait",
-                                    "work_item_id": "work-1",
-                                    "wait": {"wait_id": "wait-1"},
-                                },
-                            },
+                            "outcome": turn_settlement(
+                                {"kind": "wait", "wait": {"wait_id": "wait-1"}},
+                                {"kind": "handoff", "work_item_id": "work-1"},
+                            ),
                         }
                     ),
                 }
@@ -4063,13 +4050,14 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "attempt_id": attempt_id,
                 "source_message_id": message_id,
                 "source": {"identity": identity},
-                "binding": {"kind": "work_item", "work_item_id": "work-1"},
+                "binding": agent_binding("default", work_item_id="work-1"),
                 "admitted_fences": {"work_item_generation": generation},
             }
 
         before_restart_snapshot = {
             "execution_protocol_attempts": [
                 {
+                    "agent_id": "default",
                     "payload_json": json.dumps(
                         attempt(
                             "attempt-schedule",
@@ -4087,6 +4075,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
         snapshot = {
             "execution_protocol_attempts": [
                 {
+                    "agent_id": "default",
                     "payload_json": json.dumps(
                         attempt(
                             "attempt-schedule",
@@ -4100,6 +4089,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                     ),
                 },
                 {
+                    "agent_id": "default",
                     "payload_json": json.dumps(
                         attempt(
                             "attempt-resume",
@@ -4114,6 +4104,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                     ),
                 },
                 {
+                    "agent_id": "default",
                     "payload_json": json.dumps(
                         attempt(
                             "attempt-completion",
@@ -4640,7 +4631,7 @@ class LiveAcceptanceEvidenceTests(unittest.TestCase):
                 "payload_json": json.dumps({
                     "attempt_id": "attempt-1", "agent_id": "parent",
                     "turn_id": "reentry-turn", "source_message_id": "result-1",
-                    "binding": {"kind": "agent_lifecycle", "agent_id": "parent"},
+                    "binding": agent_binding("parent"),
                     "source": {"identity": {
                         "kind": "task_result", "task_id": "task-1",
                         "result_message_id": "result-1",
@@ -4652,7 +4643,7 @@ class LiveAcceptanceEvidenceTests(unittest.TestCase):
                 "attempt_id": "attempt-1",
                 "payload_json": json.dumps({
                     "attempt_id": "attempt-1", "outcome_id": "outcome-1",
-                    "outcome": {"owner": "conversation", "outcome": {"kind": "replied"}},
+                    "outcome": turn_settlement({"kind": "completed"}),
                 }),
             }],
             "tasks": [{

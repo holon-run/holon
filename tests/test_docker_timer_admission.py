@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from scripts.docker_e2e import timer_admission as timer
+from scripts.docker_e2e.turn_protocol import agent_binding
 from tests.test_docker_e2e_runner import ROOT, runner, stub, stub_batch_request
 
 
@@ -46,7 +47,7 @@ def fixtures() -> tuple[dict, dict]:
             "kind": "triggered_wait", "wait_id": "wait-1",
             "trigger_message_id": "tick-1",
         }, "generation": 17},
-        "binding": {"kind": "work_item", "work_item_id": WID},
+        "binding": agent_binding("main", work_item_id=WID),
         "turn_id": "turn-1",
         "admitted_fences": {
             "work_item_source_revision": 6, "work_item_generation": 2,
@@ -299,7 +300,7 @@ class TimerAdmissionTests(unittest.TestCase):
                     self.check_dispatch(before, after)
         before, after = fixtures()
         attempt = json.loads(after["execution_protocol_attempts"][0]["payload_json"])
-        attempt["binding"] = {"kind": "agent_lifecycle", "agent_id": "main"}
+        attempt["binding"] = agent_binding("main")
         after["execution_protocol_attempts"][0]["payload_json"] = json.dumps(attempt)
         with self.assertRaisesRegex(AssertionError, "binding"):
             self.check_dispatch(before, after)

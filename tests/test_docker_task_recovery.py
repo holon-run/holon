@@ -19,6 +19,7 @@ from unittest.mock import Mock, patch
 
 from scripts.docker_e2e import task_recovery as recovery
 from scripts.docker_e2e import task_result_oracle as oracle
+from scripts.docker_e2e.turn_protocol import agent_binding, turn_settlement
 from tests import test_docker_e2e_runner as runner_tests
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,8 +48,9 @@ def snapshot_with_roots(count=5):
         "agent_id": "parent", "attempt_id": f"root-{index + 1}",
         "payload_json": json.dumps({"attempt_id": f"root-{index + 1}",
                                    "source_message_id": f"message-root-{index + 1}",
-                                   "binding": {"kind": "work_item",
-                                               "work_item_id": record["work_item_id"]},
+                                   "binding": agent_binding(
+                                       record["agent_id"], work_item_id=record["work_item_id"]
+                                   ),
                                    "recovery_of_attempt_id": None}),
     } for index in range(count)]
     return snapshot, record
@@ -371,7 +373,7 @@ class RecoveryOracleTests(unittest.TestCase):
             snapshot, agent_id="parent", task_id="task-1", parent_turn_id="parent-turn",
         )
         parent = oracle.payload(snapshot["execution_protocol_attempts"][-1])
-        parent["binding"] = {"kind": "work_item", "work_item_id": "foreign"}
+        parent["binding"] = agent_binding("parent", work_item_id="foreign")
         snapshot["execution_protocol_attempts"][-1]["payload_json"] = json.dumps(parent)
         with self.assertRaises(AssertionError):
             oracle.require_task_reentry(
@@ -441,7 +443,9 @@ class RecoveryOracleTests(unittest.TestCase):
         )
         row = snapshot["execution_protocol_outcomes"][0]
         outcome = oracle.payload(row)
-        outcome["outcome"]["outcome"]["kind"] = "failed"
+        outcome["outcome"] = turn_settlement({
+            "kind": "failed", "failure": {"kind": "policy", "policy": "test-policy"},
+        })
         row["payload_json"] = json.dumps(outcome)
         with self.assertRaisesRegex(AssertionError, "typed owner outcome"):
             oracle.require_task_reentry(
@@ -641,7 +645,7 @@ class ModelLineageTests(unittest.TestCase):
                 attempt = oracle.payload(row)
                 turn = snapshot["turn_records"][-1]
                 if mutation == "owner":
-                    attempt["binding"] = {"kind": "work_item", "work_item_id": "foreign"}
+                    attempt["binding"] = agent_binding("parent", work_item_id="foreign")
                 elif mutation == "agent":
                     attempt["agent_id"] = "foreign"
                 elif mutation == "attempt-id":
@@ -974,7 +978,7 @@ class RecoveryRunnerTests(unittest.TestCase):
             "agent_id": "qa", "attempt_id": "late-fallback",
             "payload_json": json.dumps({
                 "source_message_id": "late-source", "recovery_of_attempt_id": "root-3",
-                "binding": {"kind": "work_item", "work_item_id": "owner"},
+                "binding": agent_binding("qa", work_item_id="owner"),
             }),
         })
         check = lambda value, ids: recovery.provider_barrier_identity(value, record, ids)
@@ -1004,7 +1008,7 @@ class RecoveryRunnerTests(unittest.TestCase):
                     stored["recovery_of_attempt_id"] = None
                     root["payload_json"] = json.dumps(stored)
                 else:
-                    value["binding"]["work_item_id"] = "foreign-owner"
+                    value["binding"]["attribution"]["work_item_id"] = "foreign-owner"
                 row["payload_json"] = json.dumps(value)
             with self.subTest(mutation=mutation), self.assertRaisesRegex(
                 AssertionError, "provider barrier",
@@ -1081,7 +1085,7 @@ class RecoveryRunnerTests(unittest.TestCase):
             "payload_json": json.dumps({
                 "source_message_id": "message-root-5",
                 "recovery_of_attempt_id": "root-5",
-                "binding": {"kind": "work_item", "work_item_id": "owner"},
+                "binding": agent_binding("qa", work_item_id="owner"),
             }),
         })
         identity = recovery.provider_barrier_identity(
@@ -1244,7 +1248,7 @@ class RecoveryRunnerTests(unittest.TestCase):
             value.update(source_message_id=source_id, source={"identity": {
                 "kind": "internal_followup", "message_id": source_id,
             }},
-                         binding={"kind": "work_item", "work_item_id": record["work_item_id"]})
+                         binding=agent_binding(record["agent_id"], work_item_id=record["work_item_id"]))
             row["payload_json"] = json.dumps(value)
             before["queue_entries"] = [{"message_id": record["message_id"], "status": "queued"}]
             final = after["execution_protocol_attempts"][0]
@@ -1431,7 +1435,7 @@ class RecoveryRunnerTests(unittest.TestCase):
                     row["lifecycle_state"] = "interrupted"
                 else:
                     value = oracle.payload(row)
-                    value["binding"]["work_item_id"] = "foreign"
+                    value["binding"]["attribution"]["work_item_id"] = "foreign"
                     row["payload_json"] = json.dumps(value)
             elif mutation == "early-release":
                 release["observed_at"] = "2026-10-25T12:00:00Z"
@@ -1685,11 +1689,11 @@ class RecoveryRunnerTests(unittest.TestCase):
                     if table == "briefs":
                         value["work_item_id"] = "owner"
                     if "binding" in value:
-                        value["binding"] = {"kind": "work_item", "work_item_id": "owner"}
+                        value["binding"] = agent_binding("qa", work_item_id="owner")
                     if table == "execution_protocol_outcomes":
-                        value["outcome"] = {
-                            "owner": "work_item", "outcome": {"kind": "complete"},
-                        }
+                        value["outcome"] = turn_settlement(
+                            {"kind": "completed"}, {"kind": "complete", "completion": "brief-1"},
+                        )
                     row["payload_json"] = json.dumps(value)
         task = oracle.payload(snapshot["tasks"][0])
         task["work_item_id"] = "owner"
@@ -1737,7 +1741,7 @@ class RecoveryRunnerTests(unittest.TestCase):
             elif mutation == "owner":
                 row = broken["execution_protocol_attempts"][0]
                 value = oracle.payload(row)
-                value["binding"]["work_item_id"] = "foreign"
+                value["binding"]["attribution"]["work_item_id"] = "foreign"
                 row["payload_json"] = json.dumps(value)
             else:
                 broken["messages"].append({
@@ -1799,12 +1803,9 @@ class RecoveryRunnerTests(unittest.TestCase):
             **outcome, "outcome_id": "root-outcome", "attempt_id": "task-root",
             "payload_json": json.dumps({
                 "outcome_id": "root-outcome", "attempt_id": "task-root",
-                "outcome": {"owner": "work_item", "outcome": {"kind": "continue"}},
+                "outcome": turn_settlement({"kind": "completed"}, {"kind": "continue"}),
             }),
         })
-        value = oracle.payload(outcome)
-        value["outcome"]["outcome"]["completion"] = "brief-1"
-        outcome["payload_json"] = json.dumps(value)
         snapshot["briefs"][0].update(message_id="fallback-source", payload_json=json.dumps({
             **oracle.payload(snapshot["briefs"][0]), "related_message_id": "fallback-source",
         }))
@@ -1903,7 +1904,7 @@ class RecoveryRunnerTests(unittest.TestCase):
             elif mutation.startswith("ancestor"):
                 value = oracle.payload(ancestor)
                 if mutation == "ancestor-owner":
-                    value["binding"]["work_item_id"] = "foreign"
+                    value["binding"]["attribution"]["work_item_id"] = "foreign"
                 elif mutation == "ancestor-source":
                     value["source"]["identity"]["kind"] = "queue_message"
                 else:
@@ -1919,7 +1920,7 @@ class RecoveryRunnerTests(unittest.TestCase):
                 if mutation == "typed-outcome":
                     value["attempt_id"] = "task-root"
                 else:
-                    value["outcome"]["outcome"]["completion"] = "foreign-brief"
+                    value["outcome"]["outcome"]["work_item_effect"]["completion"] = "foreign-brief"
                 row["payload_json"] = json.dumps(value)
             else:
                 snapshot["briefs"][0]["message_id"] = "result-1"
@@ -1938,7 +1939,7 @@ class RecoveryRunnerTests(unittest.TestCase):
                     value = oracle.payload(row)
                     value.update(
                         source_message_id=f"message-{row['attempt_id']}",
-                        binding={"kind": "work_item", "work_item_id": "owner"},
+                        binding=agent_binding("qa", work_item_id="owner"),
                     )
                     row["payload_json"] = json.dumps(value)
             run.captured = {key: record[key] for key in oracle.IDENTITY_FIELDS}

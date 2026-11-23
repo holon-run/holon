@@ -399,14 +399,18 @@ def require_task_reentry(
     settlement = terminal.get("outcome") or {}
     model_outcome = settlement.get("outcome") or {}
     effect = settlement.get("work_item_effect")
+    completion = None
     wait_id = (model_outcome.get("wait") or {}).get("wait_id")
     if record["work_item_id"] is not None:
-        completion = (effect or {}).get("completion")
         successful = terminal == turn_settlement({"kind": "completed"}, {"kind": "continue"})
-        if isinstance(completion, str):
-            successful |= terminal == turn_settlement(
-                {"kind": "completed"}, {"kind": "complete", "completion": completion}
+        brief_id = (effect or {}).get("completion")
+        if isinstance(brief_id, str) and brief_id:
+            complete = terminal == turn_settlement(
+                {"kind": "completed"}, {"kind": "complete", "completion": brief_id}
             )
+            if complete:
+                completion = brief_id
+                successful = True
         if isinstance(wait_id, str) and wait_id:
             successful |= terminal == turn_settlement(
                 {"kind": "wait", "wait": {"wait_id": wait_id}}, {"kind": "wait"}
@@ -525,7 +529,7 @@ def require_task_reentry(
         require_result_brief(
             snapshot, agent_id=agent_id, turn_id=turn["turn_id"],
             message_id=turn["trigger_message_id"], work_item_id=record["work_item_id"],
-            brief_id=terminal.get("outcome", {}).get("completion"),
+            brief_id=completion,
         )
     return task
 
