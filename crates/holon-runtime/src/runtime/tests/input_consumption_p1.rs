@@ -5034,6 +5034,11 @@ fn legacy_recovery_home_with_current_upgrade(
     )?;
     let tx = connection.transaction()?;
     for table in tables {
+        // The v121 source has no scheduler table. Leave the schema-89
+        // table empty so the forward migration still removes it.
+        if table == "destructive_operations" {
+            continue;
+        }
         let table = table.replace('"', "\"\"");
         let source_columns = {
             let mut statement = tx.prepare(&format!("PRAGMA original.table_info(\"{table}\")"))?;
