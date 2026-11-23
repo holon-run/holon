@@ -29,7 +29,7 @@ struct TaskOutputRead {
 
 /// An internal read carrier owns every selected/derived allocation until the
 /// caller's final synchronous wire serialization. It carries no runtime/root.
-pub(crate) struct TaskOutputResultRead {
+pub struct TaskOutputResultRead {
     pub result: TaskOutputResult,
     _role: TaskQueryLease,
     _selected: TaskOutputRead,

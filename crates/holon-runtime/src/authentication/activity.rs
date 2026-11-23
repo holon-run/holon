@@ -9,7 +9,7 @@ use super::AuthSessionRecord;
 use crate::runtime_db::RuntimeDb;
 
 #[derive(Default)]
-pub(crate) struct SessionActivity {
+pub struct SessionActivity {
     entries: Mutex<HashMap<String, Activity>>,
     checkpoint: Mutex<()>,
 }
@@ -25,11 +25,11 @@ pub(crate) fn checkpoint_interval(idle_ttl: Duration) -> Duration {
 }
 
 impl SessionActivity {
-    pub(crate) fn forget(&self, digest: &str) {
+    pub fn forget(&self, digest: &str) {
         self.entries.lock().unwrap().remove(digest);
     }
 
-    pub(crate) fn is_active(
+    pub fn is_active(
         &self,
         session: &mut AuthSessionRecord,
         now: DateTime<Utc>,
@@ -47,7 +47,7 @@ impl SessionActivity {
     }
 
     /// Check idle expiry and advance activity under one lock, including concurrent requests.
-    pub(crate) fn touch(
+    pub fn touch(
         &self,
         session: &mut AuthSessionRecord,
         now: DateTime<Utc>,

@@ -19,7 +19,7 @@ impl From<&InputEvidenceScope> for ScopeKey {
     }
 }
 impl ScopeKey {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     fn scope(&self) -> InputEvidenceScope {
         InputEvidenceScope {
             agent_id: self.0.clone(),
@@ -35,7 +35,7 @@ pub(crate) enum BudgetResource {
     PendingHostBytes,
 }
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum InputEvidenceBudgetError {
+pub enum InputEvidenceBudgetError {
     #[error("pending input needs original-attempt reconciliation: {message_id}")]
     NeedsReconcile {
         scope: InputEvidenceScope,
@@ -110,7 +110,7 @@ pub(crate) enum InputMemoryCategory {
     Candidate,
     Pins,
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct AllocationUsage {
     pub allocations: u64,
@@ -119,7 +119,7 @@ pub(crate) struct AllocationUsage {
     pub bytes: u64,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub(crate) struct OwnedBytesEstimate {
+pub struct OwnedBytesEstimate {
     pub payload_bytes: u64,
     pub metadata_estimate_bytes: u64,
 }
@@ -128,7 +128,7 @@ impl OwnedBytesEstimate {
         add(self.payload_bytes, self.metadata_estimate_bytes)
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ScopeMemoryReport {
     pub scope: InputEvidenceScope,
@@ -140,7 +140,7 @@ pub(crate) struct ScopeMemoryReport {
     pub reclaimable_history: AllocationUsage,
     pub owned: OwnedBytesEstimate,
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct InputEvidenceBudgetReport {
     pub limits: StateMemoryLimits,
@@ -252,7 +252,7 @@ impl LedgerState {
             }
         }
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     fn prune_dead(&mut self) {
         // Registration only adds live incoming allocations. Weak retains each
         // allocation's identity without retaining its payload. Release reaps
@@ -267,13 +267,13 @@ struct LedgerInner {
     state: Mutex<LedgerState>,
 }
 #[derive(Debug, Clone)]
-pub(crate) struct InputEvidenceBudgetLedger {
+pub struct InputEvidenceBudgetLedger {
     inner: Arc<LedgerInner>,
 }
 /// Held by the actual root/candidate/captured data. Arc clones share a view;
 /// final guard Drop releases only observation membership, never SQL charges.
 #[derive(Debug)]
-pub(crate) struct BudgetViewGuard {
+pub struct BudgetViewGuard {
     ledger: Arc<LedgerInner>,
     nonce: u64,
     _registration_budget: Option<Arc<BudgetViewGuard>>,
@@ -496,7 +496,7 @@ pub(crate) enum PendingTicketResolution {
     FreshNotCommitted,
 }
 impl InputEvidenceBudgetLedger {
-    pub(crate) fn new(limits: StateMemoryLimits) -> Result<Self> {
+    pub fn new(limits: StateMemoryLimits) -> Result<Self> {
         limits
             .validate()
             .map_err(|_| InputEvidenceBudgetError::InvalidInput("limits must be positive"))?;
@@ -1436,9 +1436,18 @@ impl InputEvidenceBudgetLedger {
             _registration_budget: registration_budget,
         }))
     }
+    #[cfg(feature = "http-test-support")]
+    pub fn report_for_http_test(&self) -> Result<HttpTestBudgetReport> {
+        let report = self.report()?;
+        Ok(HttpTestBudgetReport {
+            observed_bytes: report.observed_bytes,
+            host_owned: report.host_owned,
+        })
+    }
+
     /// No record/root/domain Arc escapes in a report. Weak bookkeeping can
     /// observe allocations that outlive every registered view as unclassified.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     pub(crate) fn report(&self) -> Result<InputEvidenceBudgetReport> {
         let mut state = self
             .inner
@@ -1560,7 +1569,7 @@ pub(crate) fn serialized_bytes(value: &impl Serialize) -> Result<u64> {
     Ok(count.0)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 fn empty_scope(sk: &ScopeKey) -> ScopeMemoryReport {
     ScopeMemoryReport {
         scope: sk.scope(),
@@ -1614,13 +1623,13 @@ fn add(a: u64, b: u64) -> Result<u64> {
     a.checked_add(b)
         .ok_or(InputEvidenceBudgetError::CounterOverflow)
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 fn add_usage(usage: &mut AllocationUsage, bytes: u64) -> Result<()> {
     usage.allocations = add(usage.allocations, 1)?;
     usage.bytes = add(usage.bytes, bytes)?;
     Ok(())
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 fn add_owned(total: &mut OwnedBytesEstimate, bytes: OwnedBytesEstimate) -> Result<()> {
     total.payload_bytes = add(total.payload_bytes, bytes.payload_bytes)?;
     total.metadata_estimate_bytes =
@@ -1636,3 +1645,10 @@ mod tests;
 #[cfg(test)]
 #[path = "input_evidence_owned_completion_tests.rs"]
 mod owned_completion_tests;
+
+#[cfg(feature = "http-test-support")]
+#[derive(Debug)]
+pub struct HttpTestBudgetReport {
+    pub observed_bytes: u64,
+    pub host_owned: OwnedBytesEstimate,
+}

@@ -346,7 +346,7 @@ pub(crate) struct SchedulingCaptureRequest {
     pub required_keys: BTreeSet<SchedulingKey>,
 }
 impl SchedulingCaptureRequest {
-    pub(crate) fn current() -> Self {
+    pub fn current() -> Self {
         Self {
             include_live: true,
             history_limit: SCHEDULING_HISTORY_WINDOW,

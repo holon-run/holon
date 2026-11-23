@@ -3,10 +3,10 @@ use super::*;
 use crate::types::{CallbackDeliveryMode, ExternalTriggerRecord, ExternalTriggerStatus};
 use serde_json::Value;
 
-pub(crate) struct ExternalTriggerTokenLocator {
-    pub(crate) target_agent_id: String,
-    pub(crate) external_trigger_id: String,
-    pub(crate) delivery_mode: CallbackDeliveryMode,
+pub struct ExternalTriggerTokenLocator {
+    pub target_agent_id: String,
+    pub external_trigger_id: String,
+    pub delivery_mode: CallbackDeliveryMode,
     _material: Vec<Arc<BudgetViewGuard>>,
 }
 pub(crate) struct ExternalTriggerTokenRecordRead {

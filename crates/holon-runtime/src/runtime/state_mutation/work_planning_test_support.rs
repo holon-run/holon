@@ -15,7 +15,7 @@ pub(super) fn assert_input_ready_scheduler_domains_unprepared(
     Ok(())
 }
 
-pub(super) async fn publish_unprepared_scheduler_frontier(runtime: &RuntimeHandle) -> Result<()> {
+pub async fn publish_unprepared_scheduler_frontier(runtime: &RuntimeHandle) -> Result<()> {
     // Bootstrap prepares every domain. Keep its real Input while explicitly
     // publishing the unprepared scheduler frontier this interleaving exercises.
     let mut reservation = runtime.inner.mutation_owner.reserve().await?;

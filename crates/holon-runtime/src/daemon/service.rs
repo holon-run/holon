@@ -6,7 +6,7 @@ use crate::{
     types::AgentStatus, web::WebProviderKind,
 };
 
-pub(crate) fn activity_from_snapshots(
+pub fn activity_from_snapshots(
     agents: &[crate::host::PublicAgentActivitySnapshot],
 ) -> RuntimeActivitySummary {
     let active_task_count = agents

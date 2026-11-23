@@ -59,70 +59,6 @@ fn scope() -> InputEvidenceScope {
 }
 
 #[tokio::test]
-async fn snapshot_storage_view_keeps_original_holder_through_wire_success_and_failure() -> Result<()>
-{
-    let (_home, host) = fixture().await?;
-    for roster in [false, true] {
-        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
-        let holder = phase.guard()?;
-        let (agent, retained) = {
-            let _entry = phase.enter();
-            entry(&host, roster)?
-        };
-        assert_eq!(
-            agent.scheduling_posture.posture,
-            AgentSchedulingPosture::Idle
-        );
-        assert!(Arc::ptr_eq(retained.as_ref().unwrap(), &holder));
-        let cost = phase.finish()?;
-        drop((phase, holder));
-        struct Checked<'a> {
-            agent: &'a AgentListEntry,
-            ledger: &'a InputEvidenceBudgetLedger,
-            bytes: u64,
-            fail: bool,
-        }
-        impl serde::Serialize for Checked<'_> {
-            fn serialize<S: serde::Serializer>(
-                &self,
-                serializer: S,
-            ) -> std::result::Result<S::Ok, S::Error> {
-                assert_eq!(self.ledger.report().unwrap().observed_bytes, self.bytes);
-                if self.fail {
-                    return Err(serde::ser::Error::custom("storage-view fixture failure"));
-                }
-                serde::Serialize::serialize(self.agent, serializer)
-            }
-        }
-        for fail in [false, true] {
-            let result = crate::http::serialize_json(
-                "/storage-view-fixture",
-                &Checked {
-                    agent: &agent,
-                    ledger: &ledger,
-                    bytes: cost.0,
-                    fail,
-                },
-            );
-            assert_eq!(result.is_err(), fail);
-            if let Ok(bytes) = result {
-                assert_eq!(
-                    serde_json::from_slice::<Value>(&bytes)?,
-                    serde_json::to_value(&agent)?
-                );
-            }
-            assert_eq!(ledger.report()?.observed_bytes, cost.0);
-        }
-        drop(agent);
-        assert_eq!(ledger.report()?.observed_bytes, cost.0);
-        drop(retained);
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn snapshot_storage_view_propagates_sql_errors_without_partial_entry_or_phase_reset(
 ) -> Result<()> {
     let (_home, host) = fixture().await?;
@@ -166,32 +102,6 @@ async fn snapshot_storage_view_propagates_sql_errors_without_partial_entry_or_ph
         assert!(ledger.report()?.observed_bytes > 0);
         drop(holder);
         assert_eq!(ledger.report()?.observed_bytes, 0);
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn snapshot_storage_view_preserves_both_real_http_routes() -> Result<()> {
-    use axum::{
-        body::{to_bytes, Body},
-        http::{Request, StatusCode},
-    };
-    use tower::ServiceExt;
-    let (_home, host) = fixture().await?;
-    let expected = serde_json::to_value(entry(&host, false)?.0)?;
-    let router = crate::http::router(crate::http::AppState::for_tcp(host));
-    for (uri, pointer) in [
-        ("/api/agents/snapshot", "/agents/0/agent"),
-        ("/api/agents/web/projection-snapshot", "/projection/agent"),
-    ] {
-        let response = router
-            .clone()
-            .oneshot(Request::builder().uri(uri).body(Body::empty())?)
-            .await?;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await?;
-        let value: Value = serde_json::from_slice(&body)?;
-        assert_eq!(value.pointer(pointer), Some(&expected));
     }
     Ok(())
 }

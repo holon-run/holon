@@ -20,11 +20,11 @@ pub use package::{
     SkillLibraryUpdateResult, SkillLibraryUpdateState, SkillLibraryUpdateStatus, SkillVisibility,
     REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS,
 };
-pub(crate) use package::{
-    existing_skill_roots, skill_root_id, skill_wins_catalog_selection,
-    user_global_skill_root_candidates, RemoteSkillArchiveFetchFailed, COMPAT_SKILL_ROOT_SUFFIXES,
-    SKILL_ROOT_SUFFIXES,
+pub use package::{
+    existing_skill_roots, user_global_skill_root_candidates, RemoteSkillArchiveFetchFailed,
+    COMPAT_SKILL_ROOT_SUFFIXES,
 };
+pub(crate) use package::{skill_root_id, skill_wins_catalog_selection, SKILL_ROOT_SUFFIXES};
 
 pub fn load_skills_runtime_view(
     visibility: SkillVisibility,

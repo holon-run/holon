@@ -17,7 +17,7 @@ use crate::{
 use super::activity::FileActivityMarker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EventLogPageOrder {
+pub enum EventLogPageOrder {
     Asc,
     Desc,
 }
@@ -31,9 +31,9 @@ pub(crate) struct EventLogPage {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PublishedAuditEvent {
-    pub(crate) agent_id: Option<String>,
-    pub(crate) event: AuditEventAck,
+pub struct PublishedAuditEvent {
+    pub agent_id: Option<String>,
+    pub event: AuditEventAck,
     pub(crate) qualified: Option<CommittedEventRead>,
 }
 

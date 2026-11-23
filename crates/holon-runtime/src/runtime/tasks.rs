@@ -1068,7 +1068,7 @@ impl RuntimeHandle {
         Ok(task)
     }
 
-    pub(crate) async fn resolve_agent_model_request(
+    pub async fn resolve_agent_model_request(
         &self,
         tool_name: &str,
         request: Option<AgentModelRequest>,
@@ -3806,7 +3806,7 @@ impl RuntimeHandle {
             .await
     }
 
-    pub(crate) async fn pick_work_item_in_lane(
+    pub async fn pick_work_item_in_lane(
         &self,
         work_item_id: String,
         reason: Option<String>,
@@ -4303,7 +4303,7 @@ impl RuntimeHandle {
         .await
     }
 
-    pub(crate) async fn update_work_item_fields_in_lane(
+    pub async fn update_work_item_fields_in_lane(
         &self,
         work_item_id: String,
         objective: Option<String>,
@@ -4592,7 +4592,7 @@ impl RuntimeHandle {
             .into_record())
     }
 
-    pub(crate) async fn complete_work_item_with_report(
+    pub async fn complete_work_item_with_report(
         &self,
         work_item_id: String,
         authority: WorkItemCompletionAuthority,

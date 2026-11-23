@@ -78,10 +78,7 @@ pub(crate) fn preset_manifest(preset: &str) -> Result<&'static LocalOnnxPresetMa
     }
 }
 
-pub(crate) fn local_onnx_preset_status(
-    home_dir: &Path,
-    preset: &str,
-) -> Result<LocalOnnxPresetStatus> {
+pub fn local_onnx_preset_status(home_dir: &Path, preset: &str) -> Result<LocalOnnxPresetStatus> {
     let manifest = preset_manifest(preset)?;
     let directory = managed_local_onnx_dir(home_dir, preset)?;
     let temporary = directory.with_extension("download");
@@ -137,7 +134,7 @@ pub(crate) fn local_onnx_preset_status(
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct LocalOnnxPresetStatus {
+pub struct LocalOnnxPresetStatus {
     pub preset: &'static str,
     pub directory: PathBuf,
     pub phase: &'static str,
@@ -150,7 +147,7 @@ pub(crate) struct LocalOnnxPresetStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct LocalOnnxPresetFileStatus {
+pub struct LocalOnnxPresetFileStatus {
     pub name: &'static str,
     pub path: PathBuf,
     pub sha256: &'static str,
@@ -159,10 +156,7 @@ pub(crate) struct LocalOnnxPresetFileStatus {
     pub bytes: u64,
 }
 
-pub(crate) fn download_local_onnx_preset(
-    home_dir: &Path,
-    preset: &str,
-) -> Result<LocalOnnxPresetStatus> {
+pub fn download_local_onnx_preset(home_dir: &Path, preset: &str) -> Result<LocalOnnxPresetStatus> {
     let manifest = preset_manifest(preset)?;
     let destination = managed_local_onnx_dir(home_dir, preset)?;
     if local_onnx_preset_status(home_dir, preset)?.complete {
@@ -233,10 +227,7 @@ pub(crate) fn download_local_onnx_preset(
     local_onnx_preset_status(home_dir, preset)
 }
 
-pub(crate) fn cancel_local_onnx_preset(
-    home_dir: &Path,
-    preset: &str,
-) -> Result<LocalOnnxPresetStatus> {
+pub fn cancel_local_onnx_preset(home_dir: &Path, preset: &str) -> Result<LocalOnnxPresetStatus> {
     preset_manifest(preset)?;
     let directory = managed_local_onnx_dir(home_dir, preset)?;
     let temporary = directory.with_extension("download");

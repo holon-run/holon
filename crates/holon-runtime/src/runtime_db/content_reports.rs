@@ -11,10 +11,10 @@ use crate::ids;
 use crate::runtime_db::evidence::content_hash;
 use crate::runtime_db::types::ContentReportRepository;
 
-pub(crate) const MAX_DESCRIPTION_CHARS: usize = 2_000;
+pub const MAX_DESCRIPTION_CHARS: usize = 2_000;
 pub(crate) const MAX_SNAPSHOT_CHARS: usize = 64 * 1024;
-pub(crate) const MAX_IDENTIFIER_CHARS: usize = 256;
-pub(crate) const MAX_CLIENT_REQUEST_ID_CHARS: usize = 128;
+pub const MAX_IDENTIFIER_CHARS: usize = 256;
+pub const MAX_CLIENT_REQUEST_ID_CHARS: usize = 128;
 pub(crate) const REPORT_RATE_LIMIT: i64 = 10;
 pub(crate) const REPORT_RATE_WINDOW_SECONDS: i64 = 60 * 60;
 
@@ -47,7 +47,7 @@ pub struct ContentReportRecord {
 }
 
 #[derive(Debug)]
-pub(crate) enum ContentReportError {
+pub enum ContentReportError {
     RateLimited,
     TargetNotFound,
     TargetNotReportable,

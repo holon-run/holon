@@ -1326,10 +1326,6 @@ fn scheduler_owned_bytes(
 #[path = "work_planning_tests.rs"]
 mod tests;
 
-#[cfg(all(test, holon_lib_test_shard = "c"))]
-#[path = "work_planning_http_tests.rs"]
-mod http_tests;
-
-#[cfg(all(test, any(holon_lib_test_shard = "a", holon_lib_test_shard = "c")))]
+#[cfg(any(test, feature = "http-test-support"))]
 #[path = "work_planning_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;

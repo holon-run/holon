@@ -50,20 +50,22 @@ mod control_task_generation_tests;
 pub(crate) mod task_generation;
 pub(crate) use control_cancellation::RetiredProducerExit;
 pub(crate) mod agent_list_projection;
-pub(crate) mod agent_observation;
+pub mod agent_observation;
 mod agent_summary_read;
 mod control_entry;
 pub(crate) mod control_reconcile;
 pub(crate) mod control_recovery;
-pub(crate) mod decision_models;
-pub(crate) mod decision_openai;
+#[doc(hidden)]
+pub mod decision_models;
+#[doc(hidden)]
+pub mod decision_openai;
 mod delivery;
 pub(crate) mod ended_dispatch;
 pub(crate) mod episode_recovery;
 pub(crate) mod execution_admission;
 mod failure;
 pub(crate) mod input_consumption;
-pub(crate) mod input_evidence_budget;
+pub mod input_evidence_budget;
 mod input_preparation;
 pub(crate) mod input_recovery;
 mod lifecycle;
@@ -74,7 +76,8 @@ pub(crate) use agent_summary_read::active_trigger_summaries;
 pub use agent_summary_read::OwnedAgentSummaryRead;
 pub(crate) use operator_state::StateProjectionMaterial;
 mod message_dispatch;
-pub(crate) mod mutation_owner;
+#[doc(hidden)]
+pub mod mutation_owner;
 pub(crate) mod mutation_witness;
 mod operator;
 mod operator_dispatch;
@@ -85,7 +88,7 @@ mod provider_turn;
 #[cfg(feature = "recovery-acceptance")]
 mod recovery_acceptance;
 mod repair;
-pub(crate) mod resident_input_evidence;
+pub mod resident_input_evidence;
 pub(crate) mod resident_scheduling;
 pub(crate) mod resource_observation;
 mod resource_refresh;
@@ -109,8 +112,10 @@ pub(crate) use scheduling_output::{
 pub(crate) use state_mutation::{derive_scheduler_read, ColdSchedulerFacts, SchedulerReadDomains};
 pub(crate) use task_reads::scheduler_task_request;
 pub(crate) mod resident_state;
-pub(crate) mod resident_task;
-pub(crate) mod resident_work;
+#[doc(hidden)]
+pub mod resident_task;
+#[doc(hidden)]
+pub mod resident_work;
 mod scheduler;
 mod scheduler_acceptance;
 mod scheduler_audit;
@@ -171,14 +176,12 @@ pub(crate) use worktree::{
     TaskOwnedWorktreeCleanupStatus,
 };
 
+pub(crate) use agent_message_delivery::legacy_cross_agent_caller_bindings_match;
 #[cfg(test)]
 pub(crate) use agent_message_delivery::{
     enable_delivery_checkpoint, release_delivery_checkpoint, wait_for_delivery_checkpoint,
 };
-pub(crate) use agent_message_delivery::{
-    legacy_cross_agent_caller_bindings_match, AgentMessageDeliveryService,
-    PreparedAgentMessageDelivery,
-};
+pub use agent_message_delivery::{AgentMessageDeliveryService, PreparedAgentMessageDelivery};
 pub(crate) use closure::runtime_error_active;
 pub(crate) use lifecycle::build_child_agent_observability_with_active_tasks;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
@@ -302,7 +305,7 @@ pub(crate) const ENQUEUE_AGENT_STATE_MAX_ATTEMPTS: usize = 3;
 const AUTHORITY_BLOCKED_RETRY_SECONDS: i64 = 30;
 
 #[derive(Debug, Clone)]
-pub(super) struct WorkItemCompletionReportPromotion {
+pub struct WorkItemCompletionReportPromotion {
     pub(super) record: crate::types::WorkItemRecord,
     pub(super) brief_id: String,
     pub(super) continuation_resumed: Option<WorkItemContinuationSummary>,
@@ -421,7 +424,7 @@ fn rebase_committed_agent_state(
 }
 
 #[derive(Debug, Clone)]
-pub(super) enum WorkItemCompletionReportPromotionOutcome {
+pub enum WorkItemCompletionReportPromotionOutcome {
     /// Completion changed the WorkItem state, but did not create a new
     /// user-facing report for terminal delivery.
     Unchanged(crate::types::WorkItemRecord),
@@ -431,7 +434,7 @@ pub(super) enum WorkItemCompletionReportPromotionOutcome {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum WorkItemCompletionAuthority {
+pub enum WorkItemCompletionAuthority {
     AgentExecution {
         binding: WorkItemExecutionBinding,
         effective_work_item_id: Option<String>,
@@ -440,7 +443,7 @@ pub(crate) enum WorkItemCompletionAuthority {
 }
 
 impl WorkItemCompletionReportPromotionOutcome {
-    pub(super) fn into_record(self) -> crate::types::WorkItemRecord {
+    pub fn into_record(self) -> crate::types::WorkItemRecord {
         match self {
             Self::Unchanged(record) => record,
             Self::Promoted(promotion) => promotion.record,
@@ -493,7 +496,7 @@ impl From<Option<WorkspaceEntry>> for InitialWorkspaceBinding {
     }
 }
 
-pub(crate) fn agent_model_state_for_catalog(
+pub fn agent_model_state_for_catalog(
     model_catalog: &RuntimeModelCatalog,
     base_context_config: &ContextConfig,
     state: &AgentState,
@@ -593,14 +596,14 @@ pub(crate) fn prepare_agent_model_state_for_turn(
     })
 }
 
-pub(crate) fn agent_model_list_summary_for_catalog(
+pub fn agent_model_list_summary_for_catalog(
     model_catalog: &RuntimeModelCatalog,
     state: &AgentState,
 ) -> AgentListModelSummary {
     AgentModelSummarySelection::new(model_catalog.into(), state.into()).into_summary()
 }
 
-pub(crate) fn try_agent_model_list_summary_for_catalog<'a>(
+pub fn try_agent_model_list_summary_for_catalog<'a>(
     model_catalog: impl Into<crate::config::ModelListCatalog<'a>>,
     state: &AgentState,
 ) -> Result<AgentListModelSummary> {
@@ -803,7 +806,7 @@ struct RuntimeInner {
     // Fault/cancellation fixtures block the original post-SQL install seam.
     #[cfg(test)]
     installation_barrier: Mutex<()>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     run_loop_test_gate: RwLock<()>,
     object_query_cache: Arc<crate::object_query_cache::ObjectQueryCache>,
     notify: Notify,
@@ -3284,7 +3287,7 @@ impl RuntimeHandle {
         }
     }
 
-    pub(super) fn now(&self) -> chrono::DateTime<chrono::Utc> {
+    pub fn now(&self) -> chrono::DateTime<chrono::Utc> {
         self.inner.clock.now()
     }
 
@@ -3702,7 +3705,7 @@ impl RuntimeHandle {
         &self.inner.storage
     }
 
-    pub(crate) fn runtime_db(&self) -> &crate::runtime_db::RuntimeDb {
+    pub fn runtime_db(&self) -> &crate::runtime_db::RuntimeDb {
         &self.inner.runtime_db
     }
 
@@ -3814,7 +3817,7 @@ impl RuntimeHandle {
         Ok(tasks)
     }
 
-    pub(crate) fn agent_home(&self) -> PathBuf {
+    pub fn agent_home(&self) -> PathBuf {
         self.inner.storage.data_dir().to_path_buf()
     }
 
@@ -4006,7 +4009,7 @@ impl RuntimeHandle {
         )
     }
 
-    pub(crate) async fn execute_advisory_decision(
+    pub async fn execute_advisory_decision(
         &self,
         request: decision_core::DecisionRequest<Value, Value>,
     ) -> Result<(decision_core::DecisionResponse<Value>, String, String)> {
@@ -4321,7 +4324,7 @@ impl RuntimeHandle {
         workspace::execution_root_sync(&self.inner.storage)
     }
 
-    pub(crate) async fn effective_execution(
+    pub async fn effective_execution(
         &self,
         scope: ExecutionScopeKind,
     ) -> Result<EffectiveExecution> {
@@ -5615,11 +5618,7 @@ impl RuntimeHandle {
         Ok(true)
     }
 
-    pub(crate) async fn append_audit_event(
-        &self,
-        kind: &str,
-        data: serde_json::Value,
-    ) -> Result<()> {
+    pub async fn append_audit_event(&self, kind: &str, data: serde_json::Value) -> Result<()> {
         self.append_original_audit_event(AuditEvent::legacy(kind, data))
             .await
     }
@@ -7139,7 +7138,7 @@ impl RuntimeHandle {
 
         let mut resource_retry_delay = resource_refresh::CONTEXT_RESOURCE_RETRY_MIN;
         loop {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "http-test-support"))]
             let loop_gate = self.inner.run_loop_test_gate.read().await;
             // Original processing and terminal ACK finish before this boundary.
             // A retired instance cannot plan another activation or idle wake.
@@ -7180,7 +7179,7 @@ impl RuntimeHandle {
                 }
                 scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
                 scheduler_executor::RunLoopPoll::ContextResourcesPending => {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "http-test-support"))]
                     drop(loop_gate);
                     self.wait_context_resource_retry(resource_retry_delay).await;
                     resource_retry_delay = (resource_retry_delay * 2)
@@ -7190,7 +7189,7 @@ impl RuntimeHandle {
                 scheduler_executor::RunLoopPoll::AuthorityBlocked => {
                     let retry_at =
                         self.now() + chrono::Duration::seconds(AUTHORITY_BLOCKED_RETRY_SECONDS);
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "http-test-support"))]
                     drop(loop_gate);
                     tokio::select! {
                         _ = self.inner.notify.notified() => {}
@@ -7262,7 +7261,7 @@ impl RuntimeHandle {
                         self.append_state_changed_events(&idle_transition.state)
                             .await?;
                     }
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "http-test-support"))]
                     drop(loop_gate);
                     // Only the explicitly marked acceptance binary services private
                     // controls while otherwise idle, without changing policy deadlines.
@@ -8592,7 +8591,7 @@ impl RuntimeHandle {
         self.inner.bootstrap_notify.notify_waiters();
     }
 
-    pub(crate) async fn wait_for_bootstrap(&self) -> Result<()> {
+    pub async fn wait_for_bootstrap(&self) -> Result<()> {
         loop {
             let notified = self.inner.bootstrap_notify.notified();
             tokio::pin!(notified);
@@ -8895,6 +8894,10 @@ pub(crate) fn retryable_enqueue_conflict(error: &anyhow::Error, agent_id: &str) 
             || conflict.domain() == "wait_condition_trigger"
     })
 }
+
+#[cfg(any(test, feature = "http-test-support"))]
+#[doc(hidden)]
+pub mod http_test_support;
 
 #[cfg(test)]
 pub(crate) mod tests;

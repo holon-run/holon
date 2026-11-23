@@ -11,11 +11,17 @@ pub(crate) use holon_storage::codec::{enum_string, timestamp};
 pub(crate) use holon_storage::codec::{parse_optional_timestamp, parse_timestamp};
 pub(crate) use holon_storage::wait::{decode_wait_condition_row, wait_condition_decode_error};
 
+pub(crate) use holon_storage::task::upsert_task_tx;
+#[cfg(any(test, feature = "http-test-support"))]
+pub fn upsert_task_for_fixture(db: &super::RuntimeDb, record: &TaskRecord) -> Result<()> {
+    db.transaction(|tx| upsert_task_tx(tx, record).map(|_| ()))
+}
+
 pub(crate) use holon_storage::task::{
     decode_task_payload, is_active_task_status, is_terminal_task_status,
     slim_task_record_for_payload, task_detail_i64, task_detail_string, task_revision,
-    task_transition, truncate_task_payload_string, upsert_task_tx, write_task_row_tx,
-    write_task_row_with_mode_tx, StateTransitionOutcome, TaskRowWriteMode,
+    task_transition, truncate_task_payload_string, write_task_row_tx, write_task_row_with_mode_tx,
+    StateTransitionOutcome, TaskRowWriteMode,
 };
 
 pub(crate) use holon_storage::work_item::{

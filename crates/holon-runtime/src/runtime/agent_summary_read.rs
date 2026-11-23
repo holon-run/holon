@@ -99,7 +99,7 @@ impl OwnedAgentSummaryRead {
         Ok(self)
     }
 
-    pub(crate) fn into_json_bytes(self) -> Result<tokio_util::bytes::Bytes> {
+    pub fn into_json_bytes(self) -> Result<tokio_util::bytes::Bytes> {
         let acquisition = self
             .material
             .acquisition

@@ -112,10 +112,8 @@ impl TaskParentTurnBodyRead {
 }
 
 impl RuntimeHandle {
-    #[cfg(test)]
-    pub(crate) async fn pause_run_loop_for_monitor_test(
-        &self,
-    ) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub async fn pause_run_loop_for_monitor_test(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
         // Finish the actual poll/ACK before fixtures deny body SQL.
         self.inner.run_loop_test_gate.write().await
     }

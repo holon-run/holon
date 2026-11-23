@@ -16,7 +16,7 @@ const COOLDOWN: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
 #[error("agent {agent_id} is quarantined this boot: storage constructor rejected agent-local input preparation")]
-pub(crate) struct AgentQuarantined {
+pub struct AgentQuarantined {
     pub agent_id: String,
     pub incarnation: u64,
 }

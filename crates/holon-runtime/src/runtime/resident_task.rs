@@ -59,17 +59,17 @@ pub(crate) use running::{
 pub(crate) const TASK_TERMINAL_WINDOW: usize = 128;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum TaskFamily {
+pub enum TaskFamily {
     Task,
     ResultSettlement,
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(crate) struct TaskKey {
+pub struct TaskKey {
     pub family: TaskFamily,
     pub id: String,
 }
 impl TaskKey {
-    pub(crate) fn new(family: TaskFamily, id: impl Into<String>) -> Self {
+    pub fn new(family: TaskFamily, id: impl Into<String>) -> Self {
         Self {
             family,
             id: id.into(),

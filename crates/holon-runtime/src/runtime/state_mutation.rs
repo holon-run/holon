@@ -10,7 +10,7 @@ use crate::runtime_db::{persistence_certainty, PersistenceCertainty};
 mod prepared_evidence;
 
 #[path = "state_mutation/work_planning.rs"]
-mod work_planning;
+pub(crate) mod work_planning;
 pub(crate) use work_planning::{
     derive_scheduler_read, ColdSchedulerFacts, PreparedSchedulerRead, SchedulerReadDomains,
 };
@@ -4408,7 +4408,7 @@ impl RuntimeHandle {
         )
     }
 
-    pub(crate) fn instance_agent_id(&self) -> &str {
+    pub fn instance_agent_id(&self) -> &str {
         self.inner.mutation_owner.agent_id()
     }
 

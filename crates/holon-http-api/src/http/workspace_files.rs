@@ -1,0 +1,769 @@
+use std::path::Path as FsPath;
+
+use super::*;
+use axum::http::Method;
+use holon_server::file_response::{
+    attachment_disposition, guess_mime, is_text_mime, needs_script_sandbox, serve_file,
+    served_content_type, FileResponseOptions,
+};
+
+/// Maximum bytes to read for text file content before truncating.
+const READ_LIMIT_BYTES: usize = 1024 * 1024; // 1 MB
+/// Maximum bytes to sniff for content-based MIME detection.
+const MAX_RESOLVE_REFERENCES: usize = 64;
+const MAX_REFERENCE_LENGTH: usize = 16 * 1024;
+pub(crate) const FILE_REFERENCE_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct FileQueryParams {
+    #[serde(default)]
+    execution_root_id: Option<String>,
+    #[serde(default)]
+    root: Option<String>,
+    #[serde(default)]
+    download: Option<bool>,
+    #[serde(default)]
+    meta: Option<bool>,
+}
+
+impl FileQueryParams {
+    fn execution_root_id(&self) -> Result<Option<&str>, (StatusCode, Json<Value>)> {
+        match (self.execution_root_id.as_deref(), self.root.as_deref()) {
+            (Some(left), Some(right)) if left != right => Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "root and execution_root_id selectors conflict",
+                })),
+            )),
+            (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+            (None, None) => Ok(None),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DirectoryEntry {
+    name: String,
+    #[serde(rename = "type")]
+    entry_type: &'static str,
+    size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mime_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DirectoryListing {
+    #[serde(rename = "type")]
+    entry_type: &'static str,
+    #[serde(flatten)]
+    location: crate::system::FileLocation,
+    entries: Vec<DirectoryEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct FileMetadata {
+    #[serde(rename = "type")]
+    entry_type: &'static str,
+    #[serde(flatten)]
+    location: crate::system::FileLocation,
+    size: u64,
+    mime_type: String,
+    truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_size: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct FileContent {
+    #[serde(flatten)]
+    metadata: FileMetadata,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ResolveFileReferencesRequest {
+    #[schemars(with = "Vec<FileReferenceRequest>")]
+    references: Vec<FileReferenceInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum FileReferenceInput {
+    Known(FileReferenceRequest),
+    Unsupported(Value),
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum FileReferenceRequest {
+    AbsolutePath {
+        absolute_path: String,
+    },
+    WorkspaceUri {
+        workspace_uri: String,
+    },
+    RelativePath {
+        relative_path: String,
+        base_file: FileLocationInput,
+    },
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct FileLocationInput {
+    workspace_id: String,
+    execution_root_id: String,
+    path: String,
+    absolute_path: String,
+    kind: crate::system::FileLocationKind,
+    root_kind: crate::system::WorkspaceProjectionKind,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ResolveFileReferencesResponse {
+    results: Vec<ResolveFileReferenceResult>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ResolveFileReferenceResult {
+    Resolved {
+        location: crate::system::FileLocation,
+    },
+    Unresolved {
+        reason: &'static str,
+        message: String,
+    },
+}
+
+/// Resolve a workspace by id and determine the execution root to browse.
+pub(super) fn resolve_workspace_root(
+    state: &AppState,
+    workspace_id: &str,
+    root_id: Option<&str>,
+) -> Result<crate::system::FileRoot, (StatusCode, Json<Value>)> {
+    let entries = state.host.workspace_entries().map_err(error_response)?;
+    let workspace = entries
+        .iter()
+        .find(|entry| entry.workspace_id == workspace_id)
+        .ok_or_else(|| not_found(format!("workspace '{workspace_id}' not found")))?;
+
+    // Resolve the filesystem root from server-side state, never from the
+    // client-provided root_id string. The root_id is treated as an opaque
+    // server-issued token.
+    let root = match root_id {
+        // No root_id: use the workspace anchor from the registry.
+        None => crate::system::FileRoot {
+            workspace_id: workspace_id.to_string(),
+            execution_root_id: crate::system::canonical_execution_root_id(workspace_id),
+            filesystem_path: workspace.workspace_anchor.clone(),
+            kind: crate::system::WorkspaceProjectionKind::CanonicalRoot,
+            removed: false,
+        },
+        // canonical_root:{workspace_id} also resolves to the anchor. The
+        // path comes from the server-side registry, not the client string.
+        Some(id) if id == crate::system::canonical_execution_root_id(workspace_id) => {
+            crate::system::FileRoot {
+                workspace_id: workspace_id.to_string(),
+                execution_root_id: id.to_string(),
+                filesystem_path: workspace.workspace_anchor.clone(),
+                kind: crate::system::WorkspaceProjectionKind::CanonicalRoot,
+                removed: false,
+            }
+        }
+        Some(id) if id.starts_with("canonical_root:") => {
+            return Err(forbidden(format!(
+                "execution_root_id does not belong to workspace '{workspace_id}'"
+            )));
+        }
+        // For git_worktree_root and any other format, look up the root_id
+        // in the execution root registry (runtime_db). The embedded path
+        // in the ID is never trusted or parsed.
+        Some(id) => {
+            let repo = state.host.runtime_db().execution_root_entries();
+            match repo.get(id).map_err(error_response)? {
+                Some(entry) if entry.removed_at.is_some() => {
+                    return Err((
+                        StatusCode::GONE,
+                        Json(json!({
+                            "error": "execution root has been removed",
+                            "execution_root_id": id,
+                        })),
+                    ));
+                }
+                Some(entry) => {
+                    if entry.workspace_id != workspace_id {
+                        return Err(forbidden(format!(
+                            "execution_root_id does not belong to workspace '{workspace_id}'"
+                        )));
+                    }
+                    crate::system::FileRoot {
+                        workspace_id: entry.workspace_id,
+                        execution_root_id: entry.execution_root_id,
+                        filesystem_path: entry.filesystem_path,
+                        kind: entry.root_kind,
+                        removed: false,
+                    }
+                }
+                None => {
+                    return Err(not_found(format!(
+                        "execution_root_id not found in registry: '{id}'"
+                    )));
+                }
+            }
+        }
+    };
+
+    if !root.filesystem_path.exists() {
+        return Err(not_found(format!(
+            "workspace root does not exist on disk: {}",
+            root.filesystem_path.display()
+        )));
+    }
+
+    Ok(root)
+}
+
+/// Resolve and validate a relative path within the workspace root.
+pub(super) fn resolve_and_validate_path(
+    root: &FsPath,
+    relative: &str,
+) -> Result<PathBuf, (StatusCode, Json<Value>)> {
+    crate::system::resolve_path_within_root(root, relative)
+        .map_err(|_| forbidden("path escapes workspace root"))
+}
+
+/// Anchor-deduplication priority for [`registered_file_roots`].
+///
+/// Multiple root ids can point at the same filesystem directory (stale
+/// canonical-root backfills whose workspace entry no longer exists, or the
+/// legacy shared `agent_home` alias next to a canonical `agent_home:<id>`).
+/// Only one root may claim an anchor, or every absolute-path reference below
+/// it fails with `AmbiguousRoot`.
+///
+/// Tombstone invariant: a removed root keeps claiming its anchor (and keeps
+/// answering 410) only when no higher-priority root points at the same
+/// normalized path.
+const ANCHOR_PRIORITY_CANONICAL_AGENT_HOME: u8 = 4;
+const ANCHOR_PRIORITY_LIVE_WORKSPACE: u8 = 3;
+const ANCHOR_PRIORITY_REGISTERED_ROOT: u8 = 2;
+const ANCHOR_PRIORITY_REMOVED_ROOT: u8 = 1;
+
+fn insert_deduplicated_root(
+    roots: &mut Vec<crate::system::FileRoot>,
+    anchors: &mut std::collections::HashMap<PathBuf, (usize, u8)>,
+    root: crate::system::FileRoot,
+    priority: u8,
+) {
+    let Ok(normalized) = crate::system::workspace::normalize_path(&root.filesystem_path) else {
+        // Paths that cannot be normalized never collide; keep old behavior.
+        roots.push(root);
+        return;
+    };
+    match anchors.get(&normalized) {
+        Some(&(_, existing_priority)) if existing_priority >= priority => {}
+        Some(&(index, _)) => {
+            roots[index] = root;
+            anchors.insert(normalized, (index, priority));
+        }
+        None => {
+            anchors.insert(normalized, (roots.len(), priority));
+            roots.push(root);
+        }
+    }
+}
+
+fn registered_file_roots(
+    state: &AppState,
+) -> Result<Vec<crate::system::FileRoot>, (StatusCode, Json<Value>)> {
+    let workspaces = state.host.workspace_entries().map_err(error_response)?;
+    let mut roots = Vec::new();
+    let mut anchors = std::collections::HashMap::new();
+    for workspace in workspaces {
+        let workspace_id = workspace.workspace_id.clone();
+        let root = crate::system::FileRoot {
+            execution_root_id: crate::system::canonical_execution_root_id(&workspace.workspace_id),
+            workspace_id,
+            filesystem_path: workspace.workspace_anchor,
+            kind: crate::system::WorkspaceProjectionKind::CanonicalRoot,
+            removed: false,
+        };
+        let priority = if root.workspace_id.starts_with("agent_home:") {
+            ANCHOR_PRIORITY_CANONICAL_AGENT_HOME
+        } else {
+            ANCHOR_PRIORITY_LIVE_WORKSPACE
+        };
+        insert_deduplicated_root(&mut roots, &mut anchors, root, priority);
+    }
+    let registered = state
+        .host
+        .runtime_db()
+        .execution_root_entries()
+        .latest_all()
+        .map_err(error_response)?;
+    for entry in registered {
+        if roots
+            .iter()
+            .any(|root| root.execution_root_id == entry.execution_root_id)
+        {
+            continue;
+        }
+        let priority = if entry.removed_at.is_some() {
+            ANCHOR_PRIORITY_REMOVED_ROOT
+        } else {
+            ANCHOR_PRIORITY_REGISTERED_ROOT
+        };
+        insert_deduplicated_root(
+            &mut roots,
+            &mut anchors,
+            crate::system::FileRoot {
+                workspace_id: entry.workspace_id,
+                execution_root_id: entry.execution_root_id,
+                filesystem_path: entry.filesystem_path,
+                kind: entry.root_kind,
+                removed: entry.removed_at.is_some(),
+            },
+            priority,
+        );
+    }
+    Ok(roots)
+}
+
+fn resolve_reference(
+    state: &AppState,
+    roots: &[crate::system::FileRoot],
+    reference: FileReferenceInput,
+) -> Result<crate::system::FileLocation, (StatusCode, Json<Value>)> {
+    let reference = match reference {
+        FileReferenceInput::Known(reference) => reference,
+        FileReferenceInput::Unsupported(value) => {
+            let status = match value.get("type").and_then(Value::as_str) {
+                Some("absolute_path" | "workspace_uri" | "relative_path") | None => {
+                    StatusCode::BAD_REQUEST
+                }
+                Some(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            };
+            return Err((
+                status,
+                Json(json!({
+                    "error": if status == StatusCode::UNPROCESSABLE_ENTITY {
+                        "file reference type is not supported"
+                    } else {
+                        "file reference is malformed"
+                    },
+                })),
+            ));
+        }
+    };
+    match reference {
+        FileReferenceRequest::AbsolutePath { absolute_path } => {
+            ensure_reference_length(&absolute_path)?;
+            crate::system::locate_absolute_path(roots, FsPath::new(&absolute_path))
+                .map_err(file_location_error_response)
+        }
+        FileReferenceRequest::WorkspaceUri { workspace_uri } => {
+            ensure_reference_length(&workspace_uri)?;
+            let parsed = crate::system::parse_workspace_uri(&workspace_uri)
+                .map_err(file_location_error_response)?;
+            let root = resolve_workspace_root(
+                state,
+                &parsed.workspace_id,
+                parsed.execution_root_id.as_deref(),
+            )?;
+            crate::system::location_for_relative_path(&root, &parsed.path)
+                .map_err(file_location_error_response)
+        }
+        FileReferenceRequest::RelativePath {
+            relative_path,
+            base_file,
+        } => {
+            ensure_reference_length(&relative_path)?;
+            ensure_reference_length(&base_file.path)?;
+            let root = resolve_workspace_root(
+                state,
+                &base_file.workspace_id,
+                Some(&base_file.execution_root_id),
+            )?;
+            let base = crate::system::location_for_relative_path(&root, &base_file.path)
+                .map_err(file_location_error_response)?;
+            if base.kind != crate::system::FileLocationKind::File {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "relative_path base_file must identify a file",
+                    })),
+                ));
+            }
+            if base.absolute_path != base_file.absolute_path
+                || base.kind != base_file.kind
+                || base.root_kind != base_file.root_kind
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "relative_path base_file identity does not match the registered file",
+                    })),
+                ));
+            }
+            let base_path = FsPath::new(&base.path);
+            let parent = base_path.parent().unwrap_or_else(|| FsPath::new(""));
+            let relative = parent.join(relative_path);
+            crate::system::location_for_relative_path(&root, &relative.to_string_lossy())
+                .map_err(file_location_error_response)
+        }
+    }
+}
+
+fn ensure_reference_length(value: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    if value.len() > MAX_REFERENCE_LENGTH {
+        return Err(http_error(
+            StatusCode::BAD_REQUEST,
+            HttpErrorEnvelope::new(
+                "file_reference_too_long",
+                "file reference exceeds maximum length",
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn file_location_error_response(
+    error: crate::system::FileLocationError,
+) -> (StatusCode, Json<Value>) {
+    match error {
+        crate::system::FileLocationError::PathNotFound => not_found(error.to_string()),
+        crate::system::FileLocationError::RootRemoved => http_error(
+            StatusCode::GONE,
+            HttpErrorEnvelope::new("file_root_removed", error.to_string()),
+        ),
+        crate::system::FileLocationError::PathEscapesRoot => forbidden(error.to_string()),
+        crate::system::FileLocationError::RootNotFound
+        | crate::system::FileLocationError::InvalidWorkspaceUri
+        | crate::system::FileLocationError::InvalidEncoding => http_error(
+            StatusCode::BAD_REQUEST,
+            HttpErrorEnvelope::new("invalid_file_reference", error.to_string()),
+        ),
+        crate::system::FileLocationError::AmbiguousRoot => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new("ambiguous_file_root", error.to_string()),
+        ),
+    }
+}
+
+fn result_error(error: (StatusCode, Json<Value>)) -> ResolveFileReferenceResult {
+    let reason = match error.0 {
+        StatusCode::BAD_REQUEST => "invalid_reference",
+        StatusCode::UNPROCESSABLE_ENTITY => "unsupported_reference",
+        StatusCode::FORBIDDEN => "forbidden",
+        StatusCode::NOT_FOUND => "not_found",
+        StatusCode::GONE => "root_removed",
+        StatusCode::CONFLICT => "ambiguous_root",
+        _ => "resolve_failed",
+    };
+    let message = error
+        .1
+         .0
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("file reference could not be resolved")
+        .to_string();
+    ResolveFileReferenceResult::Unresolved { reason, message }
+}
+
+pub(crate) async fn resolve_file_references(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ResolveFileReferencesRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    if request.references.len() > MAX_RESOLVE_REFERENCES {
+        return Err(http_error(
+            StatusCode::BAD_REQUEST,
+            HttpErrorEnvelope::new(
+                "too_many_file_references",
+                format!("at most {MAX_RESOLVE_REFERENCES} file references may be resolved at once"),
+            )
+            .extension("maximum", MAX_RESOLVE_REFERENCES),
+        ));
+    }
+    let roots = registered_file_roots(&state)?;
+    let results = request
+        .references
+        .into_iter()
+        .map(
+            |reference| match resolve_reference(&state, &roots, reference) {
+                Ok(location) => ResolveFileReferenceResult::Resolved { location },
+                Err(error) => result_error(error),
+            },
+        )
+        .collect();
+    Ok(Json(json!(ResolveFileReferencesResponse { results })))
+}
+
+/// Convert a filesystem modification time to whole Unix-epoch seconds for
+/// JSON metadata responses. None when the platform does not report mtime.
+fn modified_unix_seconds(metadata: &std::fs::Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Handler for workspace root (no sub-path).
+pub(crate) async fn workspace_files_root(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Query(params): Query<FileQueryParams>,
+    method: Method,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    workspace_files_inner(state, headers, workspace_id, String::new(), params, method).await
+}
+
+/// Handler for a specific path within a workspace.
+pub(crate) async fn workspace_files(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((workspace_id, path)): Path<(String, String)>,
+    Query(params): Query<FileQueryParams>,
+    method: Method,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    // {*path} in axum 0.8 captures the rest of the URL including the leading '/'.
+    let path = path.trim_start_matches('/').to_string();
+    workspace_files_inner(state, headers, workspace_id, path, params, method).await
+}
+
+async fn workspace_files_inner(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    workspace_id: String,
+    path: String,
+    params: FileQueryParams,
+    method: Method,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+
+    let root_id = params.execution_root_id()?;
+    let root = resolve_workspace_root(&state, &workspace_id, root_id)?;
+    let full_path = resolve_and_validate_path(&root.filesystem_path, &path)?;
+
+    let relative = path.trim_start_matches('/');
+    // Turn-content deletion fence: from deletion-commit time the queue blocks
+    // downloads of turn-exclusive artifacts even before the async unlink
+    // lands. Applies to agent-home workspaces where managed artifacts live.
+    // The queue is keyed by (agent_id, relative_path): a canonical
+    // `agent_home:<id>` workspace scopes the fence to its own agent, so
+    // another agent's pending deletion of the same relative path does not
+    // turn this download into a false 410. The legacy un-attributable
+    // `agent_home` alias keeps the fail-closed cross-agent check.
+    if workspace_id.starts_with("agent_home")
+        && crate::runtime_db::turn_content_deletion::pending_artifact_deletion_exists(
+            state.host.runtime_db(),
+            workspace_id.strip_prefix("agent_home:"),
+            relative,
+        )
+        .map_err(error_response)?
+    {
+        return Err((
+            StatusCode::GONE,
+            Json(json!({
+                "error": "file pending deletion",
+                "location": workspace_id,
+            })),
+        ));
+    }
+
+    let location = crate::system::location_for_relative_path(&root, relative)
+        .map_err(file_location_error_response)?;
+
+    // Directory listing
+    if full_path.is_dir() {
+        let mut entries = Vec::new();
+        let reader = match std::fs::read_dir(&full_path) {
+            Ok(r) => r,
+            Err(err) => {
+                return Err(error_response(anyhow!(err)));
+            }
+        };
+        for entry in reader {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(err) => {
+                    return Err(error_response(anyhow!(err)));
+                }
+            };
+            let name = entry.file_name().to_string_lossy().to_string();
+            let file_type = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            let (entry_type, size) = if file_type.is_dir() {
+                ("directory", 0u64)
+            } else if file_type.is_symlink() {
+                ("symlink", entry.metadata().map(|m| m.len()).unwrap_or(0))
+            } else {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                ("file", size)
+            };
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| modified_unix_seconds(&m));
+            let mime_type = if file_type.is_file() {
+                Some(guess_mime(&entry.path()))
+            } else {
+                None
+            };
+            entries.push(DirectoryEntry {
+                name,
+                entry_type,
+                size,
+                modified,
+                mime_type,
+            });
+        }
+        entries.sort_by(|a, b| match (a.entry_type, b.entry_type) {
+            ("directory", "directory") => a.name.cmp(&b.name),
+            ("directory", _) => std::cmp::Ordering::Less,
+            (_, "directory") => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        });
+        let listing = DirectoryListing {
+            entry_type: "directory",
+            location,
+            entries,
+        };
+        return Ok(Json(json!(listing)).into_response());
+    }
+
+    // File path that doesn't exist
+    if !full_path.exists() && !full_path.is_symlink() {
+        return Err(not_found(format!("file not found: {relative}")));
+    }
+
+    // File metadata
+    let metadata = tokio::fs::metadata(&full_path)
+        .await
+        .map_err(|err| error_response(anyhow!(err)))?;
+    let file_size = metadata.len();
+    let mime_type = guess_mime(&full_path);
+    let want_meta = params.meta.unwrap_or(false);
+    let want_download = params.download.unwrap_or(false);
+
+    // Metadata-only response
+    if want_meta {
+        let meta = FileMetadata {
+            entry_type: "file",
+            location,
+            size: file_size,
+            mime_type: mime_type.clone(),
+            truncated: false,
+            modified: modified_unix_seconds(&metadata),
+            line_count: None,
+            total_size: None,
+        };
+        return Ok(Json(json!(meta)).into_response());
+    }
+
+    let accept_json = headers
+        .get(ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("application/json"))
+        .unwrap_or(false);
+
+    // Raw byte serving: binary files, explicit downloads, and direct-link
+    // access to text files (no JSON negotiation). Streams from disk with
+    // Range and conditional-request support instead of buffering the file.
+    if !is_text_mime(&mime_type) || want_download || !accept_json {
+        let file = tokio::fs::File::open(&full_path)
+            .await
+            .map_err(|err| error_response(anyhow!(err)))?;
+        let metadata = file
+            .metadata()
+            .await
+            .map_err(|err| error_response(anyhow!(err)))?;
+        if !metadata.is_file() {
+            return Err(not_found("workspace path is not a regular file"));
+        }
+        let content_type = if want_download {
+            mime_type.clone()
+        } else {
+            served_content_type(&mime_type)
+        };
+        let disposition = want_download.then(|| {
+            attachment_disposition(&full_path.file_name().unwrap_or_default().to_string_lossy())
+        });
+        let options = FileResponseOptions {
+            content_type,
+            disposition,
+            csp: (!want_download && needs_script_sandbox(&mime_type))
+                .then(|| HeaderValue::from_static("sandbox")),
+            cache_control: None,
+        };
+        return serve_file(file, &metadata, relative, &headers, &method, options, None)
+            .await
+            .map_err(|err| error_response(anyhow!(err)));
+    }
+
+    // Text preview via JSON negotiation: read with truncation
+    let bytes = tokio::fs::read(&full_path)
+        .await
+        .map_err(|err| error_response(anyhow!(err)))?;
+    let total_size = bytes.len();
+    let truncated = total_size > READ_LIMIT_BYTES;
+    let line_count = bytes.iter().filter(|&&b| b == b'\n').count() as u64;
+    let read_bytes = if truncated {
+        &bytes[..READ_LIMIT_BYTES]
+    } else {
+        &bytes
+    };
+    // Find the largest valid UTF-8 boundary at or before READ_LIMIT_BYTES
+    // to avoid splitting multi-byte characters.
+    let content = if truncated {
+        // Find the largest valid UTF-8 boundary at or before READ_LIMIT_BYTES
+        // to avoid splitting multi-byte characters. A valid boundary is at
+        // a byte that is not a UTF-8 continuation byte (0x80–0xBF).
+        let mut end = READ_LIMIT_BYTES;
+        while end > 0 {
+            let prev = read_bytes[end - 1];
+            // Continuation bytes are 0x80..=0xBF; backing up past one means
+            // we're inside a multi-byte sequence.
+            if !(0x80..=0xBF).contains(&prev) {
+                break;
+            }
+            end -= 1;
+        }
+        String::from_utf8_lossy(&read_bytes[..end]).to_string()
+    } else {
+        String::from_utf8_lossy(read_bytes).to_string()
+    };
+
+    // Reaching here implies accept_json: non-JSON text access is routed to
+    // serve_file_bytes above.
+    let file_content = FileContent {
+        metadata: FileMetadata {
+            entry_type: "file",
+            location,
+            size: content.len() as u64,
+            mime_type: mime_type.clone(),
+            truncated,
+            modified: modified_unix_seconds(&metadata),
+            line_count: Some(line_count),
+            total_size: if truncated {
+                Some(total_size as u64)
+            } else {
+                None
+            },
+        },
+        content: Some(content),
+    };
+    Ok(Json(json!(file_content)).into_response())
+}

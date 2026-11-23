@@ -56,7 +56,7 @@ pub(crate) fn safe_command_preview(command: &str) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct InputEvidenceScope {
+pub struct InputEvidenceScope {
     pub agent_id: String,
     pub identity_incarnation: u64,
 }

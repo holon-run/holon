@@ -1,0 +1,3124 @@
+pub use holon_client::wire::{
+    ModelConfigMigrationRequest, RuntimeConfigReadResponse, RuntimeConfigReloadState,
+    RuntimeConfigReloadStatus, RuntimeConfigUpdateEffect, RuntimeConfigUpdateEntry,
+    RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, RuntimeConfigUpdateResult,
+};
+
+use super::*;
+use crate::{
+    config::{ApiPromptConfigFile, AppConfig},
+    daemon::RuntimeStatusResponse,
+    runtime_db::RuntimeDbProtectionStatus,
+};
+use anyhow::Context as _;
+
+pub(crate) async fn prompt_body_limit(
+    State(state): State<Arc<AppState>>,
+    mut request: AxumRequest<Body>,
+    next: Next,
+) -> AxumResponse {
+    use tower::{Layer, ServiceExt};
+
+    let limits = state.host.config().stored_config.api.prompt.clone();
+    let body_max_bytes = limits.body_max_bytes();
+    request.extensions_mut().insert(limits);
+    match DefaultBodyLimit::max(body_max_bytes)
+        .layer(next)
+        .oneshot(request)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    }
+}
+const MAX_TRACE_SEARCH_RESULTS: usize = 100;
+
+#[cfg(test)]
+mod setup_tests {
+    use super::{runtime_config_setup, RuntimeConfigReloadState, RuntimeConfigReloadStatus};
+    use crate::{
+        config::{AppConfig, CredentialKind, CredentialSource, ProviderId},
+        host::RuntimeHost,
+        http::{router, AppState},
+        onboarding::RuntimeSetupStatus,
+        provider::StubProvider,
+    };
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    fn host() -> (tempfile::TempDir, RuntimeHost) {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4","fallbacks":[]}}"#,
+        )
+        .unwrap();
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        for provider in config.providers.values_mut() {
+            provider.credential = None;
+            provider.codex_home = None;
+        }
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused"))).unwrap();
+        (home, host)
+    }
+
+    #[test]
+    fn runtime_setup_never_ready_during_unsettled_reload() {
+        let (_home, host) = host();
+        let mut config = (*host.config()).clone();
+        let provider = config.providers.get_mut(&ProviderId::openai()).unwrap();
+        provider.auth.source = CredentialSource::None;
+        provider.auth.kind = CredentialKind::None;
+        assert_eq!(
+            runtime_config_setup(&config, &RuntimeConfigReloadStatus::default()).status,
+            RuntimeSetupStatus::Ready
+        );
+        for state in [
+            RuntimeConfigReloadState::Applying,
+            RuntimeConfigReloadState::Failed,
+            RuntimeConfigReloadState::Idle,
+            RuntimeConfigReloadState::Completed,
+        ] {
+            let reload = RuntimeConfigReloadStatus {
+                requested_generation: 2,
+                completed_generation: 1,
+                state,
+                last_error: Some("private failure /credential/path".into()),
+            };
+            let setup = runtime_config_setup(&config, &reload);
+            assert_eq!(setup.status, RuntimeSetupStatus::Blocked);
+            assert!(setup.actions.is_empty());
+            assert!(!serde_json::to_string(&setup).unwrap().contains("private"));
+        }
+    }
+
+    async fn request(host: &RuntimeHost, method: &str, body: Value) -> (StatusCode, Value) {
+        let response = router(AppState::for_unix(host.clone()))
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/api/control/runtime/config")
+                    .header("content-type", "application/json")
+                    .body(if method == "GET" {
+                        Body::empty()
+                    } else {
+                        Body::from(body.to_string())
+                    })
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        (status, body)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_lock_contention_keeps_async_executor_responsive() {
+        let (_home, host) = host();
+        let transaction =
+            crate::config::PersistedConfigTransaction::begin(&host.config().config_file_path)
+                .unwrap();
+        let (release, wait) = std::sync::mpsc::channel();
+        // A watchdog releases the lock even if a regression blocks this executor.
+        let holder = std::thread::spawn(move || {
+            let released = wait.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+            drop(transaction);
+            released
+        });
+        let update = request(
+            &host,
+            "PATCH",
+            json!({"updates": [
+                {"key":"runtime.db_readers.ordinary_max_connections","value":8}
+            ]}),
+        );
+        tokio::pin!(update);
+        tokio::select! {
+            biased;
+            response = &mut update => panic!("config update finished before lock release: {response:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+        let signaled = release.send(()).is_ok();
+        let released = holder.join().unwrap();
+        assert!(
+            signaled && released,
+            "config lock blocked the async executor"
+        );
+        let (status, payload) = tokio::time::timeout(std::time::Duration::from_secs(5), update)
+            .await
+            .expect("config update after lock release");
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        assert_eq!(payload["changed"], true, "{payload}");
+        assert_eq!(
+            crate::config::load_persisted_config_at(&host.config().config_file_path)
+                .unwrap()
+                .runtime
+                .db_readers
+                .resolve()
+                .unwrap()
+                .ordinary_max_connections(),
+            8
+        );
+    }
+
+    #[tokio::test]
+    async fn reader_limits_api_persists_for_restart_and_keeps_effective_pools() {
+        let (_home, host) = host();
+        let (status, accepted) = request(
+            &host,
+            "PATCH",
+            json!({"updates": [
+                {"key":"runtime.db_readers.ordinary_max_connections","value":8},
+                {"key":"runtime.db_readers.preparation_max_connections","value":2}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(accepted["changed"], true, "{accepted}");
+        for result in accepted["results"].as_array().unwrap() {
+            assert_eq!(result["effect"], "accepted_requires_restart");
+        }
+        let generation = accepted["reload"]["requested_generation"].as_u64().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while host.config_reload_status().completed_generation < generation {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("config reload convergence");
+        let path = host.config().config_file_path.clone();
+        let persisted = crate::config::load_persisted_config_at(&path).unwrap();
+        assert_eq!(
+            persisted.runtime.db_readers.resolve().unwrap(),
+            crate::runtime_db::RuntimeDbReaderConfig::new(8, 2).unwrap()
+        );
+        assert_eq!(host.runtime_db().reader_pool_stats_for_tests().capacity, 16);
+        assert_eq!(
+            host.runtime_db()
+                .preparation_pool_stats_for_tests()
+                .capacity,
+            4
+        );
+        assert_eq!(
+            host.config()
+                .stored_config
+                .runtime
+                .db_readers
+                .resolve()
+                .unwrap(),
+            crate::runtime_db::RuntimeDbReaderConfig::default()
+        );
+        let (_, rejected) = request(
+            &host,
+            "PATCH",
+            json!({"updates": [
+                {"key":"runtime.db_readers.ordinary_max_connections","value":64}
+            ]}),
+        )
+        .await;
+        assert_eq!(rejected["changed"], false, "{rejected}");
+        assert_eq!(
+            crate::config::load_persisted_config_at(&path)
+                .unwrap()
+                .runtime
+                .db_readers,
+            persisted.runtime.db_readers
+        );
+        let (_, unset) = request(
+            &host,
+            "PATCH",
+            json!({"updates": [
+                {"key":"runtime.db_readers.ordinary_max_connections","unset":true},
+                {"key":"runtime.db_readers.preparation_max_connections","unset":true}
+            ]}),
+        )
+        .await;
+        assert_eq!(unset["changed"], true, "{unset}");
+        assert!(crate::config::load_persisted_config_at(&path)
+            .unwrap()
+            .runtime
+            .db_readers
+            .is_empty());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reader_limits_api_validates_final_batch_in_either_order() {
+        let (_home, host) = host();
+        let ordinary = "runtime.db_readers.ordinary_max_connections";
+        let preparation = "runtime.db_readers.preparation_max_connections";
+        let path = host.config().config_file_path.clone();
+        for reverse in [false, true] {
+            for (ordinary_value, preparation_value) in [(63, 1), (1, 63)] {
+                let mut updates = vec![
+                    json!({"key":ordinary,"value":ordinary_value}),
+                    json!({"key":preparation,"value":preparation_value}),
+                    json!({"key":"runtime.max_tool_output_tokens","value":12345}),
+                ];
+                if reverse {
+                    updates.reverse();
+                }
+                let (status, accepted) = request(&host, "PATCH", json!({"updates":updates})).await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(accepted["changed"], true, "{accepted}");
+                let persisted = crate::config::load_persisted_config_at(&path).unwrap();
+                assert_eq!(
+                    persisted.runtime.db_readers.resolve().unwrap(),
+                    crate::runtime_db::RuntimeDbReaderConfig::new(
+                        ordinary_value,
+                        preparation_value
+                    )
+                    .unwrap()
+                );
+                assert_eq!(persisted.runtime.max_tool_output_tokens, Some(12345));
+                let mut updates = vec![
+                    json!({"key":ordinary,"unset":true}),
+                    json!({"key":preparation,"unset":true}),
+                ];
+                if reverse {
+                    updates.reverse();
+                }
+                let (_, reset) = request(&host, "PATCH", json!({"updates":updates})).await;
+                assert_eq!(reset["changed"], true, "{reset}");
+                assert!(crate::config::load_persisted_config_at(&path)
+                    .unwrap()
+                    .runtime
+                    .db_readers
+                    .is_empty());
+            }
+        }
+        assert_eq!(host.runtime_db().reader_pool_stats_for_tests().capacity, 16);
+        assert_eq!(
+            host.runtime_db()
+                .preparation_pool_stats_for_tests()
+                .capacity,
+            4
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reader_limits_api_rejects_invalid_final_batches_atomically() {
+        let (_home, host) = host();
+        let ordinary = "runtime.db_readers.ordinary_max_connections";
+        let preparation = "runtime.db_readers.preparation_max_connections";
+        let path = host.config().config_file_path.clone();
+        let before = std::fs::read(&path).unwrap();
+        for invalid in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("bad"),
+            json!(4294967296_u64),
+            json!(64),
+        ] {
+            let (_, rejected) = request(
+                &host,
+                "PATCH",
+                json!({"updates":[
+                    {"key":"runtime.max_tool_output_tokens","value":12345},
+                    {"key":ordinary,"value":invalid},
+                    {"key":preparation,"value":1}
+                ]}),
+            )
+            .await;
+            assert_eq!(rejected["changed"], false, "{rejected}");
+            assert!(rejected["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|result| result["effect"] == "rejected"));
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        // An unset can also leave a final pair over the limit through its default.
+        let (_, accepted) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":ordinary,"value":1}, {"key":preparation,"value":63}
+            ]}),
+        )
+        .await;
+        assert_eq!(accepted["changed"], true, "{accepted}");
+        let before = std::fs::read(&path).unwrap();
+        let (_, rejected) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":ordinary,"unset":true},
+                {"key":"runtime.max_tool_output_tokens","value":12345}
+            ]}),
+        )
+        .await;
+        assert_eq!(rejected["changed"], false, "{rejected}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_setup_http_still_requires_control_authorization() {
+        let (_home, host) = host();
+        let mut state = AppState::for_tcp(host);
+        state.require_control_token = true;
+        let app = router(state);
+        for method in ["GET", "PATCH"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/api/control/runtime/config")
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"updates":[]}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert!(body.get("setup").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_setup_http_read_and_update_follow_effective_reload() {
+        let (_home, host) = host();
+        let (status, initial) = request(&host, "GET", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(initial["setup"]["status"], "blocked");
+        assert_eq!(
+            initial["setup"]["actions"],
+            json!(["configure_model_credential"])
+        );
+        assert_eq!(initial["setup"].as_object().unwrap().len(), 4);
+
+        let (status, rejected) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[{"key":"home","value":"/private/new-home"}]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(rejected["changed"], false);
+        assert_eq!(rejected["setup"], initial["setup"]);
+        assert_eq!(host.config_reload_status().requested_generation, 0);
+
+        let (status, accepted) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":"providers.openai.auth.source","value":"none"},
+                {"key":"providers.openai.auth.kind","value":"none"},
+                {"key":"providers.openai.base_url","value":"http://127.0.0.1:11434/v1"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(accepted["changed"], true);
+        let generation = accepted["reload"]["requested_generation"].as_u64().unwrap();
+        assert!(generation > 0);
+        if accepted["reload"]["state"] == "applying" {
+            assert_eq!(accepted["setup"]["status"], "blocked");
+            assert_eq!(accepted["setup"]["actions"], json!([]));
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let status = host.config_reload_status();
+                if status.completed_generation >= generation {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("reload convergence");
+        let (status, effective) = request(&host, "GET", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(effective["reload"]["state"], "completed");
+        assert_eq!(effective["setup"]["status"], "ready");
+        assert_eq!(effective["setup"]["actions"], json!([]));
+        assert_eq!(effective["setup"]["provider"], "openai");
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeDecisionTestRequest {
+    #[serde(default)]
+    pub question: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RuntimeDecisionTestResponse {
+    pub ok: bool,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
+pub async fn runtime_decision_test(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<RuntimeDecisionTestRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+
+    let runtime = state.host.default_runtime().await.map_err(error_response)?;
+    let question = request
+        .question
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Return the connectivity candidate.".to_owned());
+    let request = decision_core::DecisionRequest {
+        request_id: format!(
+            "holon-control-test-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ),
+        input: json!({ "question": question }),
+        candidates: vec![json!({ "id": "connectivity", "label": "Decision provider reachable" })],
+        schema: "Select the connectivity candidate or abstain.".to_owned(),
+        schema_version: "1".to_owned(),
+        metadata: [("integration".to_owned(), "holon-control-test".to_owned())]
+            .into_iter()
+            .collect(),
+        deadline_ms: Some(5_000),
+    };
+
+    let result = runtime.execute_advisory_decision(request).await;
+    let response = match result {
+        Ok((response, _provider, _model)) => {
+            let outcome = match response.outcome {
+                decision_core::DecisionOutcome::Rank { .. } => "rank",
+                decision_core::DecisionOutcome::Select { .. } => "select",
+                decision_core::DecisionOutcome::Abstain { .. } => "abstain",
+                decision_core::DecisionOutcome::Fallback { .. } => "fallback",
+            };
+            RuntimeDecisionTestResponse {
+                ok: true,
+                status: "ready".to_owned(),
+                outcome: Some(outcome.to_owned()),
+                confidence: response.confidence,
+                elapsed_ms: response.elapsed_ms,
+                error_code: None,
+            }
+        }
+        Err(_) => RuntimeDecisionTestResponse {
+            ok: false,
+            status: "failed".to_owned(),
+            outcome: None,
+            confidence: None,
+            elapsed_ms: None,
+            error_code: Some("decision_provider_test_failed".to_owned()),
+        },
+    };
+    Ok(Json(response))
+}
+
+pub async fn runtime_decision_local_onnx_preset(
+    Path(preset): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let config = state.host.config();
+    let status =
+        crate::runtime::decision_models::local_onnx_preset_status(&config.home_dir, &preset)
+            .map_err(error_response)?;
+    Ok(Json(status))
+}
+
+pub async fn runtime_decision_local_onnx_preset_download(
+    Path(preset): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let home_dir = state.host.config().home_dir.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        crate::runtime::decision_models::download_local_onnx_preset(&home_dir, &preset)
+    })
+    .await
+    .map_err(|error| error_response(anyhow::anyhow!("model download task failed: {error}")))?
+    .map_err(error_response)?;
+    Ok(Json(status))
+}
+
+pub async fn runtime_decision_local_onnx_preset_cancel(
+    Path(preset): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let home_dir = state.host.config().home_dir.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        crate::runtime::decision_models::cancel_local_onnx_preset(&home_dir, &preset)
+    })
+    .await
+    .map_err(|error| {
+        error_response(anyhow::anyhow!(
+            "model download cancel task failed: {error}"
+        ))
+    })?
+    .map_err(error_response)?;
+    Ok(Json(status))
+}
+
+pub async fn runtime_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime_service = state
+        .runtime_service
+        .as_ref()
+        .ok_or_else(|| service_unavailable("runtime service metadata is unavailable"))?;
+    let agents = state
+        .host
+        .public_agent_activity_snapshots()
+        .await
+        .map_err(error_response)?;
+    let activity = crate::daemon::activity_from_snapshots(&agents);
+    let last_failure = agents
+        .into_iter()
+        .filter_map(|agent| agent.last_runtime_failure)
+        .max_by(|left, right| left.occurred_at.cmp(&right.occurred_at));
+    let (startup_surface, runtime_surface) = runtime_surfaces(&state);
+    let protection = state.host.runtime_db().protection_status();
+    let response = apply_runtime_db_protection(
+        runtime_service.status_response(activity, last_failure, startup_surface, runtime_surface),
+        protection,
+    );
+    Ok(Json(response))
+}
+
+pub async fn runtime_readiness(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime_service = state
+        .runtime_service
+        .as_ref()
+        .ok_or_else(|| service_unavailable("runtime service metadata is unavailable"))?;
+    let (startup_surface, runtime_surface) = runtime_surfaces(&state);
+    let protection = state.host.runtime_db().protection_status();
+    let response = apply_runtime_db_protection(
+        runtime_service.readiness_response(startup_surface, runtime_surface),
+        protection,
+    );
+    Ok(Json(response))
+}
+
+fn apply_runtime_db_protection(
+    mut response: RuntimeStatusResponse,
+    protection: RuntimeDbProtectionStatus,
+) -> RuntimeStatusResponse {
+    response.healthy &= protection.is_healthy();
+    response.runtime_db_protection = Some(protection);
+    response
+}
+
+pub async fn runtime_performance(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    Ok(Json(diagnostics::performance_snapshot()))
+}
+
+pub async fn runtime_metrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    Ok((
+        [(CONTENT_TYPE, crate::openmetrics::CONTENT_TYPE)],
+        crate::openmetrics::render(&diagnostics::performance_snapshot()),
+    ))
+}
+
+pub async fn runtime_traces(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    Ok(Json(crate::observability::recent_trace_summaries()))
+}
+
+pub async fn runtime_trace(
+    Path(trace_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let trace = if let Some(trace) = crate::observability::recent_trace(&trace_id) {
+        Some(trace)
+    } else {
+        crate::diagnostics_store::persistent_trace(
+            &state.host.config().diagnostics_db_path(),
+            &trace_id,
+        )
+        .map_err(error_response)?
+    };
+    trace
+        .map(Json)
+        .ok_or_else(|| not_found(format!("trace {trace_id} not found")))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RuntimeTraceSearchQuery {
+    pub query: String,
+}
+
+pub async fn runtime_trace_search(
+    Query(query): Query<RuntimeTraceSearchQuery>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    if query.query.trim().is_empty() {
+        return Err(bad_request("trace search query must not be empty"));
+    }
+    let query = query.query.trim();
+    let traces = crate::observability::search_recent_traces(query);
+    let persisted = crate::diagnostics_store::search_persistent_traces(
+        &state.host.config().diagnostics_db_path(),
+        query,
+        MAX_TRACE_SEARCH_RESULTS,
+    )
+    .map_err(error_response)?;
+    Ok(Json(merge_trace_search_results(traces, persisted)))
+}
+
+fn merge_trace_search_results(
+    mut traces: Vec<crate::observability::RecentTraceSummary>,
+    persisted: Vec<crate::observability::RecentTraceSummary>,
+) -> Vec<crate::observability::RecentTraceSummary> {
+    for trace in persisted {
+        if !traces
+            .iter()
+            .any(|candidate| candidate.trace_id == trace.trace_id)
+        {
+            traces.push(trace);
+        }
+    }
+    traces.sort_by(|left, right| right.completed_at.cmp(&left.completed_at));
+    traces.truncate(MAX_TRACE_SEARCH_RESULTS);
+    traces
+}
+
+pub async fn scheduler_repair_inspect(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let inspection = state
+        .host
+        .public_agent_scheduler_repair_inspection(&agent_id)
+        .map_err(agent_access_error)?;
+    Ok(Json(inspection))
+}
+
+pub async fn scheduler_repair_apply(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<crate::runtime::SchedulerRepairRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    Ok(Json(
+        runtime
+            .apply_scheduler_repair(request)
+            .await
+            .map_err(error_response)?,
+    ))
+}
+
+fn runtime_config_reload_status(host: &crate::host::RuntimeHost) -> RuntimeConfigReloadStatus {
+    let status = host.config_reload_status();
+    let state = match status.state {
+        crate::host::ConfigReloadState::Idle => RuntimeConfigReloadState::Idle,
+        crate::host::ConfigReloadState::Applying => RuntimeConfigReloadState::Applying,
+        crate::host::ConfigReloadState::Completed => RuntimeConfigReloadState::Completed,
+        crate::host::ConfigReloadState::Failed => RuntimeConfigReloadState::Failed,
+    };
+    RuntimeConfigReloadStatus {
+        requested_generation: status.requested_generation,
+        completed_generation: status.completed_generation,
+        state,
+        last_error: status.last_error,
+    }
+}
+
+pub async fn runtime_config(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let before_reload = runtime_config_reload_status(&state.host);
+    let config = state.host.config();
+    let reload = runtime_config_reload_status(&state.host);
+    let mut setup = runtime_config_setup(&config, &reload);
+    if before_reload != reload {
+        setup.status = crate::onboarding::RuntimeSetupStatus::Blocked;
+        setup.actions.clear();
+    }
+    Ok(Json(RuntimeConfigReadResponse {
+        ok: true,
+        config_file_path: config.config_file_path.clone(),
+        runtime_surface: RuntimeConfigSurface::new(&config),
+        reload,
+        setup,
+    }))
+}
+
+fn runtime_config_setup(
+    config: &AppConfig,
+    reload: &RuntimeConfigReloadStatus,
+) -> crate::onboarding::RuntimeSetup {
+    if matches!(
+        reload.state,
+        RuntimeConfigReloadState::Applying | RuntimeConfigReloadState::Failed
+    ) || reload.requested_generation > reload.completed_generation
+    {
+        return crate::onboarding::RuntimeSetup {
+            status: crate::onboarding::RuntimeSetupStatus::Blocked,
+            default_model: Some(config.default_model.as_string()),
+            provider: Some(config.default_model.provider.as_str().into()),
+            actions: Vec::new(),
+        };
+    }
+    crate::onboarding::runtime_setup(config)
+}
+
+pub async fn runtime_config_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<RuntimeConfigUpdateRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    tokio::task::spawn_blocking(move || runtime_config_update_blocking(state, request))
+        .await
+        .map_err(|error| error_response(anyhow!("config update task failed: {error}")))?
+}
+
+fn runtime_config_update_blocking(
+    state: Arc<AppState>,
+    request: RuntimeConfigUpdateRequest,
+) -> Result<Json<RuntimeConfigUpdateResponse>, (StatusCode, Json<Value>)> {
+    let config = state.host.config();
+    let transaction =
+        PersistedConfigTransaction::begin(&config.config_file_path).map_err(error_response)?;
+    let stored = transaction.load().map_err(error_response)?;
+    let mut candidate = stored.clone();
+    let mut reader_limits = candidate.runtime.db_readers.clone();
+    let mut results = Vec::new();
+
+    for update in request.updates {
+        if !is_runtime_mutable_config_key(&update.key) {
+            results.push(RuntimeConfigUpdateResult {
+                key: update.key,
+                effect: RuntimeConfigUpdateEffect::Rejected,
+                reason: "unsupported or startup-only config key".into(),
+            });
+            continue;
+        }
+
+        let result = if update.unset {
+            if crate::config::is_runtime_db_reader_config_key(&update.key) {
+                crate::config::stage_runtime_db_reader_update(&mut reader_limits, &update.key, None)
+            } else {
+                unset_config_key(&mut candidate, &update.key)
+            }
+        } else {
+            match update.value {
+                Some(value) => {
+                    let raw = config_value_as_raw(value);
+                    if crate::config::is_runtime_db_reader_config_key(&update.key) {
+                        crate::config::stage_runtime_db_reader_update(
+                            &mut reader_limits,
+                            &update.key,
+                            Some(&raw),
+                        )
+                    } else {
+                        set_config_key(&mut candidate, &update.key, &raw)
+                    }
+                }
+                None => Err(anyhow!(
+                    "runtime config update for {} requires value or unset=true",
+                    update.key
+                )),
+            }
+        };
+
+        match result {
+            Ok(()) => {
+                results.push(RuntimeConfigUpdateResult {
+                    key: update.key,
+                    effect: RuntimeConfigUpdateEffect::AcceptedRequiresRestart,
+                    reason: "persisted in config.json; the running host keeps its current effective config until restart/reload support is added".into(),
+                });
+            }
+            Err(error) => results.push(RuntimeConfigUpdateResult {
+                key: update.key,
+                effect: RuntimeConfigUpdateEffect::Rejected,
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    candidate.runtime.db_readers = reader_limits;
+    if results
+        .iter()
+        .any(|result| result.effect == RuntimeConfigUpdateEffect::Rejected)
+    {
+        reject_accepted_runtime_config_results(
+            &mut results,
+            "batch rejected; no runtime config updates were persisted",
+        );
+    } else if let Err(error) = validate_runtime_config_candidate(&config, &candidate) {
+        reject_accepted_runtime_config_results(
+            &mut results,
+            &format!("updated config is invalid: {error}"),
+        );
+    }
+
+    let changed = results
+        .iter()
+        .any(|result| result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart);
+
+    if changed {
+        let _writer = state
+            .host
+            .context_resources()
+            .begin_write()
+            .map_err(error_response)?;
+        transaction.save(&candidate).map_err(error_response)?;
+        let generation = state
+            .host
+            .schedule_config_reload()
+            .map_err(error_response)?;
+        for result in &mut results {
+            if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+                if crate::config::is_runtime_db_reader_config_key(&result.key) {
+                    result.reason = "persisted in config.json; reader pool limits take effect after daemon restart".into();
+                    continue;
+                }
+                result.effect = RuntimeConfigUpdateEffect::AcceptedReloadScheduled;
+                result.reason =
+                    format!("persisted in config.json; reload generation {generation} scheduled");
+            }
+        }
+    }
+    let before_reload = runtime_config_reload_status(&state.host);
+    let config = state.host.config();
+    let reload = runtime_config_reload_status(&state.host);
+    let mut setup = runtime_config_setup(&config, &reload);
+    if before_reload != reload {
+        setup.status = crate::onboarding::RuntimeSetupStatus::Blocked;
+        setup.actions.clear();
+    }
+    Ok(Json(RuntimeConfigUpdateResponse {
+        ok: true,
+        changed,
+        config_file_path: config.config_file_path.clone(),
+        results,
+        runtime_surface: RuntimeConfigSurface::new(&config),
+        reload,
+        setup,
+    }))
+}
+
+pub async fn runtime_config_migrate_model_routes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ModelConfigMigrationRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let report = state
+        .host
+        .migrate_model_config_routes(request.write)
+        .await
+        .map_err(error_response)?;
+    if request.write && report.ok && report.config.changed {
+        state
+            .host
+            .schedule_config_reload()
+            .map_err(error_response)?;
+    }
+    Ok(Json(report))
+}
+
+fn reject_accepted_runtime_config_results(results: &mut [RuntimeConfigUpdateResult], reason: &str) {
+    for result in results {
+        if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+            result.effect = RuntimeConfigUpdateEffect::Rejected;
+            if result.reason.is_empty() {
+                result.reason = reason.into();
+            } else {
+                result.reason = format!("{reason}: {}", result.reason);
+            }
+        }
+    }
+}
+
+fn validate_runtime_config_candidate(
+    config: &crate::config::AppConfig,
+    candidate: &HolonConfigFile,
+) -> Result<()> {
+    candidate.runtime.db_readers.resolve()?;
+    let credentials = load_credential_store_at(&credential_store_path(&config.home_dir))?;
+    crate::web::materialize_web_config(&candidate.web, &credentials)?;
+    let mut candidate_config = config.clone();
+    candidate_config.stored_config = candidate.clone();
+    candidate_config.validated_model_overrides = crate::config::resolve_model_catalog(candidate)?;
+    if !candidate.model.route_options.is_empty() {
+        candidate_config.providers = crate::config::resolve_provider_registry(
+            candidate,
+            &crate::config::load_settings_env()?,
+            &credentials,
+        )?;
+        candidate_config.validate_model_route_options()?;
+    }
+    // Reject incomplete decision routes here: an invalid persisted route aborts
+    // every later config reload and blocks runtime spawn on restart.
+    crate::runtime::decision_openai::validate_shared_decision_config(
+        &candidate.decision,
+        &candidate_config,
+    )?;
+    Ok(())
+}
+
+fn is_runtime_mutable_config_key(key: &str) -> bool {
+    matches!(
+        key,
+        "auth.mode"
+            | "auth.oidc.issuer_url"
+            | "auth.oidc.client_id"
+            | "auth.oidc.client_secret_env"
+            | "auth.oidc.redirect_uri"
+            | "auth.session.absolute_ttl_seconds"
+            | "auth.session.idle_ttl_seconds"
+            | "api.cors.enabled"
+            | "api.cors.allowed_origins"
+            | "api.cors.allowed_methods"
+            | "api.cors.allowed_headers"
+            | "api.cors.allow_credentials"
+            | "api.cors.max_age_seconds"
+            | "api.csrf.trusted_origins"
+            | "api.prompt.attachment_max_bytes"
+            | "local_apps.max_asset_bytes"
+            | "local_apps.csp"
+            | "model.default"
+            | "model.route_options"
+            | "model.fallbacks"
+            | "vision.default"
+            | "image_generation.default"
+            | "models.catalog"
+            | "model.unknown_fallback"
+            | "model.unknown_fallback.context_window_tokens"
+            | "model.unknown_fallback.effective_context_window_percent"
+            | "model.unknown_fallback.prompt_budget_estimated_tokens"
+            | "model.unknown_fallback.compaction_trigger_estimated_tokens"
+            | "model.unknown_fallback.compaction_keep_recent_estimated_tokens"
+            | "model.unknown_fallback.runtime_max_output_tokens"
+            | "runtime.max_output_tokens"
+            | "runtime.default_tool_output_tokens"
+            | "runtime.max_tool_output_tokens"
+            | "runtime.disable_provider_fallback"
+            | "runtime.db_readers.ordinary_max_connections"
+            | "runtime.db_readers.preparation_max_connections"
+            | "decision.enabled"
+            | "decision.model"
+            | "decision.local_onnx.enabled"
+            | "decision.local_onnx.preset"
+            | "decision.local_onnx.model_dir"
+            | "decision.local_onnx.variant"
+            | "decision.local_onnx.num_threads"
+            | "decision.local_onnx.checksum"
+            | "decision.timeout_ms"
+            | "decision.max_tokens"
+            | "decision.concurrency"
+            | "decision.queue_capacity"
+            | "decision.tools.enabled"
+            | "decision.tools.max_calls_per_turn"
+            | "decision.tools.timeout_ms"
+            | "decision.tools.min_confidence"
+    ) || key.starts_with("runtime.retention.")
+        || key.starts_with("providers.")
+        || key.starts_with("agent_templates.")
+        || key.starts_with("web.")
+}
+
+fn config_value_as_raw(value: Value) -> String {
+    match value {
+        Value::String(value) => value,
+        other => other.to_string(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct CredentialListResponse {
+    ok: bool,
+    profiles: Vec<CredentialProfileStatus>,
+}
+
+pub async fn list_credentials(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let config = state.host.config();
+    let path = credential_store_path(&config.home_dir);
+    let profiles = list_credential_profiles_at(&path).map_err(error_response)?;
+    Ok(Json(CredentialListResponse { ok: true, profiles }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetCredentialRequest {
+    kind: String,
+    material: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SetCredentialResponse {
+    ok: bool,
+    profile: CredentialProfileStatus,
+    reload_generation: u64,
+}
+
+pub async fn set_credential(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(profile): Path<String>,
+    ApiJson(request): ApiJson<SetCredentialRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let config = state.host.config();
+    let path = credential_store_path(&config.home_dir);
+    let kind = CredentialKind::parse(&request.kind).map_err(error_response)?;
+    let profile_status = set_credential_profile_at(&path, &profile, kind, request.material)
+        .map_err(error_response)?;
+    let reload_generation = state
+        .host
+        .schedule_config_reload()
+        .map_err(error_response)?;
+    Ok(Json(SetCredentialResponse {
+        ok: true,
+        profile: profile_status,
+        reload_generation,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteCredentialResponse {
+    ok: bool,
+    profile: CredentialProfileStatus,
+    reload_generation: u64,
+}
+
+pub async fn delete_credential(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(profile): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let config = state.host.config();
+    let path = credential_store_path(&config.home_dir);
+    let profile_status = remove_credential_profile_at(&path, &profile).map_err(error_response)?;
+    let reload_generation = state
+        .host
+        .schedule_config_reload()
+        .map_err(error_response)?;
+    Ok(Json(DeleteCredentialResponse {
+        ok: true,
+        profile: profile_status,
+        reload_generation,
+    }))
+}
+
+pub(super) fn runtime_surfaces(
+    state: &AppState,
+) -> (crate::daemon::RuntimeStartupSurface, RuntimeConfigSurface) {
+    let config = state.host.config();
+    let startup_surface = crate::daemon::RuntimeStartupSurface {
+        user_home_dir: config.user_home_dir.clone(),
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        workspace_dir: config.workspace_dir.clone(),
+        default_agent_id: config.default_agent_id.clone(),
+        callback_base_url: config.callback_base_url.clone(),
+        control_token_configured: config.control_token.is_some(),
+        control_auth_mode: config.control_auth_mode.into(),
+    };
+    (startup_surface, RuntimeConfigSurface::new(&config))
+}
+
+pub async fn runtime_shutdown(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime_service = state
+        .runtime_service
+        .as_ref()
+        .ok_or_else(|| service_unavailable("runtime service metadata is unavailable"))?;
+    state.close_projection_reads().await;
+    graceful_runtime_shutdown(&state.host, runtime_service)
+        .await
+        .map_err(error_response)?;
+    Ok(Json(runtime_service.shutdown_response()))
+}
+
+pub async fn create_agent(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CreateAgentRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let mut created = state
+        .host
+        .create_public_named_agent_with_name(
+            &agent_id,
+            request.template.as_deref(),
+            None,
+            None,
+            request.name.as_deref(),
+            crate::host::AgentBootstrapExecution::Background,
+            // User-initiated creation without an initial_message field:
+            // request the default bootstrap initialization turn (#2795).
+            true,
+        )
+        .await
+        .map_err(error_response)?;
+    // Attach a job projection to the background bootstrap so clients can poll
+    // progress; the durable bootstrap record stays the source of truth.
+    let mut status = StatusCode::OK;
+    if created.receipt.stage == crate::types::AgentCreateStage::Provisioning {
+        status = StatusCode::ACCEPTED;
+        if let Ok(crate::host::AgentBootstrapKick::Started(receiver)) =
+            state.host.kick_agent_bootstrap(&agent_id)
+        {
+            created.receipt.job_id = Some(super::jobs::spawn_agent_bootstrap_job(
+                &state, &agent_id, receiver,
+            ));
+        }
+    }
+    let audit = crate::types::AuditEvent::legacy(
+        "agent_created",
+        json!({
+            "target_agent_id": agent_id,
+            "admission_context": admission_context,
+            "provided_trust": provided_trust,
+            "receipt_id": created.receipt.receipt_id,
+            "bootstrap": created.receipt.bootstrap,
+        }),
+    );
+    if let Err(error) = state
+        .host
+        .append_agent_creation_audit(&agent_id, created.identity.incarnation, audit)
+        .await
+    {
+        tracing::warn!(
+            agent_id,
+            error = %error,
+            "agent core commit succeeded but agent_created audit append failed"
+        );
+    }
+    Ok((status, Json(created)))
+}
+
+pub async fn agent_detail(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let detail = state
+        .host
+        .operator_agent_detail(&agent_id)
+        .map_err(agent_access_error)?;
+    Ok(Json(detail))
+}
+
+pub async fn agent_tree(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let bytes = state
+        .host
+        .operator_agent_tree()
+        .await
+        .map_err(error_response)?
+        .into_json_bytes()
+        .map_err(error_response)?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        bytes,
+    ))
+}
+
+pub async fn repair_agent(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let (detail, receiver) = state
+        .host
+        .repair_public_agent_background(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    match receiver {
+        Some(receiver) => {
+            // A background reconcile was kicked: return the current snapshot
+            // plus a job id clients can poll for completion.
+            let job_id = super::jobs::spawn_agent_bootstrap_job(&state, &agent_id, receiver);
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "ok": true,
+                    "detail": detail,
+                    "job_id": job_id,
+                })),
+            )
+                .into_response())
+        }
+        None => Ok(Json(json!({ "ok": true, "detail": detail })).into_response()),
+    }
+}
+
+pub async fn rename_agent(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<RenameAgentRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let detail = state
+        .host
+        .rename_public_agent(&agent_id, &request.name, "authenticated_operator_control")
+        .await
+        .map_err(agent_access_error)?;
+    Ok(Json(detail))
+}
+
+pub async fn delete_agent(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<DeleteAgentRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let (identity, job, created) = state
+        .host
+        .begin_public_agent_deletion_with_archive(
+            &agent_id,
+            request.cascade_private_children,
+            "authenticated_operator_control",
+            request.archive,
+        )
+        .await
+        .map_err(agent_access_error)?;
+    Ok(Json(AgentDeletionResponse {
+        ok: true,
+        created,
+        identity: crate::types::AgentIdentityView::from_record(
+            &identity,
+            &state.host.config().default_agent_id,
+        ),
+        job,
+    }))
+}
+
+pub async fn agent_deletion_status(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let (identity, job) = state
+        .host
+        .public_agent_deletion_status(&agent_id)
+        .map_err(agent_access_error)?;
+    Ok(Json(AgentDeletionStatusResponse {
+        identity: crate::types::AgentIdentityView::from_record(
+            &identity,
+            &state.host.config().default_agent_id,
+        ),
+        job,
+    }))
+}
+
+pub async fn control(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ControlRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let action = request.action.clone();
+    let runtime = state
+        .host
+        .control_public_agent(&agent_id, action.clone())
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "control_request_admitted",
+            json!({
+                "target_agent_id": agent_id,
+                "action": action,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+pub async fn abort_current_run(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<AbortCurrentRunRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let mode = match request.mode.as_deref().unwrap_or("stop_after_abort") {
+        "stop_after_abort" => CurrentRunAbortMode::StopAfterAbort,
+        "idle_after_abort" => CurrentRunAbortMode::IdleAfterAbort,
+        "pause_after_abort" => CurrentRunAbortMode::StopAfterAbort,
+        other => {
+            return Err(bad_request(format!(
+                "unsupported abort mode {other}; expected stop_after_abort, idle_after_abort, or deprecated alias pause_after_abort"
+            )))
+        }
+    };
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class.clone();
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let outcome = runtime
+        .abort_current_run(CurrentRunAbortRequest {
+            run_id: request.run_id.clone(),
+            mode,
+        })
+        .await
+        .map_err(abort_error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "aborted": true,
+        "agent_id": outcome.agent_id,
+        "run_id": outcome.run_id,
+        "mode": outcome.mode.as_str(),
+        "admission_context": admission_context,
+        "provided_trust": provided_trust,
+    })))
+}
+
+pub async fn attach_workspace(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<AttachWorkspaceRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let workspace = state
+        .host
+        .ensure_workspace_entry(std::path::PathBuf::from(&request.path))
+        .map_err(error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    runtime
+        .attach_workspace(&workspace)
+        .await
+        .map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "workspace_attach_requested",
+            json!({
+                "target_agent_id": agent_id,
+                "workspace_id": workspace.workspace_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "workspace_id": workspace.workspace_id,
+        "workspace_anchor": workspace.workspace_anchor,
+    })))
+}
+
+pub async fn exit_workspace(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ExitWorkspaceRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    runtime.exit_workspace().await.map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "workspace_exit_requested",
+            json!({
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+    })))
+}
+
+pub async fn detach_workspace(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<DetachWorkspaceRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let workspace_id = request.workspace_id.trim().to_string();
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    runtime
+        .detach_workspace(&workspace_id)
+        .await
+        .map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "workspace_detach_requested",
+            json!({
+                "target_agent_id": agent_id,
+                "workspace_id": workspace_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "workspace_id": workspace_id,
+    })))
+}
+
+pub async fn get_agent_timezone(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let timezone = runtime
+        .current_time_timezone()
+        .await
+        .map_err(error_response)?;
+    Ok(Json(
+        json!({"agent_id": agent_id, "effective_timezone": timezone.name()}),
+    ))
+}
+
+pub async fn set_agent_timezone(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<SetAgentTimezoneRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    crate::prompt::time::parse_timezone(&request.timezone)
+        .map_err(|err| bad_request(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let agent = runtime
+        .set_timezone_override(Some(request.timezone))
+        .await
+        .map_err(error_response)?;
+    let timezone = runtime
+        .current_time_timezone()
+        .await
+        .map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "agent_timezone_set",
+            json!({
+                "target_agent_id": agent_id,
+                "timezone_override": agent.timezone_override,
+                "effective_timezone": timezone.name(),
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(
+        json!({"ok": true, "agent_id": agent_id, "timezone_override": agent.timezone_override, "effective_timezone": timezone.name()}),
+    ))
+}
+
+pub async fn clear_agent_timezone(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ClearAgentTimezoneRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    runtime
+        .set_timezone_override(None)
+        .await
+        .map_err(error_response)?;
+    let timezone = runtime
+        .current_time_timezone()
+        .await
+        .map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "agent_timezone_cleared",
+            json!({
+                "target_agent_id": agent_id,
+                "timezone_override": null,
+                "effective_timezone": timezone.name(),
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(
+        json!({"ok": true, "agent_id": agent_id, "timezone_override": null, "effective_timezone": timezone.name()}),
+    ))
+}
+
+pub async fn set_agent_model(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<SetAgentModelRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let model = ModelRouteRef::parse_compatible(&request.model)
+        .map_err(|error| bad_request(error.to_string()))?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let model_state = runtime
+        .set_model_override_with_service_tier(
+            model.clone(),
+            request.reasoning_effort.clone(),
+            request.service_tier,
+        )
+        .await
+        .map_err(agent_model_override_error)?;
+    state.projection_gate.invalidate_agent(&agent_id);
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "model": model_state,
+    })))
+}
+
+pub async fn clear_agent_model(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(_request): ApiJson<ClearAgentModelRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let model_state = runtime
+        .clear_model_override()
+        .await
+        .map_err(error_response)?;
+    state.projection_gate.invalidate_agent(&agent_id);
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "model": model_state,
+    })))
+}
+
+pub async fn reset_callback(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let capability = runtime
+        .reset_external_trigger()
+        .await
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "external_trigger_id": capability.external_trigger_id,
+        "trigger_url": capability.trigger_url,
+        "delivery_mode": capability.delivery_mode,
+        "status": capability.status,
+    })))
+}
+
+const EXTERNAL_TRIGGER_FINGERPRINT_LEN: usize = 16;
+const EXTERNAL_TRIGGER_DEFAULT_PAGE: usize = 20;
+const EXTERNAL_TRIGGER_MAX_PAGE: usize = 100;
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ExternalTriggerListQuery {
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+    pub fingerprint: Option<String>,
+}
+
+enum ExternalTriggerRevealDecision {
+    Reveal { token: String },
+    TriggerNotActive,
+    TokenUnavailable,
+}
+
+fn evaluate_external_trigger_reveal(
+    record: &crate::types::ExternalTriggerRecord,
+) -> ExternalTriggerRevealDecision {
+    use crate::types::ExternalTriggerStatus;
+    if record.status != ExternalTriggerStatus::Active {
+        return ExternalTriggerRevealDecision::TriggerNotActive;
+    }
+    let Some(token) = record
+        .token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+    else {
+        return ExternalTriggerRevealDecision::TokenUnavailable;
+    };
+    if !crate::callbacks::callback_token_hash_matches(&token, &record.token_hash) {
+        return ExternalTriggerRevealDecision::TokenUnavailable;
+    }
+    ExternalTriggerRevealDecision::Reveal { token }
+}
+
+fn external_trigger_fingerprint(token_hash: &str) -> String {
+    token_hash
+        .chars()
+        .take(EXTERNAL_TRIGGER_FINGERPRINT_LEN)
+        .collect()
+}
+
+fn encode_external_trigger_cursor(created_at: &str, external_trigger_id: &str) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as CURSOR_ENGINE;
+    let payload = json!({ "c": created_at, "t": external_trigger_id });
+    CURSOR_ENGINE.encode(payload.to_string().as_bytes())
+}
+
+fn decode_external_trigger_cursor(cursor: &str) -> Option<(String, String)> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as CURSOR_ENGINE;
+    let decoded = CURSOR_ENGINE.decode(cursor.as_bytes()).ok()?;
+    let value = serde_json::from_slice::<Value>(&decoded).ok()?;
+    let created_at = value.get("c")?.as_str()?.to_string();
+    let external_trigger_id = value.get("t")?.as_str()?.to_string();
+    if created_at.is_empty() || external_trigger_id.is_empty() {
+        return None;
+    }
+    Some((created_at, external_trigger_id))
+}
+
+pub async fn list_external_triggers(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ExternalTriggerListQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let limit = match query.limit {
+        None => EXTERNAL_TRIGGER_DEFAULT_PAGE,
+        Some(limit) if (1..=EXTERNAL_TRIGGER_MAX_PAGE).contains(&limit) => limit,
+        Some(_) => {
+            return Err(bad_request(format!(
+                "limit must be between 1 and {EXTERNAL_TRIGGER_MAX_PAGE}"
+            )))
+        }
+    };
+    let fingerprint = match query.fingerprint.as_deref() {
+        None => None,
+        Some(value)
+            if value.len() == EXTERNAL_TRIGGER_FINGERPRINT_LEN
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) =>
+        {
+            Some(value.to_string())
+        }
+        Some(_) => {
+            return Err(bad_request(
+                "fingerprint must be 16 lowercase hex characters",
+            ))
+        }
+    };
+    let before = match query.cursor.as_deref() {
+        None => None,
+        Some(cursor) => decode_external_trigger_cursor(cursor),
+    };
+    let cursor = match (&query.cursor, &before) {
+        (Some(_), None) => return Err(bad_request("invalid cursor")),
+        _ => before,
+    };
+    let mut page = state
+        .host
+        .runtime_db()
+        .external_triggers()
+        .retained_page_for_agent(
+            &agent_id,
+            fingerprint.as_deref(),
+            cursor.as_ref().map(|(created_at, external_trigger_id)| {
+                (created_at.as_str(), external_trigger_id.as_str())
+            }),
+            limit.saturating_add(1),
+        )
+        .map_err(error_response)?;
+    let has_more = page.len() > limit;
+    page.truncate(limit);
+    let items: Vec<Value> = page
+        .iter()
+        .map(|(record, _)| {
+            json!({
+                "external_trigger_id": record.external_trigger_id,
+                "delivery_mode": record.delivery_mode,
+                "status": record.status,
+                "created_at": record.created_at,
+                "revoked_at": record.revoked_at,
+                "token_fingerprint": external_trigger_fingerprint(&record.token_hash),
+            })
+        })
+        .collect();
+    let mut body = json!({ "items": items });
+    if has_more {
+        if let Some((record, created_at)) = page.last() {
+            body["next_cursor"] = json!(encode_external_trigger_cursor(
+                created_at,
+                &record.external_trigger_id
+            ));
+        }
+    }
+    Ok(Json(body))
+}
+
+pub async fn reveal_external_trigger(
+    Path((agent_id, external_trigger_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control_token_credential(&headers, &state).map_err(authentication_error_response)?;
+    state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let record = state
+        .host
+        .runtime_db()
+        .external_triggers()
+        .for_agent_and_id(&agent_id, &external_trigger_id)
+        .map_err(error_response)?
+        .ok_or_else(|| not_found(format!("external trigger {external_trigger_id} not found")))?;
+    match evaluate_external_trigger_reveal(&record) {
+        ExternalTriggerRevealDecision::TriggerNotActive => Err(http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(
+                "trigger_not_active",
+                format!("external trigger {external_trigger_id} is revoked"),
+            )
+            .extension("external_trigger_id", external_trigger_id.as_str()),
+        )),
+        ExternalTriggerRevealDecision::TokenUnavailable => Err(http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(
+                "token_unavailable",
+                format!("external trigger {external_trigger_id} has no safely readable token"),
+            )
+            .extension("external_trigger_id", external_trigger_id.as_str()),
+        )),
+        ExternalTriggerRevealDecision::Reveal { token } => {
+            let trigger_url = crate::callbacks::build_callback_url(
+                &state.host.config().callback_base_url,
+                &record.delivery_mode,
+                &token,
+            );
+            Ok((
+                [(CACHE_CONTROL, "no-store")],
+                Json(json!({
+                    "external_trigger_id": record.external_trigger_id,
+                    "delivery_mode": record.delivery_mode,
+                    "token": token,
+                    "trigger_url": trigger_url,
+                })),
+            ))
+        }
+    }
+}
+
+pub async fn control_prompt(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    axum::Extension(limits): axum::Extension<ApiPromptConfigFile>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ControlPromptRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let actor = control_actor(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_agent_for_operator_prompt(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let client_request_id = request
+        .client_request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    if request.client_request_id.is_some() && client_request_id.is_none() {
+        return Err(bad_request("client_request_id must not be empty"));
+    }
+    if client_request_id
+        .as_ref()
+        .is_some_and(|value| value.len() > 200)
+    {
+        return Err(bad_request("client_request_id must not exceed 200 bytes"));
+    }
+    let work_item_id = request.work_item_id.clone().and_then(non_empty_opt);
+    let expected_incarnation = request.expected_incarnation;
+    let semantic_content = serde_json::to_value(&request)
+        .map_err(anyhow::Error::from)
+        .map_err(error_response)?;
+    let materialized = control_prompt_text_with_attachments(
+        &runtime.agent_home(),
+        request,
+        limits.attachment_max_bytes(),
+    )
+    .map_err(|err| bad_request(err.to_string()))?;
+    let text = materialized.text;
+    let created_attachment_paths = materialized.created_paths;
+    let admission_context = control_admission_context(&state);
+
+    // Even without a client key, use canonical operator policy/lifecycle admission.
+    let delivery_key = client_request_id
+        .clone()
+        .unwrap_or_else(crate::ids::message_id);
+    let caller_principal = actor.principal_id();
+    let preparation = crate::runtime::AgentMessageDeliveryService::prepare_operator_control_prompt(
+        crate::types::AgentMessageSendRequest {
+            target_agent_id: agent_id.clone(),
+            content: MessageBody::Json {
+                value: semantic_content,
+            },
+            client_idempotency_key: delivery_key,
+            correlation_id: None,
+            causation_id: None,
+            requested_priority: Some(Priority::Interject),
+            forward: false,
+            reply_context_id: None,
+        },
+        crate::types::AgentMessageCallerContext {
+            caller_principal,
+            caller_agent_id: None,
+            principal_kind: crate::types::AgentMessagePrincipalKind::Operator,
+            route: "operator_control".into(),
+            origin: actor.operator_origin(),
+            authority_class: AuthorityClass::OperatorInstruction,
+            delivery_surface: MessageDeliverySurface::HttpControlPrompt,
+            admission_context,
+            current_turn_id: None,
+            current_task_id: None,
+            current_work_item_id: None,
+            inherited_routing_context: None,
+            routing_activation_id: None,
+        },
+        expected_incarnation,
+        text,
+        work_item_id,
+        client_request_id.clone(),
+    );
+    let prepared = match preparation {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            remove_materialized_control_prompt_attachments(&created_attachment_paths);
+            return Err(bad_request(error.to_string()));
+        }
+    };
+    let delivery = runtime
+        .agent_message_delivery_service()
+        .deliver(&prepared)
+        .await;
+    let receipt = match delivery {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            remove_materialized_control_prompt_attachments(&created_attachment_paths);
+            if let Some(crate::types::AgentMessageDeliveryError::StaleIncarnation {
+                expected_incarnation,
+                actual_incarnation,
+            }) = error.downcast_ref::<crate::types::AgentMessageDeliveryError>()
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "code": "agent_incarnation_mismatch",
+                        "error": "target agent identity changed; reload the conversation",
+                        "expected_incarnation": expected_incarnation,
+                        "actual_incarnation": actual_incarnation,
+                        "retryable": false,
+                    })),
+                ));
+            } else if error
+                .downcast_ref::<crate::types::AgentMessageDeliveryError>()
+                .is_some()
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "code": "idempotency_conflict",
+                        "error": "client_request_id was reused with different prompt content",
+                        "retryable": false,
+                    })),
+                ));
+            } else {
+                return Err(error_response(error));
+            }
+        }
+    };
+    if receipt.outcome != crate::types::AgentMessageDeliveryOutcome::Accepted {
+        remove_materialized_control_prompt_attachments(&created_attachment_paths);
+        use crate::types::AgentMessageDeliveryRejectionCode as Rejection;
+        return Err(match receipt.rejection_code {
+            Some(Rejection::AgentStopped) => {
+                stopped_agent_conflict("target agent is stopped", &agent_id)
+            }
+            Some(Rejection::AgentDeleting) => agent_access_error(PublicAgentError::Deleting {
+                agent_id: agent_id.clone(),
+            }),
+            Some(Rejection::AgentDeleted) => agent_access_error(PublicAgentError::Deleted {
+                agent_id: agent_id.clone(),
+            }),
+            Some(Rejection::TargetNotFound) => not_found("target agent was not found"),
+            Some(Rejection::MessageNotAuthorized) => http_error(
+                StatusCode::FORBIDDEN,
+                HttpErrorEnvelope::new(
+                    "message_not_authorized",
+                    "operator input is denied by the target message policy",
+                ),
+            ),
+            _ => error_response(anyhow!("operator prompt admission rejected")),
+        });
+    }
+    let message_id = receipt
+        .message_id
+        .ok_or_else(|| error_response(anyhow!("accepted prompt receipt omitted message_id")))?;
+    Ok(Json(EnqueueResponse {
+        ok: true,
+        agent_id,
+        message_id,
+        disposition: client_request_id.map(|_| {
+            if receipt.idempotent_replay {
+                "duplicate".into()
+            } else {
+                "accepted".into()
+            }
+        }),
+    }))
+}
+
+#[derive(Debug)]
+struct MaterializedControlPrompt {
+    text: String,
+    created_paths: Vec<std::path::PathBuf>,
+}
+
+fn control_prompt_text_with_attachments(
+    agent_home: &std::path::Path,
+    request: ControlPromptRequest,
+    max_attachment_bytes: u64,
+) -> Result<MaterializedControlPrompt> {
+    if request.attachments.is_empty() {
+        return Ok(MaterializedControlPrompt {
+            text: request.text,
+            created_paths: Vec::new(),
+        });
+    }
+
+    let inbox = agent_home.join("media").join("inbox");
+    std::fs::create_dir_all(&inbox)
+        .with_context(|| format!("create media inbox at {}", inbox.display()))?;
+
+    let stable_request_id = request.client_request_id.clone();
+    let mut text = request.text;
+    let mut created_paths = Vec::new();
+    let materialization = (|| -> Result<()> {
+        for (index, attachment) in request.attachments.into_iter().enumerate() {
+            let position = index + 1;
+            match attachment {
+                ControlPromptAttachment::Image(ControlPromptImageAttachment {
+                    name,
+                    media_type,
+                    data_base64,
+                }) => {
+                    let bytes = decode_control_prompt_attachment(
+                        "image",
+                        position,
+                        &data_base64,
+                        max_attachment_bytes,
+                    )?;
+                    let extension = image_extension_for_media_type(&media_type)
+                        .ok_or_else(|| anyhow!("unsupported image media type: {media_type}"))?;
+                    let written = write_control_prompt_attachment(
+                        &inbox,
+                        "image",
+                        position,
+                        name.as_deref(),
+                        extension,
+                        bytes,
+                        stable_request_id.as_deref(),
+                    )?;
+                    created_paths.extend(written.created_path);
+                    append_attachment_separator(&mut text);
+                    text.push_str(&format!(
+                        "\n![{}]({})",
+                        markdown_alt_text(name.as_deref())
+                            .unwrap_or_else(|| format!("image {}", position)),
+                        markdown_absolute_path(&inbox.join(&written.file_name))
+                    ));
+                }
+                ControlPromptAttachment::File(ControlPromptFileAttachment {
+                    name,
+                    media_type,
+                    data_base64,
+                }) => {
+                    let bytes = decode_control_prompt_attachment(
+                        "file",
+                        position,
+                        &data_base64,
+                        max_attachment_bytes,
+                    )?;
+                    let extension = file_extension_for_attachment(name.as_deref(), &media_type);
+                    let written = write_control_prompt_attachment(
+                        &inbox,
+                        "file",
+                        position,
+                        name.as_deref(),
+                        &extension,
+                        bytes,
+                        stable_request_id.as_deref(),
+                    )?;
+                    created_paths.extend(written.created_path);
+                    append_attachment_separator(&mut text);
+                    text.push_str(&format!(
+                        "\n[{}]({})",
+                        markdown_alt_text(name.as_deref())
+                            .unwrap_or_else(|| format!("file {}", position)),
+                        markdown_absolute_path(&inbox.join(&written.file_name))
+                    ));
+                }
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = materialization {
+        remove_materialized_control_prompt_attachments(&created_paths);
+        return Err(error);
+    }
+
+    Ok(MaterializedControlPrompt {
+        text,
+        created_paths,
+    })
+}
+
+fn decode_control_prompt_attachment(
+    label: &str,
+    position: usize,
+    data_base64: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>> {
+    let bytes = BASE64_STANDARD
+        .decode(data_base64.as_bytes())
+        .with_context(|| format!("decode {label} attachment {position}"))?;
+    if bytes.is_empty() {
+        return Err(anyhow!("{label} attachment {position} is empty"));
+    }
+    if bytes.len() as u64 > max_bytes {
+        return Err(anyhow!(
+            "{label} attachment {position} exceeds {max_bytes} bytes"
+        ));
+    }
+    Ok(bytes)
+}
+
+struct WrittenControlPromptAttachment {
+    file_name: String,
+    created_path: Option<std::path::PathBuf>,
+}
+
+fn write_control_prompt_attachment(
+    inbox: &std::path::Path,
+    label: &str,
+    position: usize,
+    name: Option<&str>,
+    extension: &str,
+    bytes: Vec<u8>,
+    stable_request_id: Option<&str>,
+) -> Result<WrittenControlPromptAttachment> {
+    use sha2::{Digest, Sha256};
+    use std::io::Write as _;
+
+    let stem = safe_media_stem(name).unwrap_or_else(|| label.to_string());
+    let prefix = stable_request_id.map_or_else(
+        || Utc::now().format("%Y%m%dT%H%M%S%3fZ").to_string(),
+        |request_id| {
+            let mut digest = Sha256::new();
+            digest.update(b"holon.control-prompt-attachment.v1\0");
+            digest.update(request_id.as_bytes());
+            digest.update(b"\0");
+            digest.update(position.to_le_bytes());
+            digest.update(b"\0");
+            digest.update(&bytes);
+            let digest = digest.finalize();
+            let short = digest[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            format!("request-{short}")
+        },
+    );
+    let file_name = format!("{}-{}-{}.{}", prefix, position, stem, extension);
+    let path = inbox.join(&file_name);
+    let created_path = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            if let Err(error) = file.write_all(&bytes) {
+                drop(file);
+                let _ = std::fs::remove_file(&path);
+                return Err(error)
+                    .with_context(|| format!("write {label} attachment to {}", path.display()));
+            }
+            Some(path)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = std::fs::read(&path).with_context(|| {
+                format!("read existing {label} attachment at {}", path.display())
+            })?;
+            if existing != bytes {
+                return Err(anyhow!(
+                    "refusing to replace existing {label} attachment at {}",
+                    path.display()
+                ));
+            }
+            None
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("create {label} attachment at {}", path.display()));
+        }
+    };
+    Ok(WrittenControlPromptAttachment {
+        file_name,
+        created_path,
+    })
+}
+
+fn remove_materialized_control_prompt_attachments(paths: &[std::path::PathBuf]) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn append_attachment_separator(text: &mut String) {
+    if !text.ends_with('\n') && !text.is_empty() {
+        text.push('\n');
+    }
+}
+
+fn image_extension_for_media_type(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn file_extension_for_attachment(name: Option<&str>, media_type: &str) -> String {
+    safe_media_extension(name)
+        .map(str::to_ascii_lowercase)
+        .or_else(|| file_extension_for_media_type(media_type).map(str::to_string))
+        .unwrap_or_else(|| "bin".to_string())
+}
+
+fn file_extension_for_media_type(media_type: &str) -> Option<&'static str> {
+    match media_type.split(';').next().unwrap_or(media_type).trim() {
+        "application/pdf" => Some("pdf"),
+        "text/plain" => Some("txt"),
+        "text/markdown" | "text/x-markdown" => Some("md"),
+        "application/json" | "application/ld+json" => Some("json"),
+        "text/csv" => Some("csv"),
+        "text/html" => Some("html"),
+        "application/javascript" | "text/javascript" => Some("js"),
+        "application/typescript" | "text/typescript" => Some("ts"),
+        "text/x-rust" => Some("rs"),
+        "text/x-python" | "application/x-python-code" => Some("py"),
+        "application/xml" | "text/xml" => Some("xml"),
+        "application/zip" => Some("zip"),
+        "application/gzip" => Some("gz"),
+        _ => None,
+    }
+}
+
+fn safe_media_stem(name: Option<&str>) -> Option<String> {
+    let name = name?;
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
+    let safe = stem
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(48)
+        .collect::<String>();
+    (!safe.is_empty()).then_some(safe)
+}
+
+fn safe_media_extension(name: Option<&str>) -> Option<&str> {
+    let name = name?;
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let (_, extension) = name.rsplit_once('.')?;
+    let extension = extension.trim();
+    if extension.is_empty() || extension.len() > 16 {
+        return None;
+    }
+    extension
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric())
+        .then_some(extension)
+}
+
+fn markdown_alt_text(name: Option<&str>) -> Option<String> {
+    let alt = name?
+        .chars()
+        .filter(|ch| !matches!(ch, '[' | ']' | '(' | ')' | '\n' | '\r'))
+        .collect::<String>();
+    (!alt.trim().is_empty()).then(|| alt.trim().to_string())
+}
+
+fn percent_encode_path_segment(segment: &str) -> String {
+    percent_encoding::utf8_percent_encode(segment, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
+fn markdown_absolute_path(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .split('/')
+        .map(percent_encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trace_summary(
+        trace_id: impl Into<String>,
+        completed_at_seconds: i64,
+    ) -> crate::observability::RecentTraceSummary {
+        let completed_at =
+            chrono::DateTime::from_timestamp(completed_at_seconds, 0).expect("valid timestamp");
+        crate::observability::RecentTraceSummary {
+            trace_id: trace_id.into(),
+            started_at: completed_at,
+            completed_at,
+            duration_us: 0,
+            span_count: 1,
+            dropped_spans: 0,
+            error_count: 0,
+        }
+    }
+
+    #[test]
+    fn trace_search_merge_deduplicates_sorts_and_applies_global_limit() {
+        let recent = (0..75)
+            .map(|index| trace_summary(format!("recent-{index}"), index + 200))
+            .collect();
+        let mut persisted = (100..200)
+            .map(|index| trace_summary(format!("persisted-{index}"), index))
+            .collect::<Vec<_>>();
+        persisted.push(trace_summary("recent-50", 200));
+
+        let merged = merge_trace_search_results(recent, persisted);
+
+        assert_eq!(merged.len(), MAX_TRACE_SEARCH_RESULTS);
+        assert_eq!(merged[0].trace_id, "recent-74");
+        assert_eq!(merged.last().unwrap().trace_id, "persisted-175");
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|trace| trace.trace_id == "recent-50")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn quarantined_runtime_db_degrades_runtime_status() {
+        use crate::runtime_db::RuntimeDbProtectionState;
+
+        let response: RuntimeStatusResponse = serde_json::from_value(json!({
+            "ok": true,
+            "healthy": true,
+            "pid": 42,
+            "home_dir": "/tmp/holon",
+            "socket_path": "/tmp/holon.sock",
+            "http_addr": "127.0.0.1:7878",
+            "started_at": "2026-09-13T00:00:00Z",
+            "config_fingerprint": "test"
+        }))
+        .unwrap();
+        let response = apply_runtime_db_protection(
+            response,
+            RuntimeDbProtectionStatus {
+                state: RuntimeDbProtectionState::Quarantined,
+                evidence: Some("deleted-open sidecar".into()),
+            },
+        );
+
+        assert!(!response.healthy);
+        assert_eq!(
+            serde_json::to_value(response).unwrap()["runtime_db_protection"],
+            json!({
+                "state": "quarantined",
+                "evidence": "deleted-open sidecar"
+            })
+        );
+    }
+
+    #[test]
+    fn runtime_mutable_config_keys_include_visual_model_defaults() {
+        assert!(is_runtime_mutable_config_key("vision.default"));
+        assert!(is_runtime_mutable_config_key("image_generation.default"));
+        assert!(is_runtime_mutable_config_key("decision.enabled"));
+        assert!(is_runtime_mutable_config_key("decision.model"));
+        assert!(is_runtime_mutable_config_key("decision.local_onnx.preset"));
+        assert!(is_runtime_mutable_config_key("api.csrf.trusted_origins"));
+        assert!(is_runtime_mutable_config_key("local_apps.max_asset_bytes"));
+        assert!(is_runtime_mutable_config_key("local_apps.csp"));
+        assert!(is_runtime_mutable_config_key(
+            "api.prompt.attachment_max_bytes"
+        ));
+        assert!(!is_runtime_mutable_config_key("runtime.scheduler"));
+    }
+
+    #[test]
+    fn control_prompt_request_ignores_unknown_fields() {
+        let request: ControlPromptRequest = serde_json::from_value(json!({
+            "text": "hello",
+            "future_field": true
+        }))
+        .unwrap();
+
+        assert_eq!(request.text, "hello");
+        assert_eq!(request.work_item_id, None);
+        assert!(request.attachments.is_empty());
+    }
+
+    fn encoded(bytes: &[u8]) -> String {
+        BASE64_STANDARD.encode(bytes)
+    }
+
+    fn inbox_files(home: &std::path::Path) -> Vec<String> {
+        let inbox = home.join("media").join("inbox");
+        let mut files = std::fs::read_dir(inbox)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn image_attachment_still_generates_markdown_preview() {
+        let home = tempfile::tempdir().unwrap();
+        let text = control_prompt_text_with_attachments(
+            home.path(),
+            ControlPromptRequest {
+                text: "look".into(),
+                expected_incarnation: None,
+                work_item_id: None,
+                attachments: vec![ControlPromptAttachment::Image(
+                    ControlPromptImageAttachment {
+                        name: Some("diagram.png".into()),
+                        media_type: "image/png".into(),
+                        data_base64: encoded(b"png"),
+                    },
+                )],
+                client_request_id: None,
+            },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
+        )
+        .unwrap()
+        .text;
+
+        let files = inbox_files(home.path());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("-diagram.png"));
+        let absolute_path = home.path().join("media").join("inbox").join(&files[0]);
+        assert!(text.contains(&format!(
+            "look\n\n![diagram.png]({})",
+            markdown_absolute_path(&absolute_path)
+        )));
+    }
+
+    #[test]
+    fn file_attachment_generates_plain_absolute_link_and_file() {
+        let home = tempfile::tempdir().unwrap();
+        let text = control_prompt_text_with_attachments(
+            home.path(),
+            ControlPromptRequest {
+                text: "read this".into(),
+                expected_incarnation: None,
+                work_item_id: None,
+                attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
+                    name: Some("report.pdf".into()),
+                    media_type: "application/pdf".into(),
+                    data_base64: encoded(b"%PDF-1.7"),
+                })],
+                client_request_id: None,
+            },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
+        )
+        .unwrap()
+        .text;
+
+        let files = inbox_files(home.path());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("-report.pdf"));
+        assert_eq!(
+            std::fs::read(home.path().join("media").join("inbox").join(&files[0])).unwrap(),
+            b"%PDF-1.7"
+        );
+        let absolute_path = home.path().join("media").join("inbox").join(&files[0]);
+        assert!(text.contains(&format!(
+            "read this\n\n[report.pdf]({})",
+            markdown_absolute_path(&absolute_path)
+        )));
+        assert!(!text.contains("![report.pdf]"));
+    }
+
+    #[test]
+    fn file_attachment_infers_extension_from_media_type_or_uses_bin() {
+        assert_eq!(
+            file_extension_for_attachment(Some("README"), "text/markdown; charset=utf-8"),
+            "md"
+        );
+        assert_eq!(
+            file_extension_for_attachment(Some("blob"), "application/octet-stream"),
+            "bin"
+        );
+        assert_eq!(
+            file_extension_for_attachment(Some("../../src/main.rs"), "text/plain"),
+            "rs"
+        );
+    }
+
+    #[test]
+    fn file_attachment_rejects_empty_content() {
+        let home = tempfile::tempdir().unwrap();
+        let error = control_prompt_text_with_attachments(
+            home.path(),
+            ControlPromptRequest {
+                text: String::new(),
+                expected_incarnation: None,
+                work_item_id: None,
+                attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
+                    name: Some("empty.txt".into()),
+                    media_type: "text/plain".into(),
+                    data_base64: encoded(b""),
+                })],
+                client_request_id: None,
+            },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("file attachment 1 is empty"));
+    }
+
+    #[test]
+    fn prompt_attachments_honor_configured_limit_and_cleanup_on_failure() {
+        for kind in ["image", "file"] {
+            let attachment = |bytes: &[u8]| {
+                if kind == "image" {
+                    ControlPromptAttachment::Image(ControlPromptImageAttachment {
+                        name: Some("test.png".into()),
+                        media_type: "image/png".into(),
+                        data_base64: encoded(bytes),
+                    })
+                } else {
+                    ControlPromptAttachment::File(ControlPromptFileAttachment {
+                        name: Some("test.txt".into()),
+                        media_type: "text/plain".into(),
+                        data_base64: encoded(bytes),
+                    })
+                }
+            };
+            let request = |attachments| ControlPromptRequest {
+                text: String::new(),
+                expected_incarnation: None,
+                work_item_id: None,
+                attachments,
+                client_request_id: None,
+            };
+            let home = tempfile::tempdir().unwrap();
+            let accepted = control_prompt_text_with_attachments(
+                home.path(),
+                request(vec![attachment(b"abc")]),
+                3,
+            )
+            .unwrap();
+            assert_eq!(std::fs::read(&accepted.created_paths[0]).unwrap(), b"abc");
+            remove_materialized_control_prompt_attachments(&accepted.created_paths);
+
+            let error = control_prompt_text_with_attachments(
+                home.path(),
+                request(vec![attachment(b"abc"), attachment(b"abcd")]),
+                3,
+            )
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains(&format!("{kind} attachment 2 exceeds 3 bytes")));
+            assert!(inbox_files(home.path()).is_empty());
+        }
+    }
+
+    #[test]
+    fn prompt_attachment_default_accepts_64_mib_and_rejects_one_byte_more() {
+        let max_bytes = crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES;
+        for size in [max_bytes, max_bytes + 1] {
+            let data = encoded(&vec![b'x'; size as usize]);
+            let result = decode_control_prompt_attachment("file", 1, &data, max_bytes);
+            if size == max_bytes {
+                assert_eq!(result.unwrap().len() as u64, max_bytes);
+            } else {
+                assert!(result.unwrap_err().to_string().contains("exceeds"));
+            }
+        }
+    }
+
+    #[test]
+    fn dangerous_file_names_stay_inside_inbox() {
+        let home = tempfile::tempdir().unwrap();
+        let _ = control_prompt_text_with_attachments(
+            home.path(),
+            ControlPromptRequest {
+                text: String::new(),
+                expected_incarnation: None,
+                work_item_id: None,
+                attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
+                    name: Some("../../secret[name].md".into()),
+                    media_type: "text/markdown".into(),
+                    data_base64: encoded(b"# secret"),
+                })],
+                client_request_id: None,
+            },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
+        )
+        .unwrap();
+
+        let files = inbox_files(home.path());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("-secret-name.md"));
+        assert!(!home.path().join("secret[name].md").exists());
+    }
+}
+
+pub async fn create_operator_transport_binding(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<OperatorTransportBindingRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let target_agent_id = request.target_agent_id.unwrap_or_else(|| agent_id.clone());
+    if target_agent_id != agent_id {
+        return Err(bad_request(
+            "operator transport binding target_agent_id must match route agent_id",
+        ));
+    }
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let delivery_auth = validate_operator_transport_delivery_auth(request.delivery_auth)?;
+    let binding = OperatorTransportBinding {
+        binding_id: non_empty_or_generated(request.binding_id, "opbind"),
+        transport: require_non_empty(request.transport, "transport")?,
+        operator_actor_id: require_non_empty(request.operator_actor_id, "operator_actor_id")?,
+        target_agent_id,
+        default_route_id: require_non_empty(request.default_route_id, "default_route_id")?,
+        delivery_callback_url: require_non_empty(
+            request.delivery_callback_url,
+            "delivery_callback_url",
+        )?,
+        delivery_auth,
+        capabilities: request.capabilities,
+        provider: request.provider.and_then(non_empty_opt),
+        provider_identity_ref: request.provider_identity_ref.and_then(non_empty_opt),
+        status: OperatorTransportBindingStatus::Active,
+        created_at: Utc::now(),
+        last_seen_at: None,
+        metadata: request.metadata,
+    };
+    let binding = runtime
+        .upsert_operator_transport_binding(binding)
+        .await
+        .map_err(error_response)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "binding": binding,
+    })))
+}
+
+pub async fn operator_ingress(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<OperatorIngressRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let text = require_non_empty(request.text, "text")?;
+    let actor_id = require_non_empty(request.actor_id, "actor_id")?;
+    let binding_id = require_non_empty(request.binding_id, "binding_id")?;
+    let runtime = state
+        .host
+        .get_public_agent_for_external_ingress(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let Some(mut binding) = runtime
+        .active_operator_transport_binding(&binding_id)
+        .await
+        .map_err(error_response)?
+    else {
+        return Err(forbidden("operator transport binding is not active"));
+    };
+    if binding.target_agent_id != agent_id {
+        return Err(forbidden(
+            "operator transport binding does not target this agent",
+        ));
+    }
+    if binding.operator_actor_id != actor_id {
+        return Err(forbidden("operator transport actor does not match binding"));
+    }
+    let expected_provider = binding
+        .provider
+        .as_deref()
+        .unwrap_or(&binding.transport)
+        .to_string();
+    if let Some(provider) = request.provider.as_deref().and_then(non_empty_str) {
+        if provider != expected_provider {
+            return Err(forbidden(
+                "operator transport provider does not match binding",
+            ));
+        }
+    }
+
+    binding.last_seen_at = Some(Utc::now());
+    runtime
+        .upsert_operator_transport_binding(binding.clone())
+        .await
+        .map_err(error_response)?;
+
+    let reply_route_id = request.reply_route_id.and_then(non_empty_opt);
+    let conversation_ref = request.conversation_ref.and_then(non_empty_opt);
+    let interaction_id = crate::ids::interaction_id(&[
+        &agent_id,
+        "remote_operator_transport",
+        &binding.binding_id,
+        conversation_ref.as_deref().unwrap_or("default"),
+    ]);
+    let metadata = json!({
+        "operator_transport": {
+            "binding_id": binding.binding_id,
+            "conversation_ref": conversation_ref,
+            "transport": binding.transport,
+            "reply_route_id": reply_route_id,
+            "provider": request.provider.and_then(non_empty_opt).unwrap_or(expected_provider),
+            "provider_identity_ref": binding.provider_identity_ref,
+            "upstream_provider": request.upstream_provider,
+            "provider_message_ref": request.provider_message_ref,
+            "metadata": request.metadata,
+        }
+    });
+    let message = InboundRequest {
+        agent_id: agent_id.clone(),
+        kind: MessageKind::OperatorPrompt,
+        priority: Priority::Interject,
+        origin: MessageOrigin::Operator {
+            actor_id: Some(actor_id),
+            actor_display_name: None,
+        },
+        authority_class: AuthorityClass::OperatorInstruction,
+        body: MessageBody::Text { text },
+        delivery_surface: MessageDeliverySurface::RemoteOperatorTransport,
+        admission_context: AdmissionContext::OperatorTransportAuthenticated,
+        work_item_id: None,
+        metadata: Some(metadata),
+        correlation_id: request.correlation_id,
+        causation_id: request.causation_id,
+        trace_context: None,
+    }
+    .into_message();
+    let mut message = message;
+    message
+        .source_refs
+        .insert("interaction_id".into(), interaction_id);
+    let queued = runtime.enqueue(message).await.map_err(error_response)?;
+    Ok(Json(EnqueueResponse {
+        ok: true,
+        agent_id,
+        message_id: queued.id,
+        disposition: None,
+    }))
+}
+
+pub async fn control_debug_prompt(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<DebugPromptRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let effective_trust = request
+        .authority_class
+        .clone()
+        .unwrap_or(AuthorityClass::OperatorInstruction);
+    let boundary = state
+        .host
+        .public_agent_boundary_metadata(&agent_id)
+        .map_err(agent_access_error)?;
+    let prompt = state
+        .host
+        .preview_public_agent_prompt(
+            &agent_id,
+            request.text.clone(),
+            effective_trust.clone(),
+            request.budget,
+        )
+        .await
+        .map_err(agent_access_error)?;
+    let manifest_requested = request.manifest.unwrap_or(false);
+    let manifest_json = if manifest_requested {
+        Some(
+            prompt
+                .projection_manifest()
+                .canonical_json()
+                .map_err(|err| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": err.to_string()})),
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+    let dump = if manifest_requested {
+        None
+    } else {
+        Some(prompt.render_dump())
+    };
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "admission_context": admission_context,
+        "effective_trust": effective_trust,
+        "boundary": boundary,
+        "dump": dump,
+        "manifest": manifest_json,
+    })))
+}
+
+pub async fn control_wake(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ControlWakeRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    if request.reason.trim().is_empty() {
+        return Err(forbidden("wake reason may not be empty"));
+    }
+    let admission_context = control_admission_context(&state);
+    let runtime = state
+        .host
+        .get_public_agent_for_external_ingress(&agent_id)
+        .await
+        .map_err(|error| match error {
+            PublicAgentError::Stopped { agent_id } => stopped_agent_conflict(
+                format!(
+                    "agent {} is stopped; wake does not override stopped; start first",
+                    agent_id
+                ),
+                agent_id,
+            ),
+            other => agent_access_error(other),
+        })?;
+    let reason = request.reason.clone();
+    let disposition = runtime
+        .submit_wake_hint(WakeHint {
+            agent_id: agent_id.clone(),
+            reason: reason.clone(),
+            description: None,
+            source: request.source,
+            scope: None,
+            external_trigger_id: None,
+            resource: None,
+            body: None,
+            content_type: None,
+            correlation_id: request.correlation_id,
+            causation_id: request.causation_id,
+        })
+        .await
+        .map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "wake_requested",
+            json!({
+                "target_agent_id": agent_id,
+                "reason": reason,
+                "admission_context": admission_context,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(WakeResponse {
+        ok: true,
+        agent_id,
+        disposition,
+    }))
+}
+
+#[cfg(test)]
+mod external_trigger_tests {
+    use super::*;
+    use crate::types::{
+        CallbackDeliveryMode, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
+    };
+
+    fn record(
+        status: ExternalTriggerStatus,
+        token: Option<&str>,
+        token_hash: &str,
+    ) -> ExternalTriggerRecord {
+        ExternalTriggerRecord {
+            external_trigger_id: "trigger-1".to_string(),
+            target_agent_id: "agent-1".to_string(),
+            scope: ExternalTriggerScope::Agent,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            token: token.map(ToString::to_string),
+            token_hash: token_hash.to_string(),
+            status,
+            created_at: chrono::Utc::now(),
+            revoked_at: None,
+            last_delivered_at: None,
+            delivery_count: 0,
+        }
+    }
+
+    #[test]
+    fn reveal_decision_requires_active_token_and_matching_hash() {
+        let hash = crate::callbacks::hash_callback_token("secret-token");
+
+        let active = evaluate_external_trigger_reveal(&record(
+            ExternalTriggerStatus::Active,
+            Some("secret-token"),
+            &hash,
+        ));
+        assert!(matches!(
+            active,
+            ExternalTriggerRevealDecision::Reveal { ref token } if token == "secret-token"
+        ));
+
+        let revoked = evaluate_external_trigger_reveal(&record(
+            ExternalTriggerStatus::Revoked,
+            Some("secret-token"),
+            &hash,
+        ));
+        assert!(matches!(
+            revoked,
+            ExternalTriggerRevealDecision::TriggerNotActive
+        ));
+
+        let missing =
+            evaluate_external_trigger_reveal(&record(ExternalTriggerStatus::Active, None, &hash));
+        assert!(matches!(
+            missing,
+            ExternalTriggerRevealDecision::TokenUnavailable
+        ));
+
+        let empty = evaluate_external_trigger_reveal(&record(
+            ExternalTriggerStatus::Active,
+            Some(""),
+            &hash,
+        ));
+        assert!(matches!(
+            empty,
+            ExternalTriggerRevealDecision::TokenUnavailable
+        ));
+
+        let mismatched = evaluate_external_trigger_reveal(&record(
+            ExternalTriggerStatus::Active,
+            Some("other-token"),
+            &hash,
+        ));
+        assert!(matches!(
+            mismatched,
+            ExternalTriggerRevealDecision::TokenUnavailable
+        ));
+    }
+
+    #[test]
+    fn external_trigger_cursor_round_trips_and_rejects_malformed_input() {
+        let encoded = encode_external_trigger_cursor("2026-11-19T04:00:00.000Z", "trigger-1");
+        let decoded = decode_external_trigger_cursor(&encoded).expect("cursor decodes");
+        assert_eq!(decoded.0, "2026-11-19T04:00:00.000Z");
+        assert_eq!(decoded.1, "trigger-1");
+
+        assert!(decode_external_trigger_cursor("not-base64!!").is_none());
+        assert!(decode_external_trigger_cursor("aGk").is_none());
+        let empty_pair = encode_external_trigger_cursor("", "");
+        assert!(decode_external_trigger_cursor(&empty_pair).is_none());
+    }
+
+    #[test]
+    fn external_trigger_fingerprint_takes_sixteen_lowercase_hex_chars() {
+        assert_eq!(
+            external_trigger_fingerprint(&"a".repeat(64)),
+            "a".repeat(16)
+        );
+        assert_eq!(external_trigger_fingerprint("short"), "short");
+    }
+}

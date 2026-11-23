@@ -1,7 +1,7 @@
 use super::*;
 
 impl RuntimeHost {
-    pub(crate) fn session_activity(&self) -> &crate::authentication::activity::SessionActivity {
+    pub fn session_activity(&self) -> &crate::authentication::activity::SessionActivity {
         &self.inner.session_activity
     }
 

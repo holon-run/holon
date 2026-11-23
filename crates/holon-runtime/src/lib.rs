@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 // Partial libtests retain shared fixtures whose callers live in other shards.
 // Production builds and the default complete suite keep the usual lint policy.
 #![cfg_attr(
@@ -20,9 +21,7 @@ pub mod agent_template;
 pub mod agents_md;
 use holon_provider::auth;
 pub mod authentication;
-pub mod avatar;
-mod callbacks;
-pub(crate) use holon_github::client as github;
+pub mod callbacks;
 pub mod ids;
 pub mod startup;
 
@@ -32,8 +31,6 @@ pub mod client;
 pub mod cloudflare_tunnel;
 pub mod config;
 pub mod context;
-#[cfg(any(not(test), holon_lib_test_shard = "c", holon_lib_test_shard = "d"))]
-pub mod contract_inventory;
 pub mod daemon;
 pub(crate) mod decision_telemetry;
 pub mod deletion;
@@ -43,8 +40,6 @@ pub mod domain;
 pub mod fd_limit;
 pub mod host;
 mod host_registry;
-#[cfg(any(not(test), holon_lib_test_shard = "c", holon_lib_test_shard = "d"))]
-pub mod http;
 pub mod http_dto;
 pub mod ingress;
 pub mod memory;
@@ -56,8 +51,6 @@ pub mod object_query_cache;
 pub mod object_resolver;
 pub mod oidc;
 pub mod onboarding;
-#[cfg(any(not(test), holon_lib_test_shard = "c", holon_lib_test_shard = "d"))]
-pub mod openapi;
 pub use holon_tui::operator_event;
 pub mod policy;
 pub use holon_tui::presentation;
@@ -86,9 +79,13 @@ pub mod work_item_refs;
 pub mod work_item_scheduling;
 pub mod x_search;
 
-#[cfg(test)]
-mod test_env;
+#[cfg(any(test, feature = "http-test-support"))]
+#[doc(hidden)]
+pub mod test_env;
 
 #[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod worktree_tests;
+
+/// Version of the Holon application built with this runtime.
+pub const PRODUCT_VERSION: &str = env!("HOLON_PRODUCT_VERSION");

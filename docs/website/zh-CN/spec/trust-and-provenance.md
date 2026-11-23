@@ -11,8 +11,8 @@ order: 80
 
 > **Last verified:** 2026-09-13 against `crates/holon-domain/src/message.rs` `MessageEnvelope`,
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
-> `AdmissionContext`, `crates/holon-runtime/src/policy.rs`, `crates/holon-runtime/src/ingress.rs`, `crates/holon-runtime/src/http/mod.rs`,
-> `crates/holon-runtime/src/http/state.rs`, `crates/holon-runtime/src/context/mod.rs`, `crates/holon-context/src/render.rs`,
+> `AdmissionContext`, `crates/holon-runtime/src/policy.rs`, `crates/holon-runtime/src/ingress.rs`, `crates/holon-http-api/src/http/mod.rs`,
+> `crates/holon-http-api/src/http/state.rs`, `crates/holon-runtime/src/context/mod.rs`, `crates/holon-context/src/render.rs`,
 > `crates/holon-runtime/src/prompt/mod.rs`, `crates/holon-tui/src/operator_event.rs`, `crates/holon-tui/src/presentation.rs`,
 > `crates/holon-runtime/src/runtime/message_dispatch.rs`, `crates/holon-runtime/src/runtime/operator_dispatch.rs`, and
 > `crates/holon-runtime/src/runtime/turn/execution.rs`.
@@ -204,7 +204,7 @@ Holon 的来源契约：
 
 - `crates/holon-domain/src/message.rs` 定义规范的信封字段和旧版别名兼容。
 - `crates/holon-runtime/src/policy.rs` 定义按 origin 的默认权威以及 kind/origin 准入检查。
-- [`crates/holon-runtime/src/http/state.rs`](../../../../crates/holon-runtime/src/http/state.rs) 阻止公共 enqueue 使用运行时拥有的
+- [`crates/holon-http-api/src/http/state.rs`](../../../../crates/holon-http-api/src/http/state.rs) 阻止公共 enqueue 使用运行时拥有的
   kind、`Interject` 优先级、特权 origin 或权威覆盖。
 - [`crates/holon-runtime/src/context/mod.rs`](../../../../crates/holon-runtime/src/context/mod.rs) 和
   [`crates/holon-runtime/src/prompt/mod.rs`](../../../../crates/holon-runtime/src/prompt/mod.rs) 向模型暴露权威/来源标签，并在

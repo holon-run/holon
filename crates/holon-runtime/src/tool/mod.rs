@@ -23,3 +23,6 @@ pub use error::{tool_error_from_anyhow, ToolError};
 pub use spec::{ToolCall, ToolResult, ToolSpec};
 
 pub use holon_tools::model_tool_schema_inventory;
+
+#[cfg(feature = "http-test-support")]
+pub use tools::apply_patch_tool::execute as run_apply_patch_for_http_test;

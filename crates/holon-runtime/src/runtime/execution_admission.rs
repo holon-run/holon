@@ -155,7 +155,7 @@ impl super::RuntimeHandle {
         Ok(())
     }
 
-    pub(crate) fn instance_incarnation(&self) -> u64 {
+    pub fn instance_incarnation(&self) -> u64 {
         self.inner.identity_incarnation
     }
     pub(crate) fn close_execution_admission(&self) {
@@ -172,7 +172,7 @@ impl super::RuntimeHandle {
         }
         self.inner.execution_admission.lease()
     }
-    pub(crate) fn accepts_execution_admission(&self) -> bool {
+    pub fn accepts_execution_admission(&self) -> bool {
         !self.inner.shutdown_requested.load(Ordering::Acquire)
             && self.inner.execution_admission.is_open()
     }

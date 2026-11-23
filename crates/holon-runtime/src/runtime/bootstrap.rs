@@ -942,7 +942,7 @@ impl RuntimeHandle {
                 }),
                 #[cfg(test)]
                 installation_barrier: Mutex::new(()),
-                #[cfg(test)]
+                #[cfg(any(test, feature = "http-test-support"))]
                 run_loop_test_gate: RwLock::new(()),
                 object_query_cache: Arc::new(crate::object_query_cache::ObjectQueryCache::new(256)),
                 notify: Notify::new(),
@@ -1223,7 +1223,7 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub(crate) async fn current_time_timezone(&self) -> Result<chrono_tz::Tz> {
+    pub async fn current_time_timezone(&self) -> Result<chrono_tz::Tz> {
         let guard = self.inner.agent.lock().await;
         let snapshot = self.inner.config_snapshot.load();
         crate::prompt::time::resolve_timezone(

@@ -1601,6 +1601,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "holon-context",
+ "holon-http-api",
  "holon-memory-index",
  "holon-runtime",
  "holon-server",
@@ -1756,6 +1757,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "holon-http-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "decision-core",
+ "decision-openai",
+ "flate2",
+ "holon-client",
+ "holon-domain",
+ "holon-github",
+ "holon-provider",
+ "holon-runtime",
+ "holon-server",
+ "image",
+ "percent-encoding",
+ "reqwest",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "holon-memory-index"
 version = "0.1.0"
 dependencies = [
@@ -1842,7 +1880,6 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
- "axum",
  "base64 0.22.1",
  "chrono",
  "chrono-tz",
@@ -1867,7 +1904,6 @@ dependencies = [
  "holon-model-catalog",
  "holon-observability",
  "holon-provider",
- "holon-server",
  "holon-storage",
  "holon-system",
  "holon-tools",
@@ -1876,7 +1912,6 @@ dependencies = [
  "image",
  "jsonwebtoken",
  "libc",
- "percent-encoding",
  "reqwest",
  "rusqlite",
  "schemars",
@@ -1887,10 +1922,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-stream",
  "tokio-util",
  "toml",
- "tower",
  "tracing",
  "tracing-subscriber",
  "unicode-casefold",

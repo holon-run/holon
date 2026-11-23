@@ -7,11 +7,11 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::Notify;
 
-pub(crate) struct ContextResources {
+pub struct ContextResources {
     base_dir: PathBuf,
     state: Mutex<State>,
     pub(super) drained: Notify,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     pub(super) physical_checkpoint:
         Mutex<Option<Arc<super::resource_writes::PhysicalWriteBarrier>>>,
 }
@@ -105,7 +105,7 @@ impl Default for ContextResources {
         Self::new().expect("resource coordinator current directory")
     }
 }
-pub(crate) struct ReadyFence<'a> {
+pub struct ReadyFence<'a> {
     _state: MutexGuard<'a, State>,
 }
 
@@ -122,7 +122,7 @@ impl ContextResources {
             base_dir,
             state: Mutex::new(State::default()),
             drained: Notify::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "http-test-support"))]
             physical_checkpoint: Mutex::new(None),
         }
     }
@@ -192,8 +192,8 @@ impl ContextResources {
         self.drained.notify_waiters();
         Ok(())
     }
-    #[cfg(test)]
-    pub(crate) fn ready(&self) -> Result<ReadyFence<'_>> {
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub fn ready(&self) -> Result<ReadyFence<'_>> {
         let state = self.lock()?;
         ensure!(
             !state.closing && !state.failed,
@@ -322,7 +322,7 @@ impl ContextResources {
     }
 }
 impl super::RuntimeHost {
-    pub(crate) fn context_resources(&self) -> Arc<ContextResources> {
+    pub fn context_resources(&self) -> Arc<ContextResources> {
         self.inner.context_resources.clone()
     }
 }

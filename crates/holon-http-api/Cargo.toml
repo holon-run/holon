@@ -1,0 +1,48 @@
+[package]
+name = "holon-http-api"
+version = "0.1.0"
+edition = "2021"
+description = "Holon runtime HTTP routes and OpenAPI contracts"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+axum = { version = "0.8", features = ["json"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+decision-core = { version = "0.1.0", path = "../decision-core" }
+decision-openai = { version = "0.1.0", path = "../decision-openai" }
+flate2 = "1.0"
+holon-client = { version = "0.1.0", path = "../holon-client" }
+holon-domain = { version = "0.1.0", path = "../holon-domain", features = ["error-sanitization"] }
+holon-github = { version = "0.1.0", path = "../holon-github" }
+holon-provider = { version = "0.1.0", path = "../holon-provider" }
+holon-runtime = { version = "0.1.0", path = "../holon-runtime" }
+holon-server = { version = "0.1.0", path = "../holon-server" }
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
+percent-encoding = "2.3"
+reqwest = { version = "0.12", features = ["blocking", "gzip", "json", "rustls-tls", "stream"], default-features = false }
+rusqlite = { version = "0.31", features = ["bundled", "hooks", "trace"] }
+schemars = { version = "0.9", features = ["chrono04"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3.14"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["full"] }
+tokio-stream = "0.1"
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2.5"
+uuid = { version = "1.11", features = ["serde", "v4"] }
+
+[dev-dependencies]
+async-trait = "0.1"
+futures-util = "0.3"
+holon-runtime = { version = "0.1.0", path = "../holon-runtime", features = ["http-test-support"] }
+holon-server = { version = "0.1.0", path = "../holon-server", features = ["test-support"] }
+tokio = { version = "1.43", features = ["test-util"] }

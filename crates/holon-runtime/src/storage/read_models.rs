@@ -466,7 +466,7 @@ impl RuntimeReadModels {
 }
 
 impl RuntimeReadModelView<'_> {
-    pub(crate) fn work_queue_snapshot_filtered(
+    pub fn work_queue_snapshot_filtered(
         &self,
         expected_incarnation: Option<u64>,
         status: crate::types::RecordListStatus,
@@ -531,7 +531,7 @@ impl RuntimeReadModelView<'_> {
         )
     }
 
-    pub(crate) fn agent_tasks_snapshot(
+    pub fn agent_tasks_snapshot(
         &self,
         expected_incarnation: Option<u64>,
         terminal: bool,
@@ -549,7 +549,7 @@ impl RuntimeReadModelView<'_> {
             .agent_tasks_snapshot(agent_id, expected_incarnation, terminal, limit)
     }
 
-    pub(crate) fn agent_timers_snapshot_filtered(
+    pub fn agent_timers_snapshot_filtered(
         &self,
         expected_incarnation: Option<u64>,
         limit: usize,
@@ -571,7 +571,7 @@ impl RuntimeReadModelView<'_> {
         )
     }
 
-    pub(crate) fn agent_work_item_snapshot(
+    pub fn agent_work_item_snapshot(
         &self,
         work_item_id: &str,
         expected_incarnation: Option<u64>,
@@ -601,7 +601,7 @@ impl RuntimeReadModelView<'_> {
 
     /// One committed view of this agent's identity fence plus the latest
     /// task record, mirroring [`work_queue_snapshot_filtered`] admission.
-    pub(crate) fn agent_task_snapshot(
+    pub fn agent_task_snapshot(
         &self,
         task_id: &str,
         expected_incarnation: Option<u64>,
@@ -620,7 +620,7 @@ impl RuntimeReadModelView<'_> {
 
     /// One committed view of this agent's identity fence plus one tool
     /// execution record, mirroring [`work_queue_snapshot_filtered`] admission.
-    pub(crate) fn agent_tool_execution_snapshot(
+    pub fn agent_tool_execution_snapshot(
         &self,
         tool_execution_id: &str,
         expected_incarnation: Option<u64>,

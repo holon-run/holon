@@ -11,7 +11,7 @@ use crate::{
 
 /// One immutable original writer ACK shared by notifications and Current.
 #[derive(Debug, Clone)]
-pub(crate) struct AuditEventAck(
+pub struct AuditEventAck(
     Arc<AuditEventMaterial>,
     Option<crate::runtime_db::current_read_writes::CommittedEventRead>,
 );

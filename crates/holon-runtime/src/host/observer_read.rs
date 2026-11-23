@@ -3,7 +3,7 @@ use super::*;
 use crate::diagnostics::resource_io::{self, ResourceReadMaterial};
 
 impl RuntimeHost {
-    pub(crate) fn observer_inventory_material(&self) -> Result<ResourceReadMaterial> {
+    pub fn observer_inventory_material(&self) -> Result<ResourceReadMaterial> {
         // The durable Runtime ID is not an Agent identity. This synthetic
         // accounting scope never supplies a domain qualification or token.
         ResourceReadMaterial::current_or_new_for_identity(
@@ -26,14 +26,14 @@ impl AsRef<[u8]> for ObserverWire {
     }
 }
 
-pub(crate) fn observer_json_bytes<T: serde::Serialize>(
+pub fn observer_json_bytes<T: serde::Serialize>(
     value: &T,
     material: ResourceReadMaterial,
 ) -> Result<tokio_util::bytes::Bytes> {
     observer_json_bytes_with_sources(value, material, Vec::new())
 }
 
-pub(crate) fn observer_json_bytes_with_sources<T: serde::Serialize>(
+pub fn observer_json_bytes_with_sources<T: serde::Serialize>(
     value: &T,
     material: ResourceReadMaterial,
     sources: Vec<ResourceReadMaterial>,
@@ -61,7 +61,7 @@ pub(crate) fn observer_json_bytes_with_sources<T: serde::Serialize>(
     }))
 }
 
-pub(crate) fn observer_hint_bytes(
+pub fn observer_hint_bytes(
     agent_id: &str,
     material: ResourceReadMaterial,
 ) -> Result<tokio_util::bytes::Bytes> {

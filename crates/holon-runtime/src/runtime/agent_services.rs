@@ -18,11 +18,11 @@ pub(crate) struct AgentCreationService<'a> {
     runtime: &'a RuntimeHandle,
 }
 
-pub(crate) struct AgentInvocationService<'a> {
+pub struct AgentInvocationService<'a> {
     runtime: &'a RuntimeHandle,
 }
 
-pub(crate) struct AgentMessagingService<'a> {
+pub struct AgentMessagingService<'a> {
     runtime: &'a RuntimeHandle,
 }
 
@@ -65,11 +65,11 @@ impl RuntimeHandle {
         AgentCreationService { runtime: self }
     }
 
-    pub(crate) fn agent_invocation_service(&self) -> AgentInvocationService<'_> {
+    pub fn agent_invocation_service(&self) -> AgentInvocationService<'_> {
         AgentInvocationService { runtime: self }
     }
 
-    pub(crate) fn agent_messaging_service(&self) -> AgentMessagingService<'_> {
+    pub fn agent_messaging_service(&self) -> AgentMessagingService<'_> {
         AgentMessagingService { runtime: self }
     }
 }
@@ -88,7 +88,7 @@ impl AgentCreationService<'_> {
 }
 
 impl AgentMessagingService<'_> {
-    pub(crate) async fn send(
+    pub async fn send(
         &self,
         request: AgentMessageSendRequest,
         authority_class: AuthorityClass,
@@ -179,7 +179,7 @@ impl AgentMessagingService<'_> {
 }
 
 impl AgentInvocationService<'_> {
-    pub(crate) fn invoke<'a>(
+    pub fn invoke<'a>(
         &'a self,
         request: InvokeAgentRequest,
     ) -> Pin<Box<dyn Future<Output = Result<AgentInvocationReceipt>> + Send + 'a>> {

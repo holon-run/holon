@@ -1,0 +1,1168 @@
+use super::*;
+use crate::runtime_error::RuntimeError;
+
+#[cfg(test)]
+#[path = "tasks_tests.rs"]
+mod tests;
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ToolExecutionArtifactContent {
+    pub artifact_index: usize,
+    pub size: u64,
+    pub content: String,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct TaskListQuery {
+    pub status: Option<TaskListStatus>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskListStatus {
+    Active,
+    Terminal,
+}
+
+fn loaded_task_identity(
+    agent_id: &str,
+    incarnation: u64,
+    expected_incarnation: Option<u64>,
+) -> Result<crate::runtime_db::conversation::ConversationIdentity, (StatusCode, Json<Value>)> {
+    if expected_incarnation.is_some_and(|expected| expected != incarnation) {
+        return Err(conversation::identity_changed());
+    }
+    Ok(crate::runtime_db::conversation::ConversationIdentity {
+        agent_id: agent_id.to_owned(),
+        agent_incarnation: incarnation,
+    })
+}
+
+pub async fn tasks(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<TaskListQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
+    let storage = state
+        .host
+        .operator_agent_read_storage(&agent_id)
+        .map_err(agent_access_error)?;
+    let terminal = matches!(query.status, Some(TaskListStatus::Terminal));
+    let limit = if terminal {
+        query.limit.unwrap_or(20).min(20)
+    } else {
+        query.limit.unwrap_or(50)
+    };
+    if !terminal {
+        if let Some(runtime) = state
+            .host
+            .try_get_operator_loaded_runtime(&agent_id)
+            .await
+            .map_err(agent_access_error)?
+        {
+            let identity = loaded_task_identity(
+                &agent_id,
+                runtime.instance_incarnation(),
+                expected_incarnation,
+            )?;
+            let mut read = runtime
+                .active_task_records_read(limit)
+                .await
+                .map_err(task_lifecycle_error)?;
+            // Keep the qualified material alive through DTO serialization.
+            let response = Json(
+                std::mem::take(&mut read.records)
+                    .into_iter()
+                    .map(crate::http_dto::TaskRecordDto::from)
+                    .collect::<Vec<_>>(),
+            )
+            .into_response();
+            return Ok(conversation::bind_response(&headers, &identity, response));
+        }
+    }
+    let (identity, tasks) = storage
+        .read_block("http.tasks.list", move |storage| {
+            storage
+                .read_models()
+                .agent_tasks_snapshot(expected_incarnation, terminal, limit)
+        })
+        .await
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| agent_access_error(PublicAgentError::NotFound { agent_id }))?;
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(
+            tasks
+                .into_iter()
+                .map(crate::http_dto::TaskRecordDto::from)
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+    ))
+}
+
+pub async fn task_status(
+    Path((agent_id, task_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
+    let storage = state
+        .host
+        .operator_agent_read_storage(&agent_id)
+        .map_err(agent_access_error)?;
+    if let Some(runtime) = state
+        .host
+        .try_get_operator_loaded_runtime(&agent_id)
+        .await
+        .map_err(agent_access_error)?
+    {
+        let identity = loaded_task_identity(
+            &agent_id,
+            runtime.instance_incarnation(),
+            expected_incarnation,
+        )?;
+        let read = runtime
+            .managed_tasks()
+            .task_status_read(&task_id)
+            .await
+            .map_err(|error| task_query_error(error, &task_id))?;
+        return Ok(conversation::bind_response(
+            &headers,
+            &identity,
+            Json(&read.snapshot).into_response(),
+        ));
+    }
+    let read_task_id = task_id.clone();
+    let (identity, task) = storage
+        .read_block("http.tasks.status", move |storage| {
+            storage
+                .read_models()
+                .agent_task_snapshot(&read_task_id, expected_incarnation)
+        })
+        .await
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| {
+            agent_access_error(PublicAgentError::NotFound {
+                agent_id: agent_id.clone(),
+            })
+        })?;
+    let Some(task) = task.filter(|task| task.agent_id == agent_id) else {
+        return Err(task_not_found_response(&task_id));
+    };
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(TaskStatusSnapshot::from_task_record(&task)).into_response(),
+    ))
+}
+
+pub async fn task_output(
+    Path((agent_id, task_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<TaskOutputQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
+    let storage = state
+        .host
+        .operator_agent_read_storage(&agent_id)
+        .map_err(agent_access_error)?;
+    if let Some(runtime) = state
+        .host
+        .try_get_operator_loaded_runtime(&agent_id)
+        .await
+        .map_err(agent_access_error)?
+    {
+        let identity = loaded_task_identity(
+            &agent_id,
+            runtime.instance_incarnation(),
+            expected_incarnation,
+        )?;
+        let output = runtime
+            .managed_tasks()
+            .task_output_read(
+                &task_id,
+                query.block.unwrap_or(false),
+                query.timeout_ms.unwrap_or(TASK_OUTPUT_DEFAULT_TIMEOUT_MS),
+            )
+            .await
+            .map_err(|error| task_query_error(error, &task_id))?;
+        return Ok(conversation::bind_response(
+            &headers,
+            &identity,
+            Json(&output.result).into_response(),
+        ));
+    }
+    let read_task_id = task_id.clone();
+    let (_, task) = storage
+        .read_block("http.tasks.output", move |storage| {
+            storage
+                .read_models()
+                .agent_task_snapshot(&read_task_id, expected_incarnation)
+        })
+        .await
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| {
+            agent_access_error(PublicAgentError::NotFound {
+                agent_id: agent_id.clone(),
+            })
+        })?;
+    if !task.is_some_and(|task| task.agent_id == agent_id) {
+        return Err(task_not_found_response(&task_id));
+    }
+    Err(error_response(
+        RuntimeError::new(
+            crate::runtime_error::RuntimeErrorDomain::Conflict,
+            "task_not_live",
+            format!("task {task_id} is not managed by a loaded runtime"),
+        )
+        .with_safe_context("task_id", &task_id)
+        .into(),
+    ))
+}
+
+pub async fn tool_execution(
+    Path((agent_id, tool_execution_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
+    let storage = state
+        .host
+        .operator_agent_read_storage(&agent_id)
+        .map_err(agent_access_error)?;
+    let read_tool_execution_id = tool_execution_id.clone();
+    let (identity, record) = storage
+        .read_block("http.tasks.tool_execution", move |storage| {
+            storage
+                .read_models()
+                .agent_tool_execution_snapshot(&read_tool_execution_id, expected_incarnation)
+        })
+        .await
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| agent_access_error(PublicAgentError::NotFound { agent_id }))?;
+    let Some(record) = record else {
+        return Err(not_found(format!(
+            "tool execution {tool_execution_id} not found"
+        )));
+    };
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(record).into_response(),
+    ))
+}
+
+pub async fn tool_execution_artifact(
+    Path((agent_id, tool_execution_id, artifact_index)): Path<(String, String, usize)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let storage = state
+        .host
+        .operator_agent_read_storage(&agent_id)
+        .map_err(agent_access_error)?;
+    let read_tool_execution_id = tool_execution_id.clone();
+    let read_agent_id = agent_id.clone();
+    let Some(record) = storage
+        .read_block("http.tasks.tool_execution_artifact", move |storage| {
+            Ok(storage.read_tool_execution_by_id(&read_tool_execution_id)?)
+        })
+        .await
+        .map_err(error_response)?
+        .filter(|record| record.agent_id == read_agent_id)
+    else {
+        return Err(not_found(format!(
+            "tool execution {tool_execution_id} not found"
+        )));
+    };
+    let result = record
+        .output
+        .get("result")
+        .or_else(|| {
+            record
+                .output
+                .get("envelope")
+                .and_then(|value| value.get("result"))
+        })
+        .unwrap_or(&record.output);
+    let artifact_path = result
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .and_then(|artifacts| artifacts.get(artifact_index))
+        .and_then(|artifact| artifact.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| not_found(format!("artifact {artifact_index} not found")))?;
+
+    let data_dir =
+        std::fs::canonicalize(storage.data_dir()).map_err(|error| error_response(error.into()))?;
+    let requested_path = PathBuf::from(artifact_path);
+    let requested_path = if requested_path.is_absolute() {
+        requested_path
+    } else {
+        data_dir.join(requested_path)
+    };
+    let artifact_path = std::fs::canonicalize(&requested_path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            not_found(format!("artifact {artifact_index} not found"))
+        } else {
+            error_response(error.into())
+        }
+    })?;
+    if !artifact_path.starts_with(&data_dir) {
+        return Err(forbidden("artifact path escapes runtime data directory"));
+    }
+    let metadata = tokio::fs::metadata(&artifact_path)
+        .await
+        .map_err(|error| error_response(error.into()))?;
+    if !metadata.is_file() {
+        return Err(bad_request("artifact path is not a file"));
+    }
+    let content = tokio::fs::read_to_string(&artifact_path)
+        .await
+        .map_err(|error| error_response(error.into()))?;
+    Ok(Json(ToolExecutionArtifactContent {
+        artifact_index,
+        size: metadata.len(),
+        content,
+    }))
+}
+
+pub async fn task_input(
+    Path((agent_id, task_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<TaskInputRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    if !runtime
+        .task_record(&task_id)
+        .await
+        .map_err(error_response)?
+        .is_some_and(|task| task.agent_id == agent_id)
+    {
+        return Err(task_not_found_response(&task_id));
+    }
+    let authority_class = request
+        .authority_class
+        .unwrap_or(AuthorityClass::OperatorInstruction);
+    validate_invocation_context(request.invocation_context.as_ref(), Some(authority_class))?;
+    let result = runtime
+        .managed_tasks()
+        .task_input_with_trust(&task_id, &request.text, &authority_class)
+        .await
+        .map_err(task_lifecycle_error)?;
+    Ok(Json(result))
+}
+
+pub async fn task_stop(
+    Path((agent_id, task_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<TaskStopRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    if !runtime
+        .task_record(&task_id)
+        .await
+        .map_err(error_response)?
+        .is_some_and(|task| task.agent_id == agent_id)
+    {
+        return Err(task_not_found_response(&task_id));
+    }
+    let authority_class = request
+        .authority_class
+        .unwrap_or(AuthorityClass::OperatorInstruction);
+    validate_invocation_context(request.invocation_context.as_ref(), Some(authority_class))?;
+    let task = runtime
+        .managed_tasks()
+        .stop_task(&task_id, &authority_class)
+        .await
+        .map_err(task_lifecycle_error)?;
+    let force_stop_requested = task
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get("force_stop_requested"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let snapshot = TaskStatusSnapshot::from_task_record(&task);
+    let result = TaskStopResult {
+        summary_text: Some(match task.status {
+            TaskStatus::Cancelling => format!("stop requested for task {}", task.id),
+            TaskStatus::Cancelled => format!("cancelled task {}", task.id),
+            _ => format!("updated task {}", task.id),
+        }),
+        task: snapshot,
+        stop_requested: true,
+        force_stop_requested,
+    };
+    Ok(Json(result))
+}
+
+pub async fn create_command_task(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CreateCommandTaskRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
+    let effective_trust = provided_trust
+        .clone()
+        .unwrap_or(AuthorityClass::OperatorInstruction);
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let task = runtime
+        .schedule_command_task(
+            request.summary,
+            crate::types::CommandTaskSpec {
+                cmd: request.cmd,
+                workdir: request.workdir,
+                shell: request.shell,
+                login: request.login.unwrap_or(true),
+                tty: request.tty.unwrap_or(false),
+                yield_time_ms: request.yield_time_ms.unwrap_or(10_000),
+                max_output_tokens: request.max_output_tokens,
+                accepts_input: request.accepts_input.unwrap_or(false),
+                terminal_reentry: false,
+            },
+            effective_trust.clone(),
+        )
+        .await
+        .map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "task_create_requested",
+            json!({
+                "task_id": task.id,
+                "kind": task.kind,
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "effective_trust": effective_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(task))
+}
+
+pub async fn create_work_item(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CreateWorkItemRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let recipient =
+        super::notifications::recipient(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
+    let objective = request.objective.trim().to_string();
+    if objective.is_empty() {
+        return Err(bad_request("objective must not be empty"));
+    }
+    let (runtime, record) = state
+        .host
+        .enqueue_public_work_item(&agent_id, objective, recipient.principal_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    runtime
+        .append_audit_event(
+            "work_item_enqueue_requested",
+            json!({
+                "work_item_id": record.id,
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(record))
+}
+
+pub async fn pick_work_item(
+    Path((agent_id, work_item_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<PickWorkItemRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let reason = normalize_optional_non_empty(request.reason);
+    if request.clear_blocker && reason.is_none() {
+        return Err(bad_request(
+            "clear_blocker requires a non-empty reason explaining why the blocker is resolved",
+        ));
+    }
+    let picked = runtime
+        .pick_work_item_in_lane(
+            work_item_id,
+            reason,
+            request.clear_blocker,
+            Some(crate::runtime_db::WorkCommandLane::Idle),
+        )
+        .await
+        .map_err(work_item_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            "work_item_pick_requested",
+            json!({
+                "work_item_id": picked.current_work_item.id.clone(),
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    let current_work_item_id = picked.current_work_item.id.clone();
+    Ok(Json(PickWorkItemResponse {
+        previous_work_item: picked.previous_work_item,
+        current_work_item: picked.current_work_item,
+        current_work_item_id,
+        transition: picked.transition,
+    }))
+}
+
+pub async fn update_work_item(
+    Path((agent_id, work_item_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<UpdateWorkItemRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
+    let objective = request
+        .objective
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                Err(bad_request("objective must not be empty"))
+            } else {
+                Ok(trimmed)
+            }
+        })
+        .transpose()?;
+    if request.recheck_after.is_some() {
+        return Err(bad_request(
+            "blocked_by recheck_after is deprecated; use WaitFor with recheck_after_ms",
+        ));
+    }
+    let blocked_by = request
+        .blocked_by
+        .map(parse_blocked_by_mutation)
+        .transpose()?;
+    if objective.is_none()
+        && request.plan_status.is_none()
+        && request.todo_list.is_none()
+        && blocked_by.is_none()
+    {
+        return Err(bad_request(
+            "request must include at least one mutation field",
+        ));
+    }
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let record = runtime
+        .update_work_item_fields_in_lane(
+            work_item_id,
+            objective,
+            request.plan_status,
+            request.todo_list,
+            blocked_by,
+            Some(crate::runtime_db::WorkCommandLane::Idle),
+        )
+        .await
+        .map_err(work_item_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            "work_item_update_requested",
+            json!({
+                "work_item_id": record.id.clone(),
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(record))
+}
+
+pub async fn complete_work_item(
+    Path((agent_id, work_item_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CompleteWorkItemRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let report_text = request.report_text.trim();
+    if report_text.is_empty() {
+        return Err(bad_request("report_text must not be empty"));
+    }
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let existing = runtime
+        .latest_work_item(&work_item_id)
+        .await
+        .map_err(work_item_lifecycle_error)?
+        .ok_or_else(|| {
+            work_item_lifecycle_error(
+                RuntimeError::not_found(
+                    "work_item_not_found",
+                    format!("work item {work_item_id} not found"),
+                )
+                .with_safe_context("work_item_id", work_item_id.clone())
+                .into(),
+            )
+        })?;
+    let record = match existing.state {
+        crate::types::WorkItemState::Open | crate::types::WorkItemState::Completed => runtime
+            .complete_work_item_with_report(
+                work_item_id,
+                crate::runtime::WorkItemCompletionAuthority::Control,
+                report_text.to_string(),
+                Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .map_err(work_item_lifecycle_error)?
+            .into_record(),
+        crate::types::WorkItemState::Completing => runtime
+            .promote_work_item_completion_report(
+                work_item_id,
+                report_text.to_string(),
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .map_err(work_item_lifecycle_error)?,
+    };
+    runtime
+        .append_audit_event(
+            "work_item_complete_requested",
+            json!({
+                "work_item_id": record.id.clone(),
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(record))
+}
+
+pub async fn work_items(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ActiveHistoryQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
+    let storage = state
+        .host
+        .operator_agent_read_storage(&agent_id)
+        .map_err(agent_access_error)?;
+    let limit = query.limit.unwrap_or(50);
+    let (identity, work_queue) = storage
+        .read_block("http.tasks.work_items", move |storage| {
+            storage.read_models().work_queue_snapshot_filtered(
+                expected_incarnation,
+                query.status,
+                limit,
+            )
+        })
+        .await
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| agent_access_error(PublicAgentError::NotFound { agent_id }))?;
+    let work_items = work_queue.items.into_iter().take(limit).collect::<Vec<_>>();
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(work_items).into_response(),
+    ))
+}
+
+pub async fn work_item(
+    Path((agent_id, work_item_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
+    let storage = state
+        .host
+        .operator_agent_read_storage(&agent_id)
+        .map_err(agent_access_error)?;
+    let read_work_item_id = work_item_id.clone();
+    let (identity, work_item) = storage
+        .read_block("http.tasks.work_item", move |storage| {
+            storage
+                .read_models()
+                .agent_work_item_snapshot(&read_work_item_id, expected_incarnation)
+        })
+        .await
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| {
+            agent_access_error(PublicAgentError::NotFound {
+                agent_id: agent_id.clone(),
+            })
+        })?;
+    let Some(work_item) = work_item.filter(|item| item.agent_id == agent_id) else {
+        return Err(error_response(
+            RuntimeError::not_found(
+                "work_item_not_found",
+                format!("work item {work_item_id} not found"),
+            )
+            .with_safe_context("work_item_id", work_item_id)
+            .into(),
+        ));
+    };
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(work_item).into_response(),
+    ))
+}
+
+pub async fn timers(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ActiveHistoryQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
+    let storage = state
+        .host
+        .operator_agent_read_storage(&agent_id)
+        .map_err(agent_access_error)?;
+    let limit = query.limit.unwrap_or(50);
+    let (identity, timers) = storage
+        .read_block("http.tasks.timers", move |storage| {
+            storage.read_models().agent_timers_snapshot_filtered(
+                expected_incarnation,
+                limit,
+                query.status,
+            )
+        })
+        .await
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| agent_access_error(PublicAgentError::NotFound { agent_id }))?;
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(timers).into_response(),
+    ))
+}
+
+pub async fn timer(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let storage = state
+        .host
+        .operator_agent_read_storage(&agent_id)
+        .map_err(agent_access_error)?;
+    let read_timer_id = timer_id.clone();
+    let read_agent_id = agent_id.clone();
+    let Some(timer) = storage
+        .read_block("http.tasks.timer", move |storage| {
+            Ok(storage.latest_timer_record(&read_timer_id)?)
+        })
+        .await
+        .map_err(error_response)?
+        .filter(|timer| timer.agent_id == read_agent_id)
+    else {
+        return Err(error_response(
+            RuntimeError::not_found("timer_not_found", format!("timer {timer_id} not found"))
+                .with_safe_context("timer_id", timer_id)
+                .into(),
+        ));
+    };
+    Ok(Json(timer))
+}
+
+pub async fn create_timer(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CreateTimerRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    if request.calendar_expression.is_some()
+        && (request.duration_ms.is_some() || request.interval_ms.is_some())
+    {
+        return Err(error_response(
+            RuntimeError::validation(
+                "timer_schedule_conflict",
+                "calendar_expression cannot be combined with duration_ms or interval_ms",
+            )
+            .with_safe_context("fields", "calendar_expression,duration_ms,interval_ms")
+            .into(),
+        ));
+    }
+    let content =
+        crate::types::TimerContent::for_create(request.title, request.instruction, request.summary)
+            .map_err(|error| {
+                error_response(
+                    RuntimeError::validation("invalid_timer_content", error.to_string()).into(),
+                )
+            })?;
+    let timer = match (request.calendar_expression, request.timezone) {
+        (Some(expression), Some(timezone)) => runtime
+            .schedule_calendar_timer_with_content(expression, timezone, content)
+            .await
+            .map_err(error_response)?,
+        (None, None) => runtime
+            .schedule_timer_with_content(
+                request.duration_ms.ok_or_else(|| {
+                    error_response(anyhow::anyhow!(
+                        "duration_ms is required when calendar_expression is absent"
+                    ))
+                })?,
+                request.interval_ms,
+                content,
+            )
+            .await
+            .map_err(error_response)?,
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(error_response(anyhow::anyhow!(
+                "calendar_expression and timezone must be provided together"
+            )))
+        }
+    };
+    runtime
+        .append_audit_event(
+            "timer_create_requested",
+            json!({
+                "timer_id": timer.id,
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(timer))
+}
+
+pub async fn edit_timer_content(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(patch): ApiJson<crate::types::TimerContentPatch>,
+) -> Result<Json<crate::types::TimerRecord>, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let timer = runtime
+        .edit_timer_content(&timer_id, patch)
+        .await
+        .map_err(timer_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            "timer_content_edit_requested",
+            json!({
+                "timer_id": timer.id,
+                "target_agent_id": agent_id,
+                "admission_context": control_admission_context(&state),
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(timer))
+}
+
+pub async fn cancel_timer(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CancelTimerRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let timer = runtime
+        .cancel_timer(&timer_id)
+        .await
+        .map_err(timer_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            "timer_cancel_requested",
+            json!({
+                "timer_id": timer.id,
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(timer))
+}
+
+pub async fn pause_timer(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CancelTimerRequest>,
+) -> Result<Json<crate::types::TimerRecord>, (StatusCode, Json<Value>)> {
+    set_timer_paused(state, headers, agent_id, timer_id, request, true).await
+}
+
+pub async fn resume_timer(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CancelTimerRequest>,
+) -> Result<Json<crate::types::TimerRecord>, (StatusCode, Json<Value>)> {
+    set_timer_paused(state, headers, agent_id, timer_id, request, false).await
+}
+
+async fn set_timer_paused(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    agent_id: String,
+    timer_id: String,
+    request: CancelTimerRequest,
+    paused: bool,
+) -> Result<Json<crate::types::TimerRecord>, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let timer = if paused {
+        runtime.pause_timer(&timer_id).await
+    } else {
+        runtime.resume_timer(&timer_id).await
+    }
+    .map_err(timer_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            if paused {
+                "timer_pause_requested"
+            } else {
+                "timer_resume_requested"
+            },
+            json!({
+                "timer_id": timer.id,
+                "target_agent_id": agent_id,
+                "admission_context": control_admission_context(&state),
+                "provided_trust": request.authority_class,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(timer))
+}
+
+fn timer_lifecycle_error(err: anyhow::Error) -> (StatusCode, Json<Value>) {
+    error_response(err)
+}
+
+fn task_not_found_response(task_id: &str) -> (StatusCode, Json<Value>) {
+    error_response(
+        RuntimeError::not_found("task_not_found", format!("task {task_id} not found"))
+            .with_safe_context("task_id", task_id)
+            .into(),
+    )
+}
+
+// Only the exact requested foreign Task shares the public not-found contract.
+pub(super) fn task_query_error(error: anyhow::Error, task_id: &str) -> (StatusCode, Json<Value>) {
+    use crate::runtime::resident_task::{TaskFamily, TaskKey};
+    use crate::runtime_db::task_snapshot::TaskSnapshotError;
+    if matches!(error.downcast_ref::<TaskSnapshotError>(),
+        Some(TaskSnapshotError::ForeignRecord(TaskKey { family: TaskFamily::Task, id })) if id == task_id)
+    {
+        task_not_found_response(task_id)
+    } else {
+        task_lifecycle_error(error)
+    }
+}
+
+#[cfg(test)]
+mod task_query_error_tests {
+    use super::*;
+    use crate::runtime::{
+        http_test_support::host_backed_test_runtime,
+        resident_task::{TaskFamily, TaskKey},
+    };
+    use crate::runtime_db::task_snapshot::TaskSnapshotError;
+    use anyhow::Context;
+
+    #[tokio::test]
+    async fn loaded_foreign_status_named_acquisition_preserves_http_not_found() -> Result<()> {
+        let (_home, host, runtime) = host_backed_test_runtime().await;
+        let _run_loop = runtime.pause_run_loop_for_monitor_test().await;
+        let at = Utc::now();
+        let task = crate::types::TaskRecord {
+            id: "foreign-http-status".into(),
+            agent_id: "another-agent".into(),
+            kind: crate::types::TaskKind::CommandTask,
+            status: crate::types::TaskStatus::Completed,
+            created_at: at,
+            updated_at: at,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("foreign history".into()),
+            detail: None,
+            recovery: None,
+        };
+        crate::runtime_db::repositories::upsert_task_for_fixture(host.runtime_db(), &task)?;
+        let error = runtime
+            .task_status_read(&task.id)
+            .await
+            .err()
+            .context("foreign task was exposed")?;
+        assert!(
+            matches!(error.downcast_ref::<TaskSnapshotError>(), Some(TaskSnapshotError::ForeignRecord(key)) if key.family == TaskFamily::Task && key.id == task.id),
+            "{error:#}"
+        );
+        let (status, body) = task_query_error(error, &task.id);
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body.0["code"], "task_not_found");
+        assert_eq!(
+            runtime.runtime_db().transaction(|tx| Ok(tx.query_row(
+                "SELECT COUNT(*) FROM task_domain_records WHERE record_id=?1",
+                [&task.id],
+                |row| row.get::<_, usize>(0)
+            )?))?,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn task_query_error_preserves_non_foreign_and_non_target_failures() {
+        let key = TaskKey::new(TaskFamily::Task, "requested-task");
+        for error in [
+            TaskSnapshotError::NeedsPreparation(key.clone()),
+            TaskSnapshotError::CanonicalChanged(key.clone()),
+            TaskSnapshotError::ResourceExhausted("actual budget"),
+            TaskSnapshotError::ForeignRecord(TaskKey::new(TaskFamily::Task, "different-task")),
+            TaskSnapshotError::ForeignRecord(TaskKey::new(
+                TaskFamily::ResultSettlement,
+                "requested-task",
+            )),
+        ] {
+            let (status, body) = task_query_error(error.into(), "requested-task");
+            assert_ne!(status, StatusCode::NOT_FOUND);
+            assert_ne!(body.0["code"], "task_not_found");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "task_active_list_tests.rs"]
+mod active_list_tests;

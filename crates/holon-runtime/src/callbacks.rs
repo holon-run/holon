@@ -6,7 +6,7 @@ pub(crate) fn generate_callback_token() -> String {
     crate::ids::capability_id("cb")
 }
 
-pub(crate) fn hash_callback_token(token: &str) -> String {
+pub fn hash_callback_token(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     let mut encoded = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -15,7 +15,7 @@ pub(crate) fn hash_callback_token(token: &str) -> String {
     encoded
 }
 
-pub(crate) fn callback_token_hash_matches(token: &str, expected: &str) -> bool {
+pub fn callback_token_hash_matches(token: &str, expected: &str) -> bool {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     if expected.len() != 64 {
         return false;
@@ -28,7 +28,7 @@ pub(crate) fn callback_token_hash_matches(token: &str, expected: &str) -> bool {
         })
 }
 
-pub(crate) fn build_callback_url(
+pub fn build_callback_url(
     base_url: &str,
     delivery_mode: &CallbackDeliveryMode,
     token: &str,

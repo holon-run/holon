@@ -16,7 +16,7 @@ impl RuntimeDb {
         self.writer.workspace_context()
     }
 
-    pub(crate) fn prepare_workspace_context(&self) -> Result<()> {
+    pub fn prepare_workspace_context(&self) -> Result<()> {
         at_blocking_boundary(|| {
             let slot = self.workspace_context_publication();
             let ready = matches!(
@@ -42,6 +42,35 @@ impl RuntimeDb {
 
     fn load_workspace_context(&self) -> Result<WorkspaceContext> {
         self.read_for_preparation(|tx| WorkspaceContext::load(tx))
+    }
+
+    pub fn agent_workspace_registry_entries(
+        &self,
+        agent: &crate::types::AgentState,
+    ) -> Result<Vec<crate::types::WorkspaceEntry>> {
+        self.with_workspace_context(|context| {
+            let mut entries = Vec::new();
+            let mut selected = std::collections::HashSet::new();
+            let workspace_ids = agent
+                .active_workspace_entry
+                .iter()
+                .map(|entry| entry.workspace_id.as_str())
+                .chain(agent.attached_workspaces.iter().map(String::as_str));
+            for workspace_id in workspace_ids {
+                self.check_read_cancellation()?;
+                if selected.insert(workspace_id) {
+                    if let Some(entry) = context.entry(workspace_id)? {
+                        entries.push(entry.clone());
+                    }
+                }
+            }
+            Ok(entries)
+        })
+    }
+
+    #[cfg(feature = "http-test-support")]
+    pub fn check_workspace_context_for_test(&self) -> Result<()> {
+        self.with_workspace_context(|_| Ok(()))
     }
 
     /// The callback only copies selected material; contention never waits on a writer.
@@ -75,8 +104,8 @@ impl RuntimeDb {
         capture(current)
     }
 
-    #[cfg(all(test, holon_lib_test_shard = "c"))]
-    pub(crate) fn hold_workspace_context_publication_for_test(&self) -> impl Drop + '_ {
+    #[cfg(any(all(test, holon_lib_test_shard = "c"), feature = "http-test-support"))]
+    pub fn hold_workspace_context_publication_for_test(&self) -> impl Drop + '_ {
         self.workspace_context_publication().write().unwrap()
     }
 

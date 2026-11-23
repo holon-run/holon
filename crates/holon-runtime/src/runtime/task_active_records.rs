@@ -1,7 +1,7 @@
 //! The HTTP active list returns canonical records, separate from display summaries.
 use super::*;
 
-pub(crate) struct ActiveTaskRecordsRead {
+pub struct ActiveTaskRecordsRead {
     pub records: Vec<TaskRecord>,
     _selected: CapturedTasks,
     _references: Arc<BudgetViewGuard>,
@@ -9,10 +9,7 @@ pub(crate) struct ActiveTaskRecordsRead {
 }
 
 impl RuntimeHandle {
-    pub(crate) async fn active_task_records_read(
-        &self,
-        limit: usize,
-    ) -> Result<ActiveTaskRecordsRead> {
+    pub async fn active_task_records_read(&self, limit: usize) -> Result<ActiveTaskRecordsRead> {
         let tasks = self.capture_task_read(&active_task_request()).await?.tasks;
         let count = active_task_count(&tasks)?;
         let limits = self.inner.input_evidence_budget.limits();

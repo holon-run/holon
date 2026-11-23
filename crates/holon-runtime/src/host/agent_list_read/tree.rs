@@ -29,7 +29,7 @@ impl AsRef<[u8]> for TreeWire {
 }
 
 impl OwnedAgentTreeRead {
-    pub(crate) fn into_json_bytes(self) -> Result<tokio_util::bytes::Bytes> {
+    pub fn into_json_bytes(self) -> Result<tokio_util::bytes::Bytes> {
         let Some((_, first)) = self.materials.first() else {
             return Ok(tokio_util::bytes::Bytes::from_static(b"{\"roots\":[]}"));
         };

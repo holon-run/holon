@@ -1,0 +1,1040 @@
+use super::*;
+use chrono::{DateTime, Utc};
+use std::{collections::BTreeMap, sync::Mutex};
+use uuid::Uuid;
+
+const USER_GLOBAL_LIBRARY_LABEL: &str = "user_global";
+
+fn effective_user_home_dir(state: &AppState) -> Result<PathBuf> {
+    state
+        .host
+        .config()
+        .user_home_dir
+        .clone()
+        .or_else(|| crate::agent_template::user_home_dir().ok())
+        .ok_or_else(|| anyhow!("HOME is not set; cannot resolve user-global skills"))
+}
+
+#[derive(Clone, Default)]
+pub struct JobRegistry {
+    // TODO: retain terminal jobs for a bounded window before evicting them.
+    jobs: Arc<Mutex<BTreeMap<String, JobSnapshot>>>,
+}
+
+impl JobRegistry {
+    pub(super) fn insert(&self, job: JobSnapshot) {
+        self.jobs
+            .lock()
+            .expect("job registry lock")
+            .insert(job.id.clone(), job);
+    }
+
+    fn get(&self, id: &str) -> Option<JobSnapshot> {
+        self.jobs
+            .lock()
+            .expect("job registry lock")
+            .get(id)
+            .cloned()
+    }
+
+    pub(super) fn update(&self, id: &str, update: impl FnOnce(&mut JobSnapshot)) {
+        let mut jobs = self.jobs.lock().expect("job registry lock");
+        if let Some(job) = jobs.get_mut(id) {
+            update(job);
+            job.updated_at = Utc::now();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JobSnapshot {
+    pub id: String,
+    pub kind: String,
+    pub status: JobStatus,
+    pub phase: String,
+    pub progress: JobProgress,
+    pub summary: String,
+    pub items: Vec<JobItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct JobProgress {
+    pub current: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JobItem {
+    pub id: String,
+    pub status: JobStatus,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CreateJobRequest {
+    #[serde(rename = "skill.install")]
+    SkillInstall {
+        params: crate::types::AddSkillRequest,
+    },
+    #[serde(rename = "agent_template.remote_sources.sync")]
+    AgentTemplateRemoteSourcesSync {
+        params: crate::types::SyncTemplateRemoteSourcesRequest,
+    },
+}
+
+pub async fn create_job(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CreateJobRequest>,
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    match request {
+        CreateJobRequest::SkillInstall { params } => create_skill_install_job(state, params)
+            .await
+            .map(IntoResponse::into_response),
+        CreateJobRequest::AgentTemplateRemoteSourcesSync { params } => {
+            create_template_remote_source_sync_job(state, params)
+                .await
+                .map(IntoResponse::into_response)
+        }
+    }
+}
+
+pub async fn job_status(
+    Path(job_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    match state.jobs.get(&job_id) {
+        Some(job) => Ok(Json(json!({ "ok": true, "job": job }))),
+        None => Err(http_error(
+            StatusCode::NOT_FOUND,
+            HttpErrorEnvelope::new("job_not_found", format!("job {job_id} was not found")),
+        )),
+    }
+}
+
+async fn create_skill_install_job(
+    state: Arc<AppState>,
+    request: crate::types::AddSkillRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
+    let id = format!("job_{}", Uuid::new_v4().simple());
+    let now = Utc::now();
+    let job = JobSnapshot {
+        id: id.clone(),
+        kind: "skill.install".into(),
+        status: JobStatus::Queued,
+        phase: "queued".into(),
+        progress: JobProgress::default(),
+        summary: "Queued skill install job".into(),
+        items: Vec::new(),
+        result: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    state.jobs.insert(job.clone());
+
+    let jobs = state.jobs.clone();
+    let skill_library_write_jobs = state.skill_library_write_jobs.clone();
+    let resource_gate = state.host.context_resources();
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
+    let job_id = id.clone();
+    tokio::spawn(async move {
+        jobs.update(&job_id, |job| {
+            job.status = JobStatus::Running;
+            job.phase = "installing".into();
+            job.summary = "Installing skill into the Global Skill Library".into();
+            job.progress.total = 1;
+            job.items = vec![JobItem {
+                id: "skill.install".into(),
+                status: JobStatus::Running,
+                summary: skill_install_summary(&request.kind),
+                error: None,
+            }];
+        });
+        let permit = match skill_library_write_jobs.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let message = format!("skill install queue closed: {error}");
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.progress.current = 1;
+                    job.summary = "Skill install queue closed".into();
+                    job.error = Some(message.clone());
+                    job.items = vec![JobItem {
+                        id: "skill.install".into(),
+                        status: JobStatus::Failed,
+                        summary: "Skill install queue closed".into(),
+                        error: Some(message),
+                    }];
+                });
+                return;
+            }
+        };
+        let kind = request.kind.clone();
+        let writer = match resource_gate
+            .begin_path_write(crate::skills::user_global_skill_root_candidates(&user_home))
+        {
+            Ok(writer) => writer,
+            Err(error) => {
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.error = Some(error.to_string());
+                });
+                return;
+            }
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            writer.enter_physical()?;
+            let _writer = writer;
+            let _permit = permit;
+            crate::skills::add_library_skill(&user_home, &kind)
+        })
+        .await;
+        match result {
+            Ok(Ok(skill_name)) => jobs.update(&job_id, |job| {
+                job.status = JobStatus::Completed;
+                job.phase = "completed".into();
+                job.progress.current = 1;
+                job.summary = format!("Installed {skill_name} to the Global Skill Library");
+                job.items = vec![JobItem {
+                    id: skill_name.clone(),
+                    status: JobStatus::Completed,
+                    summary: format!("Installed {skill_name}"),
+                    error: None,
+                }];
+                job.result = Some(json!({
+                    "skill_name": skill_name,
+                    "library": USER_GLOBAL_LIBRARY_LABEL,
+                }));
+            }),
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.progress.current = 1;
+                    job.summary = "Skill install failed".into();
+                    job.error = Some(message.clone());
+                    job.items = vec![JobItem {
+                        id: "skill.install".into(),
+                        status: JobStatus::Failed,
+                        summary: "Skill install failed".into(),
+                        error: Some(message),
+                    }];
+                });
+            }
+            Err(error) => {
+                let message = format!("skill install worker failed: {error}");
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.progress.current = 1;
+                    job.summary = "Skill install worker failed".into();
+                    job.error = Some(message.clone());
+                    job.items = vec![JobItem {
+                        id: "skill.install".into(),
+                        status: JobStatus::Failed,
+                        summary: "Skill install worker failed".into(),
+                        error: Some(message),
+                    }];
+                });
+            }
+        }
+    });
+
+    Ok(((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "ok": true,
+            "job": job,
+        })),
+    ))
+        .into_response())
+}
+
+pub(super) async fn create_skill_update_job(
+    state: Arc<AppState>,
+    request: crate::types::UpdateSkillRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
+    let id = format!("job_{}", Uuid::new_v4().simple());
+    let now = Utc::now();
+    let target = request.name.clone().unwrap_or_else(|| "all skills".into());
+    let job = JobSnapshot {
+        id: id.clone(),
+        kind: "skill.update".into(),
+        status: JobStatus::Queued,
+        phase: "queued".into(),
+        progress: JobProgress::default(),
+        summary: format!("Queued update for {target}"),
+        items: Vec::new(),
+        result: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    state.jobs.insert(job.clone());
+
+    let jobs = state.jobs.clone();
+    let skill_library_write_jobs = state.skill_library_write_jobs.clone();
+    let resource_gate = state.host.context_resources();
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
+    let job_id = id.clone();
+    tokio::spawn(async move {
+        let permit = match skill_library_write_jobs.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let message = format!("skill library write queue closed: {error}");
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Skill update queue closed".into();
+                    job.error = Some(message);
+                });
+                return;
+            }
+        };
+        jobs.update(&job_id, |job| {
+            job.status = JobStatus::Running;
+            job.phase = "updating".into();
+            job.summary = format!("Updating {target}");
+        });
+
+        let progress_jobs = jobs.clone();
+        let progress_job_id = job_id.clone();
+        let name = request.name.clone();
+        let writer = match resource_gate
+            .begin_path_write(crate::skills::user_global_skill_root_candidates(&user_home))
+        {
+            Ok(writer) => writer,
+            Err(error) => {
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.error = Some(error.to_string());
+                });
+                return;
+            }
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            writer.enter_physical()?;
+            let _writer = writer;
+            let _permit = permit;
+            crate::skills::update_library_skills_with_progress(
+                &user_home,
+                name.as_deref(),
+                |progress| match progress {
+                    crate::skills::SkillLibraryUpdateProgress::Started { total } => {
+                        progress_jobs.update(&progress_job_id, |job| {
+                            job.progress.total = total;
+                            job.summary = if total == 0 {
+                                "No matching skills to update".into()
+                            } else {
+                                format!("Starting update of {total} skills")
+                            };
+                        });
+                    }
+                    crate::skills::SkillLibraryUpdateProgress::Item(status) => {
+                        progress_jobs.update(&progress_job_id, |job| {
+                            job.progress.current += 1;
+                            job.items.push(skill_update_job_item(&status));
+                            job.summary = format!(
+                                "Checked {} of {} skills",
+                                job.progress.current, job.progress.total
+                            );
+                        });
+                    }
+                },
+            )
+        })
+        .await;
+
+        match result {
+            Ok(Ok(update_result)) => jobs.update(&job_id, |job| {
+                let (updated, unchanged, skipped, failed) =
+                    skill_update_counts(&update_result.statuses);
+                job.status = JobStatus::Completed;
+                job.phase = "completed".into();
+                job.summary = format!(
+                    "Skill update completed: {updated} updated, {unchanged} unchanged, {skipped} skipped, {failed} failed"
+                );
+                job.result = serde_json::to_value(update_result).ok();
+            }),
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Skill update failed".into();
+                    job.error = Some(message);
+                });
+            }
+            Err(error) => {
+                let message = format!("skill update worker failed: {error}");
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Skill update worker failed".into();
+                    job.error = Some(message);
+                });
+            }
+        }
+    });
+
+    Ok(((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "ok": true,
+            "job": job,
+        })),
+    ))
+        .into_response())
+}
+
+fn skill_update_job_item(status: &crate::skills::SkillLibraryUpdateStatus) -> JobItem {
+    let (job_status, outcome) = match status.status {
+        crate::skills::SkillLibraryUpdateState::Updated => (JobStatus::Completed, "updated"),
+        crate::skills::SkillLibraryUpdateState::Unchanged => (JobStatus::Completed, "unchanged"),
+        crate::skills::SkillLibraryUpdateState::Skipped => (JobStatus::Completed, "skipped"),
+        crate::skills::SkillLibraryUpdateState::Failed => (JobStatus::Failed, "failed"),
+    };
+    JobItem {
+        id: status.name.clone(),
+        status: job_status,
+        summary: format!("{}: {outcome}", status.name),
+        error: status.reason.clone(),
+    }
+}
+
+fn skill_update_counts(
+    statuses: &[crate::skills::SkillLibraryUpdateStatus],
+) -> (usize, usize, usize, usize) {
+    statuses.iter().fold(
+        (0, 0, 0, 0),
+        |(updated, unchanged, skipped, failed), status| match status.status {
+            crate::skills::SkillLibraryUpdateState::Updated => {
+                (updated + 1, unchanged, skipped, failed)
+            }
+            crate::skills::SkillLibraryUpdateState::Unchanged => {
+                (updated, unchanged + 1, skipped, failed)
+            }
+            crate::skills::SkillLibraryUpdateState::Skipped => {
+                (updated, unchanged, skipped + 1, failed)
+            }
+            crate::skills::SkillLibraryUpdateState::Failed => {
+                (updated, unchanged, skipped, failed + 1)
+            }
+        },
+    )
+}
+
+pub(super) async fn create_template_remote_source_sync_job(
+    state: Arc<AppState>,
+    request: crate::types::SyncTemplateRemoteSourcesRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
+    let id = format!("job_{}", Uuid::new_v4().simple());
+    let now = Utc::now();
+    let job = JobSnapshot {
+        id: id.clone(),
+        kind: "agent_template.remote_sources.sync".into(),
+        status: JobStatus::Queued,
+        phase: "queued".into(),
+        progress: JobProgress::default(),
+        summary: "Queued agent template remote source sync job".into(),
+        items: Vec::new(),
+        result: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    state.jobs.insert(job.clone());
+
+    let jobs = state.jobs.clone();
+    let sync_jobs = state.template_remote_source_sync_jobs.clone();
+    let resource_gate = state.host.context_resources();
+    let db = state.host.runtime_db().clone();
+    let configured_sources = crate::agent_template::effective_agent_template_remote_sources(
+        &state.host.config().stored_config.agent_templates,
+    );
+    let job_id = id.clone();
+    tokio::spawn(async move {
+        let selected_sources = configured_sources
+            .iter()
+            .filter(|(source_id, config)| {
+                request
+                    .source_id
+                    .as_ref()
+                    .is_none_or(|requested| requested == *source_id)
+                    && config.enabled()
+            })
+            .map(|(source_id, config)| (source_id.clone(), config.clone()))
+            .collect::<Vec<_>>();
+
+        if request.source_id.is_some() && selected_sources.is_empty() {
+            let message = format!(
+                "agent template remote source {} was not found or is disabled",
+                request.source_id.as_deref().unwrap_or_default()
+            );
+            jobs.update(&job_id, |job| {
+                job.status = JobStatus::Failed;
+                job.phase = "failed".into();
+                job.summary = "Remote source sync failed".into();
+                job.error = Some(message.clone());
+                job.items = vec![JobItem {
+                    id: request.source_id.clone().unwrap_or_default(),
+                    status: JobStatus::Failed,
+                    summary: "Remote source was not found or is disabled".into(),
+                    error: Some(message),
+                }];
+            });
+            return;
+        }
+
+        jobs.update(&job_id, |job| {
+            job.status = JobStatus::Running;
+            job.phase = "syncing".into();
+            job.summary = "Synchronizing agent template remote sources".into();
+            job.progress.total = selected_sources.len();
+            job.items = selected_sources
+                .iter()
+                .map(|(source_id, _)| JobItem {
+                    id: source_id.clone(),
+                    status: JobStatus::Queued,
+                    summary: format!("Queued sync for {source_id}"),
+                    error: None,
+                })
+                .collect();
+        });
+
+        let permit = match sync_jobs.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let message = format!("remote source sync queue closed: {error}");
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Remote source sync queue closed".into();
+                    job.error = Some(message.clone());
+                    for item in &mut job.items {
+                        item.status = JobStatus::Failed;
+                        item.error = Some(message.clone());
+                    }
+                });
+                return;
+            }
+        };
+        let _permit = permit;
+
+        let user_home = match crate::agent_template::user_home_dir() {
+            Ok(path) => path,
+            Err(error) => {
+                let message = error.to_string();
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Remote source sync failed".into();
+                    job.error = Some(message.clone());
+                    for item in &mut job.items {
+                        item.status = JobStatus::Failed;
+                        item.error = Some(message.clone());
+                    }
+                });
+                return;
+            }
+        };
+
+        // This detached job, not its HTTP waiter, owns the async downloads and
+        // synchronous template/registry writes through their actual completion.
+        let writer = if selected_sources.is_empty() {
+            Ok(None)
+        } else {
+            resource_gate.begin_write().map(Some)
+        };
+        let _writer = match writer {
+            Ok(writer) => writer,
+            Err(error) => {
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Remote source sync failed".into();
+                    job.error = Some(error.to_string());
+                    for item in &mut job.items {
+                        item.status = JobStatus::Failed;
+                        item.error = job.error.clone();
+                    }
+                });
+                return;
+            }
+        };
+        let mut completed = 0usize;
+        let mut failed = 0usize;
+        let mut source_results = Vec::new();
+        for (source_id, config) in selected_sources {
+            jobs.update(&job_id, |job| {
+                if let Some(item) = job.items.iter_mut().find(|item| item.id == source_id) {
+                    item.status = JobStatus::Running;
+                    item.summary = format!("Syncing {source_id}");
+                    item.error = None;
+                }
+            });
+            match crate::agent_template::sync_agent_template_remote_source(
+                &db, &user_home, &source_id, &config,
+            )
+            .await
+            {
+                Ok(status) => {
+                    let source_failed = matches!(
+                        status.status,
+                        crate::agent_template::AgentTemplateRemoteSourceSyncStatus::PartiallyFailed
+                            | crate::agent_template::AgentTemplateRemoteSourceSyncStatus::Failed
+                    );
+                    if source_failed {
+                        failed += 1;
+                    } else {
+                        completed += 1;
+                    }
+                    source_results.push(json!(status));
+                    jobs.update(&job_id, |job| {
+                        job.progress.current = completed + failed;
+                        if let Some(item) = job.items.iter_mut().find(|item| item.id == source_id) {
+                            if source_failed {
+                                item.status = JobStatus::Failed;
+                                item.summary = format!("Failed to fully sync {source_id}");
+                                item.error = status.error.clone();
+                            } else {
+                                item.status = JobStatus::Completed;
+                                item.summary = format!("Synced {source_id}");
+                                item.error = None;
+                            }
+                        }
+                    });
+                }
+                Err(error) => {
+                    failed += 1;
+                    let mut message = error.to_string();
+                    let failure_db = db.clone();
+                    let failure_source_id = source_id.clone();
+                    let failure_config = config.clone();
+                    let failure_message = message.clone();
+                    let record_result = tokio::task::spawn_blocking(move || {
+                        crate::agent_template::record_agent_template_remote_source_sync_failure(
+                            &failure_db,
+                            &failure_source_id,
+                            &failure_config,
+                            &failure_message,
+                        )
+                    })
+                    .await
+                    .map_err(|err| {
+                        anyhow!("remote source sync failure recorder worker failed: {err}")
+                    })
+                    .and_then(|result| result);
+                    if let Err(record_error) = record_result {
+                        message = format!(
+                            "{message}; additionally failed to persist sync failure: {record_error}"
+                        );
+                    }
+                    jobs.update(&job_id, |job| {
+                        job.progress.current = completed + failed;
+                        if let Some(item) = job.items.iter_mut().find(|item| item.id == source_id) {
+                            item.status = JobStatus::Failed;
+                            item.summary = format!("Failed to sync {source_id}");
+                            item.error = Some(message.clone());
+                        }
+                    });
+                }
+            }
+        }
+
+        jobs.update(&job_id, |job| {
+            if failed == 0 {
+                job.status = JobStatus::Completed;
+                job.phase = "completed".into();
+                job.summary = format!("Synced {completed} agent template remote source(s)");
+            } else {
+                job.status = JobStatus::Failed;
+                job.phase = "failed".into();
+                job.summary =
+                    format!("Synced {completed} agent template remote source(s), {failed} failed");
+                job.error = Some(job.summary.clone());
+            }
+            job.result = Some(json!({
+                "sources": source_results,
+                "completed": completed,
+                "failed": failed,
+            }));
+        });
+    });
+
+    Ok(((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "ok": true,
+            "job": job,
+        })),
+    ))
+        .into_response())
+}
+
+pub(super) fn create_oauth_device_login_job(
+    state: Arc<AppState>,
+    oauth_config: holon_provider::auth::OAuthProviderConfig,
+    profile: String,
+    device_code: holon_provider::auth::CodexDeviceCode,
+) -> JobSnapshot {
+    let provider_id = oauth_config.provider_id;
+    let provider_label = if provider_id == crate::config::ProviderId::OPENAI_CODEX {
+        "OpenAI Codex"
+    } else {
+        provider_id
+    };
+    let id = format!("job_{}", Uuid::new_v4().simple());
+    let now = Utc::now();
+    let job = JobSnapshot {
+        id: id.clone(),
+        kind: if provider_id == crate::config::ProviderId::OPENAI_CODEX {
+            "auth.codex.device_login".into()
+        } else {
+            format!("auth.{provider_id}.device_login")
+        },
+        status: JobStatus::Queued,
+        phase: "waiting_for_user".into(),
+        progress: JobProgress {
+            current: 1,
+            total: 3,
+        },
+        summary: format!("Waiting for {provider_label} device authorization"),
+        items: vec![JobItem {
+            id: "device_authorization".into(),
+            status: JobStatus::Running,
+            summary: format!("Waiting for user to authorize the {provider_label} device code"),
+            error: None,
+        }],
+        result: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    state.jobs.insert(job.clone());
+
+    let jobs = state.jobs.clone();
+    let host = state.host.clone();
+    let job_id = id.clone();
+    tokio::spawn(async move {
+        jobs.update(&job_id, |job| {
+            job.status = JobStatus::Running;
+        });
+        let login_result =
+            if oauth_config.device_protocol == holon_provider::auth::OAuthDeviceProtocol::Codex {
+                holon_provider::auth::complete_codex_device_login(device_code).await
+            } else {
+                holon_provider::auth::complete_oauth_device_login(&oauth_config, device_code).await
+            };
+        match login_result {
+            Ok(login) => {
+                jobs.update(&job_id, |job| {
+                    job.phase = "persisting_credentials".into();
+                    job.progress.current = 2;
+                    job.summary = format!("Persisting {provider_label} OAuth credential");
+                    job.items = vec![JobItem {
+                        id: "credential_profile".into(),
+                        status: JobStatus::Running,
+                        summary: format!("Writing {profile} credential profile"),
+                        error: None,
+                    }];
+                });
+                let config = host.config();
+                let credential_path = credential_store_path(&config.home_dir);
+                match set_credential_profile_at(
+                    &credential_path,
+                    &profile,
+                    CredentialKind::OAuth,
+                    login.material,
+                ) {
+                    Ok(profile_status) => {
+                        match host.schedule_config_reload() {
+                            Ok(reload_generation) => {
+                                jobs.update(&job_id, |job| {
+                                    job.status = JobStatus::Completed;
+                                    job.phase = "completed".into();
+                                    job.progress.current = 3;
+                                    job.summary = format!("{provider_label} OAuth login completed");
+                                    job.items = vec![JobItem {
+                                        id: "credential_profile".into(),
+                                        status: JobStatus::Completed,
+                                        summary: format!(
+                                            "Configured {profile} OAuth credential profile"
+                                        ),
+                                        error: None,
+                                    }];
+                                    job.result = Some(json!({
+                                        "provider_id": provider_id,
+                                        "profile": profile_status.profile,
+                                        "auth_kind": profile_status.kind,
+                                        "configured": true,
+                                        "account_id": login.account_id,
+                                        "reload_generation": reload_generation,
+                                    }));
+                                });
+                            }
+                            Err(error) => fail_codex_device_login_job(
+                                &jobs,
+                                &job_id,
+                                &format!(
+                                    "{provider_label} credential persisted but reload scheduling failed"
+                                ),
+                                error.to_string(),
+                            ),
+                        }
+                    }
+                    Err(error) => fail_codex_device_login_job(
+                        &jobs,
+                        &job_id,
+                        &format!("{provider_label} credential persist failed"),
+                        error.to_string(),
+                    ),
+                }
+            }
+            Err(error) => fail_codex_device_login_job(
+                &jobs,
+                &job_id,
+                &format!("{provider_label} device login failed"),
+                error.to_string(),
+            ),
+        }
+    });
+
+    job
+}
+
+fn fail_codex_device_login_job(jobs: &JobRegistry, job_id: &str, summary: &str, message: String) {
+    jobs.update(job_id, |job| {
+        job.status = JobStatus::Failed;
+        job.phase = "failed".into();
+        job.progress.current = job.progress.total;
+        job.summary = summary.into();
+        job.error = Some(message.clone());
+        job.items = vec![JobItem {
+            id: "oauth.device_login".into(),
+            status: JobStatus::Failed,
+            summary: summary.into(),
+            error: Some(message),
+        }];
+    });
+}
+
+fn skill_install_summary(kind: &crate::types::SkillInstallKind) -> String {
+    match kind {
+        crate::types::SkillInstallKind::Named { name, .. } => format!("Install named skill {name}"),
+        crate::types::SkillInstallKind::Local { path, .. } => {
+            format!("Install local skill {}", path.display())
+        }
+        crate::types::SkillInstallKind::Remote { package, skill, .. } => match skill {
+            Some(skill) => format!("Install remote skill {package}@{skill}"),
+            None => format!("Install remote skill package {package}"),
+        },
+    }
+}
+
+const BOOTSTRAP_POLL_INTERVAL_MS: u64 = 400;
+
+fn bootstrap_step_job_status(status: &crate::types::AgentBootstrapStepStatus) -> JobStatus {
+    match status {
+        crate::types::AgentBootstrapStepStatus::Pending => JobStatus::Queued,
+        crate::types::AgentBootstrapStepStatus::Succeeded => JobStatus::Completed,
+        crate::types::AgentBootstrapStepStatus::Failed => JobStatus::Failed,
+    }
+}
+
+fn bootstrap_job_items(
+    bootstrap: &crate::types::AgentBootstrapRecord,
+) -> (Vec<JobItem>, JobProgress) {
+    let steps = [
+        ("template", &bootstrap.template),
+        ("runtime", &bootstrap.runtime),
+        ("workspace", &bootstrap.workspace),
+        ("model", &bootstrap.model),
+        ("initial_message", &bootstrap.initial_message),
+    ];
+    let mut items = Vec::with_capacity(steps.len());
+    let mut succeeded = 0usize;
+    for (id, step) in steps {
+        if step.status == crate::types::AgentBootstrapStepStatus::Succeeded {
+            succeeded += 1;
+        }
+        items.push(JobItem {
+            id: id.to_string(),
+            status: bootstrap_step_job_status(&step.status),
+            summary: match &step.last_error {
+                Some(error) => format!("{id}: {error}"),
+                None => id.to_string(),
+            },
+            error: step.last_error.clone(),
+        });
+    }
+    (
+        items,
+        JobProgress {
+            current: succeeded,
+            total: steps.len(),
+        },
+    )
+}
+
+fn apply_bootstrap_snapshot(
+    jobs: &JobRegistry,
+    job_id: &str,
+    agent_id: &str,
+    snapshot: &crate::types::AgentBootstrapRecord,
+) {
+    let (items, progress) = bootstrap_job_items(snapshot);
+    jobs.update(job_id, |job| {
+        job.items = items;
+        job.progress = progress;
+        job.summary = format!(
+            "Bootstrapping agent {agent_id}: {} of {} steps complete",
+            job.progress.current, job.progress.total
+        );
+    });
+}
+
+/// Register a job that projects the background bootstrap reconcile of one
+/// agent. The job is a discardable progress view: the durable
+/// `agent_bootstraps` record remains the source of truth, and losing the job
+/// (for example a daemon restart) never loses bootstrap state.
+pub(super) fn spawn_agent_bootstrap_job(
+    state: &AppState,
+    agent_id: &str,
+    receiver: tokio::sync::oneshot::Receiver<
+        std::result::Result<crate::types::AgentBootstrapRecord, String>,
+    >,
+) -> String {
+    let id = format!("job_{}", Uuid::new_v4().simple());
+    let now = Utc::now();
+    let snapshot = state
+        .host
+        .runtime_db()
+        .agent_bootstraps()
+        .latest(agent_id)
+        .ok()
+        .flatten();
+    let (items, progress) = snapshot
+        .as_ref()
+        .map(|snapshot| bootstrap_job_items(snapshot))
+        .unwrap_or_default();
+    let job = JobSnapshot {
+        id: id.clone(),
+        kind: "agent.bootstrap".into(),
+        status: JobStatus::Running,
+        phase: "bootstrapping".into(),
+        progress,
+        summary: format!("Bootstrapping agent {agent_id}"),
+        items,
+        result: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    state.jobs.insert(job);
+
+    let jobs = state.jobs.clone();
+    let host = state.host.clone();
+    let job_id = id.clone();
+    let agent_id = agent_id.to_string();
+    tokio::spawn(async move {
+        let mut receiver = receiver;
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(BOOTSTRAP_POLL_INTERVAL_MS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                result = &mut receiver => {
+                    match result {
+                        Ok(Ok(record)) => {
+                            let (items, progress) = bootstrap_job_items(&record);
+                            let summary = record.summary();
+                            jobs.update(&job_id, |job| {
+                                job.status = JobStatus::Completed;
+                                job.phase = "completed".into();
+                                job.progress = progress;
+                                job.items = items;
+                                job.summary = format!(
+                                    "Agent {} bootstrap finished: {}",
+                                    agent_id,
+                                    serde_json::to_value(&summary)
+                                        .ok()
+                                        .and_then(|value| value.get("status").cloned())
+                                        .and_then(|value| value.as_str().map(str::to_string))
+                                        .unwrap_or_else(|| "unknown".into())
+                                );
+                                job.result = Some(json!({
+                                    "agent_id": agent_id,
+                                    "bootstrap": summary,
+                                }));
+                            });
+                        }
+                        Ok(Err(message)) => {
+                            let message = message.clone();
+                            jobs.update(&job_id, |job| {
+                                job.status = JobStatus::Failed;
+                                job.phase = "failed".into();
+                                job.summary = format!("Agent {agent_id} bootstrap reconcile failed");
+                                job.error = Some(message);
+                            });
+                        }
+                        Err(_) => {
+                            jobs.update(&job_id, |job| {
+                                job.status = JobStatus::Failed;
+                                job.phase = "failed".into();
+                                job.summary = format!(
+                                    "Agent {agent_id} bootstrap reconcile ended without a result"
+                                );
+                                job.error = Some(
+                                    "bootstrap reconcile task ended without a result (runtime shutdown?)"
+                                        .into(),
+                                );
+                            });
+                        }
+                    }
+                    break;
+                }
+                _ = interval.tick() => {
+                    if let Ok(Some(snapshot)) = host
+                        .runtime_db()
+                        .agent_bootstraps()
+                        .latest(&agent_id)
+                    {
+                        apply_bootstrap_snapshot(&jobs, &job_id, &agent_id, &snapshot);
+                    }
+                }
+            }
+        }
+    });
+    id
+}
+
+#[cfg(test)]
+#[path = "jobs/resource_writer_tests.rs"]
+mod resource_writer_tests;

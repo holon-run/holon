@@ -47,8 +47,9 @@ mod work_queue;
 pub use activity::{FileActivityMarker, PollActivityMarker};
 #[cfg(test)]
 pub(crate) use events::EventLogPage;
+pub use events::EventLogPageOrder;
 pub use events::RuntimeEventLog;
-pub(crate) use events::{EventBus, EventLogPageOrder, PublishedAuditEvent};
+pub(crate) use events::{EventBus, PublishedAuditEvent};
 pub use index_outbox::RuntimeIndexOutbox;
 pub use read_models::RuntimeReadModels;
 pub(crate) use read_models::{
@@ -300,7 +301,7 @@ impl AppStorage {
         self.runtime_dir().join(RUNTIME_CACHE_DIR)
     }
 
-    pub(crate) fn runtime_db(&self) -> Result<Option<RuntimeDb>> {
+    pub fn runtime_db(&self) -> Result<Option<RuntimeDb>> {
         Ok(Some(self.runtime_db.clone()))
     }
 
@@ -310,7 +311,7 @@ impl AppStorage {
     /// A slow SQLite read then costs one request instead of a tokio worker;
     /// SQL execution is cancelled at the deadline and surfaces as the existing
     /// retryable runtime-db error.
-    pub(crate) async fn read_block<T, F>(&self, label: &'static str, read: F) -> Result<T>
+    pub async fn read_block<T, F>(&self, label: &'static str, read: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(AppStorage) -> Result<T> + Send + 'static,

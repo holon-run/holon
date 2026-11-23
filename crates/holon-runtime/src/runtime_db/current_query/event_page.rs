@@ -6,7 +6,7 @@ const MAX_PAGE_CANDIDATES: usize = 256;
 const MAX_PAGE_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Default)]
-pub(crate) struct EventPageCosts {
+pub struct EventPageCosts {
     pub scanned: usize,
     pub decoded: usize,
     pub matched: usize,
@@ -21,11 +21,11 @@ pub(crate) struct EventPageCosts {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct EventPageScan<'a> {
+pub struct EventPageScan<'a> {
     pub kind: Option<&'a str>,
 }
 
-pub(crate) struct PreparedEventPage {
+pub struct PreparedEventPage {
     events: Vec<Arc<OwnedCurrentRecord>>,
     pub cursor_seq: Option<u64>,
     pub recovery: crate::runtime_db::AgentEventRecoveryWindow,
@@ -33,13 +33,13 @@ pub(crate) struct PreparedEventPage {
     pub has_newer: bool,
     pub next_before_seq: Option<u64>,
     pub next_after_seq: Option<u64>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     pub costs: EventPageCosts,
     _material: Vec<Arc<BudgetViewGuard>>,
 }
 
-#[cfg(test)]
-pub(crate) fn append_qualified_event_for_fixture(
+#[cfg(any(test, feature = "http-test-support"))]
+pub fn append_qualified_event_for_fixture(
     db: &crate::runtime_db::RuntimeDb,
     scope: &InputEvidenceScope,
     ledger: &InputEvidenceBudgetLedger,
@@ -83,7 +83,7 @@ pub(crate) fn append_qualified_event_for_fixture(
 }
 
 impl PreparedEventPage {
-    pub(crate) fn events(
+    pub fn events(
         &self,
     ) -> impl DoubleEndedIterator<Item = &crate::types::AuditEvent> + ExactSizeIterator {
         self.events.iter().map(|record| match record.record() {
@@ -93,7 +93,7 @@ impl PreparedEventPage {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "http-test-support"))]
 pub(crate) fn prepare_event_page(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -261,7 +261,7 @@ pub(crate) fn prepare_event_page_with_scan(
         next_after_seq: (scan.is_some() && !descending && has_more)
             .then_some(scanned_seq)
             .flatten(),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "http-test-support"))]
         costs,
         _material: guards,
     })

@@ -8,7 +8,7 @@ pub(crate) use task_stop_original::OriginalTaskStopMetadataRead;
 mod agent_list_read;
 mod cold_summary;
 mod observer_read;
-pub(crate) use observer_read::{
+pub use observer_read::{
     observer_hint_bytes, observer_json_bytes, observer_json_bytes_with_sources,
 };
 mod child_monitor_binding;
@@ -20,7 +20,7 @@ mod child_task_summaries_read_tests;
 mod cold_scheduling;
 mod event_read;
 pub use agent_list_read::{OwnedAgentListEntry, OwnedAgentListRead, OwnedAgentTreeRead};
-pub(crate) use event_read::OwnedEventPageRead;
+pub use event_read::OwnedEventPageRead;
 mod command_task_producer;
 pub(crate) mod context_resources;
 mod input_evidence;
@@ -28,7 +28,7 @@ mod input_evidence;
 mod original_child_spawn;
 mod pending_budget;
 mod quarantine;
-pub(crate) use quarantine::AgentQuarantined;
+pub use quarantine::AgentQuarantined;
 pub(crate) mod resource_writes;
 mod startup_dispatch;
 pub use startup_dispatch::StartupDispatchCompletion;
@@ -150,14 +150,14 @@ pub struct PublicAgentActivitySnapshot {
 /// Host-level roster snapshot data assembled from one committed read view.
 /// The HTTP layer maps this onto the wire `AgentRosterSnapshot` contract.
 #[derive(Debug)]
-pub(crate) struct AgentRosterSnapshotData {
+pub struct AgentRosterSnapshotData {
     pub runtime_id: String,
     pub event_log_epoch: String,
     pub visibility_policy_generation: u64,
     pub agents: Vec<AgentRosterEntryData>,
-    pub(crate) _material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
-    pub(crate) acquisition: crate::diagnostics::resource_io::ResourceReadMaterial,
-    pub(crate) agent_materials: Vec<crate::diagnostics::resource_io::ResourceReadMaterial>,
+    pub _material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    pub acquisition: crate::diagnostics::resource_io::ResourceReadMaterial,
+    pub agent_materials: Vec<crate::diagnostics::resource_io::ResourceReadMaterial>,
 }
 
 impl Clone for AgentRosterSnapshotData {
@@ -191,7 +191,7 @@ impl PartialEq for AgentRosterSnapshotData {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AgentRosterEntryData {
+pub struct AgentRosterEntryData {
     pub agent: AgentListEntry,
     pub event_head_seq: u64,
     pub oldest_retained_seq: u64,
@@ -199,7 +199,7 @@ pub(crate) struct AgentRosterEntryData {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AgentRosterLatestBriefData {
+pub struct AgentRosterLatestBriefData {
     pub brief_id: String,
     pub created_event_seq: Option<u64>,
     pub created_at: chrono::DateTime<Utc>,
@@ -210,7 +210,7 @@ pub(crate) struct AgentRosterLatestBriefData {
 /// committed read view. The HTTP layer maps this onto the wire
 /// `AgentProjectionSnapshot` contract.
 #[derive(Debug)]
-pub(crate) struct AgentProjectionSnapshotData {
+pub struct AgentProjectionSnapshotData {
     pub runtime_id: String,
     pub event_log_epoch: String,
     pub visibility_policy_generation: u64,
@@ -231,8 +231,8 @@ pub(crate) struct AgentProjectionSnapshotData {
     /// durable per-record deletion ledger exists for these families yet,
     /// and absence is represented by the null anchors above.
     pub hydration_references: Vec<AgentHydrationReferenceData>,
-    pub(crate) _material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
-    pub(crate) acquisition: crate::diagnostics::resource_io::ResourceReadMaterial,
+    pub _material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    pub acquisition: crate::diagnostics::resource_io::ResourceReadMaterial,
 }
 
 impl Clone for AgentProjectionSnapshotData {
@@ -278,7 +278,7 @@ impl PartialEq for AgentProjectionSnapshotData {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AgentWorkItemAnchorData {
+pub struct AgentWorkItemAnchorData {
     pub work_item_id: String,
     pub state: crate::types::WorkItemState,
     pub plan_status: crate::types::WorkItemPlanStatus,
@@ -287,25 +287,25 @@ pub(crate) struct AgentWorkItemAnchorData {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ConversationRevisionAnchorsData {
+pub struct ConversationRevisionAnchorsData {
     pub latest_message_id: Option<String>,
     pub latest_transcript_entry_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AgentHydrationReferenceData {
+pub struct AgentHydrationReferenceData {
     pub record_kind: ObserverSyncRecordKindData,
     pub record_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ObserverSyncRecordKindData {
+pub enum ObserverSyncRecordKindData {
     Message,
     Brief,
     TranscriptEntry,
 }
 
-fn projection_hydration_references(
+pub fn projection_hydration_references(
     message_id: Option<&str>,
     transcript_entry_id: Option<&str>,
     brief_id: Option<&str>,
@@ -345,7 +345,7 @@ fn projection_hydration_references(
     Ok(references)
 }
 
-pub(crate) const LATEST_BRIEF_PREVIEW_MAX_UTF8_BYTES: usize = 512;
+pub const LATEST_BRIEF_PREVIEW_MAX_UTF8_BYTES: usize = 512;
 
 /// Bounds a stored Brief preview to the roster contract's UTF-8 byte limit,
 /// cutting on a char boundary so the value stays valid UTF-8.
@@ -363,13 +363,13 @@ fn brief_preview(preview: Option<String>) -> String {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentStateProjectionSource {
+pub enum AgentStateProjectionSource {
     Loaded,
     Storage,
 }
 
 impl AgentStateProjectionSource {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Loaded => "loaded",
             Self::Storage => "storage",
@@ -377,17 +377,17 @@ impl AgentStateProjectionSource {
     }
 }
 
-pub(crate) struct AgentStateReadProjection {
-    pub(crate) observation: Option<crate::types::AgentListObservation>,
-    pub(crate) waits: Vec<crate::types::WaitConditionRecord>,
-    pub(crate) source: AgentStateProjectionSource,
-    pub(crate) agent: LightweightAgentStateProjection,
-    pub(crate) tasks: Vec<TaskRecord>,
-    pub(crate) timers: Vec<crate::runtime::TimerRecordLoan>,
-    pub(crate) active_work_item_count: usize,
-    pub(crate) active_timer_count: usize,
-    pub(crate) external_triggers: Vec<crate::runtime::ExternalTriggerRecordLoan>,
-    pub(crate) material: crate::runtime::StateProjectionMaterial,
+pub struct AgentStateReadProjection {
+    pub observation: Option<crate::types::AgentListObservation>,
+    pub waits: Vec<crate::types::WaitConditionRecord>,
+    pub source: AgentStateProjectionSource,
+    pub agent: LightweightAgentStateProjection,
+    pub tasks: Vec<TaskRecord>,
+    pub timers: Vec<crate::runtime::TimerRecordLoan>,
+    pub active_work_item_count: usize,
+    pub active_timer_count: usize,
+    pub external_triggers: Vec<crate::runtime::ExternalTriggerRecordLoan>,
+    pub material: crate::runtime::StateProjectionMaterial,
 }
 
 #[derive(Clone)]
@@ -505,7 +505,7 @@ pub(crate) struct HostInner {
     >,
     #[cfg(test)]
     clock_recovery_dispatch_gates: Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>,
-    #[cfg(all(test, holon_lib_test_shard = "d"))]
+    #[cfg(any(all(test, holon_lib_test_shard = "d"), feature = "http-test-support"))]
     test_constructor_outcomes: Mutex<BTreeMap<String, anyhow::Error>>,
     bootstrap_provider_active: AtomicBool,
     bootstrap_ready_notify: Notify,
@@ -1158,7 +1158,7 @@ pub enum AgentBootstrapExecution {
 }
 
 /// Outcome of kicking the background bootstrap reconcile for an agent.
-pub(crate) enum AgentBootstrapKick {
+pub enum AgentBootstrapKick {
     /// The bootstrap record is already terminal-ready; nothing was started.
     AlreadyComplete(AgentBootstrapRecord),
     /// A background reconcile is running; the receiver resolves with its
@@ -1334,7 +1334,7 @@ impl RuntimeHost {
                 runtime_constructor_gate: Mutex::new(None),
                 #[cfg(test)]
                 clock_recovery_dispatch_gates: Mutex::new(BTreeMap::new()),
-                #[cfg(all(test, holon_lib_test_shard = "d"))]
+                #[cfg(any(all(test, holon_lib_test_shard = "d"), feature = "http-test-support"))]
                 test_constructor_outcomes: Mutex::new(BTreeMap::new()),
                 bootstrap_provider_active: AtomicBool::new(bootstrap_provider_active),
                 bootstrap_ready_notify: Notify::new(),
@@ -1562,7 +1562,7 @@ impl RuntimeHost {
         Ok(())
     }
 
-    pub(crate) fn bootstrap_mode_active(&self) -> bool {
+    pub fn bootstrap_mode_active(&self) -> bool {
         self.inner.bootstrap_provider_active.load(Ordering::Acquire)
     }
 
@@ -1607,8 +1607,8 @@ impl RuntimeHost {
         &self.inner.runtime_db
     }
 
-    #[cfg(all(test, holon_lib_test_shard = "c"))]
-    pub(crate) fn configure_reader_pool_for_tests(
+    #[cfg(any(all(test, holon_lib_test_shard = "c"), feature = "http-test-support"))]
+    pub fn configure_reader_pool_for_tests(
         &mut self,
         capacity: u32,
         budget: Duration,
@@ -1619,7 +1619,7 @@ impl RuntimeHost {
             .configure_reader_pool_for_tests(capacity, budget)
     }
 
-    pub(crate) fn skills_registry(&self) -> Arc<RwLock<SkillsRegistry>> {
+    pub fn skills_registry(&self) -> Arc<RwLock<SkillsRegistry>> {
         self.inner.skills_registry.clone()
     }
 
@@ -2673,7 +2673,7 @@ impl RuntimeHost {
         }
     }
 
-    pub(crate) fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<PublishedAuditEvent> {
+    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<PublishedAuditEvent> {
         self.inner.event_bus.subscribe()
     }
 
@@ -3198,7 +3198,7 @@ impl RuntimeHost {
             .await
     }
 
-    pub(crate) async fn migrate_model_config_routes(
+    pub async fn migrate_model_config_routes(
         &self,
         write: bool,
     ) -> Result<crate::model_config_migration::ModelConfigMigrationReport> {
@@ -3688,7 +3688,7 @@ impl RuntimeHost {
         Ok(())
     }
 
-    pub(crate) async fn unload_runtime(&self, agent_id: &str) {
+    pub async fn unload_runtime(&self, agent_id: &str) {
         if let Err(error) = self.drain_runtime_incarnation(agent_id, None).await {
             tracing::warn!(agent_id, error = %error, "runtime drain incomplete");
         }
@@ -4357,7 +4357,7 @@ impl RuntimeHost {
 
     /// Resource reads share the authenticated operator read surface's target
     /// policy, without acquiring runtime state or opening an AgentHome.
-    pub(crate) fn local_agent_resource_identity(
+    pub fn local_agent_resource_identity(
         &self,
         agent_id: &str,
     ) -> std::result::Result<AgentIdentityRecord, PublicAgentError> {
@@ -4385,7 +4385,7 @@ impl RuntimeHost {
         }
     }
 
-    pub(crate) fn operator_agent_read_storage(
+    pub fn operator_agent_read_storage(
         &self,
         agent_id: &str,
     ) -> std::result::Result<AppStorage, PublicAgentError> {
@@ -4405,7 +4405,7 @@ impl RuntimeHost {
             .contains_key(agent_id)
     }
 
-    pub(crate) async fn try_get_loaded_runtime(&self, agent_id: &str) -> Option<RuntimeHandle> {
+    pub async fn try_get_loaded_runtime(&self, agent_id: &str) -> Option<RuntimeHandle> {
         let registry = self.inner.runtimes.read().await;
         registry
             .agents
@@ -4431,7 +4431,7 @@ impl RuntimeHost {
         Ok(runtime)
     }
 
-    pub(crate) async fn try_get_operator_loaded_runtime(
+    pub async fn try_get_operator_loaded_runtime(
         &self,
         agent_id: &str,
     ) -> std::result::Result<Option<RuntimeHandle>, PublicAgentError> {
@@ -4439,7 +4439,7 @@ impl RuntimeHost {
         Ok(self.try_get_loaded_runtime(agent_id).await)
     }
 
-    pub(crate) async fn operator_agent_skills_view(
+    pub async fn operator_agent_skills_view(
         &self,
         agent_id: &str,
     ) -> std::result::Result<crate::types::SkillsRuntimeView, PublicAgentError> {
@@ -4504,7 +4504,7 @@ impl RuntimeHost {
         }
     }
 
-    pub(crate) async fn search_memory_read_only(
+    pub async fn search_memory_read_only(
         &self,
         query: &str,
         limit: usize,
@@ -4540,7 +4540,7 @@ impl RuntimeHost {
         .await?
     }
 
-    pub(crate) async fn get_memory_read_only(
+    pub async fn get_memory_read_only(
         &self,
         source_ref: &str,
         max_chars: Option<usize>,
@@ -4562,7 +4562,7 @@ impl RuntimeHost {
         .await?
     }
 
-    pub(crate) fn public_agent_scheduler_repair_inspection(
+    pub fn public_agent_scheduler_repair_inspection(
         &self,
         agent_id: &str,
     ) -> std::result::Result<SchedulerRepairInspection, PublicAgentError> {
@@ -4610,7 +4610,7 @@ impl RuntimeHost {
         })
     }
 
-    pub(crate) fn public_agent_worktree_summary(
+    pub fn public_agent_worktree_summary(
         &self,
         agent_id: &str,
     ) -> std::result::Result<String, PublicAgentError> {
@@ -4629,7 +4629,7 @@ impl RuntimeHost {
         ))
     }
 
-    pub(crate) async fn local_agent_summary(
+    pub async fn local_agent_summary(
         &self,
         agent_id: &str,
     ) -> std::result::Result<crate::runtime::OwnedAgentSummaryRead, PublicAgentError> {
@@ -4841,7 +4841,7 @@ impl RuntimeHost {
         .map_err(PublicAgentError::Runtime)
     }
 
-    pub(crate) async fn local_agent_lightweight_projection(
+    pub async fn local_agent_lightweight_projection(
         &self,
         agent_id: &str,
     ) -> std::result::Result<LightweightAgentStateProjection, PublicAgentError> {
@@ -4935,7 +4935,7 @@ impl RuntimeHost {
     /// Model-only read: never builds a full/compact summary, never activates a
     /// runtime, and for unloaded agents reads only the persisted model
     /// material through the same shared resolver as the cold summary path.
-    pub(crate) async fn local_agent_model(
+    pub async fn local_agent_model(
         &self,
         agent_id: &str,
     ) -> std::result::Result<crate::types::AgentModelState, PublicAgentError> {
@@ -5430,8 +5430,8 @@ impl RuntimeHost {
     }
 
     // Unscoped reference path retained for scoped projection equivalence tests.
-    #[cfg(test)]
-    pub(crate) async fn operator_agent_state_projection(
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub async fn operator_agent_state_projection(
         &self,
         agent_id: &str,
         task_limit: usize,
@@ -5603,7 +5603,7 @@ impl RuntimeHost {
     }
 
     /// Operator visibility is not an external/peer ingress grant.
-    pub(crate) async fn get_agent_for_operator_prompt(
+    pub async fn get_agent_for_operator_prompt(
         &self,
         agent_id: &str,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
@@ -5900,7 +5900,7 @@ impl RuntimeHost {
         })
     }
 
-    pub(crate) async fn append_agent_creation_audit(
+    pub async fn append_agent_creation_audit(
         &self,
         agent_id: &str,
         identity_incarnation: u64,
@@ -6385,7 +6385,7 @@ impl RuntimeHost {
     /// The durable `agent_bootstraps` record stays the source of truth; the
     /// returned receiver resolves once the background reconcile finishes, so
     /// HTTP job projections can follow it without owning the lifecycle.
-    pub(crate) fn kick_agent_bootstrap(&self, agent_id: &str) -> Result<AgentBootstrapKick> {
+    pub fn kick_agent_bootstrap(&self, agent_id: &str) -> Result<AgentBootstrapKick> {
         let bootstrap = self
             .runtime_db()
             .agent_bootstraps()
@@ -7491,8 +7491,8 @@ impl RuntimeHost {
         self.inner.registry.agent_identity_records()
     }
 
-    #[cfg(test)]
-    pub(crate) fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.inner.registry.append_agent_identity(record)?;
         self.prepare_agent_list_identity(record);
         Ok(())
@@ -7804,8 +7804,8 @@ impl RuntimeHost {
     /// committed database read view. All-or-nothing: any per-Agent assembly
     /// failure fails the whole snapshot, and entries reflect committed
     /// canonical state instead of in-memory runtime watchers.
-    #[cfg(test)]
-    pub(crate) fn agent_roster_snapshot(&self) -> Result<AgentRosterSnapshotData> {
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub fn agent_roster_snapshot(&self) -> Result<AgentRosterSnapshotData> {
         let per_agent = crate::diagnostics::resource_io::ResourceReadMaterial::current()?.is_none();
         let acquisition = self.observer_inventory_material()?;
         acquisition.read(|| {
@@ -7813,10 +7813,7 @@ impl RuntimeHost {
         })
     }
 
-    pub(crate) fn agent_roster_snapshot_scoped(
-        &self,
-        db: &RuntimeDb,
-    ) -> Result<AgentRosterSnapshotData> {
+    pub fn agent_roster_snapshot_scoped(&self, db: &RuntimeDb) -> Result<AgentRosterSnapshotData> {
         db.check_read_scope()?;
         let per_agent = crate::diagnostics::resource_io::ResourceReadMaterial::current()?.is_none();
         let acquisition = self.observer_inventory_material()?;
@@ -7948,8 +7945,8 @@ impl RuntimeHost {
     /// public member, so unknown, private, and deleted identities stay
     /// indistinguishable. Assembly is all-or-nothing: an unreadable anchor
     /// fails the whole request instead of substituting placeholder facts.
-    #[cfg(test)]
-    pub(crate) fn agent_projection_snapshot(
+    #[cfg(any(test, feature = "http-test-support"))]
+    pub fn agent_projection_snapshot(
         &self,
         agent_id: &str,
     ) -> Result<Option<AgentProjectionSnapshotData>> {
@@ -7957,7 +7954,7 @@ impl RuntimeHost {
         acquisition.read(|| self.agent_projection_snapshot_in(agent_id, &acquisition))
     }
 
-    pub(crate) fn agent_projection_snapshot_scoped(
+    pub fn agent_projection_snapshot_scoped(
         &self,
         agent_id: &str,
         db: &RuntimeDb,
@@ -7967,7 +7964,7 @@ impl RuntimeHost {
         acquisition.read(|| self.agent_projection_snapshot_in_scoped(agent_id, &acquisition, db))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "http-test-support"))]
     fn agent_projection_snapshot_in(
         &self,
         agent_id: &str,
@@ -8471,7 +8468,7 @@ impl RuntimeHost {
         Ok(children)
     }
 
-    pub(crate) async fn deliver_external_callback(
+    pub async fn deliver_external_callback(
         &self,
         agent_id: &str,
         incarnation: u64,
@@ -8546,7 +8543,7 @@ impl RuntimeHost {
         )
     }
 
-    pub(crate) fn resolve_external_trigger_locator(
+    pub fn resolve_external_trigger_locator(
         &self,
         callback_token: &str,
     ) -> Result<
@@ -8618,7 +8615,7 @@ impl RuntimeHost {
         Ok(Some((agent_id, read.into_record())))
     }
 
-    pub(crate) fn ensure_default_agent_identity(&self) -> Result<AgentIdentityRecord> {
+    pub fn ensure_default_agent_identity(&self) -> Result<AgentIdentityRecord> {
         let identity = self.inner.registry.ensure_default_agent_identity()?;
         self.prepare_agent_list_identity(&identity);
         Ok(identity)
@@ -11599,7 +11596,7 @@ impl RuntimeHost {
         })
     }
 
-    pub(crate) fn agent_data_dir(&self, agent_id: &str) -> PathBuf {
+    pub fn agent_data_dir(&self, agent_id: &str) -> PathBuf {
         self.config().data_dir.join("agents").join(agent_id)
     }
 
@@ -11611,7 +11608,7 @@ impl RuntimeHost {
         self.inner.registry.validate_agent_id(agent_id)
     }
 
-    fn runtime_context_config(&self) -> ContextConfig {
+    pub fn runtime_context_config(&self) -> ContextConfig {
         let config = self.config();
         let base = ContextConfig {
             recent_messages: config.context_window_messages,
@@ -11703,7 +11700,7 @@ impl RuntimeHost {
         let runtime_agent_id = agent_id.to_string();
         let constructor_observation = observation.clone();
         let runtime = spawn_blocking(move || {
-            #[cfg(all(test, holon_lib_test_shard = "d"))]
+            #[cfg(any(all(test, holon_lib_test_shard = "d"), feature = "http-test-support"))]
             if let Some(error) = host
                 .inner
                 .test_constructor_outcomes
@@ -12507,9 +12504,6 @@ mod tests {
     #[path = "../batched_invocation_tests.rs"]
     mod batched_invocation_tests;
     #[cfg(holon_lib_test_shard = "d")]
-    #[path = "callback_discovery_tests.rs"]
-    mod callback_discovery_tests;
-    #[cfg(holon_lib_test_shard = "d")]
     #[path = "child_summary_ownership_tests.rs"]
     mod child_summary_ownership_tests;
     #[cfg(holon_lib_test_shard = "d")]
@@ -12686,17 +12680,7 @@ mod tests {
         test_host_with_provider(Arc::new(SilentPeerProvider(peer_id)))
     }
 
-    fn test_host_with_provider(
-        provider: Arc<dyn AgentProvider>,
-    ) -> (tempfile::TempDir, RuntimeHost) {
-        let home = tempdir().unwrap();
-        write_test_model_config(home.path());
-        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-        config.user_home_dir = Some(home.path().to_path_buf());
-        let host = RuntimeHost::new_with_provider(config, provider).unwrap();
-        host.ensure_default_agent_identity().unwrap();
-        (home, host)
-    }
+    use crate::runtime::http_test_support::test_host_with_provider;
 
     fn empty_test_host() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();
@@ -12736,12 +12720,7 @@ mod tests {
         );
     }
 
-    async fn restart_fixture_host(host: RuntimeHost) -> RuntimeHost {
-        let config = host.config().as_ref().clone();
-        host.shutdown().await.unwrap();
-        drop(host);
-        RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap()
-    }
+    use crate::runtime::http_test_support::restart_fixture_host;
 
     fn canonical_test_host() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();
@@ -33241,5 +33220,36 @@ impl RuntimeHost {
             .lock()
             .unwrap()
             .insert(agent_id.to_owned(), gate);
+    }
+}
+
+#[cfg(any(test, feature = "http-test-support"))]
+pub(crate) mod http_fixture {
+    use super::*;
+
+    pub fn input_evidence_budget(
+        host: &RuntimeHost,
+    ) -> &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger {
+        &host.inner.input_evidence_budget
+    }
+
+    #[cfg(any(all(test, holon_lib_test_shard = "d"), feature = "http-test-support"))]
+    pub fn inject_constructor_error(host: &RuntimeHost, agent_id: &str, error: anyhow::Error) {
+        host.inner
+            .test_constructor_outcomes
+            .lock()
+            .unwrap()
+            .insert(agent_id.to_owned(), error);
+    }
+
+    pub fn active_identity(
+        host: &RuntimeHost,
+        agent_id: &str,
+    ) -> std::result::Result<AgentIdentityRecord, PublicAgentError> {
+        host.active_agent_identity(agent_id)
+    }
+
+    pub async fn has_no_loaded_agents(host: &RuntimeHost) -> bool {
+        host.inner.runtimes.read().await.agents.is_empty()
     }
 }

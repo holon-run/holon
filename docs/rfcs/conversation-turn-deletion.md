@@ -440,4 +440,4 @@ Implementation reference:
 identification pattern),
 `crates/holon-runtime/src/runtime_db/agent_deletion_cleanup.rs` (guarded
 purge pattern), `crates/holon-runtime/src/memory/index.rs`,
-`crates/holon-runtime/src/http/workspace_files.rs`.
+`crates/holon-http-api/src/http/workspace_files.rs`.

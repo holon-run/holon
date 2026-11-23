@@ -14,7 +14,8 @@ use super::RuntimeHandle;
 use crate::types::{
     AgentMessageAdmissionEvidence, AgentMessageCallerContext, AgentMessageDeliveryOutcome,
     AgentMessageDeliveryReceipt, AgentMessageDeliveryRecord, AgentMessageDeliveryState,
-    AgentMessageRoutingContext, AgentMessageSendRequest, MessageEnvelope, MessageKind, Priority,
+    AgentMessageRoutingContext, AgentMessageSendRequest, MessageBody, MessageEnvelope, MessageKind,
+    Priority,
 };
 
 const DELIVERY_IDEMPOTENCY_NAMESPACE: &str = "agent_message_delivery";
@@ -30,23 +31,23 @@ static DELIVERY_REACHED_CHECKPOINT: Notify = Notify::const_new();
 #[cfg(test)]
 static DELIVERY_ALLOW_CONTINUE: Notify = Notify::const_new();
 
-pub(crate) struct AgentMessageDeliveryService<'a> {
+pub struct AgentMessageDeliveryService<'a> {
     runtime: &'a RuntimeHandle,
 }
 
-pub(crate) struct PreparedAgentMessageDelivery {
+pub struct PreparedAgentMessageDelivery {
     pub(crate) message: MessageEnvelope,
     pub(crate) record: AgentMessageDeliveryRecord,
 }
 
 impl RuntimeHandle {
-    pub(crate) fn agent_message_delivery_service(&self) -> AgentMessageDeliveryService<'_> {
+    pub fn agent_message_delivery_service(&self) -> AgentMessageDeliveryService<'_> {
         AgentMessageDeliveryService { runtime: self }
     }
 }
 
 impl AgentMessageDeliveryService<'_> {
-    pub(crate) async fn deliver(
+    pub async fn deliver(
         &self,
         prepared: &PreparedAgentMessageDelivery,
     ) -> Result<AgentMessageDeliveryReceipt> {
@@ -57,6 +58,26 @@ impl AgentMessageDeliveryService<'_> {
         #[cfg(test)]
         wait_at_delivery_checkpoint(&prepared.record.target_agent_id).await;
         Ok(receipt)
+    }
+
+    pub fn prepare_operator_control_prompt(
+        request: AgentMessageSendRequest,
+        caller: AgentMessageCallerContext,
+        expected_incarnation: Option<u64>,
+        text: String,
+        work_item_id: Option<String>,
+        client_request_id: Option<String>,
+    ) -> Result<PreparedAgentMessageDelivery> {
+        let mut prepared = Self::prepare(request, caller)?;
+        prepared.message.kind = MessageKind::OperatorPrompt;
+        prepared.record.expected_incarnation = expected_incarnation;
+        prepared.message.body = MessageBody::Text { text };
+        prepared.message.work_item_id = work_item_id;
+        prepared.message.metadata = Some(serde_json::json!({
+            "control": true,
+            "client_request_id": client_request_id,
+        }));
+        Ok(prepared)
     }
 
     pub(crate) fn prepare(
