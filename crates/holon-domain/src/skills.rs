@@ -243,7 +243,7 @@ pub struct SkillRootRegistration {
     pub owner_agent_id: Option<String>,
     /// Root path on disk.
     pub root_path: PathBuf,
-    /// A bare workspace skills/ root with no whole-root curated alias.
+    /// A bare project workspace skills/ root with no whole-root curated alias.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub standalone_workspace_skills: bool,
     /// Last scan status.

@@ -3188,9 +3188,11 @@ mod resource_read_tests {
         };
         write(&roots[0], "First", "original")?;
         write(&roots[1], "Second", "original")?;
-        runtime
+        let initial = runtime
             .skills_runtime_view_for_state(&state, &identity)
             .await?;
+        assert!(initial.catalog_only_roots.is_empty());
+        assert_eq!(initial.discoverable_skills.len(), 2);
         let registry = host.skills_registry();
         // The test-only snapshot equality includes the private fingerprint map.
         let before = registry.read().await.clone();

@@ -70,7 +70,7 @@ pub fn load_skills_runtime_view(
         });
     }
 
-    let workspace_roots = workspace_skill_root_registrations(workspace_anchor);
+    let workspace_roots = workspace_skill_root_registrations(workspace_anchor, Some(agent_home));
     for root in &workspace_roots {
         discoverable_skills.extend(load_catalog_for_scope(
             io,
@@ -173,7 +173,7 @@ pub fn agent_skill_roots(agent_home: &Path) -> Vec<PathBuf> {
 }
 
 pub fn workspace_skill_roots(workspace_anchor: Option<&Path>) -> Vec<PathBuf> {
-    workspace_skill_root_registrations(workspace_anchor)
+    workspace_skill_root_registrations(workspace_anchor, None)
         .into_iter()
         .map(|root| root.root_path)
         .collect()
@@ -181,6 +181,7 @@ pub fn workspace_skill_roots(workspace_anchor: Option<&Path>) -> Vec<PathBuf> {
 
 fn workspace_skill_root_registrations(
     workspace_anchor: Option<&Path>,
+    agent_home: Option<&Path>,
 ) -> Vec<SkillRootRegistration> {
     let Some(anchor) = workspace_anchor else {
         return Vec::new();
@@ -203,7 +204,12 @@ fn workspace_skill_root_registrations(
         }
         identities.insert(identity, roots.len());
         let mut root = skill_root_registration(SkillRootSourceKind::Workspace, None, path);
-        root.standalone_workspace_skills = is_bare;
+        // AgentHome may also be the execution root. Keep its existing
+        // registrations and IDs, but don't treat its skills as a publish directory.
+        root.standalone_workspace_skills = is_bare
+            && !agent_home.is_some_and(|home| {
+                anchor == home || skill_root_identity(anchor) == skill_root_identity(home)
+            });
         roots.push(root);
     }
     roots
@@ -349,7 +355,10 @@ pub fn effective_skill_root_registrations(
             root_path,
         )
     }));
-    roots.extend(workspace_skill_root_registrations(workspace_anchor));
+    roots.extend(workspace_skill_root_registrations(
+        workspace_anchor,
+        Some(agent_home),
+    ));
     roots
 }
 

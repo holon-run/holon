@@ -31,6 +31,7 @@ If any of the first three directories yields a discoverable skill, all three
 remain eligible, but a separate `skills/` directory becomes an install source
 only. The scan checks direct subdirectories for readable `SKILL.md` files;
 empty directories, README files, and broken links do not trigger the rule.
+The rule does not apply when AgentHome is the current execution root.
 A curated root linked to `skills/` counts as the same root. A link to just one
 skill selects only that skill from `skills/`.
 

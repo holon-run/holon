@@ -29,6 +29,7 @@ Holon 以 agent 当前的执行根为准，包括当前 worktree。前三个协�
 安装来源，不进入提示。扫描只检查直接子目录中可读的 `SKILL.md`；空目录、
 README 和断链都不触发这条规则。协作目录若整根链接到 `skills/`，两者视为
 同一个根；若只链接到其中一个 skill，则只选入这一项。
+当前执行根为 AgentHome 时，不应用此规则。
 
 用 `holon skills list --agent <id>` 查看实际可见项。此命令与
 `GET /agents/{agent_id}/skills` 在规则生效时都返回

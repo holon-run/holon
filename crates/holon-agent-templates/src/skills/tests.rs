@@ -622,6 +622,35 @@ fn agent_skill_discovery_merges_compatible_roots() {
 }
 
 #[test]
+fn workspace_skill_discovery_preserves_agent_home_as_execution_root() {
+    let home = tempdir().unwrap();
+    let write = |relative: &str| {
+        let path = home.path().join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "skill description").unwrap();
+    };
+    let view = || {
+        load_skills_runtime_view(
+            &crate::TestIo,
+            SkillVisibility::NonDefaultAgent,
+            None,
+            home.path(),
+            Some(home.path()),
+            &[],
+        )
+        .unwrap()
+    };
+    write("skills/local/SKILL.md");
+    let local = view().discoverable_skills[0].clone();
+
+    write(".agents/skills/extra/SKILL.md");
+    let after = view();
+    assert!(after.catalog_only_roots.is_empty());
+    assert_eq!(after.discoverable_skills.len(), 2);
+    assert!(after.discoverable_skills.contains(&local));
+}
+
+#[test]
 fn workspace_skill_discovery_prefers_nonempty_curated_roots() {
     let dir = tempdir().unwrap();
     let workspace = dir.path().join("workspace");

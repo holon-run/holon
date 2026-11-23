@@ -58,6 +58,7 @@ discoverable entry, a distinct bare `skills/` root is available only as an
 install source. This filter applies before name precedence and also governs
 attachments and the projection of existing activations. A whole-root alias
 retains curated visibility without changing its existing root or skill IDs.
+The filter does not apply when AgentHome is the current execution root.
 The agent skills list API reports the excluded `skills/` root with reason
 `curated_roots_present` in `catalog_only_roots`; the diagnostic is not shown
 to the model and does not register anything in the Skill Library.
