@@ -2120,43 +2120,57 @@ async fn deepseek_search(
 // They are declared here rather than shared with BigModel: each station's
 // numeric codes are a separate contract and must not be assumed equal.
 const ZAI_AUTH_ERROR_CODES: [i64; 5] = [1000, 1001, 1003, 1005, 1220];
-const ZAI_RATE_ERROR_CODES: [i64; 16] = [
-    1113, 1302, 1305, 1308, 1309, 1310, 1311, 1313, 1314, 1315, 1316, 1317, 1318, 1319, 1320, 1321,
+// 1113 means the account is out of balance or has no usable resource
+// package; retrying cannot succeed, so it is not a rate-limit code.
+const ZAI_BALANCE_ERROR_CODES: [i64; 1] = [1113];
+const ZAI_RATE_ERROR_CODES: [i64; 15] = [
+    1302, 1305, 1308, 1309, 1310, 1311, 1313, 1314, 1315, 1316, 1317, 1318, 1319, 1320, 1321,
 ];
 const ZAI_INVALID_ERROR_CODES: [i64; 6] = [1210, 1213, 1214, 1215, 1261, 1301];
 const ZAI_ENGINE_ERROR_CODES: [i64; 4] = [1211, 1212, 1221, 1222];
 
 // BigModel business error codes, from https://docs.bigmodel.cn/cn/api/api-code.
 const BIGMODEL_AUTH_ERROR_CODES: [i64; 5] = [1000, 1001, 1003, 1005, 1220];
-const BIGMODEL_RATE_ERROR_CODES: [i64; 16] = [
-    1113, 1302, 1305, 1308, 1309, 1310, 1311, 1313, 1314, 1315, 1316, 1317, 1318, 1319, 1320, 1321,
+// 1113 carries the same balance semantics on this station's own contract.
+const BIGMODEL_BALANCE_ERROR_CODES: [i64; 1] = [1113];
+const BIGMODEL_RATE_ERROR_CODES: [i64; 15] = [
+    1302, 1305, 1308, 1309, 1310, 1311, 1313, 1314, 1315, 1316, 1317, 1318, 1319, 1320, 1321,
 ];
 const BIGMODEL_INVALID_ERROR_CODES: [i64; 6] = [1210, 1213, 1214, 1215, 1261, 1301];
 const BIGMODEL_ENGINE_ERROR_CODES: [i64; 4] = [1211, 1212, 1221, 1222];
 
-fn zai_business_error_kind(code: i64) -> Option<&'static str> {
-    if ZAI_AUTH_ERROR_CODES.contains(&code) {
-        Some("provider_unavailable")
+const STATION_BUSINESS_HINT: &str = "check the API key and engine selection or retry later";
+const STATION_BALANCE_HINT: &str = "check the account balance or an available resource package";
+
+/// Classify a station business code into (error kind, recovery hint). The
+/// hint travels with the kind so balance exhaustion never advises retrying.
+fn zai_business_error(code: i64) -> Option<(&'static str, &'static str)> {
+    if ZAI_BALANCE_ERROR_CODES.contains(&code) {
+        Some(("provider_unavailable", STATION_BALANCE_HINT))
+    } else if ZAI_AUTH_ERROR_CODES.contains(&code) {
+        Some(("provider_unavailable", STATION_BUSINESS_HINT))
     } else if ZAI_RATE_ERROR_CODES.contains(&code) {
-        Some("rate_limited")
+        Some(("rate_limited", STATION_BUSINESS_HINT))
     } else if ZAI_INVALID_ERROR_CODES.contains(&code) {
-        Some("invalid_request")
+        Some(("invalid_request", STATION_BUSINESS_HINT))
     } else if ZAI_ENGINE_ERROR_CODES.contains(&code) {
-        Some("engine_unavailable")
+        Some(("engine_unavailable", STATION_BUSINESS_HINT))
     } else {
         None
     }
 }
 
-fn bigmodel_business_error_kind(code: i64) -> Option<&'static str> {
-    if BIGMODEL_AUTH_ERROR_CODES.contains(&code) {
-        Some("provider_unavailable")
+fn bigmodel_business_error(code: i64) -> Option<(&'static str, &'static str)> {
+    if BIGMODEL_BALANCE_ERROR_CODES.contains(&code) {
+        Some(("provider_unavailable", STATION_BALANCE_HINT))
+    } else if BIGMODEL_AUTH_ERROR_CODES.contains(&code) {
+        Some(("provider_unavailable", STATION_BUSINESS_HINT))
     } else if BIGMODEL_RATE_ERROR_CODES.contains(&code) {
-        Some("rate_limited")
+        Some(("rate_limited", STATION_BUSINESS_HINT))
     } else if BIGMODEL_INVALID_ERROR_CODES.contains(&code) {
-        Some("invalid_request")
+        Some(("invalid_request", STATION_BUSINESS_HINT))
     } else if BIGMODEL_ENGINE_ERROR_CODES.contains(&code) {
-        Some("engine_unavailable")
+        Some(("engine_unavailable", STATION_BUSINESS_HINT))
     } else {
         None
     }
@@ -2228,7 +2242,7 @@ async fn station_web_search(
     api_key: &str,
     body: Value,
     max_results: usize,
-    classify: fn(i64) -> Option<&'static str>,
+    business_error: fn(i64) -> Option<(&'static str, &'static str)>,
 ) -> Result<Vec<WebSearchResult>> {
     let url = url?;
     let client = Client::builder()
@@ -2255,19 +2269,20 @@ async fn station_web_search(
     let business_code = payload.as_ref().and_then(station_business_code);
 
     if !status.is_success() {
-        let kind = business_code
-            .and_then(classify)
-            .unwrap_or_else(|| station_status_error_kind(status));
+        // A recognized business code classifies the failure by the station's
+        // own contract ahead of the HTTP status.
+        let (kind, hint) = match business_code.and_then(business_error) {
+            Some((kind, hint)) => (kind, hint),
+            None => (
+                station_status_error_kind(status),
+                "check the API key and engine selection or retry later",
+            ),
+        };
         let message = match business_code {
             Some(code) => format!("{label} search failed (business code {code})"),
             None => format!("{label} search returned HTTP {status}"),
         };
-        return Err(search_error(
-            kind,
-            message,
-            provider_id,
-            "check the API key and engine selection or retry later",
-        ));
+        return Err(search_error(kind, message, provider_id, hint));
     }
 
     let Some(payload) = payload else {
@@ -2279,22 +2294,28 @@ async fn station_web_search(
         ));
     };
     let Some(entries) = payload.get("search_result").and_then(Value::as_array) else {
-        let (kind, message) = match business_code {
-            Some(code) => (
-                classify(code).unwrap_or("provider_unavailable"),
-                format!("{label} search failed (business code {code})"),
+        // An error body inside a 200 envelope also classifies by the
+        // station's business code when one is recognized.
+        let (kind, hint) = match business_code.and_then(business_error) {
+            Some((kind, hint)) => (kind, hint),
+            // A code outside every table still marks an error body rather
+            // than a protocol violation.
+            None if business_code.is_some() => (
+                "provider_unavailable",
+                "try another query or check the provider response format",
             ),
             None => (
                 "parse_failed",
-                format!("{label} search response did not include a search_result array"),
+                "try another query or check the provider response format",
             ),
         };
-        return Err(search_error(
-            kind,
-            message,
-            provider_id,
-            "try another query or check the provider response format",
-        ));
+        let message = match business_code {
+            Some(code) => format!("{label} search failed (business code {code})"),
+            None => {
+                format!("{label} search response did not include a search_result array")
+            }
+        };
+        return Err(search_error(kind, message, provider_id, hint));
     };
 
     let results = entries
@@ -2386,7 +2407,7 @@ async fn zai_search(
         api_key,
         body,
         max_results,
-        zai_business_error_kind,
+        zai_business_error,
     )
     .await
 }
@@ -2435,7 +2456,7 @@ async fn bigmodel_search(
         api_key,
         body,
         max_results,
-        bigmodel_business_error_kind,
+        bigmodel_business_error,
     )
     .await
 }
