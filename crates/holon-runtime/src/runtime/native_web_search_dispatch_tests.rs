@@ -605,3 +605,124 @@ async fn explicit_deepseek_web_provider_wins_over_credential_discovery() {
     assert_eq!(entry.base_url.as_deref(), Some("http://127.0.0.1:1"));
     assert_eq!(entry.api_key, "explicit-key");
 }
+
+fn zhipu_discovery_config(home: &tempfile::TempDir) -> AppConfig {
+    let mut config = dispatch_fixture_config(home);
+    let zai = ProviderId::parse("zai").unwrap();
+    let bigmodel = ProviderId::parse("bigmodel").unwrap();
+    for (id, provider) in config.providers.iter_mut() {
+        if *id == zai {
+            provider.credential = Some("fake-official-zai-key".into());
+        } else if *id == bigmodel {
+            provider.credential = Some("fake-official-bigmodel-key".into());
+        } else if *id == ProviderId::openai() {
+            // The default model chain resolves through the OpenAI route, so it
+            // keeps its fixture credential; its builtin native search entry is
+            // disabled to keep the derived set deterministic.
+            provider.builtin_web_search = None;
+        } else {
+            provider.credential = None;
+            provider.codex_home = Some("/nonexistent/holon-test-codex-home".into());
+        }
+    }
+    config
+}
+
+#[tokio::test]
+async fn derived_zai_and_bigmodel_search_entries_are_listed_from_official_credentials() {
+    let home = tempfile::tempdir().unwrap();
+    let config = zhipu_discovery_config(&home);
+    let runtime = dispatch_runtime(&home, config);
+
+    // Only the WebSearch tool view derives standalone entries.
+    assert!(!runtime
+        .inner
+        .config_snapshot
+        .load_full()
+        .web_config
+        .providers
+        .contains_key("zai"));
+
+    let (web_config, derived_ids) = runtime.web_search_tool_config();
+    assert!(derived_ids.contains("zai"));
+    assert!(derived_ids.contains("bigmodel"));
+    for (id, expected_kind, expected_key) in [
+        (
+            "zai",
+            holon_web_retrieval::WebProviderKind::Zai,
+            "fake-official-zai-key",
+        ),
+        (
+            "bigmodel",
+            holon_web_retrieval::WebProviderKind::BigModel,
+            "fake-official-bigmodel-key",
+        ),
+    ] {
+        let derived = web_config.providers.get(id).unwrap();
+        assert_eq!(derived.kind, expected_kind);
+        // The discovered key is pinned to the official endpoint.
+        assert_eq!(derived.base_url, None);
+        assert_eq!(derived.api_key, expected_key);
+        assert!(web_config.search.derived_providers.contains(id));
+    }
+
+    let agent_id = runtime.agent_id().await.unwrap();
+    let (result, _) = runtime
+        .inner
+        .tools
+        .execute(
+            &runtime,
+            &agent_id,
+            &crate::types::AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "derived-zhipu-search-list".into(),
+                name: "ListWebSearchProviders".into(),
+                input: json!({}),
+            },
+        )
+        .await
+        .unwrap();
+    let payload = result.envelope.result.unwrap();
+    let providers = payload["providers"].as_array().unwrap();
+    for id in ["zai", "bigmodel"] {
+        assert!(
+            providers.contains(&json!({"provider_id": id, "source": "derived"})),
+            "listing must report {id} as derived"
+        );
+    }
+}
+
+#[tokio::test]
+async fn explicit_zhipu_web_provider_wins_over_credential_discovery() {
+    let home = tempfile::tempdir().unwrap();
+    let config = zhipu_discovery_config(&home);
+    let runtime = dispatch_runtime(&home, config);
+
+    // Declaring Z.AI explicitly keeps the derived view from duplicating it or
+    // rewriting the configured entry; BigModel has no explicit entry and still
+    // derives once.
+    let mut snapshot = (*runtime.inner.config_snapshot.load_full()).clone();
+    snapshot.web_config.providers.insert(
+        "zai".to_string(),
+        holon_web_retrieval::WebProviderConfig {
+            kind: holon_web_retrieval::WebProviderKind::Zai,
+            base_url: Some("http://127.0.0.1:1".into()),
+            engine_id: None,
+            api_key: "explicit-key".into(),
+            model_route: None,
+            command: None,
+            output: None,
+            limits: Default::default(),
+        },
+    );
+    runtime.inner.config_snapshot.store(Arc::new(snapshot));
+
+    let (web_config, derived_ids) = runtime.web_search_tool_config();
+    assert!(!derived_ids.contains("zai"));
+    assert!(derived_ids.contains("bigmodel"));
+    assert!(!web_config.search.derived_providers.contains("zai"));
+    let entry = web_config.providers.get("zai").unwrap();
+    assert_eq!(entry.base_url.as_deref(), Some("http://127.0.0.1:1"));
+    assert_eq!(entry.api_key, "explicit-key");
+    assert!(web_config.search.derived_providers.contains("bigmodel"));
+}

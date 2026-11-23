@@ -544,10 +544,10 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 | `x_search.enabled` | boolean | `true` | 有 xAI 凭据时自动启用 `XSearch`；设为 `false` 可隐藏它 |
 | `x_search.model` | model_ref | — | 用于隔离 `XSearch` 请求的可选 xAI 模型路由 |
 | `x_search.timeout_seconds` | integer | `60` | 隔离 xAI `XSearch` 请求的超时 |
-| `web.providers.<name>.kind` | string | required | 提供商类型：`duck_duck_go`、`searxng`、`brave`、`google`、`deepseek`、`tencent_cloud_wsa`、`bocha`、`tavily`、`keenable`、`exa`、`perplexity`、`firecrawl`、`open_ai_native`、`anthropic_native`、`gemini_native` 或 `command` |
+| `web.providers.<name>.kind` | string | required | 提供商类型：`duck_duck_go`、`searxng`、`brave`、`google`、`deepseek`、`zai`、`bigmodel`、`tencent_cloud_wsa`、`bocha`、`tavily`、`keenable`、`exa`、`perplexity`、`firecrawl`、`open_ai_native`、`anthropic_native`、`gemini_native` 或 `command` |
 | `web.providers.<name>.base_url` | string | unset | 自定义提供商端点 |
 | `web.providers.<name>.credential_profile` | string | unset | API 型提供商的凭据 profile |
-| `web.providers.<name>.engine_id` | string | `google` 必填 | `kind=google` 的 Programmable Search 引擎 ID（`cx`）；在 programmablesearchengine.google.com 创建引擎并启用“搜索整个网络”，即可查询整个网络而非受限站点索引 |
+| `web.providers.<name>.engine_id` | string | `google` 必填 | 引擎选择项。`kind=google` 时是 Programmable Search 引擎 ID（`cx`）；在 programmablesearchengine.google.com 创建引擎并启用“搜索整个网络”，即可查询整个网络而非受限站点索引。`kind=zai` 时选择 Z.AI 引擎（`search-prime`，默认值）。`kind=bigmodel` 时选择 BigModel 引擎（`search_std`、`search_pro`、`search_pro_sogou`、`search_pro_quark`，默认 `search_pro`）。其他类型不接受 `engine_id` |
 | `web.providers.<name>.model_route` | model_route_ref | unset | 仅 native 类型：绑定一条具体模型路由（例如 `openai@default/gpt-5.4`），由该路由的传输、端点和凭据执行独立的服务端搜索 |
 | `web.providers.<name>.capabilities` | json_object | derived | `holon config get` 和路由诊断暴露的只读能力元数据 |
 | `web.providers.<name>.command.argv` | string_list | unset | `kind=command` WebSearch 提供商的命令参数模板（支持 `{{query}}` 和 `{{max_results}}`） |
@@ -566,6 +566,8 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 即使默认模式为 `single`，显式聚合也可能把同一查询发送给多家提供商，增加外发、费用或延迟。如需每次最多尝试一家，请将 `web.search.max_provider_attempts` 设为 `1`。这不是提供商白名单，也不限制多次独立调用。
 
 原生服务端搜索提供商（如 `open_ai_native` 这类 native `web.providers` 类型，含经 Codex 传输绑定的路由）仅在显式点名时运行。具备可用凭证且声明可独立派发原生搜索能力的模型提供商（目前为 `openai` 与 `openai-codex`）还会零配置自动派生一个原生条目，绑定模型目录 preferred route；`web.search.native_default` 可固定单个提供商、用 `off` 关闭派生或用 `auto` 恢复默认，同 id 的显式 `web.providers` 条目优先于派生条目。派生条目保持显式点名边界：省略 `WebSearch.provider`、传入 `auto`/`aggregate` 或配置 `web.search.providers` 都不会触发它们；只有以 `provider` 显式传入其 ID 才会执行，且绑定的 `model_route` 必须可解析并声明 builtin web search。独立请求只携带查询与必要的搜索参数——不含对话历史、工作区数据或其他工具。结果仅取厂商结构化引用来源，按 URL 去重后最多返回 `max_results` 条；已执行搜索但无可映射来源时返回空结果列表，未执行搜索的纯回答则显式失败。任何失败对本次调用都是终态：native 派发绝不回退到其他提供商或路由。
+
+Z.AI 与 BigModel 的独立搜索服务同样支持零配置发现。全局独立搜索开启且存在绑定在官方 Z.AI 站点（`api.z.ai`）或 BigModel 站点（`open.bigmodel.cn`）的已认证模型提供商时，Holon 会用该官方 key 派生一个仅显式点名可用的 `zai` 或 `bigmodel` 条目；两站都绑定则各派生一次。第三方代理或仅兼容协议的端点不会派生，key 也不会跨站借用。显式 `web.providers` 条目优先且不会被重复列出。派生条目不会进入默认、`auto` 或 `aggregate` 候选链，只有把其 ID 作为 `WebSearch.provider` 传入才会运行。列举不发起请求，也不探测权限或额度；发现不代表账号已具备搜索权限，实际搜索请求可能计费。
 
 ## 运行时数据库保留策略（Retention）
 

@@ -168,6 +168,13 @@ Holon 使用基于提供商的搜索模型，有多种提供商可选。未配�
   派生路由。
 - **DeepSeek**：独立 Search / Fetch API，通过 `kind=deepseek` 引用 API key profile，
   任意对话模型均可使用。
+- **Z.AI / BigModel**：`api.z.ai`（`kind=zai`，引擎 `search-prime`）与
+  `open.bigmodel.cn`（`kind=bigmodel`；引擎 `search_std`、`search_pro`、
+  `search_pro_sogou`、`search_pro_quark`，默认 `search_pro`）上的独立
+  `POST /api/paas/v4/web_search` 服务。可用
+  `web.providers.<name>.engine_id` 选择非默认引擎。已有对应官方模型 API key
+  时也会自动派生匹配的仅显式点名条目；派生条目不会进入默认、`auto` 或
+  `aggregate` 候选链。发现不代表账号已具备搜索权限，实际搜索请求可能计费。
 - **SearXNG（自托管）**：开源元搜索引擎后端，无需 API 凭据，适合自托管与本地私密网络环境。配置方式：`holon config set web.providers.searxng.kind searxng` 与 `holon config set web.providers.searxng.base_url <url>`。详细部署与排错请参阅[用自托管 SearXNG 配置搜索后端指南](/zh-CN/guides/searxng-websearch-provider.md)。
 
 所有提供商返回的搜索结果都会标准化为一致格式，包含标题、URL 和摘要文本。引用会被保留，

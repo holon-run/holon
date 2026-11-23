@@ -184,6 +184,15 @@ take precedence over this chain.
   access, `holon config set web.providers.firecrawl.credential_profile <profile>`.
 - **DeepSeek** — independent Search/Fetch APIs using a DeepSeek API key profile
   (`kind=deepseek`), available to any conversation model.
+- **Z.AI / BigModel** — independent `POST /api/paas/v4/web_search` services at
+  `api.z.ai` (`kind=zai`, engine `search-prime`) and `open.bigmodel.cn`
+  (`kind=bigmodel`; engines `search_std`, `search_pro`, `search_pro_sogou`,
+  `search_pro_quark`, default `search_pro`). Select a non-default engine with
+  `web.providers.<name>.engine_id`. An existing official Z.AI or BigModel model
+  API key also derives the matching explicit-only search entry automatically;
+  the derived entry stays out of the default, `auto`, and `aggregate` chain.
+  Discovery does not prove the account has search permission, and an actual
+  search request may be billed.
 - **Model-native search** — Some model providers (OpenAI, Anthropic) support
   native web search through their own APIs. In "Auto" mode, Holon prefers
   these for conversation turns when available. Standalone `WebSearch` native

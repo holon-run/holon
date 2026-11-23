@@ -580,10 +580,10 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `x_search.enabled` | boolean | `true` | Enable `XSearch` automatically when xAI credentials are available; set `false` to hide it |
 | `x_search.model` | model_ref | — | Optional xAI model route for isolated `XSearch` requests |
 | `x_search.timeout_seconds` | integer | `60` | Timeout for isolated xAI `XSearch` requests |
-| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `google`, `deepseek`, `tencent_cloud_wsa`, `bocha`, `tavily`, `keenable`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
+| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `google`, `deepseek`, `zai`, `bigmodel`, `tencent_cloud_wsa`, `bocha`, `tavily`, `keenable`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
 | `web.providers.<name>.base_url` | string | unset | Custom provider endpoint |
 | `web.providers.<name>.credential_profile` | string | unset | Credential profile for API-backed providers |
-| `web.providers.<name>.engine_id` | string | required for `google` | Programmable Search engine id (`cx`) for `kind=google`; create the engine at programmablesearchengine.google.com with "Search the entire web" enabled to query the whole web rather than a site-restricted index |
+| `web.providers.<name>.engine_id` | string | required for `google` | Engine selector. For `kind=google` it is the Programmable Search engine id (`cx`); create the engine at programmablesearchengine.google.com with "Search the entire web" enabled to query the whole web rather than a site-restricted index. For `kind=zai` it selects the Z.AI engine (`search-prime`, the default). For `kind=bigmodel` it selects the BigModel engine (`search_std`, `search_pro`, `search_pro_sogou`, `search_pro_quark`; default `search_pro`). Other kinds reject `engine_id` |
 | `web.providers.<name>.model_route` | model_route_ref | unset | Native kinds only: binds a concrete model route (for example `openai@default/gpt-5.4`) whose transport, endpoint, and credentials execute the standalone server-side search |
 | `web.providers.<name>.capabilities` | json_object | derived | Read-only capability metadata surfaced by `holon config get` and routing diagnostics |
 | `web.providers.<name>.command.argv` | string_list | unset | Command argv template for `kind=command` WebSearch providers (supports `{{query}}` and `{{max_results}}`) |
@@ -632,6 +632,19 @@ citations, deduplicated by URL up to `max_results`; a completed search with
 no mappable sources returns an empty result list, while a response without
 search evidence fails explicitly. Every failure is terminal for the call:
 native dispatch never falls back to another provider or route.
+
+The Z.AI and BigModel standalone search services are also discoverable. When
+global standalone search is enabled and an authenticated model provider is
+pinned to the official Z.AI host (`api.z.ai`) or BigModel host
+(`open.bigmodel.cn`), Holon derives one explicit-only `zai` or `bigmodel`
+search entry from that official key; binding both stations derives one entry
+each. Proxy or compatible-protocol endpoints never derive an entry, and a key
+is never borrowed across stations. Explicit `web.providers` entries win and are
+not duplicated. Derived entries stay out of the default, `auto`, and
+`aggregate` candidate chain and run only when their ID is passed as
+`WebSearch.provider`. Listing performs no request and probes no permission or
+quota; discovery does not mean the account has search access, and an actual
+search request may be billed.
 
 ## Runtime Database Retention
 

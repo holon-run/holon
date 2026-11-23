@@ -14,9 +14,11 @@ use url::{form_urlencoded, Url};
 use holon_domain::ToolError;
 
 use crate::{
-    deepseek_tool_url, policy::timeout, WebCommandOutputConfig, WebCommandResultMapping, WebConfig,
-    WebFetchConfig, WebProviderCapabilityMetadata, WebProviderConfig, WebProviderKind,
-    WebProviderSupportStatus, WebSearchMode,
+    bigmodel_web_search_url, deepseek_tool_url, policy::timeout, zai_web_search_url,
+    WebCommandOutputConfig, WebCommandResultMapping, WebConfig, WebFetchConfig,
+    WebProviderCapabilityMetadata, WebProviderConfig, WebProviderKind, WebProviderSupportStatus,
+    WebSearchMode, BIGMODEL_DEFAULT_SEARCH_ENGINE, BIGMODEL_SEARCH_ENGINES,
+    ZAI_DEFAULT_SEARCH_ENGINE, ZAI_SEARCH_ENGINES,
 };
 
 const DUCKDUCKGO_PROVIDER_ID: &str = "duckduckgo";
@@ -319,6 +321,12 @@ fn configured_search_ready(id: &str, provider: &WebProviderConfig) -> bool {
         WebProviderKind::DeepSeek => {
             search_api_key(id, provider).is_ok() && deepseek_endpoint(id, provider).is_ok()
         }
+        WebProviderKind::Zai => {
+            search_api_key(id, provider).is_ok() && zai_web_search_url(provider).is_ok()
+        }
+        WebProviderKind::BigModel => {
+            search_api_key(id, provider).is_ok() && bigmodel_web_search_url(provider).is_ok()
+        }
         WebProviderKind::Command => command_configuration(id, provider).is_ok_and(|(argv, _)| {
             expand_command_argv(argv, "", 1, id).is_ok()
                 && argv.iter().all(|arg| !arg.contains('\0'))
@@ -345,12 +353,17 @@ fn search_api_key<'a>(id: &str, provider: &'a WebProviderConfig) -> Result<&'a s
         WebProviderKind::TencentCloudWsa => "Tencent Cloud WSA SearchPro",
         WebProviderKind::Bocha => "Bocha AI Web Search",
         WebProviderKind::DeepSeek => "DeepSeek",
+        WebProviderKind::Zai => "Z.AI Web Search",
+        WebProviderKind::BigModel => "BigModel Web Search",
         WebProviderKind::Tavily => "Tavily",
         WebProviderKind::Exa => "Exa",
         WebProviderKind::Perplexity => "Perplexity",
         _ => return Ok(key),
     };
-    let empty = if provider.kind == WebProviderKind::DeepSeek {
+    let empty = if matches!(
+        provider.kind,
+        WebProviderKind::DeepSeek | WebProviderKind::Zai | WebProviderKind::BigModel
+    ) {
         key.trim().is_empty()
     } else {
         key.is_empty()
@@ -970,6 +983,12 @@ async fn search_configured_provider(
         WebProviderKind::DeepSeek => {
             deepseek_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
+        WebProviderKind::Zai => {
+            zai_search(query, max_results, provider_id, provider_config, fetch_config).await
+        }
+        WebProviderKind::BigModel => {
+            bigmodel_search(query, max_results, provider_id, provider_config, fetch_config).await
+        }
         WebProviderKind::Keenable => {
             keenable_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
@@ -1005,7 +1024,7 @@ async fn search_configured_provider(
             "provider_unavailable",
             format!("WebSearch provider kind `{kind:?}` is reserved for future provider support"),
             provider_id,
-            "configure a duckduckgo, searxng, brave, google, tencent_cloud_wsa, bocha, tavily, keenable, deepseek, exa, perplexity, or firecrawl provider for this Holon version",
+            "configure a duckduckgo, searxng, brave, google, tencent_cloud_wsa, bocha, tavily, keenable, deepseek, zai, bigmodel, exa, perplexity, or firecrawl provider for this Holon version",
         )),
     }?;
     Ok(ProviderSearchOutput::new(results))
@@ -2095,6 +2114,330 @@ async fn deepseek_search(
         ));
     }
     Ok(results)
+}
+
+// Z.AI business error codes, from https://docs.z.ai/api-reference/api-code.
+// They are declared here rather than shared with BigModel: each station's
+// numeric codes are a separate contract and must not be assumed equal.
+const ZAI_AUTH_ERROR_CODES: [i64; 5] = [1000, 1001, 1003, 1005, 1220];
+const ZAI_RATE_ERROR_CODES: [i64; 16] = [
+    1113, 1302, 1305, 1308, 1309, 1310, 1311, 1313, 1314, 1315, 1316, 1317, 1318, 1319, 1320, 1321,
+];
+const ZAI_INVALID_ERROR_CODES: [i64; 6] = [1210, 1213, 1214, 1215, 1261, 1301];
+const ZAI_ENGINE_ERROR_CODES: [i64; 4] = [1211, 1212, 1221, 1222];
+
+// BigModel business error codes, from https://docs.bigmodel.cn/cn/api/api-code.
+const BIGMODEL_AUTH_ERROR_CODES: [i64; 5] = [1000, 1001, 1003, 1005, 1220];
+const BIGMODEL_RATE_ERROR_CODES: [i64; 16] = [
+    1113, 1302, 1305, 1308, 1309, 1310, 1311, 1313, 1314, 1315, 1316, 1317, 1318, 1319, 1320, 1321,
+];
+const BIGMODEL_INVALID_ERROR_CODES: [i64; 6] = [1210, 1213, 1214, 1215, 1261, 1301];
+const BIGMODEL_ENGINE_ERROR_CODES: [i64; 4] = [1211, 1212, 1221, 1222];
+
+fn zai_business_error_kind(code: i64) -> Option<&'static str> {
+    if ZAI_AUTH_ERROR_CODES.contains(&code) {
+        Some("provider_unavailable")
+    } else if ZAI_RATE_ERROR_CODES.contains(&code) {
+        Some("rate_limited")
+    } else if ZAI_INVALID_ERROR_CODES.contains(&code) {
+        Some("invalid_request")
+    } else if ZAI_ENGINE_ERROR_CODES.contains(&code) {
+        Some("engine_unavailable")
+    } else {
+        None
+    }
+}
+
+fn bigmodel_business_error_kind(code: i64) -> Option<&'static str> {
+    if BIGMODEL_AUTH_ERROR_CODES.contains(&code) {
+        Some("provider_unavailable")
+    } else if BIGMODEL_RATE_ERROR_CODES.contains(&code) {
+        Some("rate_limited")
+    } else if BIGMODEL_INVALID_ERROR_CODES.contains(&code) {
+        Some("invalid_request")
+    } else if BIGMODEL_ENGINE_ERROR_CODES.contains(&code) {
+        Some("engine_unavailable")
+    } else {
+        None
+    }
+}
+
+/// Read the business error code from either documented error shape: a
+/// top-level `code`/`message` object or a nested `error.code`.
+fn station_business_code(payload: &Value) -> Option<i64> {
+    let raw = payload
+        .get("code")
+        .or_else(|| payload.get("error").and_then(|error| error.get("code")))?;
+    match raw {
+        Value::Number(number) => number.as_i64(),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn station_status_error_kind(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "provider_unavailable",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+        status if status.is_client_error() => "invalid_request",
+        _ => "network_failed",
+    }
+}
+
+/// Resolve and validate a station-specific engine code. An absent engine keeps
+/// the station default; an unsupported one is rejected without a request.
+fn station_engine(
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    label: &str,
+    default_engine: &str,
+    supported: &[&str],
+) -> Result<String> {
+    let engine = provider
+        .engine_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|engine| !engine.is_empty())
+        .unwrap_or(default_engine);
+    if !supported.contains(&engine) {
+        return Err(search_error(
+            "invalid_request",
+            format!(
+                "{label} search engine `{engine}` is not supported; use one of {}",
+                supported.join(", ")
+            ),
+            provider_id,
+            format!(
+                "set web.providers.<id>.engine_id to one of {}",
+                supported.join(", ")
+            ),
+        ));
+    }
+    Ok(engine.to_string())
+}
+
+/// Shared transport for the two Zhipu-family standalone search endpoints.
+/// Request bodies and error-code tables stay station-specific at the call
+/// sites; only the response envelope (`search_result[]`) is shared.
+#[allow(clippy::too_many_arguments)]
+async fn station_web_search(
+    label: &str,
+    provider_id: &str,
+    fetch_config: &WebFetchConfig,
+    url: Result<Url>,
+    api_key: &str,
+    body: Value,
+    max_results: usize,
+    classify: fn(i64) -> Option<&'static str>,
+) -> Result<Vec<WebSearchResult>> {
+    let url = url?;
+    let client = Client::builder()
+        .timeout(timeout(fetch_config))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let response = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| {
+            search_error(
+                "network_failed",
+                format!("{label} search request failed"),
+                provider_id,
+                "retry later or check the provider configuration",
+            )
+        })?;
+    let status = response.status();
+    let raw_body = read_search_response(response, provider_id).await?;
+    let payload: Option<Value> = serde_json::from_str(&raw_body).ok();
+    let business_code = payload.as_ref().and_then(station_business_code);
+
+    if !status.is_success() {
+        let kind = business_code
+            .and_then(classify)
+            .unwrap_or_else(|| station_status_error_kind(status));
+        let message = match business_code {
+            Some(code) => format!("{label} search failed (business code {code})"),
+            None => format!("{label} search returned HTTP {status}"),
+        };
+        return Err(search_error(
+            kind,
+            message,
+            provider_id,
+            "check the API key and engine selection or retry later",
+        ));
+    }
+
+    let Some(payload) = payload else {
+        return Err(search_error(
+            "parse_failed",
+            format!("{label} search returned invalid JSON"),
+            provider_id,
+            "retry later or check the provider configuration",
+        ));
+    };
+    let Some(entries) = payload.get("search_result").and_then(Value::as_array) else {
+        let (kind, message) = match business_code {
+            Some(code) => (
+                classify(code).unwrap_or("provider_unavailable"),
+                format!("{label} search failed (business code {code})"),
+            ),
+            None => (
+                "parse_failed",
+                format!("{label} search response did not include a search_result array"),
+            ),
+        };
+        return Err(search_error(
+            kind,
+            message,
+            provider_id,
+            "try another query or check the provider response format",
+        ));
+    };
+
+    let results = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let title = entry.get("title")?.as_str()?.to_string();
+            let mut url = Url::parse(entry.get("link")?.as_str()?.trim()).ok()?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                return None;
+            }
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url: url.to_string(),
+                    snippet: entry
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .filter(|content| !content.trim().is_empty())
+                        .map(str::to_string),
+                    published_at: entry
+                        .get("publish_date")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    ..ProviderRawSearchResult::default()
+                },
+            )
+        })
+        .take(max_results)
+        .collect::<Vec<_>>();
+    if !entries.is_empty() && results.is_empty() && max_results != 0 {
+        return Err(search_error(
+            "parse_failed",
+            format!("{label} search returned no parseable search results"),
+            provider_id,
+            "try another query or check the provider response format",
+        ));
+    }
+    Ok(results)
+}
+
+async fn zai_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    if query.trim().is_empty() {
+        return Err(search_error(
+            "invalid_request",
+            "Z.AI search query must not be empty",
+            provider_id,
+            "provide a non-empty query",
+        ));
+    }
+    let api_key = search_api_key(provider_id, provider)?;
+    let engine = station_engine(
+        provider_id,
+        provider,
+        "Z.AI",
+        ZAI_DEFAULT_SEARCH_ENGINE,
+        &ZAI_SEARCH_ENGINES,
+    )?;
+    // Z.AI documents `count` and its filter fields only for `search_pro_jina`,
+    // which is not an accepted engine, so the request carries only the
+    // documented `search-prime` inputs and truncates locally.
+    let body = json!({
+        "search_engine": engine,
+        "search_query": query,
+    });
+    let url = zai_web_search_url(provider).map_err(|_| {
+        search_error(
+            "provider_unavailable",
+            "Z.AI base_url is invalid",
+            provider_id,
+            "configure an HTTP(S) Z.AI base_url or use the discovered entry",
+        )
+    });
+    station_web_search(
+        "Z.AI",
+        provider_id,
+        fetch_config,
+        url,
+        api_key,
+        body,
+        max_results,
+        zai_business_error_kind,
+    )
+    .await
+}
+
+async fn bigmodel_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    if query.trim().is_empty() {
+        return Err(search_error(
+            "invalid_request",
+            "BigModel search query must not be empty",
+            provider_id,
+            "provide a non-empty query",
+        ));
+    }
+    let api_key = search_api_key(provider_id, provider)?;
+    let engine = station_engine(
+        provider_id,
+        provider,
+        "BigModel",
+        BIGMODEL_DEFAULT_SEARCH_ENGINE,
+        &BIGMODEL_SEARCH_ENGINES,
+    )?;
+    let body = json!({
+        "search_engine": engine,
+        "search_query": query,
+        "count": max_results.clamp(1, 50),
+    });
+    let url = bigmodel_web_search_url(provider).map_err(|_| {
+        search_error(
+            "provider_unavailable",
+            "BigModel base_url is invalid",
+            provider_id,
+            "configure an HTTP(S) BigModel base_url or use the discovered entry",
+        )
+    });
+    station_web_search(
+        "BigModel",
+        provider_id,
+        fetch_config,
+        url,
+        api_key,
+        body,
+        max_results,
+        bigmodel_business_error_kind,
+    )
+    .await
 }
 
 async fn tavily_search(
