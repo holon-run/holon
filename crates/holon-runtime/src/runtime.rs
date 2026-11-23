@@ -3258,9 +3258,7 @@ impl RuntimeHandle {
             ToolExecutionStatus::Success | ToolExecutionStatus::Error
         ) || !matches!(
             tool_name,
-            crate::tool::names::EXEC_COMMAND
-                | crate::tool::names::EXEC_COMMAND_BATCH
-                | crate::tool::names::SCHEDULE_DESTRUCTIVE_OPERATION
+            crate::tool::names::EXEC_COMMAND | crate::tool::names::EXEC_COMMAND_BATCH
         ) {
             return Ok(());
         }

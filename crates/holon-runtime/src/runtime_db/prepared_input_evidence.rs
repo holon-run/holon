@@ -178,7 +178,6 @@ fn idle_batch_invariants(record: &TurnRecord) -> impl PartialEq + '_ {
         runtime_failure,
         terminal,
         replay,
-        destructive_operation_id,
         external_side_effect_possible,
         external_side_effect_tool_call_id,
         operator_dispatch_fenced,
@@ -205,7 +204,6 @@ fn idle_batch_invariants(record: &TurnRecord) -> impl PartialEq + '_ {
             runtime_failure,
             terminal,
             replay,
-            destructive_operation_id,
             external_side_effect_possible,
             external_side_effect_tool_call_id,
             operator_dispatch_fenced,
@@ -484,7 +482,6 @@ impl PreparedInputEvidence {
                             record.tool_name.as_str(),
                             crate::tool::names::EXEC_COMMAND
                                 | crate::tool::names::EXEC_COMMAND_BATCH
-                                | crate::tool::names::SCHEDULE_DESTRUCTIVE_OPERATION
                         ),
                     "Tool result barrier differs from its original command Turn"
                 );

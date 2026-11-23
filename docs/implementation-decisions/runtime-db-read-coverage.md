@@ -36,7 +36,6 @@ catalog; read/decoding failures must not overwrite the old catalog.
 | `runtime_db/authentication.rs` | `AuthenticationRepository<'_>` | `find_user`, `find_user_by_id`, `find_session` |
 | `runtime_db/conversation.rs` | `ConversationRepository<'_>` | `brief_snapshot`, `summary_page`, `shadow_diagnostics`, `summary_snapshot_after_context`, `activities`, `activity_snapshot`, `change_batch` |
 | `runtime_db/conversation/locate.rs` | `ConversationRepository<'_>` | `summary_window_snapshot`, `locate_source` |
-| `runtime_db/destructive_operations.rs` | `DestructiveOperationRepository<'_>` | `by_id`, `pending_verification` |
 | `runtime_db/index_outbox.rs` | `RuntimeIndexOutboxRepository<'_>` | `high_watermark`, `agent_ids_with_pending`, `agent_ids_with_pending_async`, `agent_ids_with_watermarks`, `agent_ids_with_watermarks_async`, `high_watermark_for_agent`, `produced_watermark_for_agent`, `pending_count_for_agent`, `oldest_pending_created_at_for_agent`, `read_after`, `delete_acknowledged_through` |
 | `runtime_db/mod.rs` | `RuntimeDb` | `provider_quota_incident`, `storage_domain`, `storage_domains`, `storage_domain_is_complete`, `event_log_epoch`, `runtime_id`, `visibility_policy_generation` |
 | `runtime_db/observer_sync.rs` | `crate::runtime_db::RuntimeDb` | `observer_sync_foundations`, `agent_roster_snapshot_rows`, `agent_projection_snapshot_rows`, `agent_event_recovery_window` |

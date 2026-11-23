@@ -46,9 +46,196 @@ async fn resume_deletion_after_archive_failure(host: &RuntimeHost, agent_id: &st
 
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn deletion_terminalizes_triggered_waits_and_external_operation_ownership() {
-    use crate::runtime_db::DestructiveOperationRecord;
+async fn startup_retires_legacy_destructive_operations_without_executing_them() -> Result<()> {
+    use crate::types::{ToolExecutionRecord, ToolExecutionStatus, TurnRecord};
+    use holon_domain::{TurnTerminalKind, TurnTerminalSummary};
+    use rusqlite::params;
+    use serde_json::json;
 
+    let (_home, host) = canonical_test_host();
+    let config = host.config().as_ref().clone();
+    let db_path = host.runtime_db().path().to_path_buf();
+    let ledger_exists = |db: &rusqlite::Connection| -> rusqlite::Result<bool> {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'destructive_operations')",
+            [],
+            |row| row.get(0),
+        )
+    };
+    assert!(!ledger_exists(&rusqlite::Connection::open(&db_path)?)?);
+    let runtime = host.default_runtime().await?;
+    let work = runtime
+        .create_work_item("existing work".into(), None, None, Vec::new())
+        .await?;
+    let agent_id = &work.agent_id;
+    let storage = host.agent_storage(agent_id)?;
+    let now = Utc::now();
+    let legacy = [
+        ("old-scheduled", "scheduled"),
+        ("old-interrupted", "daemon_interrupted"),
+        ("old-verified", "verified"),
+    ];
+    let finished = TurnTerminalSummary {
+        kind: TurnTerminalKind::Completed,
+        reason: None,
+        no_brief_reason: None,
+        completed_at: now,
+        duration_ms: 0,
+    };
+    let interrupted = TurnTerminalSummary {
+        kind: TurnTerminalKind::Interrupted,
+        reason: Some("startup_recovery/destructive_operation_verify_only".into()),
+        ..finished.clone()
+    };
+    for (index, (id, phase)) in legacy.iter().enumerate() {
+        let mut turn = TurnRecord::new(agent_id, *id, index as u64 + 1);
+        turn.current_work_item_id = Some(work.id.clone());
+        turn.terminal = match *phase {
+            "daemon_interrupted" => Some(interrupted.clone()),
+            "verified" => Some(finished.clone()),
+            _ => None,
+        };
+        storage.append_turn(&turn)?;
+    }
+
+    let marker_dir = tempfile::tempdir()?;
+    let command_marker = marker_dir.path().join("operation-ran");
+    let verify_marker = marker_dir.path().join("verification-ran");
+    let command = format!("printf marker > '{}'", command_marker.display());
+    let verification = format!("printf marker > '{}'", verify_marker.display());
+    let receipt = ToolExecutionRecord {
+        id: "old-tool-receipt".into(),
+        agent_id: agent_id.clone(),
+        work_item_id: Some(work.id.clone()),
+        turn_index: 3,
+        turn_id: Some("old-verified".into()),
+        tool_name: "ScheduleDestructiveOperation".into(),
+        created_at: now,
+        completed_at: Some(now),
+        duration_ms: 0,
+        authority_class: AuthorityClass::OperatorInstruction,
+        status: ToolExecutionStatus::Success,
+        input: json!({"command": command}),
+        output: json!({"phase": "scheduled"}),
+        summary: "historical dispatch receipt".into(),
+        call_binding: None,
+        invocation_surface: None,
+    };
+    storage.append_tool_execution(&receipt)?;
+    drop(runtime);
+    drop(storage);
+    host.shutdown().await?;
+    drop(host);
+
+    {
+        let db = rusqlite::Connection::open(&db_path)?;
+        // Restore only the retired v120 schema pieces in the disposable fixture.
+        let migration = holon_storage::migrations::MIGRATIONS
+            .iter()
+            .find(|migration| migration.name == "destructive_operation_fences")
+            .unwrap();
+        db.execute_batch(migration.sql)?;
+        db.execute_batch(
+            "ALTER TABLE destructive_operations ADD COLUMN command_digest TEXT NOT NULL DEFAULT '';
+             DELETE FROM schema_migrations WHERE name = 'retire_destructive_operation_scheduler';
+             INSERT INTO runtime_metadata (key, value, created_at, updated_at)
+             VALUES ('destructive_operation_closed:old-closed', '1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);",
+        )?;
+        for (id, phase) in legacy {
+            db.execute(
+                "INSERT INTO destructive_operations
+                 (operation_id, owner_turn_id, owner_work_item_id, phase, verification_target,
+                  recovery_policy, created_at, updated_at, command_digest)
+                 VALUES (?1,?1,?2,?3,?4,'verify_only',?5,?5,'fixture-digest')",
+                params![id, work.id, phase, verification, now.to_rfc3339()],
+            )?;
+            assert_eq!(
+                db.execute(
+                    "UPDATE turn_records
+                     SET payload_json = json_set(payload_json, '$.destructive_operation_id', ?1)
+                     WHERE turn_id = ?1",
+                    [id],
+                )?,
+                1,
+            );
+        }
+    }
+
+    for startup in 0..2 {
+        let host = RuntimeHost::new_with_provider(
+            config.clone(),
+            Arc::new(StubProvider::new("done")),
+        )?;
+        host.recover_orphaned_queue_claims_at_startup().await?;
+        assert!(!command_marker.exists());
+        assert!(!verify_marker.exists());
+        let db = host.runtime_db();
+        db.transaction(|tx| {
+            assert!(!ledger_exists(tx)?);
+            assert_eq!(
+                tx.query_row(
+                    "SELECT COUNT(*) FROM runtime_metadata WHERE key GLOB 'destructive_operation_closed:*'",
+                    [],
+                    |row| row.get::<_, u64>(0),
+                )?,
+                0,
+            );
+            assert_eq!(
+                tx.query_row(
+                    "SELECT COUNT(*) FROM turn_records
+                     WHERE json_type(payload_json,'$.destructive_operation_id') IS NOT NULL",
+                    [],
+                    |row| row.get::<_, u64>(0),
+                )?,
+                0,
+            );
+            Ok(())
+        })?;
+        for (id, phase) in legacy {
+            let turn = db.turn_records().by_id(Some(agent_id), id)?.unwrap();
+            assert_eq!(turn.current_work_item_id.as_deref(), Some(work.id.as_str()));
+            let terminal = turn.terminal.unwrap();
+            if phase == "scheduled" {
+                assert_eq!(terminal.kind, TurnTerminalKind::Interrupted);
+                assert_eq!(
+                    terminal.reason.as_deref(),
+                    Some("startup_recovery/external_side_effect_indeterminate"),
+                );
+            } else if phase == "daemon_interrupted" {
+                assert_eq!(terminal, interrupted);
+            } else {
+                assert_eq!(terminal, finished);
+            }
+        }
+        let preserved = db
+            .evidence()
+            .tool_execution_by_id(agent_id, &receipt.id)?
+            .unwrap();
+        assert_eq!(preserved.input, receipt.input);
+        assert_eq!(preserved.output, receipt.output);
+        assert_eq!(preserved.status, receipt.status);
+        let runtime = host.default_runtime().await?;
+        let (_, picked) = runtime.pick_work_item(work.id.clone()).await?;
+        assert_eq!(picked.id, work.id);
+        let continued = runtime
+            .update_work_item_fields(
+                work.id.clone(),
+                Some(format!("authorized follow-up after startup {startup}")),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+        assert_eq!(continued.objective, format!("authorized follow-up after startup {startup}"));
+        host.shutdown().await?;
+    }
+    Ok(())
+}
+
+#[cfg(holon_lib_test_shard = "d")]
+#[tokio::test]
+async fn deletion_terminalizes_triggered_waits() {
     for legacy_index_proof in [false, true] {
         let fixture = provider_test_config(Some("dummy-token"));
         let host = RuntimeHost::new(fixture.config).unwrap();
@@ -86,29 +273,6 @@ async fn deletion_terminalizes_triggered_waits_and_external_operation_ownership(
         wait.trigger_message_id = Some("unconsumed-wake".into());
         wait.triggered_at = Some(now);
         host.runtime_db().wait_conditions().upsert(&wait).unwrap();
-        let verification_marker = host.config().data_dir.join("must-not-verify");
-        let phases = [
-            DestructiveOperationPhase::Planned,
-            DestructiveOperationPhase::Scheduled,
-            DestructiveOperationPhase::DaemonInterrupted,
-            DestructiveOperationPhase::Verified,
-        ];
-        for (index, phase) in phases.iter().enumerate() {
-            host.runtime_db()
-                .destructive_operations()
-                .plan_or_get(&DestructiveOperationRecord {
-                    operation_id: format!("owned-operation-{index}"),
-                    owner_turn_id: turn.turn_id.clone(),
-                    owner_work_item_id: None,
-                    command_digest: "fixture".into(),
-                    phase: *phase,
-                    verification_target: format!("touch {}", verification_marker.display()),
-                    recovery_policy: "verify_only".into(),
-                    created_at: now,
-                    updated_at: now,
-                })
-                .unwrap();
-        }
         let (_, mut job, _) = host
             .begin_public_agent_deletion(agent_id, false, "test")
             .await
@@ -121,18 +285,13 @@ async fn deletion_terminalizes_triggered_waits_and_external_operation_ownership(
                 Utc::now(),
             )
             .unwrap();
-            // Model an old proof that omitted unresolved waits and operations.
+            // Model an old proof that omitted unresolved waits.
             host.runtime_db()
                 .transaction(|tx| {
                     tx.execute(
                         "UPDATE wait_conditions SET status = 'triggered', cancelled_at = NULL,
                          payload_json = ?1 WHERE wait_condition_id = ?2",
                         rusqlite::params![serde_json::to_string(&wait)?, wait.id],
-                    )?;
-                    tx.execute(
-                        "UPDATE destructive_operations SET phase = 'scheduled'
-                         WHERE operation_id = 'owned-operation-1'",
-                        [],
                     )?;
                     Ok(())
                 })
@@ -152,23 +311,6 @@ async fn deletion_terminalizes_triggered_waits_and_external_operation_ownership(
         assert_eq!(cancelled.status, WaitConditionStatus::Cancelled);
         assert!(cancelled.cancelled_at.is_some());
         assert_eq!(cancelled.trigger_message_id, wait.trigger_message_id);
-        for (index, phase) in phases.iter().enumerate() {
-            let operation = host
-                .runtime_db()
-                .destructive_operations()
-                .by_id(&format!("owned-operation-{index}"))
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                operation.phase,
-                if *phase == DestructiveOperationPhase::Verified {
-                    DestructiveOperationPhase::Verified
-                } else {
-                    DestructiveOperationPhase::OwnerClosed
-                }
-            );
-        }
-        assert!(!verification_marker.exists());
         resume_deletion_after_archive_failure(&host, agent_id).await;
         host.create_public_named_agent_with_name(
             agent_id,
@@ -194,37 +336,6 @@ async fn deletion_terminalizes_triggered_waits_and_external_operation_ownership(
             .latest_for_agent(agent_id)
             .unwrap()
             .is_empty());
-        assert!(host
-            .runtime_db()
-            .destructive_operations()
-            .by_id("owned-operation-1")
-            .unwrap()
-            .is_none());
-        let new_turn = crate::types::TurnRecord::new(agent_id, "replacement-turn", 1);
-        host.agent_storage(agent_id)
-            .unwrap()
-            .append_turn(&new_turn)
-            .unwrap();
-        for (index, phase) in phases.iter().enumerate() {
-            let replay = DestructiveOperationRecord {
-                operation_id: format!("owned-operation-{index}"),
-                owner_turn_id: new_turn.turn_id.clone(),
-                owner_work_item_id: None,
-                command_digest: "fixture".into(),
-                phase: *phase,
-                verification_target: "true".into(),
-                recovery_policy: "verify_only".into(),
-                created_at: now,
-                updated_at: now,
-            };
-            assert!(host
-                .runtime_db()
-                .destructive_operations()
-                .plan_and_schedule(&replay)
-                .unwrap_err()
-                .to_string()
-                .contains("destructive_operation_owner_closed"));
-        }
         host.shutdown().await.unwrap();
     }
 }

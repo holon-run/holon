@@ -100,9 +100,6 @@ fn description_path(tool_name: &str) -> Option<&'static str> {
         "MemorySearch" => "src/tool/tool_descriptions/memory_search.md",
         "PickWorkItem" => "src/tool/tool_descriptions/pick_work_item.md",
         "RemoveWorktree" => "src/tool/tool_descriptions/remove_worktree.md",
-        "ScheduleDestructiveOperation" => {
-            "src/tool/tool_descriptions/schedule_destructive_operation.md"
-        }
         "SendAgentMessage" => "src/tool/tool_descriptions/send_agent_message.md",
         "Sleep" => "src/tool/tool_descriptions/sleep.md",
         "CreateAgent" => "src/tool/tool_descriptions/create_agent.md",

@@ -4,7 +4,7 @@ use crate::{
     runtime_db::{
         evidence::{upsert_agent_identity_tx, upsert_agent_state_tx},
         input_evidence_snapshot::{capture_input_evidence_upgrade_tx, INPUT_EVIDENCE_SCHEMA},
-        DestructiveOperationPhase, DestructiveOperationRecord, RuntimeDb, RuntimeDbRetentionPolicy,
+        RuntimeDb, RuntimeDbRetentionPolicy,
     },
     types::{
         AgentKind, AgentOwnership, AgentProfilePreset, AgentState, AgentVisibility, AuthorityClass,
@@ -161,44 +161,6 @@ fn compound_scope_mismatch_cannot_write_another_agent() -> Result<()> {
         .commit_agent_posture(&command)
         .is_err());
     assert!(f.db.agent_states().latest("agent-b")?.is_none());
-    Ok(())
-}
-#[cfg(holon_lib_test_shard = "b")]
-#[test]
-fn original_destructive_operation_tx_qualifies_only_fresh_turn_write() -> Result<()> {
-    let f = Fixture::new()?;
-    let turn = TurnRecord::new("agent-a", "turn-a", 1);
-    f.db.turn_records().upsert_in_scope(&f.scope, &turn)?;
-    let now = Utc::now();
-    let command = DestructiveOperationRecord {
-        operation_id: "operation-a".into(),
-        owner_turn_id: "turn-a".into(),
-        owner_work_item_id: None,
-        command_digest: "digest-a".into(),
-        phase: DestructiveOperationPhase::Planned,
-        verification_target: "daemon".into(),
-        recovery_policy: "verify_only".into(),
-        created_at: now,
-        updated_at: now,
-    };
-    let ledger =
-        crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(Default::default())?;
-    let first =
-        f.db.destructive_operations()
-            .plan_and_schedule_in_scope(&f.scope, &command, &ledger, None)?;
-    assert!(first.record.should_dispatch);
-    assert!(first.input_delta.query_advance.is_some());
-    assert!(first
-        .input_delta
-        .records
-        .iter()
-        .any(|r| r.locator.key == Key::new(Family::Turn, "turn-a") && r.locator.revision == 2));
-    let replay =
-        f.db.destructive_operations()
-            .plan_and_schedule_in_scope(&f.scope, &command, &ledger, None)?;
-    assert!(!replay.record.should_dispatch);
-    assert!(replay.input_delta.records.is_empty());
-    assert!(replay.input_delta.query_advance.is_none());
     Ok(())
 }
 fn retention_policy() -> RuntimeDbRetentionPolicy {

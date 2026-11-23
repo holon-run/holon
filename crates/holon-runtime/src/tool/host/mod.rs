@@ -36,7 +36,6 @@ pub(crate) mod memory_get;
 pub(crate) mod memory_search;
 pub(crate) mod pick_work_item;
 pub(crate) mod remove_worktree;
-pub(crate) mod schedule_destructive_operation;
 pub(crate) mod semantic_projection;
 pub(crate) mod send_agent_message;
 pub(crate) mod sleep;
@@ -269,15 +268,6 @@ pub(super) fn execute_builtin_tool_route<'a>(
             holon_tools::builtins::BuiltinTool::RemoveWorktree => Box::pin(
                 remove_worktree::execute(runtime, agent_id, authority_class, &call.input),
             ),
-            holon_tools::builtins::BuiltinTool::ScheduleDestructiveOperation => {
-                Box::pin(schedule_destructive_operation::execute(
-                    runtime,
-                    agent_id,
-                    authority_class,
-                    &call.input,
-                    context,
-                ))
-            }
             holon_tools::builtins::BuiltinTool::CreateExternalTrigger => Box::pin(
                 create_external_trigger::execute(runtime, agent_id, authority_class, &call.input),
             ),

@@ -1064,62 +1064,30 @@ async fn exec_command_spawn_failure_allows_correction_in_the_same_turn() -> Resu
 }
 
 #[tokio::test]
-async fn destructive_operation_checks_pending_registration_before_launch_and_keeps_its_fence(
-) -> Result<()> {
-    use crate::tool::{
-        names::SCHEDULE_DESTRUCTIVE_OPERATION,
-        spec::{ExternalCommandAttempt, ExternalCommandRegistrationFailed, ToolExecutionContext},
-        ToolCall,
-    };
-    use crate::types::{TranscriptEntry, TranscriptEntryKind};
+async fn retired_destructive_operation_is_unknown_and_does_not_execute() -> Result<()> {
+    use crate::tool::{spec::ToolExecutionContext, ToolCall};
     use serde_json::json;
 
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
-    runtime.await_initial_resources().await;
-    let _refresh = runtime.hold_resource_refresh_for_test().await?;
-    let (_, _session) = runtime.begin_task_birth_session().await?;
-    let (turn_id, _) = runtime
-        .begin_interactive_turn_with_provenance(None, None, None, None)
-        .await?;
+    let temp = tempfile::tempdir()?;
+    assert!(!runtime
+        .inner
+        .tools
+        .tool_specs()?
+        .iter()
+        .any(|spec| spec.name == "ScheduleDestructiveOperation"));
+    let marker = temp.path().join("must-not-execute");
+    let harmless_command = format!("printf marker > '{}'", marker.display());
     let call = ToolCall {
-        id: "schedule-command".into(),
-        name: SCHEDULE_DESTRUCTIVE_OPERATION.into(),
+        id: "retired-tool-call".into(),
+        name: "ScheduleDestructiveOperation".into(),
         input: json!({
-            "operation_id":"schedule-fixture", "command":"printf fixture", "verification_target":"fixture",
+            "operation_id": "retired-tool-fixture",
+            "command": harmless_command,
+            "verification_target": harmless_command,
         }),
     };
-    let round = TranscriptEntry::new(
-        "default",
-        TranscriptEntryKind::AssistantRound,
-        Some(1),
-        None,
-        json!({
-            "turn_id":turn_id,
-            "blocks":[{"type":"tool_use","id":call.id,"name":call.name,"input":call.input}],
-        }),
-    );
-    runtime.persist_transcript_evidence(&round).await?;
-    let context = || ToolExecutionContext {
-        effective_work_item_id: Some("fixture-work".into()),
-        turn_id: Some(turn_id.clone()),
-        tool_call_id: Some(call.id.clone()),
-        external_command_attempt: Some(Arc::new(ExternalCommandAttempt {
-            assistant_round_id: round.id.clone(),
-            model_output_budget: 4096,
-            submitted: Default::default(),
-        })),
-        ..Default::default()
-    };
-    let db = runtime.runtime_db();
-    db.transaction(|tx| {
-        tx.execute_batch(
-            "CREATE TRIGGER reject_destructive_attempt BEFORE INSERT ON tool_executions
-             WHEN NEW.kind='ScheduleDestructiveOperation'
-             BEGIN SELECT RAISE(ABORT, 'fixture rejects launcher registration'); END;",
-        )?;
-        Ok(())
-    })?;
     let error = runtime
         .inner
         .tools
@@ -1128,41 +1096,12 @@ async fn destructive_operation_checks_pending_registration_before_launch_and_kee
             "default",
             &AuthorityClass::OperatorInstruction,
             &call,
-            &context(),
+            &ToolExecutionContext::default(),
         )
         .await
         .unwrap_err();
-    assert!(error.is::<ExternalCommandRegistrationFailed>(), "{error:#}");
-    assert!(
-        format!("{error:#}").contains("fixture rejects launcher registration"),
-        "{error:#}"
-    );
-    let operation = db
-        .destructive_operations()
-        .by_id("schedule-fixture")?
-        .unwrap();
-    assert_eq!(
-        operation.phase,
-        crate::runtime_db::DestructiveOperationPhase::Scheduled
-    );
-    let (result, record) = runtime
-        .inner
-        .tools
-        .execute_with_context(
-            runtime,
-            "default",
-            &AuthorityClass::OperatorInstruction,
-            &call,
-            &context(),
-        )
-        .await?;
-    assert_eq!(result.envelope.result.unwrap()["already_scheduled"], true);
-    assert!(record.call_binding.is_none());
-    let turn = db.turn_records().by_id(Some("default"), &turn_id)?.unwrap();
-    assert!(!turn.external_side_effect_possible);
-    assert_eq!(
-        turn.destructive_operation_id.as_deref(),
-        Some("schedule-fixture")
-    );
+    let error = error.downcast_ref::<holon_tools::ToolError>().unwrap();
+    assert_eq!(error.kind, "unknown_tool");
+    assert!(!marker.exists());
     Ok(())
 }

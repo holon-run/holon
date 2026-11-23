@@ -349,9 +349,7 @@ impl RuntimeHandle {
             InputEvidenceWrite::ToolResult { record, .. }
                 if matches!(
                     record.tool_name.as_str(),
-                    crate::tool::names::EXEC_COMMAND
-                        | crate::tool::names::EXEC_COMMAND_BATCH
-                        | crate::tool::names::SCHEDULE_DESTRUCTIVE_OPERATION
+                    crate::tool::names::EXEC_COMMAND | crate::tool::names::EXEC_COMMAND_BATCH
                 ) =>
             {
                 record

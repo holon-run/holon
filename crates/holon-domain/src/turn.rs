@@ -93,9 +93,6 @@ pub struct TurnRecord {
     pub terminal: Option<TurnTerminalSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay: Option<TurnReplayProvenance>,
-    /// Durable fence for a destructive lifecycle operation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub destructive_operation_id: Option<String>,
     /// An external process may have produced a side effect before this turn
     /// reached a durable tool-result checkpoint. Such turns are never replayed.
     #[serde(default)]
@@ -131,7 +128,6 @@ impl TurnRecord {
             runtime_failure: None,
             terminal: None,
             replay: None,
-            destructive_operation_id: None,
             external_side_effect_possible: false,
             external_side_effect_tool_call_id: None,
             operator_dispatch_fenced: false,

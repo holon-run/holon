@@ -135,16 +135,15 @@ pub(super) fn pending_id_tx(
     Ok(tx
         .query_row(
             "SELECT evidence_id FROM tool_executions
-         WHERE agent_id=?1 AND turn_id=?2 AND kind IN (?3,?4,?5)
+         WHERE agent_id=?1 AND turn_id=?2 AND kind IN (?3,?4)
            AND json_extract(payload_json,'$.status')='pending'
-           AND json_extract(payload_json,'$.call_binding.incarnation')=?6
+           AND json_extract(payload_json,'$.call_binding.incarnation')=?5
          ORDER BY created_at, evidence_id LIMIT 1",
             params![
                 scope.agent_id,
                 turn_id,
                 EXTERNAL_COMMAND_TOOLS[0],
                 EXTERNAL_COMMAND_TOOLS[1],
-                EXTERNAL_COMMAND_TOOLS[2],
                 scope.identity_incarnation
             ],
             |row| row.get(0),
@@ -185,8 +184,8 @@ pub(super) fn recover_missing_results_tx(
     let turn_id = turn.turn_id.as_str();
     let mut statement = tx.prepare(
         "SELECT e.evidence_id FROM tool_executions e
-         WHERE e.agent_id=?1 AND e.turn_id=?2 AND e.kind IN (?3,?4,?5)
-           AND json_extract(e.payload_json,'$.call_binding.incarnation')=?6
+         WHERE e.agent_id=?1 AND e.turn_id=?2 AND e.kind IN (?3,?4)
+           AND json_extract(e.payload_json,'$.call_binding.incarnation')=?5
            AND json_extract(e.payload_json,'$.status') IN ('success','error')
            AND NOT EXISTS (
              SELECT 1 FROM transcript_entries t, json_each(t.payload_json,'$.data.refs') r
@@ -203,7 +202,6 @@ pub(super) fn recover_missing_results_tx(
                 turn_id,
                 EXTERNAL_COMMAND_TOOLS[0],
                 EXTERNAL_COMMAND_TOOLS[1],
-                EXTERNAL_COMMAND_TOOLS[2],
                 scope.identity_incarnation
             ],
             |row| row.get::<_, String>(0),

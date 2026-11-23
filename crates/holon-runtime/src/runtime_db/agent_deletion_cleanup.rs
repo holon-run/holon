@@ -222,10 +222,6 @@ const DEPENDENT_TABLES: &[(&str, &str)] = &[
         "subagent_cleanup_failure_notices",
         "brief_id IN (SELECT evidence_id FROM briefs WHERE agent_id = ?1)",
     ),
-    (
-        "destructive_operations",
-        "owner_turn_id IN (SELECT turn_id FROM turn_records WHERE agent_id = ?1)",
-    ),
     // Parent-owned reminders are not the child's private history.
     ("subagent_cleanup_outbox", "parent_agent_id = ?1"),
     ("subagent_cleanup_observations", "parent_agent_id = ?1"),
@@ -355,14 +351,6 @@ pub(crate) fn settle_execution(
                 upsert_wait_condition_tx(tx, &wait)?;
             }
         }
-        // Close recovery ownership, not externally dispatched side effects.
-        // Deletion neither replays the command nor fabricates verification.
-        tx.execute(
-            "UPDATE destructive_operations SET phase = 'owner_closed', updated_at = ?2
-             WHERE owner_turn_id IN (SELECT turn_id FROM turn_records WHERE agent_id = ?1)
-               AND phase IN ('planned','scheduled','daemon_interrupted')",
-            params![agent_id, now.to_rfc3339()],
-        )?;
         retire_agent_execution_tx(tx, agent_id)?;
         for mut command in
             payloads::<AdmitActivationCommand>(tx, "scheduler_activations", agent_id)?
@@ -486,23 +474,6 @@ pub(crate) fn purge_private_history(
         assert_payload_ownership_tx(tx, agent_id)?;
         assert_search_schema_tx(tx)?;
 
-        let operation_ids = {
-            let mut statement = tx.prepare(
-                "SELECT operation_id FROM destructive_operations
-                 WHERE owner_turn_id IN (SELECT turn_id FROM turn_records WHERE agent_id = ?1)",
-            )?;
-            let ids = statement
-                .query_map([agent_id], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            ids
-        };
-        for operation_id in operation_ids {
-            super::destructive_operations::retain_closed_operation_fence_tx(
-                tx,
-                &operation_id,
-                now,
-            )?;
-        }
         let guards = checked_fixed_delete_guards_tx(tx)?;
         for (name, _) in &guards {
             tx.execute_batch(&format!("DROP TRIGGER {}", quoted(name)))?;
@@ -826,16 +797,6 @@ fn assert_execution_settled_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<(
             "unsettled deletion execution in {table}"
         );
     }
-    ensure!(
-        !exists(
-            tx,
-            "SELECT EXISTS(SELECT 1 FROM destructive_operations d
-             JOIN turn_records t ON t.turn_id = d.owner_turn_id
-             WHERE t.agent_id = ?1 AND d.phase NOT IN ('verified','owner_closed'))",
-            agent_id
-        )?,
-        "unsettled deletion destructive operations"
-    );
     Ok(())
 }
 
@@ -846,8 +807,6 @@ fn assert_no_live_resources_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<(
         "SELECT EXISTS(SELECT 1 FROM timers WHERE agent_id = ?1 AND status IN ('active','paused'))",
         "SELECT EXISTS(SELECT 1 FROM wait_conditions WHERE agent_id = ?1 AND status IN ('active','triggered'))",
         "SELECT EXISTS(SELECT 1 FROM workspace_occupancies WHERE holder_agent_id = ?1 AND released_at IS NULL)",
-        "SELECT EXISTS(SELECT 1 FROM destructive_operations d JOIN turn_records t ON t.turn_id = d.owner_turn_id
-         WHERE t.agent_id = ?1 AND d.phase NOT IN ('verified','owner_closed'))",
         "SELECT EXISTS(SELECT 1 FROM agent_message_deliveries WHERE target_agent_id = ?1 AND state IN ('queued','dispatched'))",
     ] {
         ensure!(!exists(tx, sql, agent_id)?, "deletion still has live resources");
@@ -1839,7 +1798,6 @@ mod tests {
                 "external_triggers",
                 "messages",
                 "wait_conditions",
-                "destructive_operations",
                 "audit_events",
                 "runtime_index_outbox",
             ] {
@@ -1848,7 +1806,6 @@ mod tests {
                     "conversation_source_revisions" => "json_object('source',source_id,'revision',revision)",
                     "audit_events" => "json(data_json)",
                     "runtime_index_outbox" => "json_object('seq',change_seq,'agent',agent_id,'source',source_ref)",
-                    "destructive_operations" => "json_object('operation',operation_id,'turn',owner_turn_id,'phase',phase,'updated',updated_at)",
                     _ => "json(payload_json)",
                 };
                 let mut statement = tx.prepare(&format!("SELECT json_group_array({value}) FROM {table}"))?;
@@ -2323,12 +2280,6 @@ mod tests {
                     params![agent, brief.id],
                 )?;
                 tx.execute(
-                    "INSERT INTO destructive_operations(operation_id,owner_turn_id,phase,
-                     verification_target,recovery_policy,created_at,updated_at)
-                     VALUES (?1,?2,'verified',?1,'verify','now','now')",
-                    params![agent, format!("turn-{agent}")],
-                )?;
-                tx.execute(
                     "INSERT INTO subagent_cleanup_observations VALUES (?1,?1,'evidence',
                      'now','now',NULL,0,NULL)",
                     [agent],
@@ -2758,18 +2709,6 @@ mod tests {
             trigger_message_id: None,
             triggered_at: None,
         })?;
-        db.destructive_operations()
-            .plan_or_get(&super::super::DestructiveOperationRecord {
-                operation_id: "rollback-operation".into(),
-                owner_turn_id: "turn-open".into(),
-                owner_work_item_id: None,
-                command_digest: "fixture".into(),
-                phase: super::super::DestructiveOperationPhase::Scheduled,
-                verification_target: "false".into(),
-                recovery_policy: "verify_only".into(),
-                created_at: now,
-                updated_at: now,
-            })?;
         fence(&db)?;
         let before = snapshot(&db)?;
         db.transaction(|tx| {
@@ -2860,15 +2799,6 @@ mod tests {
         memory(&db)?;
         db.turn_records()
             .upsert(&TurnRecord::new("a", "operation-turn", 1))?;
-        db.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO destructive_operations(operation_id,owner_turn_id,phase,
-                 verification_target,recovery_policy,created_at,updated_at)
-                 VALUES ('rollback-fence','operation-turn','scheduled','false','verify_only','now','now')",
-                [],
-            )?;
-            Ok(())
-        })?;
         fence(&db)?;
         settle_execution(&db, "a", 1, Utc::now())?;
         let before = private_rows(&db, "a")?;
@@ -2889,25 +2819,6 @@ mod tests {
                 "SELECT EXISTS(SELECT 1 FROM audit_events WHERE agent_id = ?1)",
                 "a"
             )?);
-            let fences: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM runtime_metadata
-                 WHERE key LIKE 'destructive_operation_closed:%'",
-                [],
-                |row| row.get(0),
-            )?;
-            assert_eq!(
-                fences, 0,
-                "a failed purge must roll back dispatch tombstones"
-            );
-            let phase: String = tx.query_row(
-                "SELECT phase FROM destructive_operations WHERE operation_id = 'rollback-fence'",
-                [],
-                |row| row.get(0),
-            )?;
-            assert_eq!(
-                phase, "owner_closed",
-                "the private operation must survive failed purge"
-            );
             assert!(exists(
                 tx,
                 "SELECT EXISTS(SELECT 1 FROM messages WHERE agent_id = ?1)",

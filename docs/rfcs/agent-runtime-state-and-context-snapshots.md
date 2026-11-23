@@ -17,15 +17,12 @@ using a Turn side-effect barrier also settle that barrier and its checkpoint
 Audit in the same transaction. Prepared Wait and Work completion use their
 existing terminal transaction boundaries.
 
-Before starting a process for a model-issued `ExecCommand`, `ExecCommandBatch`,
-or `ScheduleDestructiveOperation`, the runtime commits a `Pending`
+Before starting a process for a model-issued `ExecCommand` or
+`ExecCommandBatch`, the runtime commits a `Pending`
 ToolExecutionRecord bound to the current incarnation, Turn, assistant round
 and call. `ExecCommand` task reuse skips this registration. A batch registers
 once before the first process starts and settles its grouped result using the
-same execution ID. Destructive scheduling keeps its operation ID and
-`verify_only` recovery policy, and registers the tool attempt before launching
-the external dispatcher. A repeated operation already fenced for verification
-skips launch and attempt registration.
+same execution ID.
 
 The result transaction settles the same execution ID and leaves the Turn's
 side-effect marker untouched. A proven spawn failure can settle the record
