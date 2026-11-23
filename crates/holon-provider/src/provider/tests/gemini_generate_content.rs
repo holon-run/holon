@@ -697,5 +697,139 @@ async fn gemini_native_web_search_sends_query_and_maps_grounding_citations() {
         "standalone search wire tools must carry google_search: {tools:?}"
     );
     assert_eq!(body["contents"][0]["parts"][0]["text"], "fixture query");
-    assert_eq!(body["generationConfig"]["maxOutputTokens"], 256);
+    // The standalone search must reuse the route output budget instead of a
+    // hard-coded tiny cap that truncated the answer before the search ran.
+    assert_eq!(body["generationConfig"]["maxOutputTokens"], 1024);
+}
+
+fn gemini_grounded_search_response() -> Value {
+    json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "grounded answer" }]
+            },
+            "finishReason": "STOP",
+            "groundingMetadata": {
+                "webSearchQueries": ["fixture query"],
+                "groundingChunks": [
+                    { "web": { "uri": "https://example.test/first", "title": "First" } }
+                ]
+            }
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 4,
+            "candidatesTokenCount": 6
+        }
+    })
+}
+
+fn gemini_unsearched_response(finish_reason: &str) -> Value {
+    json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "plain answer" }]
+            },
+            "finishReason": finish_reason
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 4,
+            "candidatesTokenCount": 6
+        }
+    })
+}
+
+async fn run_gemini_native_search(
+    response: Value,
+    max_output_tokens: u32,
+) -> (Value, ProviderNativeSearchOutcome) {
+    let captured_body = Arc::new(Mutex::new(None::<Value>));
+    let captured_body_for_server = captured_body.clone();
+    let response_for_server = response;
+    let base_url =
+        spawn_test_server(Router::new().fallback(post(move |Json(body): Json<Value>| {
+            let captured_body = captured_body_for_server.clone();
+            let response = response_for_server.clone();
+            async move {
+                *captured_body.lock().unwrap() = Some(body);
+                Json(response)
+            }
+        })))
+        .await;
+    let mut fixture = ProviderFixture::gemini("gemini-key");
+    fixture.config.base_url = base_url;
+    fixture.config.builtin_web_search = Some(crate::config::ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::Gemini,
+        advertised_tool_type: "google_search".into(),
+        backend_kind: "gemini_web_search".into(),
+    });
+    let provider = GeminiProvider::from_runtime_config(
+        &fixture.config,
+        "gemini-3-pro",
+        max_output_tokens,
+        fixture.home.path(),
+        TEST_CLIENT_VERSION,
+    )
+    .unwrap();
+    let outcome = provider
+        .native_web_search(
+            ProviderNativeWebSearchRequest {
+                kind: ProviderNativeWebSearchKind::Gemini,
+                provider_id: "gemini".into(),
+                provider_model_ref: "gemini/gemini-3-pro".into(),
+                advertised_tool_type: "google_search".into(),
+                backend_kind: "gemini_web_search".into(),
+                max_results: Some(5),
+            },
+            "fixture query",
+        )
+        .await
+        .expect("standalone gemini native search must succeed");
+    let body = captured_body
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("server should capture the request body");
+    (body, outcome)
+}
+
+#[tokio::test]
+async fn gemini_native_search_omits_output_budget_when_unset() {
+    let (body, outcome) = run_gemini_native_search(gemini_grounded_search_response(), 0).await;
+    let generation_config = body["generationConfig"]
+        .as_object()
+        .expect("search request must carry a generationConfig object");
+    assert!(
+        generation_config.get("maxOutputTokens").is_none(),
+        "no configured budget must fall back to the upstream default: {body:?}"
+    );
+    assert!(outcome.search_executed);
+    assert!(!outcome.output_budget_exhausted);
+}
+
+#[tokio::test]
+async fn gemini_native_search_reports_output_budget_exhaustion() {
+    let (_, outcome) =
+        run_gemini_native_search(gemini_unsearched_response("MAX_TOKENS"), 1024).await;
+    assert!(
+        !outcome.search_executed,
+        "a truncated answer is not search evidence"
+    );
+    assert!(
+        outcome.output_budget_exhausted,
+        "MAX_TOKENS without grounding must report the exhausted output budget"
+    );
+    assert!(outcome.citations.is_empty());
+}
+
+#[tokio::test]
+async fn gemini_native_search_keeps_completed_non_search_distinct() {
+    let (_, outcome) = run_gemini_native_search(gemini_unsearched_response("STOP"), 1024).await;
+    assert!(!outcome.search_executed);
+    assert!(
+        !outcome.output_budget_exhausted,
+        "a completed answer without grounding is not an output-budget problem"
+    );
 }

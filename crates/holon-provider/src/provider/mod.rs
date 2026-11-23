@@ -308,10 +308,15 @@ pub struct ProviderNativeWebSearchRequest {
 
 /// Outcome of one standalone native web search request. `citations` come only
 /// from structured upstream sources; `search_executed` reflects explicit
-/// upstream evidence that the search tool ran.
+/// upstream evidence that the search tool ran. `output_budget_exhausted`
+/// reports a response that stopped on the output token budget before any
+/// search evidence appeared, which is a configuration problem rather than a
+/// provider that cannot search.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderNativeSearchOutcome {
     pub search_executed: bool,
+    #[serde(default)]
+    pub output_budget_exhausted: bool,
     pub citations: Vec<crate::types::Citation>,
 }
 

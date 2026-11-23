@@ -726,3 +726,50 @@ async fn explicit_zhipu_web_provider_wins_over_credential_discovery() {
     assert_eq!(entry.api_key, "explicit-key");
     assert!(web_config.search.derived_providers.contains("bigmodel"));
 }
+
+fn gemini_unsearched_response(finish_reason: &str) -> Value {
+    json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "plain answer" }]
+            },
+            "finishReason": finish_reason
+        }],
+        "usageMetadata": { "promptTokenCount": 4, "candidatesTokenCount": 6 }
+    })
+}
+
+#[tokio::test]
+async fn gemini_native_search_truncation_reports_output_budget() {
+    let base_url =
+        spawn_native_search_gemini_server(gemini_unsearched_response("MAX_TOKENS")).await;
+    let (_home, runtime, route) = gemini_dispatch_fixture(base_url);
+
+    let error = runtime
+        .dispatch_native_web_search("gemini-search", &route, "query", 5)
+        .await
+        .expect_err("a truncated answer must not count as a completed search");
+    assert_eq!(error.kind, "search_truncated");
+    let hint = error.recovery_hint.unwrap_or_default();
+    assert!(
+        hint.contains("output budget"),
+        "truncation diagnostics must name the output budget: {hint}"
+    );
+    assert!(
+        !hint.contains("supports server-side web search"),
+        "truncation diagnostics must not suggest swapping the model route: {hint}"
+    );
+}
+
+#[tokio::test]
+async fn gemini_native_search_completed_without_search_stays_not_executed() {
+    let base_url = spawn_native_search_gemini_server(gemini_unsearched_response("STOP")).await;
+    let (_home, runtime, route) = gemini_dispatch_fixture(base_url);
+
+    let error = runtime
+        .dispatch_native_web_search("gemini-search", &route, "query", 5)
+        .await
+        .expect_err("an answer without grounding evidence must not count as a search");
+    assert_eq!(error.kind, "search_not_executed");
+}

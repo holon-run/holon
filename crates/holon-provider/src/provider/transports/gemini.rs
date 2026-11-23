@@ -64,7 +64,9 @@ struct GenerateContentRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiGenerationConfig {
-    max_output_tokens: u32,
+    /// `None` omits the field so the upstream default applies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_mime_type: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -237,7 +239,10 @@ impl GeminiProvider {
             contents: build_gemini_contents(request),
             tools: build_gemini_tools(request),
             generation_config: GeminiGenerationConfig {
-                max_output_tokens: GEMINI_NATIVE_SEARCH_MAX_OUTPUT_TOKENS,
+                // A hard-coded tiny budget truncates the answer before the
+                // grounded search runs; reuse the route budget and fall back to
+                // the upstream default when no budget is configured.
+                max_output_tokens: (self.max_output_tokens > 0).then_some(self.max_output_tokens),
                 response_mime_type: None,
                 response_json_schema: None,
             },
@@ -400,7 +405,7 @@ impl AgentProvider for GeminiProvider {
                     contents: build_gemini_contents(&request),
                     tools: build_gemini_tools(&request),
                     generation_config: GeminiGenerationConfig {
-                        max_output_tokens: self.max_output_tokens,
+                        max_output_tokens: Some(self.max_output_tokens),
                         response_mime_type: response_json_schema.as_ref().map(|_| "application/json"),
                         response_json_schema,
                     },
@@ -1043,8 +1048,6 @@ fn build_gemini_tools(request: &ProviderTurnRequest) -> Vec<Value> {
     tools
 }
 
-const GEMINI_NATIVE_SEARCH_MAX_OUTPUT_TOKENS: u32 = 256;
-
 /// Gemini grounds native web search through the `google_search` tool
 /// declaration keyed by the advertised tool type; other native search kinds
 /// have no Gemini lowering.
@@ -1083,11 +1086,11 @@ fn gemini_native_web_search_diagnostics(
 /// (`webSearchQueries` or grounding chunks), and citations come only from
 /// structured `groundingChunks[].web` entries.
 fn parse_gemini_native_web_search_output(response: &Value) -> ProviderNativeSearchOutcome {
-    let grounding = response
+    let candidate = response
         .get("candidates")
         .and_then(Value::as_array)
-        .and_then(|candidates| candidates.first())
-        .and_then(|candidate| candidate.get("groundingMetadata"));
+        .and_then(|candidates| candidates.first());
+    let grounding = candidate.and_then(|candidate| candidate.get("groundingMetadata"));
     let grounding_queries = grounding
         .and_then(|metadata| metadata.get("webSearchQueries"))
         .and_then(Value::as_array)
@@ -1115,8 +1118,17 @@ fn parse_gemini_native_web_search_output(response: &Value) -> ProviderNativeSear
                 .collect()
         })
         .unwrap_or_default();
+    // `MAX_TOKENS` without grounding evidence means the answer was truncated
+    // before the search ran; keep it distinct from a completed non-search so
+    // callers get an actionable diagnostic instead of "swap the model route".
+    let output_budget_exhausted = !search_executed
+        && candidate
+            .and_then(|candidate| candidate.get("finishReason"))
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.eq_ignore_ascii_case("MAX_TOKENS"));
     ProviderNativeSearchOutcome {
         search_executed,
+        output_budget_exhausted,
         citations,
     }
 }

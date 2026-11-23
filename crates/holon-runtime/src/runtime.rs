@@ -3891,6 +3891,16 @@ impl RuntimeHandle {
                 recovery_hint: None,
             })?;
         if !outcome.search_executed {
+            if outcome.output_budget_exhausted {
+                return Err(WebSearchNativeDispatchError {
+                    kind: "search_truncated",
+                    message: "upstream stopped on the output token budget before the web search evidence appeared"
+                        .to_string(),
+                    recovery_hint: Some(
+                        "raise the model route output budget or shorten the search query",
+                    ),
+                });
+            }
             return Err(WebSearchNativeDispatchError {
                 kind: "search_not_executed",
                 message: "upstream completed without evidence that the web search tool ran"
