@@ -5,6 +5,39 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-24
+
+The November 24 Beijing review tested models.dev sample
+`d6cd7d0ed36ab4d77a34a28f8b9467d645d9a652867da336892a6ae6f1b6cf1b`
+against `f6f9cff42`. Refresh and validation passed, but the coverage gate
+caught the preview refresh dropping `mistral@default/labs-leanstral-1-5-1`
+from the supplement. We could not verify retirement with Mistral, so we
+retain the prior snapshot, artifact, supplement, and refresh report rather
+than remove that route or weaken the gate. The preview refresh also changed
+the Gemini Flash Latest description and found two new Together upstream
+candidates; neither was used to change a shipped route.
+
+- Volcengine's [Agent Plan table](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-plan-overview.md)
+  shows `1024K` context and `128K` maximum output. Its
+  [OpenCode examples](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-opencode.md)
+  use `1024000` and `65536` in client configuration and list text and image
+  input on the Responses model. Do not convert table abbreviations into
+  exact hard limits or treat client settings as provider defaults.
+  Keep output default, context and output ceiling unknown; no reasoning
+  effort levels or parallel tool calls are claimed.
+- The [general Volcengine Responses reference](https://ark.volcengine.com/region:cn-beijing/docs/create-model-responses-api.md)
+  now describes `max`, not `high`, as the default effort for
+  `glm-5-2-260617`. That does not describe a plan alias. The
+  [Qianfan Chat reference](https://cloud.baidu.com/doc/qianfan-api/s/wmwbl48n4)
+  now says the omitted `thinking.type` default depends on the model,
+  not that it is always `disabled`. This establishes no new per-model
+  capability or effort levels.
+- The [Gemini 4 Neon model card](https://aistudio.google.com/docs/models/gemini-4-neon#pricing)
+  now spells out standard pricing separately from batch, other tiers and tool
+  fees. Do not use those rows to change the synchronous route's capacity.
+  The official Codex model list was byte-identical to the previous sample.
+  No credential, account entitlement, or live inference test was performed.
+
 ## Incremental review: 2026-11-23
 
 The November 23 Beijing cycle pins the November 22, 2026 20:31 UTC

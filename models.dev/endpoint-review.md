@@ -9,6 +9,33 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-24 incremental review
+
+Add only `volcengine@plan/glm-5.4`: the personal Agent Plan lists the exact
+ID for Small, Medium, Large, and Max, and its Responses example documents
+image input. Do not inherit that capability on unreviewed endpoints.
+Do not change the default model or `glm-latest`, expose a separate Chat
+route, or extend this admission to Coding Plan or the general API.
+[Field evidence](metadata-evidence.md#incremental-review-2026-11-24)
+separates the plan's abbreviated limits from client settings.
+
+[BigModel](https://docs.bigmodel.cn/cn/coding-plan/latest-model) and
+[Z.AI](https://docs.z.ai/devpack/latest-model) independently list `glm-5.4`
+for every GLM Coding Plan tier. Holon does not yet represent those distinct
+plan routes. Do not add the model to either general `@default` catalog
+or copy their capabilities onto the Volcengine route.
+
+The [Volcengine general API notice](https://ark.volcengine.com/region:cn-beijing/docs/model-deprecation-notice.md)
+calls for rechecking `doubao-seed-2-0-code-preview-260215` at 14:00 UTC+8
+on November 24; it does not retire the same ID on a plan. The same
+notice puts `doubao-seed-2-0-pro-260215` at January 22, 2027, 14:00
+UTC+8. Keep the separate November 25 boundary for plan `kimi-k3`.
+DashScope `qwen4-max-preview` stays on the reviewed Token Plan route
+through its published preview window, which ends November 26 at
+00:00 UTC+8. Do not remove the two older OpenCode Go LongCat IDs:
+repeated absence from Go's public list is not proof of a Go shutdown,
+and the Console pay-as-you-go retirement is scoped to a different service.
+
 ## 2026-11-23 incremental review
 
 Add only `opencode-go@default/longcat-2.5`. The two public Go catalogs

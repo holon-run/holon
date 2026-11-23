@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **37 provider accounts**
-across **51 endpoints** and **429 models**.
+across **51 endpoints** and **430 models**.
 
 This page is auto-generated from the Holon source code
 ([`crates/holon-model-catalog/src/lib.rs`](https://github.com/holon-run/holon/blob/main/crates/holon-model-catalog/src/lib.rs) and
@@ -480,6 +480,7 @@ and capabilities.
 | `volcengine` | `glm-5.2` | `volcengine/glm-5.2` | 204800 | 128000 | ✅ | — |
 | `volcengine` | `glm-5.3` | `volcengine/glm-5.3` | 204800 | 128000 | ✅ | — |
 | `volcengine` | `glm-5.3-flash` | `volcengine/glm-5.3-flash` | — | — | — | ✅ |
+| `volcengine` | `glm-5.4` | `volcengine/glm-5.4` | — | — | — | ✅ |
 | `volcengine` | `glm-latest` | `volcengine/glm-latest` | — | — | ✅ | — |
 | `volcengine` | `kimi-k2.8-preview` | `volcengine/kimi-k2.8-preview` | — | — | ✅ | ✅ |
 | `volcengine` | `kimi-k3` | `volcengine/kimi-k3` | — | — | ✅ | ✅ |
