@@ -40,7 +40,10 @@ use holon::{
         UpdateWorkItemRequest,
     },
     memory::{rebuild_memory_index, request_memory_index_rebuild},
-    model_discovery::{discovery_cache_path, refresh_provider_models},
+    model_discovery::{
+        discovery_cache_path, discovery_cache_status_for_provider, refresh_provider_models,
+        DEFAULT_DISCOVERY_CACHE_TTL,
+    },
     onboarding::{
         apply_onboarding_wizard_draft, onboarding_report, OnboardingApplySummary,
         OnboardingSearchSelection, OnboardingWizardSubmission,
@@ -8204,9 +8207,20 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
             let provider = effective.providers.get(&id).with_context(|| {
                 format!("provider {} was saved but did not resolve", id.as_str())
             })?;
+            let discovery = discovery_cache_status_for_provider(
+                provider,
+                &effective.model_discovery_cache,
+                DEFAULT_DISCOVERY_CACHE_TTL,
+                false,
+            );
+            let refresh_command = discovery
+                .supports_auto_refresh
+                .then(|| format!("holon config models refresh --provider {}", id.as_str()));
             print_json(&serde_json::json!({
                 "applied_via": "offline_store",
                 "provider": provider_config_view(&effective, provider),
+                "model_discovery": discovery,
+                "next_step": refresh_command,
             }))
         }
         ConfigProviderCommands::Get { provider } => {

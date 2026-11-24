@@ -28,13 +28,18 @@ pub const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 
 
 /// Transport-level default discovery used for `openai_chat_completions`
 /// providers that have no built-in discovery definition. Custom OpenAI-compatible
-/// providers (for example a local Ollama endpoint) then participate in model
-/// discovery through the standard `GET {base_url}/models` endpoint without a
-/// provider-specific definition; built-in providers keep winning because their
-/// explicit definitions are resolved first.
+/// providers (for example a self-hosted gateway or a local Ollama endpoint) then
+/// participate in model discovery through the OpenAI `/v1/models` endpoint
+/// without a provider-specific definition. `OpenAiV1` reuses the same `/v1`
+/// de-duplication as built-in gateways, so `http://host:port` and
+/// `http://host:port/v1` both resolve to `http://host:port/v1/models` while a
+/// path prefix is preserved. Built-in providers keep winning because their
+/// explicit definitions are resolved first, so `OpenAiCompatible` remains the
+/// route for providers such as github-copilot and kilocode that expect
+/// `{base_url}/models`.
 const OPENAI_COMPATIBLE_DEFAULT_DISCOVERY: ModelDiscoveryDefinition = ModelDiscoveryDefinition {
     auth: ModelDiscoveryAuth::Optional,
-    route: ModelDiscoveryRoute::OpenAiCompatible,
+    route: ModelDiscoveryRoute::OpenAiV1,
     decoder: ModelDiscoveryDecoder::OpenAiCompatible,
 };
 
@@ -157,10 +162,23 @@ pub fn discovery_cache_status_for_provider(
             .to_std()
             .ok()
     });
+    // A cached list is only valid for the endpoint it was fetched from. When the
+    // provider's base_url (and therefore the derived discovery URL) changes, the
+    // cached models no longer describe the current gateway, so force a refresh
+    // instead of trusting a list that is still within the TTL. Legacy entries
+    // without a recorded source URL are treated the same way so they are
+    // re-validated once against the current endpoint.
+    let source_url_changed = entry.is_some_and(|entry| {
+        provider_models_url(provider)
+            .map(|current| entry.source_url.as_deref() != Some(current.as_str()))
+            .unwrap_or(false)
+    });
     let state = if !supports_auto_refresh {
         ModelDiscoveryCacheState::Unsupported
     } else if provider_model_discovery_requires_credential(provider) && !credential_configured {
         ModelDiscoveryCacheState::Unauthenticated
+    } else if source_url_changed {
+        ModelDiscoveryCacheState::Stale
     } else if let Some(age) = age {
         if age <= ttl {
             ModelDiscoveryCacheState::Fresh

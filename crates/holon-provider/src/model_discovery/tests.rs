@@ -1396,7 +1396,7 @@ async fn check_oauth_discovery_lifecycle(case: OAuthDiscoveryCase) {
     let token_forms = forms.clone();
     let server = Router::new()
         .route(
-            "/models",
+            "/v1/models",
             get(move |headers: axum::http::HeaderMap| {
                 let bearers = model_bearers.clone();
                 async move {
@@ -1739,7 +1739,7 @@ async fn custom_openai_compatible_provider_discovers_models_without_authenticati
         let mut request = [0_u8; 2048];
         let read = stream.read(&mut request).unwrap();
         let request = String::from_utf8_lossy(&request[..read]);
-        assert!(request.starts_with("GET /models HTTP/1.1"));
+        assert!(request.starts_with("GET /v1/models HTTP/1.1"));
         assert!(!request.to_ascii_lowercase().contains("authorization:"));
 
         let body = r#"{"object":"list","data":[
@@ -1768,7 +1768,7 @@ async fn custom_openai_compatible_provider_discovers_models_without_authenticati
     assert_eq!(report.model_count, 2);
     assert_eq!(
         provider_models_url(&provider).unwrap(),
-        format!("{base_url}/models")
+        format!("{base_url}/v1/models")
     );
 
     let cache = load_discovery_cache_at(&cache_path).unwrap();
@@ -1807,6 +1807,66 @@ fn openai_compatible_discovery_keeps_only_non_empty_server_model_ids() {
     assert!(models
         .iter()
         .all(|model| model.capabilities == ModelCapabilityFlags::default()));
+}
+
+#[test]
+fn custom_openai_compatible_provider_derives_v1_models_url() {
+    // `OpenAiV1` de-duplicates `/v1`, so both root and `/v1` base URLs land on
+    // `/v1/models` while an explicit path prefix is preserved.
+    let cases = [
+        ("http://127.0.0.1:8080", "http://127.0.0.1:8080/v1/models"),
+        ("http://127.0.0.1:8080/", "http://127.0.0.1:8080/v1/models"),
+        (
+            "http://127.0.0.1:8080/v1",
+            "http://127.0.0.1:8080/v1/models",
+        ),
+        (
+            "http://127.0.0.1:8080/v1/",
+            "http://127.0.0.1:8080/v1/models",
+        ),
+        (
+            "https://gateway.example.invalid/gw",
+            "https://gateway.example.invalid/gw/v1/models",
+        ),
+    ];
+    for (base_url, expected) in cases {
+        let provider = custom_openai_provider(base_url.to_string());
+        assert_eq!(
+            provider_models_url(&provider).unwrap(),
+            expected,
+            "base_url {base_url:?}"
+        );
+    }
+}
+
+#[test]
+fn discovery_cache_status_invalidates_when_source_url_changes() {
+    let provider = custom_openai_provider("http://127.0.0.1:8080".into());
+    let ttl = Duration::from_secs(60);
+    let mut cache = ModelDiscoveryCacheFile::default();
+    cache.providers.insert(
+        provider.id.clone(),
+        ProviderModelDiscoveryCache {
+            provider: provider.id.clone(),
+            fetched_at: Utc::now(),
+            source_url: Some(provider_models_url(&provider).unwrap()),
+            response_hash: None,
+            models: Vec::new(),
+        },
+    );
+    assert_eq!(
+        discovery_cache_status_for_provider(&provider, &cache, ttl, false).state,
+        ModelDiscoveryCacheState::Fresh
+    );
+
+    // Same provider id and TTL window, but the gateway moved: the cached list no
+    // longer describes the current endpoint, so a refresh is required.
+    let moved = custom_openai_provider("http://127.0.0.1:9090".into());
+    assert_eq!(
+        discovery_cache_status_for_provider(&moved, &cache, ttl, false).state,
+        ModelDiscoveryCacheState::Stale
+    );
+    assert!(discovery_cache_needs_refresh(&moved, &cache, ttl));
 }
 
 #[test]
@@ -1951,7 +2011,7 @@ fn discovery_cache_status_reports_missing_stale_and_fresh() {
         ProviderModelDiscoveryCache {
             provider: provider.id.clone(),
             fetched_at: Utc::now() - chrono::TimeDelta::seconds(120),
-            source_url: None,
+            source_url: Some(provider_models_url(&provider).unwrap()),
             response_hash: None,
             models: Vec::new(),
         },

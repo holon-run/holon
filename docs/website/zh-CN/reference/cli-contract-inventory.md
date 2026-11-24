@@ -79,7 +79,7 @@ order: 11
 
 | 命令 | 参数 | 选项 | 输出 | 初始稳定性 | 备注 |
 |---|---|---|---|---:|---|
-| `holon config providers set` | `<PROVIDER>` | `--transport <TRANSPORT>`；`--base-url <BASE_URL>`；`--credential-source <SOURCE>` 默认 `none`；`--credential-kind <KIND>` 默认 `none`；`--credential-env <ENV>`；`--credential-profile <PROFILE>`；`--credential-external <COMMAND>` | JSON `{ "applied_via": "offline_store", "provider": ... }` | 命令形态为 `stable` 候选；provider 对象为 `experimental` | 内置 provider 可能拒绝不兼容的 transport 覆盖。 |
+| `holon config providers set` | `<PROVIDER>` | `--transport <TRANSPORT>`；`--base-url <BASE_URL>`；`--credential-source <SOURCE>` 默认 `none`；`--credential-kind <KIND>` 默认 `none`；`--credential-env <ENV>`；`--credential-profile <PROFILE>`；`--credential-external <COMMAND>` | JSON `{ "applied_via": "offline_store", "provider": ..., "model_discovery": ..., "next_step": ... }` | 命令形态为 `stable` 候选；provider 对象为 `experimental` | 内置 provider 可能拒绝不兼容的 transport 覆盖。`model_discovery` 报告发现缓存状态；`next_step` 为刷新命令，provider 不支持发现时为 `null`。 |
 | `holon config providers get` | `<PROVIDER>` | none | JSON provider 视图 | `experimental` | 输出使用运行时 provider 视图。 |
 | `holon config providers list` | none | none | provider 视图的 JSON 数组/对象 | `experimental` | 输出形态应与 API/配置清册对齐。 |
 | `holon config providers remove` | `<PROVIDER>` | none | JSON `{ "applied_via": "offline_store", "provider": ..., "status": "removed\|not_configured" }` | `stable` JSON | 由 `tests/cli_json_contract.rs` 锁定；状态字符串面向脚本。 |

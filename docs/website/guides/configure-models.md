@@ -183,6 +183,42 @@ holon config set image_generation.default "openai@default/dall-e-3"
 
 These settings do not affect your chat model. For details, see [Inspect Images](./inspect-image.md) and [Generate Images](./generate-image.md).
 
+### Scenario 6: Self-Hosted OpenAI-Compatible Gateways (Magpie, LiteLLM, etc.)
+
+Self-hosted gateways that expose the OpenAI-compatible `GET /v1/models` endpoint can participate in model discovery without hand-writing a `models.catalog` entry for every model.
+
+1. **Register the gateway** with one base URL and a credential source:
+   ```bash
+   holon config providers set my-gateway \
+     --transport openai_chat_completions \
+     --base-url http://gateway.internal:8080 \
+     --credential-source env \
+     --credential-env MY_GATEWAY_API_KEY
+   ```
+   `--base-url` may be either the gateway root (`http://gateway.internal:8080`) or an explicit `/v1` URL (`http://gateway.internal:8080/v1`). Both resolve to `GET /v1/models`; an explicit path prefix such as `http://gateway.internal:8080/gw` resolves to `GET /gw/v1/models`. Setting a credential is optional for gateways that accept unauthenticated discovery.
+2. **Trigger discovery** (discovery is never probed at startup or during a turn, so a broken gateway cannot block agents):
+   ```bash
+   holon config models refresh --provider my-gateway
+   ```
+   The `providers set` output reports the current discovery cache state (`missing`, `stale`, `fresh`, `unauthenticated`, or `unsupported`) and the exact refresh command as `next_step`.
+3. **Verify the discovered models**:
+   ```bash
+   holon config models list
+   ```
+   Discovered models appear automatically; select one with the usual route format:
+   ```bash
+   holon config set model.default "my-gateway@default/<model-id>"
+   ```
+
+Discovery cache is scoped to the derived `/v1/models` URL. Changing a provider's `base_url` invalidates the cached list immediately, even within the 24-hour TTL, so the next refresh reflects the new gateway. Discovery failures (404, timeout, missing key) are reported on the `models refresh` result and in the provider's discovery status; they do not fail startup or agent turns.
+
+`models.catalog` remains available as an optional override for routes where discovery cannot supply the model set — for example setting context window or output limits, or non-chat transports (`anthropic_messages`, `openai_responses`) whose model catalogs are not auto-discovered:
+```bash
+holon config set models.catalog '{"my-gateway@default/my-model":{"context_window_tokens":131072}}'
+```
+
+> Automatic discovery currently covers only the OpenAI-compatible `GET /v1/models` shape, which standard responses expose as model IDs. Vendor extensions in the response body are not parsed yet; use `models.catalog` overrides when you need explicit budgets or capabilities.
+
 ## Troubleshooting
 
 - **Local Ollama Connection Refused**:
