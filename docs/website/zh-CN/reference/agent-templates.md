@@ -317,6 +317,17 @@ Holon 还带一个隐藏的内置 `holon-default` 模板，用于零配置和离
 被写入 `~/.agents/agent_templates`，也不作为目录条目显示，只有在创建 Agent
 且没有显式指定模板选择器时才会用到。
 
+不需要创建 Agent 也可以查询目录：
+
+```text
+holon template catalog
+holon template show <catalog_id>
+```
+
+两个命令都是只读的，与 Web/TUI 和 `GET /templates/catalog` 使用同一份目录视图。
+Agent 提示词不再内嵌模板目录，需要时按需通过 CLI 或 API 查询，而不是让每一轮
+上下文都为它付费。
+
 官方模板源是 Holon 仓库。同步时，其顶层 `agent_templates/` 目录下的模板会
 成为 `~/.agents/agent_templates` 里的普通本地目录条目。
 

@@ -415,7 +415,7 @@ fn build_context_lists_skill_metadata_without_skill_body() {
 }
 
 #[test]
-fn build_context_lists_agent_template_catalog_without_template_body() {
+fn build_context_omits_agent_template_catalog_section() {
     let fixture = Fixture::default();
 
     let current_message = MessageEnvelope::new(
@@ -469,16 +469,18 @@ fn build_context_lists_agent_template_catalog_without_template_body() {
         )
         .unwrap();
 
-    let catalog = built
+    // The template catalog is a low-frequency lookup. It is served by
+    // `holon template catalog|show` (and Web/TUI/API), not injected into the
+    // prompt, so the captured SkillsRuntimeView data must stay out of context.
+    assert!(built
         .plan
         .sections
         .iter()
-        .find(|section| section.name == "agent_templates_catalog")
-        .expect("agent_templates_catalog section should be present");
-    assert!(catalog.content.contains("builtin:demo"));
-    assert!(catalog.content.contains("template=demo"));
-    assert!(catalog.content.contains("demo template summary"));
-    assert!(catalog.content.contains("skills=ghx"));
+        .all(|section| section.name != "agent_templates_catalog"));
+    assert!(skills
+        .agent_templates_catalog
+        .iter()
+        .any(|entry| entry.catalog_id == "builtin:demo"));
 }
 
 #[test]

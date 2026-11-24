@@ -75,8 +75,8 @@ use holon::cli::{
     ConfigCredentialCommands, ConfigModelCommands, ConfigProviderCommands,
     ConfigProviderHeaderCommands, ControlCommandAction, DaemonCommands, DebugCommands,
     EventsCommands, MemoryIndexCommands, ModelsDevCommands, ServeAccess, ServeOptions,
-    SkillsCommands, TaskCommands, TimerCommands, TimerCreateArgs, WorkItemCommands,
-    WorkspaceCommands,
+    SkillsCommands, TaskCommands, TemplateCommands, TimerCommands, TimerCreateArgs,
+    WorkItemCommands, WorkspaceCommands,
 };
 
 // Linux daemons swap in jemalloc so freed pages are purged back to the OS
@@ -348,6 +348,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         }
         Commands::Agent { command } => handle_agent_command(&config, command).await,
         Commands::Skills { command } => handle_skills_command(&config, command).await,
+        Commands::Template { command } => handle_template_command(&config, command).await,
         Commands::Workspace { command } => handle_workspace_command(&config, command).await,
         Commands::Tui {
             agent,
@@ -4569,6 +4570,22 @@ mod tests {
     }
 
     #[test]
+    fn template_detail_path_encodes_the_catalog_id_as_one_segment() {
+        assert_eq!(
+            template_detail_path("user_global:code-reviewer").unwrap(),
+            "/templates/catalog/user_global:code-reviewer"
+        );
+        assert_eq!(
+            template_detail_path("remote:official/worker").unwrap(),
+            "/templates/catalog/remote:official%2Fworker"
+        );
+        assert_eq!(
+            template_detail_path("weird id?").unwrap(),
+            "/templates/catalog/weird%20id%3F"
+        );
+    }
+
+    #[test]
     fn unspecified_listen_accepts_explicit_advertise_url() {
         let mut config = test_config();
         let advertise = apply_serve_options(
@@ -7665,6 +7682,33 @@ async fn handle_skills_command(config: &AppConfig, command: SkillsCommands) -> R
             .await
         }
     }
+}
+
+async fn handle_template_command(config: &AppConfig, command: TemplateCommands) -> Result<()> {
+    match command {
+        TemplateCommands::Catalog => {
+            let response: serde_json::Value = get_json(config, "/templates/catalog").await?;
+            print_json(&response)
+        }
+        TemplateCommands::Show { catalog_id } => {
+            let path = template_detail_path(&catalog_id)?;
+            let response: serde_json::Value = get_json(config, &path).await?;
+            print_json(&response)
+        }
+    }
+}
+
+/// Build the read-only template-detail API path for a catalog id.
+///
+/// Catalog ids can contain a colon (`user_global:foo`) or slashes
+/// (`remote:owner/repo/name`), so the id is encoded as one path segment and
+/// percent-decoded by the API's `{catalog_id}` route.
+fn template_detail_path(catalog_id: &str) -> Result<String> {
+    let mut url = url::Url::parse("http://holon.local").expect("static base URL");
+    url.path_segments_mut()
+        .map_err(|_| anyhow!("failed to build template detail path"))?
+        .extend(["templates", "catalog", catalog_id]);
+    Ok(url.path().to_string())
 }
 
 fn build_skill_add_kind(

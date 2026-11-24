@@ -472,6 +472,18 @@ and offline startup. It is not seeded into `~/.agents/agent_templates`, and it
 is not shown as a catalog entry. It is used only when creating an agent without
 an explicit template selector.
 
+Browse the catalog without creating an agent:
+
+```text
+holon template catalog
+holon template show <catalog_id>
+```
+
+Both commands are read-only and use the same catalog view as the Web/TUI and
+`GET /templates/catalog`. The agent prompt does not embed the template catalog,
+so an agent that needs it queries the CLI or API on demand instead of paying for
+it in every turn's context.
+
 The official template source is the Holon repository. When synced, templates
 under its top-level `agent_templates/` directory become normal local catalog
 entries from `~/.agents/agent_templates`.

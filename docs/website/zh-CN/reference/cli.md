@@ -131,6 +131,9 @@ holon (v0.61.0)
 │   ├── refresh    重新扫描本地根目录
 │   ├── install    [已废弃] 兼容别名
 │   └── uninstall  [已废弃] 兼容别名
+├── template       只读查询 Agent 模板目录
+│   ├── catalog    列出可见模板目录
+│   └── show       显示单个模板的完整详情
 ├── run          单次 Agent 交互
 ├── solve        处理 GitHub issue 或类似目标
 ├── workspace    工作区管理（attach、exit、detach）
@@ -183,6 +186,18 @@ holon agent create reviewer --template code-reviewer
 holon agent repair reviewer
 holon run --agent reviewer "Review src/runtime/turn.rs"
 ```
+
+### 模板目录
+
+```bash
+holon template catalog
+holon template show user_global:code-reviewer
+```
+
+`holon template catalog` 与 `GET /templates/catalog` 同口径：用户全局模板库
+加上已同步的远程源，并排除隐藏内置的 `holon-default`。
+`holon template show <catalog_id>` 从 `GET /templates/catalog/{catalog_id}`
+返回单个模板的详情。两个命令都只读，不触发同步、安装、删除或创建 Agent。
 
 ### Agent 生命周期
 

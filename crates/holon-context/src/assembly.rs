@@ -289,49 +289,6 @@ pub fn assemble_context(
         ));
     }
 
-    if !skills.agent_templates_catalog.is_empty() {
-        let rendered = skills
-            .agent_templates_catalog
-            .iter()
-            .map(|entry| {
-                let skills = if entry.included_skills.is_empty() {
-                    "skills=none".to_string()
-                } else {
-                    format!("skills={}", entry.included_skills.join(","))
-                };
-                let path = entry
-                    .path
-                    .as_ref()
-                    .map(|path| format!(" path={}", path.display()))
-                    .unwrap_or_default();
-                let display = if entry.name.is_empty() || entry.name == entry.description {
-                    entry.description.clone()
-                } else if entry.description.is_empty() {
-                    entry.name.clone()
-                } else {
-                    format!("{} - {}", entry.name, entry.description)
-                };
-                format!(
-                    "- [{}] {} template={} :: {}{} ({skills})",
-                    entry.source.label(),
-                    entry.catalog_id,
-                    entry.template,
-                    display,
-                    path
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        candidates.push(context_candidate(
-            section(
-                "agent_templates_catalog",
-                format!("Discovered agent templates catalog:\n{rendered}"),
-            ),
-            None,
-            false,
-        ));
-    }
-
     if !skills.discoverable_skills.is_empty() {
         let rendered = skills
             .discoverable_skills
@@ -689,7 +646,6 @@ fn context_candidate_policy(id: &str, pinned: bool) -> ContextCandidatePolicy {
         "current_work_item_process_trace" => (RetentionPriority::Normal, DropTier::Normal, 80),
         "queued_blocked_work_items" => (RetentionPriority::Normal, DropTier::Normal, 90),
         "worktree_session" => (RetentionPriority::Normal, DropTier::Late, 100),
-        "agent_templates_catalog" => (RetentionPriority::Low, DropTier::Early, 110),
         "skills_catalog" => (RetentionPriority::Low, DropTier::Early, 120),
         "active_skills" => (RetentionPriority::Normal, DropTier::Normal, 130),
         "agent_home_notes_catalog" => (RetentionPriority::Low, DropTier::Early, 140),
