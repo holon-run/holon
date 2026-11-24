@@ -1,12 +1,31 @@
 #!/usr/bin/env bash
 # Real-library startup smoke for a daily beta build.
 #
-# Snapshots the live daemon home into a sandbox (WAL-consistent `sqlite3
-# .backup` of the runtime database plus the small config/credential files),
-# boots the published beta binary against the snapshot on a spare port, and
-# verifies the daemon starts, passes schema migrations, and accepts
-# connections. This is the gate that catches #4429-class upgrade aborts
-# before any real machine auto-upgrades.
+# Snapshots the live daemon home's runtime database into a sandbox
+# (WAL-consistent `sqlite3 .backup` of `state/runtime.sqlite`), boots the
+# published beta binary against the snapshot on a spare port, and verifies
+# the daemon starts, passes schema migrations, and accepts connections. This
+# is the gate that catches #4429-class upgrade aborts before any real machine
+# auto-upgrades.
+#
+# Isolation invariants (enforced below, fail closed):
+# - Zero credentials: nothing from the live home's credential surface is
+#   copied into the sandbox — no `credentials.json`, no `config.json`, no
+#   model-discovery cache. serve resolves a default model at startup and
+#   aborts when none is authenticated, so the sandbox boots in bootstrap
+#   mode (HOLON_BOOTSTRAP=1, crates/holon-runtime/src/config/mod.rs), the
+#   runtime's designed no-model-yet state: the provider rejects every agent
+#   turn. The serve environment is also scrubbed (`env -i`) so ambient
+#   provider credential variables (for example OPENAI_API_KEY) cannot reach
+#   the daemon.
+# - Agents cannot execute: the snapshot carries the real runtime state
+#   (timers, queued work items, waiting agents), but with no usable
+#   credential no agent can make a model call, so nothing in the sandbox can
+#   drive real LLM calls or external actions during the settle window.
+#   Data-layer isolation alone is not execution isolation.
+# - Migration smoke semantics unchanged: the sandbox database keeps the real
+#   database shape, so schema migration behavior is verified exactly as
+#   before.
 #
 # Usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--keep] [--no-marker]
 # Env:
@@ -76,22 +95,41 @@ fi
 log "smoking beta binary: $("$BINARY" --version)"
 
 log "snapshotting live daemon home ${HOME_SRC} into sandbox ${SANDBOX}"
+if [ -e "$HOME_SRC/credentials.json" ]; then
+  log "live credentials.json detected; NOT copying it (sandbox must stay credential-free)"
+fi
 rm -rf "$SANDBOX"
 mkdir -p "$SANDBOX/.holon/state"
 chmod 700 "$SANDBOX"
-cp "$HOME_SRC/config.json" "$HOME_SRC/credentials.json" "$SANDBOX/.holon/"
-if [ -f "$HOME_SRC/model-discovery-cache.json" ]; then cp "$HOME_SRC/model-discovery-cache.json" "$SANDBOX/.holon/"; fi
 : > "$SANDBOX/.holon/holon.db"
 log "sqlite .backup of state/runtime.sqlite (WAL-consistent; can take minutes on large homes)"
 sqlite3 "$HOME_SRC/state/runtime.sqlite" ".backup '$SANDBOX/.holon/state/runtime.sqlite'"
 log "snapshot size: $(du -sh "$SANDBOX/.holon/state/runtime.sqlite" | awk '{print $1}')"
 
+# Fail closed: the sandbox must be credential-free and config-free before
+# boot. The snapshot step never copies these files; this guards the invariant
+# against future edits or stray files turning the sandbox into an executable
+# agent home.
+if [ -e "$SANDBOX/.holon/credentials.json" ] || [ -e "$SANDBOX/.holon/config.json" ]; then
+  rm -rf "$SANDBOX"
+  unset SANDBOX
+  die "sandbox would contain credentials.json/config.json; refusing to boot an executable agent home"
+fi
+
 LOG="$SANDBOX/serve.log"
 WEB_ARGS=()
 [ -n "${SMOKE_WEB_DIST:-}" ] && WEB_ARGS=(--web-dist "$SMOKE_WEB_DIST")
-setsid env -u HOLON_SOCKET_PATH "HOLON_HOME=$SANDBOX/.holon" \
+# A credential-free sandbox has no authenticated provider, so serve would
+# abort at startup ("no default model configured ..."). HOLON_BOOTSTRAP=1
+# selects bootstrap mode instead: the daemon boots and every agent turn is
+# rejected by the bootstrap provider, so execution isolation is unchanged.
+setsid env -i PATH="$PATH" "HOLON_HOME=$SANDBOX/.holon" "HOLON_BOOTSTRAP=1" \
   "$BINARY" serve --access local --port "$PORT" "${WEB_ARGS[@]}" >"$LOG" 2>&1 &
 SERVER_PID=$!
+
+# The serve environment is scrubbed (env -i): no ambient credential variables
+# can reach the sandbox daemon, which resolves built-in provider auth from
+# environment variables when they are present.
 
 # The runtime loads config, credentials, state and its socket under HOLON_HOME
 # (default ~/.holon). Without an explicit override the beta would open and
@@ -100,6 +138,11 @@ SERVER_PID=$!
 # can still be empty right after fork+exec, so retry briefly before failing.
 env_bound=0
 for _ in $(seq 1 10); do
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    echo "---- serve log tail ----" >&2
+    tail -n 20 "$LOG" >&2 || true
+    die "serve process exited during the env check (see log above)"
+  fi
   if tr '\0' '\n' <"/proc/$SERVER_PID/environ" 2>/dev/null | grep -qx "HOLON_HOME=$SANDBOX/.holon"; then
     env_bound=1
     break
