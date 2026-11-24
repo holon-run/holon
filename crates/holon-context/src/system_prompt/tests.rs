@@ -552,10 +552,7 @@ fn identity_skeleton_and_scoped_workspace_preserve_default_context_contract() {
         .find(|section| section.name == "identity")
         .expect("identity section");
     assert_eq!(identity.layout, crate::PromptLayout::SharedPrefix);
-    assert_eq!(
-        identity.content,
-        "You are Holon, a headless coding-oriented runtime assistant."
-    );
+    assert_eq!(identity.content, "You are a general-purpose assistant.");
     let section = sections
         .iter()
         .find(|section| section.name == "workspace_context")

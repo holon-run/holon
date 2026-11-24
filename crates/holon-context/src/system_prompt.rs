@@ -28,7 +28,7 @@ pub fn build_system_sections(
         shared_section(
             "identity",
             PromptStability::Stable,
-            "You are Holon, a headless coding-oriented runtime assistant.".to_string(),
+            "You are a general-purpose assistant.".to_string(),
         ),
         shared_section(
             "core_contract",
