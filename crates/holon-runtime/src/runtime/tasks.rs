@@ -11,7 +11,7 @@ use super::message_dispatch::message_text;
 use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
 use crate::config::{ModelRef, ProviderId};
-use crate::model_discovery::ModelDiscoveryCacheState;
+use crate::model_discovery::{ModelDiscoveryCacheState, ModelDiscoveryCacheStatus};
 use crate::runtime_db::transitions::WorkCommandLane;
 use crate::runtime_error::{
     sanitize_runtime_error_text, RuntimeError, RuntimeErrorContext, RuntimeErrorDomain,
@@ -1080,21 +1080,7 @@ impl RuntimeHandle {
             .await
             .ok()
             .flatten()?;
-        if !status.supports_auto_refresh {
-            return None;
-        }
-        let reason = match status.state {
-            ModelDiscoveryCacheState::Missing => "has no model discovery cache yet",
-            ModelDiscoveryCacheState::Stale => "has a stale model discovery cache",
-            ModelDiscoveryCacheState::Unauthenticated => "is not authenticated for model discovery",
-            ModelDiscoveryCacheState::Fresh | ModelDiscoveryCacheState::Unsupported => {
-                return None;
-            }
-        };
-        let provider = model_ref.provider.as_str();
-        Some(format!(
-            "provider {provider} {reason}; run `holon config models refresh --provider {provider}` to discover the gateway's models, or register this model under models.catalog"
-        ))
+        model_catalog_rejection_hint_for(&model_ref.provider, &status)
     }
 
     pub async fn resolve_agent_model_request(
@@ -6161,6 +6147,29 @@ fn task_status_from_message(message: &MessageEnvelope, metadata: &serde_json::Va
     super::resident_task::task_output_status_from_message(message, metadata)
 }
 
+/// Builds the `not in the model catalog` recovery hint from a discovery status.
+///
+/// Only discovery-capable providers with an unusable cache get an actionable
+/// hint; a fresh catalog or an unsupported provider keeps the generic advice.
+fn model_catalog_rejection_hint_for(
+    provider: &ProviderId,
+    status: &ModelDiscoveryCacheStatus,
+) -> Option<String> {
+    if !status.supports_auto_refresh {
+        return None;
+    }
+    let reason = match status.state {
+        ModelDiscoveryCacheState::Missing => "has no model discovery cache yet",
+        ModelDiscoveryCacheState::Stale => "has a stale model discovery cache",
+        ModelDiscoveryCacheState::Unauthenticated => "is not authenticated for model discovery",
+        ModelDiscoveryCacheState::Fresh | ModelDiscoveryCacheState::Unsupported => return None,
+    };
+    let provider = provider.as_str();
+    Some(format!(
+        "provider {provider} {reason}; run `holon config models refresh --provider {provider}` to discover the gateway's models, or register this model under models.catalog"
+    ))
+}
+
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod control_task_result_tests {
@@ -6315,5 +6324,77 @@ mod control_task_result_tests {
             assert_eq!(normalized, expected);
             assert_eq!(serde_json::to_value(&result).unwrap(), frozen);
         }
+    }
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[cfg(test)]
+mod model_catalog_rejection_hint_tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn status(
+        state: ModelDiscoveryCacheState,
+        supports_auto_refresh: bool,
+    ) -> ModelDiscoveryCacheStatus {
+        ModelDiscoveryCacheStatus {
+            provider: ProviderId::parse("my-gateway").unwrap(),
+            state,
+            supports_auto_refresh,
+            credential_configured: true,
+            refresh_in_flight: false,
+            fetched_at: Some(Utc::now()),
+            age_seconds: Some(10),
+            ttl_seconds: 86_400,
+            model_count: 0,
+        }
+    }
+
+    #[test]
+    fn unusable_discovery_cache_explains_reason_and_refresh_command() {
+        let provider = ProviderId::parse("my-gateway").unwrap();
+        for (state, reason) in [
+            (
+                ModelDiscoveryCacheState::Missing,
+                "has no model discovery cache yet",
+            ),
+            (
+                ModelDiscoveryCacheState::Stale,
+                "has a stale model discovery cache",
+            ),
+            (
+                ModelDiscoveryCacheState::Unauthenticated,
+                "is not authenticated for model discovery",
+            ),
+        ] {
+            let hint = model_catalog_rejection_hint_for(&provider, &status(state, true))
+                .expect("actionable hint");
+            assert_eq!(
+                hint,
+                format!(
+                    "provider my-gateway {reason}; run `holon config models refresh --provider my-gateway` to discover the gateway's models, or register this model under models.catalog"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_or_unsupported_status_keeps_the_generic_hint() {
+        let provider = ProviderId::parse("my-gateway").unwrap();
+        assert!(model_catalog_rejection_hint_for(
+            &provider,
+            &status(ModelDiscoveryCacheState::Fresh, true)
+        )
+        .is_none());
+        assert!(model_catalog_rejection_hint_for(
+            &provider,
+            &status(ModelDiscoveryCacheState::Missing, false)
+        )
+        .is_none());
+        assert!(model_catalog_rejection_hint_for(
+            &provider,
+            &status(ModelDiscoveryCacheState::Unsupported, true)
+        )
+        .is_none());
     }
 }

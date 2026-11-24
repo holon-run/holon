@@ -193,9 +193,12 @@ Self-hosted gateways that expose the OpenAI-compatible `GET /v1/models` endpoint
      --transport openai_chat_completions \
      --base-url http://gateway.internal:8080 \
      --credential-source env \
+     --credential-kind api_key \
      --credential-env MY_GATEWAY_API_KEY
    ```
    `--base-url` may be either the gateway root (`http://gateway.internal:8080`) or an explicit `/v1` URL (`http://gateway.internal:8080/v1`). Both resolve to `GET /v1/models`; an explicit path prefix such as `http://gateway.internal:8080/gw` resolves to `GET /gw/v1/models`. Setting a credential is optional for gateways that accept unauthenticated discovery.
+
+   > Custom (non-built-in) `openai_chat_completions` providers derive their discovery URL from `base_url`: `{base_url}` or `{base_url}/v1` resolves to `{base_url}/v1/models`, while a path prefix `{base_url}/<prefix>` resolves to `{base_url}/<prefix>/v1/models`. A gateway that only serves `GET /models` at its root (no `/v1`) is not auto-discovered; register its models under `models.catalog` instead. Built-in providers (Copilot, Kilo Code, LiteLLM, vLLM, Ollama, and so on) carry explicit discovery definitions and are unaffected.
 2. **Trigger discovery** (discovery is never probed at startup or during a turn, so a broken gateway cannot block agents):
    ```bash
    holon config models refresh --provider my-gateway

@@ -826,6 +826,83 @@ fn config_provider_remove_json_contract_is_stable() {
 }
 
 #[test]
+fn config_provider_set_reports_model_discovery_state_and_next_step() {
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+
+    let set = run_json_with_env(
+        &home,
+        &[
+            "config",
+            "providers",
+            "set",
+            "script-gateway",
+            "--transport",
+            "openai_chat_completions",
+            "--base-url",
+            "https://gateway.example.invalid:8080",
+            "--credential-source",
+            "env",
+            "--credential-kind",
+            "api_key",
+            "--credential-env",
+            "SCRIPT_GATEWAY_API_KEY",
+        ],
+        &[("SCRIPT_GATEWAY_API_KEY", "test-key")],
+    );
+    assert_eq!(set["applied_via"], "offline_store");
+    assert_eq!(set["provider"]["id"], "script-gateway");
+    assert_eq!(set["provider"]["transport"], "openai_chat_completions");
+    assert_eq!(
+        set["provider"]["base_url"],
+        "https://gateway.example.invalid:8080"
+    );
+    assert_eq!(set["provider"]["auth"]["source"], "env");
+    assert_eq!(set["provider"]["auth"]["kind"], "api_key");
+    assert_eq!(set["provider"]["auth"]["env"], "SCRIPT_GATEWAY_API_KEY");
+
+    // A saved provider with no discovered models yet must surface the discovery
+    // state and the exact refresh command so scripted onboarding is actionable.
+    let discovery = &set["model_discovery"];
+    assert_eq!(discovery["provider"], "script-gateway");
+    assert_eq!(discovery["state"], "missing");
+    assert_eq!(discovery["supports_auto_refresh"], true);
+    assert_eq!(discovery["credential_configured"], true);
+    assert_eq!(discovery["refresh_in_flight"], false);
+    assert_eq!(discovery["model_count"], 0);
+    assert_eq!(
+        set["next_step"],
+        "holon config models refresh --provider script-gateway"
+    );
+
+    // Re-registering is idempotent for the script contract and keeps the same keys.
+    let repeated = run_json(
+        &home,
+        &[
+            "config",
+            "providers",
+            "set",
+            "script-gateway",
+            "--transport",
+            "openai_chat_completions",
+            "--base-url",
+            "https://gateway.example.invalid:8080/v1",
+            "--credential-source",
+            "env",
+            "--credential-kind",
+            "api_key",
+            "--credential-env",
+            "SCRIPT_GATEWAY_API_KEY",
+        ],
+    );
+    assert_eq!(repeated["provider"]["id"], "script-gateway");
+    assert_eq!(repeated["model_discovery"]["state"], "missing");
+    assert_eq!(
+        repeated["next_step"],
+        "holon config models refresh --provider script-gateway"
+    );
+}
+
+#[test]
 fn config_credentials_json_contract_is_stable_and_redacted() {
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
 
