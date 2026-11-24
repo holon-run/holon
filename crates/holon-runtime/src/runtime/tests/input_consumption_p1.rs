@@ -1087,29 +1087,32 @@ fn assert_budgeted_recovery_capacity(
                 .await;
                 blocked.push(record);
             }
+            let result_identities: Vec<_> = blocked
+                .iter()
+                .map(|record| record.result_identity.clone())
+                .collect();
+            let result_keys: std::collections::BTreeSet<_> = result_identities
+                .iter()
+                .map(|id| TaskKey::new(TaskFamily::ResultSettlement, id))
+                .collect();
+            // Each synthetic root changes only the fixture's attempt history.
+            // Publish all of that root's results through one owned write.
             for root in 0..if paused { 5 } else { 1 } {
                 let now = harness.runtime().now();
-                for record in &blocked {
-                    let result_identity = record.result_identity.clone();
-                    let root_id = format!("older-root-{root}");
-                    owned_task_fixture_write(
-                        harness.runtime(),
-                        std::collections::BTreeSet::from([TaskKey::new(
-                            TaskFamily::ResultSettlement,
-                            &result_identity,
-                        )]),
-                        move |tx| {
-                            assert!(charge_recovery_admission_tx(
-                                tx,
-                                &result_identity,
-                                &root_id,
-                                now,
-                            )?);
-                            Ok(())
-                        },
-                    )
-                    .await;
-                }
+                let root_id = format!("older-root-{root}");
+                let result_identities = result_identities.clone();
+                owned_task_fixture_write(harness.runtime(), result_keys.clone(), move |tx| {
+                    for result_identity in &result_identities {
+                        assert!(charge_recovery_admission_tx(
+                            tx,
+                            result_identity,
+                            &root_id,
+                            now,
+                        )?);
+                    }
+                    Ok(())
+                })
+                .await;
                 if paused {
                     harness.advance(std::time::Duration::from_secs(600)).await;
                 }
