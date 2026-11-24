@@ -11,6 +11,7 @@ use super::message_dispatch::message_text;
 use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
 use crate::config::{ModelRef, ProviderId};
+use crate::model_discovery::{ModelDiscoveryCacheState, ModelDiscoveryCacheStatus};
 use crate::runtime_db::transitions::WorkCommandLane;
 use crate::runtime_error::{
     sanitize_runtime_error_text, RuntimeError, RuntimeErrorContext, RuntimeErrorDomain,
@@ -1068,6 +1069,20 @@ impl RuntimeHandle {
         Ok(task)
     }
 
+    /// Recovery hint for `model_request_rejected ... is not in the model catalog`.
+    ///
+    /// Discovery-capable providers explain why the catalog is empty (missing,
+    /// stale, or unauthenticated cache) and point at the refresh command, so a
+    /// self-hosted OpenAI-compatible gateway does not look like a dead end.
+    async fn model_catalog_rejection_hint(&self, model_ref: &ModelRef) -> Option<String> {
+        let status = self
+            .provider_discovery_cache_status(&model_ref.provider)
+            .await
+            .ok()
+            .flatten()?;
+        model_catalog_rejection_hint_for(&model_ref.provider, &status)
+    }
+
     pub async fn resolve_agent_model_request(
         &self,
         tool_name: &str,
@@ -1110,6 +1125,13 @@ impl RuntimeHandle {
                 entry.policy.model_ref == model_ref || entry.model == model_ref_string
             });
         let Some(availability) = availability else {
+            let recovery_hint = self
+                .model_catalog_rejection_hint(&model_ref)
+                .await
+                .unwrap_or_else(|| {
+                    "call ListModelProviders and ListProviderModels before requesting a model"
+                        .to_string()
+                });
             return Err(anyhow::Error::from(
                 ToolError::new(
                     "model_request_rejected",
@@ -1119,9 +1141,7 @@ impl RuntimeHandle {
                     "requested_model": model_ref_string,
                     "resolution_status": "rejected",
                 }))
-                .with_recovery_hint(
-                    "call ListModelProviders and ListProviderModels before requesting a model",
-                ),
+                .with_recovery_hint(recovery_hint),
             ));
         };
 
@@ -6127,6 +6147,29 @@ fn task_status_from_message(message: &MessageEnvelope, metadata: &serde_json::Va
     super::resident_task::task_output_status_from_message(message, metadata)
 }
 
+/// Builds the `not in the model catalog` recovery hint from a discovery status.
+///
+/// Only discovery-capable providers with an unusable cache get an actionable
+/// hint; a fresh catalog or an unsupported provider keeps the generic advice.
+fn model_catalog_rejection_hint_for(
+    provider: &ProviderId,
+    status: &ModelDiscoveryCacheStatus,
+) -> Option<String> {
+    if !status.supports_auto_refresh {
+        return None;
+    }
+    let reason = match status.state {
+        ModelDiscoveryCacheState::Missing => "has no model discovery cache yet",
+        ModelDiscoveryCacheState::Stale => "has a stale model discovery cache",
+        ModelDiscoveryCacheState::Unauthenticated => "is not authenticated for model discovery",
+        ModelDiscoveryCacheState::Fresh | ModelDiscoveryCacheState::Unsupported => return None,
+    };
+    let provider = provider.as_str();
+    Some(format!(
+        "provider {provider} {reason}; run `holon config models refresh --provider {provider}` to discover the gateway's models, or register this model under models.catalog"
+    ))
+}
+
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod control_task_result_tests {
@@ -6281,5 +6324,77 @@ mod control_task_result_tests {
             assert_eq!(normalized, expected);
             assert_eq!(serde_json::to_value(&result).unwrap(), frozen);
         }
+    }
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[cfg(test)]
+mod model_catalog_rejection_hint_tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn status(
+        state: ModelDiscoveryCacheState,
+        supports_auto_refresh: bool,
+    ) -> ModelDiscoveryCacheStatus {
+        ModelDiscoveryCacheStatus {
+            provider: ProviderId::parse("my-gateway").unwrap(),
+            state,
+            supports_auto_refresh,
+            credential_configured: true,
+            refresh_in_flight: false,
+            fetched_at: Some(Utc::now()),
+            age_seconds: Some(10),
+            ttl_seconds: 86_400,
+            model_count: 0,
+        }
+    }
+
+    #[test]
+    fn unusable_discovery_cache_explains_reason_and_refresh_command() {
+        let provider = ProviderId::parse("my-gateway").unwrap();
+        for (state, reason) in [
+            (
+                ModelDiscoveryCacheState::Missing,
+                "has no model discovery cache yet",
+            ),
+            (
+                ModelDiscoveryCacheState::Stale,
+                "has a stale model discovery cache",
+            ),
+            (
+                ModelDiscoveryCacheState::Unauthenticated,
+                "is not authenticated for model discovery",
+            ),
+        ] {
+            let hint = model_catalog_rejection_hint_for(&provider, &status(state, true))
+                .expect("actionable hint");
+            assert_eq!(
+                hint,
+                format!(
+                    "provider my-gateway {reason}; run `holon config models refresh --provider my-gateway` to discover the gateway's models, or register this model under models.catalog"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_or_unsupported_status_keeps_the_generic_hint() {
+        let provider = ProviderId::parse("my-gateway").unwrap();
+        assert!(model_catalog_rejection_hint_for(
+            &provider,
+            &status(ModelDiscoveryCacheState::Fresh, true)
+        )
+        .is_none());
+        assert!(model_catalog_rejection_hint_for(
+            &provider,
+            &status(ModelDiscoveryCacheState::Missing, false)
+        )
+        .is_none());
+        assert!(model_catalog_rejection_hint_for(
+            &provider,
+            &status(ModelDiscoveryCacheState::Unsupported, true)
+        )
+        .is_none());
     }
 }

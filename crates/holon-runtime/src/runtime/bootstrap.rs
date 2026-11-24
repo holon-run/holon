@@ -1989,6 +1989,35 @@ impl RuntimeHandle {
             .collect())
     }
 
+    /// Discovery status for one provider, without spawning a refresh.
+    ///
+    /// Used by rejection diagnostics so a `not in the model catalog` error can
+    /// explain whether discovery is unsupported or the cache is simply missing,
+    /// stale, or missing a credential.
+    pub(crate) async fn provider_discovery_cache_status(
+        &self,
+        provider_id: &crate::config::ProviderId,
+    ) -> Result<Option<ModelDiscoveryCacheStatus>> {
+        let snap = self.inner.config_snapshot.load();
+        let Some(reconfig) = snap.provider_reconfig.as_ref() else {
+            return Ok(None);
+        };
+        let config = reconfig.config.clone();
+        let cache_path = discovery_cache_path(&config.home_dir);
+        let cache =
+            tokio::task::spawn_blocking(move || load_discovery_cache_at(&cache_path)).await??;
+        let Some(provider) = config.providers.get(provider_id) else {
+            return Ok(None);
+        };
+        let in_flight = self.inner.model_discovery_refreshes.lock().await.clone();
+        Ok(Some(discovery_cache_status_for_provider(
+            provider,
+            &cache,
+            DEFAULT_DISCOVERY_CACHE_TTL,
+            in_flight.contains(&provider.id),
+        )))
+    }
+
     pub(crate) async fn model_availability(&self) -> Result<Vec<ResolvedModelAvailability>> {
         let mut models = if let Some(config) = self.model_config_with_fresh_discovery_cache().await
         {

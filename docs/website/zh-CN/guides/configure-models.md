@@ -176,6 +176,45 @@ holon config set image_generation.default "openai@default/dall-e-3"
 
 这些设置完全独立，不会影响日常文本对话模型的路由。关于图像工具的具体用法，请参阅[检查与分析图像](./inspect-image.md)与[生成图像](./generate-image.md)。
 
+### 场景六：接入自托管 OpenAI 兼容网关（Magpie、LiteLLM 等）
+
+暴露 OpenAI 兼容 `GET /v1/models` 接口的自托管网关可以参与模型自动发现，不必为每个模型手写 `models.catalog` 条目。
+
+1. **注册网关**，只需一个 base URL 和凭据来源：
+   ```bash
+   holon config providers set my-gateway \
+     --transport openai_chat_completions \
+     --base-url http://gateway.internal:8080 \
+     --credential-source env \
+     --credential-kind api_key \
+     --credential-env MY_GATEWAY_API_KEY
+   ```
+   `--base-url` 可以是网关根地址（`http://gateway.internal:8080`），也可以是显式 `/v1` 地址（`http://gateway.internal:8080/v1`），两者都会解析为 `GET /v1/models`；带路径前缀的地址（如 `http://gateway.internal:8080/gw`）解析为 `GET /gw/v1/models`。对开放匿名发现的网关，可以不配置凭据。
+
+   > 自定义（非内置）`openai_chat_completions` provider 的发现地址由 `base_url` 推导：`{base_url}` 或 `{base_url}/v1` 解析为 `{base_url}/v1/models`，路径前缀 `{base_url}/<prefix>` 解析为 `{base_url}/<prefix>/v1/models`。只在根路径提供 `GET /models`（没有 `/v1`）的网关不会被自动发现，请改用 `models.catalog` 登记模型。内置 provider（Copilot、Kilo Code、LiteLLM、vLLM、Ollama 等）都有显式发现定义，不受影响。
+2. **触发发现**（发现从不在启动或 Turn 期间探测，因此网关故障不会阻塞 Agent）：
+   ```bash
+   holon config models refresh --provider my-gateway
+   ```
+   `providers set` 的输出会报告当前发现缓存状态（`missing`、`stale`、`fresh`、`unauthenticated`、`unsupported`）以及作为 `next_step` 的刷新命令。
+3. **核验发现的模型**：
+   ```bash
+   holon config models list
+   ```
+   发现的模型会自动出现；用常规路由格式选择：
+   ```bash
+   holon config set model.default "my-gateway@default/<model-id>"
+   ```
+
+发现缓存按推导出的 `/v1/models` 地址隔离。修改 provider 的 `base_url` 会立即让缓存列表失效（即使在 24 小时 TTL 内），下一次刷新即反映新网关。发现失败（404、超时、缺少密钥）会体现在 `models refresh` 结果和 provider 的发现状态中，不会导致启动或 Agent Turn 失败。
+
+`models.catalog` 仍是可选的覆盖手段，用于发现无法提供模型集合的场景，例如设置上下文窗口或输出上限，或非 chat 传输（`anthropic_messages`、`openai_responses` 的模型目录不会自动发现）：
+```bash
+holon config set models.catalog '{"my-gateway@default/my-model":{"context_window_tokens":131072}}'
+```
+
+> 自动发现目前只覆盖 OpenAI 兼容的 `GET /v1/models` 形态，响应中的厂商扩展字段尚未解析；需要显式预算或能力时请使用 `models.catalog` 覆盖。
+
 ## 常见排障与诊断
 
 - **本地 Ollama 连接失败（Connection Refused）**：
