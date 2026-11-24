@@ -23,9 +23,9 @@ use crate::persistence::{
     attach_write_context, mark_persistence_failure, persistence_certainty, sqlite_extended_code,
     PersistenceCertainty, PersistenceFailurePhase,
 };
-use crate::write_queue::RuntimeDbWriteContext;
 #[cfg(target_os = "linux")]
 use crate::RuntimeDbProtectionError;
+use crate::{write_callback_phases::WriteCallbackPhases, write_queue::RuntimeDbWriteContext};
 use crate::{
     ReaderReprepareRequested, RuntimeDbRetryableError, RuntimeStateTransitionConflict,
     RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL, RUNTIME_DB_BUSY_TIMEOUT,
@@ -557,6 +557,7 @@ pub(crate) fn run_transaction_on_connection<T>(
     context: RuntimeDbWriteContext,
     queue_wait: Duration,
     mutex_wait: Duration,
+    callback_phases: Option<&WriteCallbackPhases>,
     f: impl FnOnce(&Transaction<'_>) -> Result<T>,
 ) -> Result<T> {
     run_transaction_attempt(
@@ -565,6 +566,7 @@ pub(crate) fn run_transaction_on_connection<T>(
         context.with_caller(),
         queue_wait,
         mutex_wait,
+        callback_phases,
         f,
     )
     .map_err(|error| attach_write_context(error, context.operation, context.table))
@@ -576,9 +578,13 @@ fn run_transaction_attempt<T>(
     context: RuntimeDbWriteContext,
     queue_wait: Duration,
     mutex_wait: Duration,
+    callback_phases: Option<&WriteCallbackPhases>,
     f: impl FnOnce(&Transaction<'_>) -> Result<T>,
 ) -> Result<T> {
     let (origin_file, origin_line) = context.origin();
+    if let Some(phases) = callback_phases {
+        phases.reset();
+    }
     let started_at = Instant::now();
     tracing::trace!(
         path = %path.display(),
@@ -626,6 +632,7 @@ fn run_transaction_attempt<T>(
                     held_write_lock_ms = held_write_lock.as_millis(),
                     callback_ms = callback_elapsed.as_millis(),
                     commit_ms = commit_elapsed.as_millis(),
+                    callback_phases_us = callback_phases.and_then(WriteCallbackPhases::log_value),
                     "runtime db commit outcome unknown"
                 );
                 mark_persistence_failure(
@@ -655,6 +662,7 @@ fn run_transaction_attempt<T>(
                     callback_ms = callback_elapsed.as_millis(),
                     commit_ms = commit_elapsed.as_millis(),
                     elapsed_ms = elapsed.as_millis(),
+                    callback_phases_us = callback_phases.and_then(WriteCallbackPhases::log_value),
                     "slow runtime db write"
                 );
             }
@@ -733,6 +741,7 @@ fn run_transaction_attempt<T>(
                     begin_wait_ms = begin_wait.as_millis(),
                     begin_retry_count,
                     elapsed_ms = elapsed.as_millis(),
+                    callback_phases_us = callback_phases.and_then(WriteCallbackPhases::log_value),
                     "runtime db write deferred to reader reprepare"
                 );
             } else if rolled_back && is_retryable_state_transition_conflict(&error) {
@@ -756,6 +765,7 @@ fn run_transaction_attempt<T>(
                     begin_wait_ms = begin_wait.as_millis(),
                     begin_retry_count,
                     elapsed_ms = elapsed.as_millis(),
+                    callback_phases_us = callback_phases.and_then(WriteCallbackPhases::log_value),
                     "runtime db write rolled back"
                 );
             } else {
@@ -769,6 +779,7 @@ fn run_transaction_attempt<T>(
                     callback_ms = callback_elapsed.as_millis(),
                     rollback_ms = rollback_elapsed.as_millis(),
                     rolled_back,
+                    callback_phases_us = callback_phases.and_then(WriteCallbackPhases::log_value),
                     path = %path.display(),
                     operation = context.operation,
                     table = context.table,

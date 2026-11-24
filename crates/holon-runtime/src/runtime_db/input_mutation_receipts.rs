@@ -832,12 +832,22 @@ pub(crate) fn with_fresh_input_mutation_preparation_and_preflight<T, G>(
         attempt.original_attempt_finished(),
         ReceiptError::OriginalAttemptNotFinished
     );
-    db.recovery_transaction_once(|tx| {
-        let _material = preflight(tx)?;
-        let resolution = match lookup_input_mutation_receipt_tx(tx, attempt.prepared())? {
-            Some(receipt) => InputMutationResolution::Present(receipt),
-            None => InputMutationResolution::Absent,
+    db.recovery_transaction_once_with_phases(|tx, phases| {
+        use holon_storage::write_callback_phases::WriteCallbackPhase;
+
+        let phases = Some(phases);
+        let _material = {
+            let _phase = WriteCallbackPhase::RecoveryPreflight.start(phases);
+            preflight(tx)?
         };
+        let resolution = {
+            let _phase = WriteCallbackPhase::RecoveryReceiptLookup.start(phases);
+            match lookup_input_mutation_receipt_tx(tx, attempt.prepared())? {
+                Some(receipt) => InputMutationResolution::Present(receipt),
+                None => InputMutationResolution::Absent,
+            }
+        };
+        let _phase = WriteCallbackPhase::RecoveryPrepare.start(phases);
         prepare_current(tx, resolution)
     })
     .map_err(super::persistence::mark_original_input_recovery_failure)

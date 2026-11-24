@@ -264,7 +264,7 @@ impl RuntimeDbWriter {
                     } = request;
                     let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
                     loop {
-                        match thread_state.append_wait_with_context(context, |tx| job(tx)) {
+                        match thread_state.append_wait_with_context(context, None, |tx| job(tx)) {
                             Ok(()) => {
                                 #[cfg(any(test, feature = "test-support"))]
                                 if let Some(completion) = completion.take() {
@@ -432,8 +432,18 @@ impl RuntimeDbWriter {
         context: RuntimeDbWriteContext,
         f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
+        self.append_wait_with_callback_phases(context, None, f)
+    }
+
+    #[track_caller]
+    pub fn append_wait_with_callback_phases<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        phases: Option<&crate::write_callback_phases::WriteCallbackPhases>,
+        f: impl FnMut(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
         let context = context.with_caller();
-        at_blocking_boundary(|| self.state.append_wait_with_context(context, f))
+        at_blocking_boundary(|| self.state.append_wait_with_context(context, phases, f))
     }
 
     #[track_caller]
@@ -450,8 +460,18 @@ impl RuntimeDbWriter {
         context: RuntimeDbWriteContext,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
+        self.append_wait_once_with_callback_phases(context, None, f)
+    }
+
+    #[track_caller]
+    pub fn append_wait_once_with_callback_phases<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        phases: Option<&crate::write_callback_phases::WriteCallbackPhases>,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
         let context = context.with_caller();
-        at_blocking_boundary(|| self.state.append_wait_once(context, f))
+        at_blocking_boundary(|| self.state.append_wait_once(context, phases, f))
     }
 }
 
@@ -564,6 +584,7 @@ impl RuntimeDbWriterState {
     fn append_wait_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
+        phases: Option<&crate::write_callback_phases::WriteCallbackPhases>,
         mut f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let queue_wait_started_at = Instant::now();
@@ -582,9 +603,14 @@ impl RuntimeDbWriterState {
         let (origin_file, origin_line) = context.origin();
         loop {
             self.ensure_protected().map_err(before_begin_failure)?;
-            match self
-                .run_transaction_attempt(&connection, context, queue_wait, mutex_wait, |tx| f(tx))
-            {
+            match self.run_transaction_attempt(
+                &connection,
+                context,
+                queue_wait,
+                mutex_wait,
+                phases,
+                |tx| f(tx),
+            ) {
                 Ok(value) => return Ok(value),
                 Err(error) if is_retryable_transaction_error(&error) => {
                     retry_count += 1;
@@ -631,6 +657,7 @@ impl RuntimeDbWriterState {
     fn append_wait_once<T>(
         &self,
         context: RuntimeDbWriteContext,
+        phases: Option<&crate::write_callback_phases::WriteCallbackPhases>,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let queue_wait_started_at = Instant::now();
@@ -643,7 +670,7 @@ impl RuntimeDbWriterState {
             .map_err(|_| before_begin_failure(anyhow!("runtime db writer mutex poisoned")))?;
         let mutex_wait = mutex_wait_started_at.elapsed();
         self.ensure_protected().map_err(before_begin_failure)?;
-        self.run_transaction_attempt(&connection, context, queue_wait, mutex_wait, f)
+        self.run_transaction_attempt(&connection, context, queue_wait, mutex_wait, phases, f)
     }
 
     fn run_transaction_attempt<T>(
@@ -652,13 +679,14 @@ impl RuntimeDbWriterState {
         context: RuntimeDbWriteContext,
         queue_wait: std::time::Duration,
         mutex_wait: std::time::Duration,
+        phases: Option<&crate::write_callback_phases::WriteCallbackPhases>,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let observations = TransactionObservation::begin(&self.queue);
         let result = self.finish_transaction_attempt(
             connection,
             run_transaction_on_connection(
-                connection, &self.path, context, queue_wait, mutex_wait, f,
+                connection, &self.path, context, queue_wait, mutex_wait, phases, f,
             ),
         );
         let mut writes = observations.finish();

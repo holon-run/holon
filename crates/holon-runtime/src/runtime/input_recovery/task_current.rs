@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::{ensure, Context, Result};
+use holon_storage::write_callback_phases::WriteCallbackPhase;
 
 use super::super::{
     input_evidence_budget::{BudgetViewGuard, InputEvidenceBudgetLedger},
@@ -151,7 +152,8 @@ pub(super) fn prepare(
         );
         // This is deliberately the original FIFO/Immediate writer, not an
         // advisory receipt lookup on the preparation pool.
-        let (receipt, receipt_guard) = db.recovery_transaction_once(|tx| {
+        let (receipt, receipt_guard) = db.recovery_transaction_once_with_phases(|tx, phases| {
+            let preflight = WriteCallbackPhase::RecoveryPreflight.start(Some(phases));
             ensure!(
                 attempt.original_attempt_finished(),
                 "Task receipt recovery original attempt is unfinished"
@@ -168,6 +170,8 @@ pub(super) fn prepare(
                 request,
                 budget,
             )?;
+            drop(preflight);
+            let _receipt = WriteCallbackPhase::RecoveryReceiptLookup.start(Some(phases));
             Ok((
                 lookup_input_mutation_receipt_tx(tx, attempt.prepared())?,
                 guard,
