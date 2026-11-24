@@ -1086,6 +1086,7 @@ impl AgentListModelSummary {
             override_reasoning_effort: self.override_reasoning_effort,
             override_service_tier: self.override_service_tier,
             effective_service_tier: self.effective_service_tier,
+            override_unresolved: false,
             resolved_policy: ResolvedRuntimeModelPolicy::default(),
         }
     }

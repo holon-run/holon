@@ -83,5 +83,19 @@ pub fn validate_model_route_options(catalog: &RuntimeModelCatalog) -> Result<()>
             route.validate_service_tier(tier)?;
         }
     }
+    // `models.routes` keys must reference an existing provider endpoint. An
+    // unknown endpoint is a configuration error, not something to silently
+    // ignore, otherwise the cache override applies to a route that can never
+    // resolve.
+    for route_ref in catalog.model_route_overrides.keys() {
+        catalog
+            .try_resolve_explicit_model_metadata(&ContextConfig::default(), route_ref)
+            .map_err(|error| {
+                anyhow!(
+                    "invalid models.routes key {}: {error}",
+                    route_ref.as_string()
+                )
+            })?;
+    }
     Ok(())
 }

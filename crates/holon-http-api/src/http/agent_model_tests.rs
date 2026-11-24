@@ -275,3 +275,32 @@ async fn model_endpoint_errors_match_status_and_create_nothing() -> Result<()> {
     host.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn control_agent_model_set_rejects_unknown_endpoint_route() -> Result<()> {
+    let (_home, host) = super::tests::control_token_test_host();
+    let agent = host.config().default_agent_id.clone();
+    // Activate the operator runtime so `get_operator_agent` succeeds; the
+    // rejection happens before any override is persisted.
+    host.default_runtime().await?;
+    let app = router(AppState::for_tcp(host));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/control/agents/{agent}/model"))
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"openai@nope/gpt-5.4"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("unknown endpoint"), "{text}");
+    assert!(text.contains("openai@nope/gpt-5.4"), "{text}");
+    assert!(text.contains("default"), "{text}");
+    Ok(())
+}

@@ -26,6 +26,7 @@ fn state_dto_model() -> crate::types::AgentModelState {
         override_reasoning_effort: None,
         override_service_tier: None,
         effective_service_tier: None,
+        override_unresolved: false,
         resolved_policy: crate::model_catalog::ResolvedRuntimeModelPolicy::default(),
     }
 }

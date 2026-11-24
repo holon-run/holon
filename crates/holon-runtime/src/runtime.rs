@@ -501,11 +501,23 @@ pub fn agent_model_state_for_catalog(
     base_context_config: &ContextConfig,
     state: &AgentState,
 ) -> AgentModelState {
+    let override_unresolved =
+        model_catalog.model_override_unresolved(base_context_config, state.model_override.as_ref());
     let summary = agent_model_list_summary_for_catalog(model_catalog, state);
-    model_state_from_summary(
+    let mut model_state = model_state_from_summary(
         summary,
-        model_catalog.resolved_model_policy(base_context_config, state.model_override.as_ref()),
-    )
+        model_catalog.resolved_model_policy(
+            base_context_config,
+            if override_unresolved {
+                None
+            } else {
+                state.model_override.as_ref()
+            },
+        ),
+        override_unresolved,
+    );
+    apply_override_unresolved_downgrade(&mut model_state, override_unresolved);
+    model_state
 }
 
 pub(crate) fn try_agent_model_state_for_catalog(
@@ -529,19 +541,28 @@ pub(crate) fn try_agent_model_state_for_turn_catalog(
         Some(route) => catalog.try_route_service_tier(route)?,
         None => state.model_override_service_tier,
     };
+    let override_unresolved =
+        model_catalog.model_override_unresolved(base_context_config, state.model_override.as_ref());
+    let policy_route = if override_unresolved {
+        fallback_model
+    } else {
+        fallback_model.or(state.model_override.as_ref())
+    };
     // Last-active is observability, not a new policy request. Only an explicit
     // turn fallback changes the policy's route.
-    let policy = model_catalog.try_resolved_model_policy(
-        base_context_config,
-        fallback_model.or(state.model_override.as_ref()),
-    )?;
+    let policy = model_catalog.try_resolved_model_policy(base_context_config, policy_route)?;
     let summary = selection.into_summary_with_tier(effective_service_tier);
-    Ok(model_state_from_summary(summary, policy))
+    let mut model_state = model_state_from_summary(summary, policy, override_unresolved);
+    if fallback_model.is_none() {
+        apply_override_unresolved_downgrade(&mut model_state, override_unresolved);
+    }
+    Ok(model_state)
 }
 
 fn model_state_from_summary(
     summary: AgentListModelSummary,
     policy: crate::model_catalog::ResolvedRuntimeModelPolicy,
+    override_unresolved: bool,
 ) -> AgentModelState {
     AgentModelState {
         source: summary.source,
@@ -555,8 +576,24 @@ fn model_state_from_summary(
         override_reasoning_effort: summary.override_reasoning_effort,
         override_service_tier: summary.override_service_tier,
         effective_service_tier: summary.effective_service_tier,
+        override_unresolved,
         resolved_policy: policy,
     }
+}
+
+/// Reflect a persisted-but-unresolved override the way execution behaves:
+/// run on the default model while keeping the requested override visible.
+fn apply_override_unresolved_downgrade(
+    model_state: &mut AgentModelState,
+    override_unresolved: bool,
+) {
+    if !override_unresolved {
+        return;
+    }
+    model_state.effective_model = model_state.runtime_default_model.clone();
+    model_state.active_model = Some(model_state.runtime_default_model.clone());
+    model_state.fallback_active = false;
+    model_state.requested_model = model_state.override_model.clone();
 }
 
 #[derive(Debug)]

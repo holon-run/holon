@@ -1232,10 +1232,18 @@ impl RuntimeHandle {
             return Ok(None); // Static/local providers have no configured HTTP path.
         };
         let config = &reconfig.config;
+        // An unresolved persisted override is treated as absent so admission
+        // follows the same default model that execution falls back to.
+        let override_route = state.model_override.as_ref().filter(|route| {
+            snapshot
+                .model_catalog
+                .try_resolve_explicit_model_metadata(&snapshot.base_context_config, route)
+                .is_ok()
+        });
         let mut candidates = Vec::new();
         for model in snapshot
             .model_catalog
-            .provider_chain(state.model_override.as_ref())
+            .provider_chain(override_route)
             .into_iter()
             .take(if config.provider_fallback_disabled() {
                 1
