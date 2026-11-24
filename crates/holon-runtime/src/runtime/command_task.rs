@@ -1832,13 +1832,16 @@ impl RuntimeHandle {
         content: &str,
     ) -> Result<String> {
         let dir = self.tool_artifact_dir();
-        tokio::fs::create_dir_all(&dir)
-            .await
-            .with_context(|| format!("failed to create {}", dir.display()))?;
         let path = dir.join(format!("{label}-{}.log", Uuid::new_v4().simple()));
-        tokio::fs::write(&path, content)
-            .await
-            .with_context(|| format!("failed to persist {}", path.display()))?;
+        let display = path.display().to_string();
+        let content = content.to_owned();
+        let write_path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            holon_domain::private_fs::write_private_file(&write_path, content.as_bytes())
+        })
+        .await
+        .with_context(|| format!("failed to persist {display}"))?
+        .with_context(|| format!("failed to persist {display}"))?;
         Ok(path.display().to_string())
     }
 
@@ -2434,6 +2437,33 @@ mod tests {
         .unwrap();
         crate::runtime::tests::support::isolate_test_user_home(&runtime);
         (home, workspace, runtime)
+    }
+
+    #[tokio::test]
+    async fn persisted_tool_artifacts_are_private() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let path = runtime
+            .persist_tool_text_artifact("tool-result", "SECRET=1")
+            .await
+            .unwrap();
+        let path = std::path::PathBuf::from(path);
+        assert_eq!(std::fs::read(&path).unwrap(), b"SECRET=1");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(file_mode, 0o600, "tool artifacts must stay private");
+            let dir_mode = std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                dir_mode, 0o700,
+                "the tool artifact directory must stay private"
+            );
+        }
     }
 
     fn command_spec(accepts_input: bool, terminal_reentry: bool) -> CommandTaskSpec {
@@ -3618,6 +3648,13 @@ mod tests {
         assert!(artifact.len() as u64 <= policy.retention_bytes);
         assert!(artifact.starts_with(&"A".repeat(2_816).into_bytes()));
         assert!(artifact.ends_with(&"Z".repeat(1_024).into_bytes()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = std::fs::metadata(output_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "command output captures must stay private");
+        }
     }
 
     #[tokio::test]

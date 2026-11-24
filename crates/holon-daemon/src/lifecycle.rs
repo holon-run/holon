@@ -529,11 +529,11 @@ async fn daemon_start_unlocked(
     config.prepare_runtime_before_server(&startup)?;
 
     let log_path = daemon_paths(config).log_path;
-    let log = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| format!("failed to open {}", log_path.display()))?;
+    let log = holon_domain::private_fs::open_private_file(
+        &log_path,
+        holon_domain::private_fs::PrivateOpenMode::Append,
+    )
+    .with_context(|| format!("failed to open {}", log_path.display()))?;
     let log_err = log
         .try_clone()
         .with_context(|| format!("failed to clone {}", log_path.display()))?;

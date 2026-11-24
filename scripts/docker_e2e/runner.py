@@ -1746,6 +1746,28 @@ class CaseHarness:
         write_json(self.evidence / f"{label}.json", value)
         return value
 
+    def publish_snapshot_readable(self, snapshot_dir: Path) -> None:
+        """Widen copied runtime state so host-side evidence checks can read it.
+
+        Runtime state files are private (0600, root-owned inside the container),
+        while the harness reads and uploads them from the host as a different
+        user. Copies stay outside the runtime directory and are only widened
+        after they have been extracted as evidence.
+        """
+        self.docker(
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "--volume",
+            f"{snapshot_dir.resolve()}:/snapshot",
+            "--entrypoint",
+            "bash",
+            self.image,
+            "-lc",
+            "set -euo pipefail; chmod -R a+rX -- /snapshot",
+        )
+
     def runtime_db_snapshot(self, label: str) -> dict[str, Any]:
         snapshot_dir = self.evidence / f"{label}-runtime-state"
         if snapshot_dir.exists():
@@ -1766,6 +1788,7 @@ class CaseHarness:
                         "runtime database snapshot is missing: "
                         + (result.stderr or result.stdout).strip(),
                     )
+            self.publish_snapshot_readable(snapshot_dir)
         except subprocess.TimeoutExpired as error:
             write_json(
                 self.evidence / f"{label}-runtime-state-copy-failure.json",
@@ -1873,7 +1896,8 @@ class CaseHarness:
             "bash",
             self.image,
             "-lc",
-            "set -euo pipefail; cp /var/lib/holon/state/runtime.sqlite* /snapshot/",
+            "set -euo pipefail; cp /var/lib/holon/state/runtime.sqlite* /snapshot/; "
+            "chmod -R a+rX -- /snapshot",
         )
         database = snapshot_dir / "runtime.sqlite"
         require(database.is_file(), "offline runtime database snapshot is missing")
@@ -2071,7 +2095,8 @@ class CaseHarness:
                 "bash",
                 image,
                 "-lc",
-                "set -euo pipefail; cp /var/lib/holon/state/runtime.sqlite* /snapshot/",
+                "set -euo pipefail; cp /var/lib/holon/state/runtime.sqlite* /snapshot/; "
+                "chmod -R a+rX -- /snapshot",
             )
         finally:
             self.docker("volume", "rm", volume, check=False)
@@ -2110,6 +2135,7 @@ class CaseHarness:
                 check=name == "runtime.sqlite",
                 timeout=RUNTIME_DB_COPY_TIMEOUT_SECONDS,
             )
+        self.publish_snapshot_readable(snapshot_dir)
         connection = sqlite3.connect(
             f"file:{snapshot_dir / 'runtime.sqlite'}?mode=ro", uri=True
         )

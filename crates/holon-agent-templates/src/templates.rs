@@ -2715,8 +2715,7 @@ async fn materialize_template(
 }
 
 pub fn ensure_agent_home_layout(agent_home: &Path) -> Result<()> {
-    fs::create_dir_all(agent_home)
-        .with_context(|| format!("failed to create {}", agent_home.display()))?;
+    ensure_private_dir(agent_home)?;
     for dir in [
         agent_home.join("memory"),
         agent_home.join("notes"),
@@ -2729,7 +2728,7 @@ pub fn ensure_agent_home_layout(agent_home: &Path) -> Result<()> {
         agent_home.join(".holon/indexes"),
         agent_home.join(".holon/cache"),
     ] {
-        fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        ensure_private_dir(&dir)?;
     }
     create_file_if_missing(
         &agent_memory_self_path(agent_home),
@@ -2742,11 +2741,44 @@ pub fn ensure_agent_home_layout(agent_home: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Creates a private directory, keeping an existing one usable.
+///
+/// Narrowing the mode of a directory that already exists is best-effort: an
+/// agent home on a read-only mount or owned by another uid must still produce
+/// a usable layout, matching the other private write sites that only warn.
+/// Failing to create a missing directory is still an error.
+fn ensure_private_dir(path: &Path) -> Result<()> {
+    match holon_domain::private_fs::create_private_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if path.is_dir() => {
+            tracing::warn!(
+                target: "holon::agent_template",
+                path = %path.display(),
+                %error,
+                "failed to restrict agent home directory permissions; keeping existing mode"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error).with_context(|| format!("failed to create {}", path.display())),
+    }
+}
+
 fn create_file_if_missing(path: &Path, content: &[u8]) -> Result<()> {
     if path.exists() {
+        // Never overwrite seeded memory, but keep an existing file private.
+        // Permission correction is best-effort for the same reason.
+        if let Err(error) = holon_domain::private_fs::set_private_file_mode(path) {
+            tracing::warn!(
+                target: "holon::agent_template",
+                path = %path.display(),
+                %error,
+                "failed to restrict agent home file permissions; keeping existing mode"
+            );
+        }
         return Ok(());
     }
-    write_file_atomically(path, content)
+    holon_domain::private_fs::write_private_file(path, content)
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn render_agent_home_agents_md(template_guidance: &str, profile_seed: Option<&str>) -> String {
