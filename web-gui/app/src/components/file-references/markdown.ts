@@ -21,7 +21,7 @@ export function remarkFileReferences(options: Options = {}) {
     visit(tree, (node, index, parent) => {
       if (node.type === "link" || node.type === "linkReference") return SKIP;
       if (node.type !== "text" || index == null || !parent) return;
-      const pattern = /file:\/\/[^\s<>"'，。；！？、（）【】《》]+|workspace:\/\/[^\s<>"')\]]+|\/[^\s<>"'，。；！？、（）【】《》]+/g;
+      const pattern = /[fF][iI][lL][eE]:\/\/[^\s<>"'，。；！？、（）【】《》]+|workspace:\/\/[^\s<>"')\]]+|\/[^\s<>"'，。；！？、（）【】《》]+/g;
       const segments: any[] = [];
       let last = 0;
       for (const match of node.value.matchAll(pattern)) {

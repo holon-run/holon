@@ -123,11 +123,13 @@ describe("MarkdownContent resolve degradation", () => {
   it("autolinks explicit file: URLs in prose, including directories", () => {
     const html = renderToStaticMarkup(<MarkdownContent text={
       "记录在 file:///data/holon-home/.holon/agents/holon-ops 目录下。\n\n" +
-      "file:///data/holon-home/notes.md，路径file:///data/broken.md 与 /data/holon-home/dir 均不链接。"
+      "file:///data/holon-home/notes.md，路径file:///data/broken.md 与 /data/holon-home/dir 均不链接。\n\n" +
+      "FILE:///data/holon-home/notes.md 与 classifyReference 的大小写不敏感一致。"
     } />);
-    expect(html.match(/file-reference-unresolved/g)).toHaveLength(2);
+    expect(html.match(/file-reference-unresolved/g)).toHaveLength(3);
     expect(html).toContain(">file:///data/holon-home/.holon/agents/holon-ops</span>");
     expect(html).toContain(">file:///data/holon-home/notes.md</span>");
+    expect(html).toContain(">FILE:///data/holon-home/notes.md</span>");
     expect(html).toContain("路径file:///data/broken.md 与 /data/holon-home/dir 均不链接。");
     expect(html).not.toContain('href="#"');
   });
