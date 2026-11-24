@@ -302,7 +302,7 @@ pub(crate) fn attach_original_child_memory_to_owner(
     prepared.with_original_child_material(material.into_inner())
 }
 
-#[cfg(all(test, holon_lib_test_shard = "d"))]
+#[cfg(all(test, holon_lib_test_shard = "a"))]
 mod tests {
     use super::*;
     use crate::runtime_db::transitions::{AgentPostureTransitionCommand, AgentStateMutation};
