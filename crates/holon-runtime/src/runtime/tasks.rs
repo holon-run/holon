@@ -6339,6 +6339,7 @@ mod model_catalog_rejection_hint_tests {
     ) -> ModelDiscoveryCacheStatus {
         ModelDiscoveryCacheStatus {
             provider: ProviderId::parse("my-gateway").unwrap(),
+            endpoint: holon_provider::config::ProviderEndpointId::default_endpoint(),
             state,
             supports_auto_refresh,
             credential_configured: true,

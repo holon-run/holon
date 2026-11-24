@@ -447,6 +447,23 @@ named endpoint. Canonical selections persist that route explicitly, for example
 `volcengine@image-openai/model-id`. Existing built-in aliases and older
 `provider/model` references continue to work as compatible inputs.
 
+### Provider Discovery
+
+Model discovery is configured separately from the inference `transport`, so a
+gateway that speaks several protocols can expose one model list:
+
+```bash
+holon config set providers.magpie.discovery.kind openai_models
+holon config set providers.magpie.discovery.path /models
+holon config set providers.magpie.endpoints.anthropic.discovery.path /v1/models
+```
+
+- `providers.<id>.discovery` is the provider-level default; `providers.<id>.endpoints.<endpoint_id>.discovery` overrides it.
+- `kind`: `openai_models` or `disabled`. `disabled` opts out of the transport default, including the automatic `openai_chat_completions` `/v1/models` fallback.
+- `path`: relative to the effective endpoint `base_url`. Absolute URLs, `..` segments, query strings, fragments and percent-escapes are rejected when the config loads, and the joined URL never leaves the endpoint origin.
+- A block without `discovery` keeps the previous behavior. Unknown `kind` values and unknown fields are configuration errors, not silent fallbacks.
+- Cached results are owned by `provider@endpoint`; changing an endpoint's base URL or discovery path invalidates only that endpoint's entry.
+
 ### Removing a Provider
 
 ```bash

@@ -849,7 +849,10 @@ mod tests {
             })
             .collect();
         config.model_discovery_cache.providers.insert(
-            ProviderId::openai(),
+            holon_provider::model_discovery::ModelDiscoveryCacheKey::new(
+                ProviderId::openai(),
+                holon_provider::config::ProviderEndpointId::default_endpoint(),
+            ),
             ProviderModelDiscoveryCache {
                 provider: ProviderId::openai(),
                 fetched_at: chrono::Utc::now(),

@@ -335,19 +335,25 @@ fn maps_arcee_models_without_inventing_capabilities_or_output_limits() {
 fn arcee_discovery_requires_a_credential_and_uses_its_models_api() {
     let provider = arcee_provider();
     let cache = ModelDiscoveryCacheFile::default();
-    let status =
-        discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+    let status = discovery_cache_status_for_provider(
+        &provider,
+        None,
+        &cache,
+        Duration::from_secs(60),
+        false,
+    );
 
     assert!(status.supports_auto_refresh);
     assert!(!status.credential_configured);
     assert_eq!(status.state, ModelDiscoveryCacheState::Unauthenticated);
     assert!(!discovery_cache_needs_refresh(
         &provider,
+        None,
         &cache,
         Duration::from_secs(60)
     ));
     assert_eq!(
-        provider_models_url(&provider).unwrap(),
+        provider_models_url(&provider, None).unwrap(),
         "https://api.arcee.ai/api/v1/models"
     );
 }
@@ -409,19 +415,25 @@ fn maps_only_live_huggingface_routes_conservatively() {
 fn huggingface_discovery_is_public_but_inference_still_requires_authentication() {
     let provider = huggingface_provider();
     let cache = ModelDiscoveryCacheFile::default();
-    let status =
-        discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+    let status = discovery_cache_status_for_provider(
+        &provider,
+        None,
+        &cache,
+        Duration::from_secs(60),
+        false,
+    );
 
     assert!(status.supports_auto_refresh);
     assert!(!status.credential_configured);
     assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
     assert!(discovery_cache_needs_refresh(
         &provider,
+        None,
         &cache,
         Duration::from_secs(60)
     ));
     assert_eq!(
-        provider_models_url(&provider).unwrap(),
+        provider_models_url(&provider, None).unwrap(),
         "https://router.huggingface.co/v1/models"
     );
 }
@@ -1179,19 +1191,25 @@ fn maps_only_synthetic_always_on_models_from_published_metadata() {
 fn nearai_discovery_is_public_but_inference_remains_unauthenticated() {
     let provider = nearai_provider();
     let cache = ModelDiscoveryCacheFile::default();
-    let status =
-        discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+    let status = discovery_cache_status_for_provider(
+        &provider,
+        None,
+        &cache,
+        Duration::from_secs(60),
+        false,
+    );
 
     assert!(status.supports_auto_refresh);
     assert!(!status.credential_configured);
     assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
     assert!(discovery_cache_needs_refresh(
         &provider,
+        None,
         &cache,
         Duration::from_secs(60)
     ));
     assert_eq!(
-        provider_models_url(&provider).unwrap(),
+        provider_models_url(&provider, None).unwrap(),
         "https://cloud-api.near.ai/v1/models"
     );
 }
@@ -1200,19 +1218,25 @@ fn nearai_discovery_is_public_but_inference_remains_unauthenticated() {
 fn synthetic_discovery_is_public_and_uses_the_openai_models_endpoint() {
     let provider = synthetic_provider();
     let cache = ModelDiscoveryCacheFile::default();
-    let status =
-        discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+    let status = discovery_cache_status_for_provider(
+        &provider,
+        None,
+        &cache,
+        Duration::from_secs(60),
+        false,
+    );
 
     assert!(status.supports_auto_refresh);
     assert!(!status.credential_configured);
     assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
     assert!(discovery_cache_needs_refresh(
         &provider,
+        None,
         &cache,
         Duration::from_secs(60)
     ));
     assert_eq!(
-        provider_models_url(&provider).unwrap(),
+        provider_models_url(&provider, None).unwrap(),
         "https://api.synthetic.new/openai/v1/models"
     );
 }
@@ -1221,14 +1245,20 @@ fn synthetic_discovery_is_public_and_uses_the_openai_models_endpoint() {
 fn vercel_discovery_is_public_but_inference_remains_unauthenticated() {
     let provider = vercel_provider();
     let cache = ModelDiscoveryCacheFile::default();
-    let status =
-        discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+    let status = discovery_cache_status_for_provider(
+        &provider,
+        None,
+        &cache,
+        Duration::from_secs(60),
+        false,
+    );
 
     assert!(status.supports_auto_refresh);
     assert!(!status.credential_configured);
     assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
     assert!(discovery_cache_needs_refresh(
         &provider,
+        None,
         &cache,
         Duration::from_secs(60)
     ));
@@ -1242,19 +1272,25 @@ fn vercel_discovery_is_public_but_inference_remains_unauthenticated() {
 fn kilocode_discovery_is_public_but_inference_still_requires_authentication() {
     let provider = kilocode_provider();
     let cache = ModelDiscoveryCacheFile::default();
-    let status =
-        discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+    let status = discovery_cache_status_for_provider(
+        &provider,
+        None,
+        &cache,
+        Duration::from_secs(60),
+        false,
+    );
 
     assert!(status.supports_auto_refresh);
     assert!(!status.credential_configured);
     assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
     assert!(discovery_cache_needs_refresh(
         &provider,
+        None,
         &cache,
         Duration::from_secs(60)
     ));
     assert_eq!(
-        provider_models_url(&provider).unwrap(),
+        provider_models_url(&provider, None).unwrap(),
         "https://api.kilo.ai/api/gateway/models"
     );
 }
@@ -1263,19 +1299,25 @@ fn kilocode_discovery_is_public_but_inference_still_requires_authentication() {
 fn opencode_go_discovery_is_public_and_separate_from_inference() {
     let provider = opencode_go_provider();
     let cache = ModelDiscoveryCacheFile::default();
-    let status =
-        discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+    let status = discovery_cache_status_for_provider(
+        &provider,
+        None,
+        &cache,
+        Duration::from_secs(60),
+        false,
+    );
 
     assert!(status.supports_auto_refresh);
     assert!(!status.credential_configured);
     assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
     assert!(discovery_cache_needs_refresh(
         &provider,
+        None,
         &cache,
         Duration::from_secs(60)
     ));
     assert_eq!(
-        provider_models_url(&provider).unwrap(),
+        provider_models_url(&provider, None).unwrap(),
         "https://opencode.ai/inference/go/v1/models"
     );
 }
@@ -1288,8 +1330,8 @@ async fn public_model_discovery_request_omits_custom_gateway_credentials() {
     let discovery = provider_discovery_definition(&provider).unwrap();
     let request = provider_models_request(
         &provider,
-        discovery,
-        &provider_models_url(&provider).unwrap(),
+        &EffectiveDiscovery::builtin(discovery),
+        &provider_models_url(&provider, None).unwrap(),
     )
     .await
     .unwrap()
@@ -1320,8 +1362,8 @@ async fn authenticated_model_discovery_request_preserves_required_and_optional_c
         let discovery = provider_discovery_definition(&provider).unwrap();
         let request = provider_models_request(
             &provider,
-            discovery,
-            &provider_models_url(&provider).unwrap(),
+            &EffectiveDiscovery::builtin(discovery),
+            &provider_models_url(&provider, None).unwrap(),
         )
         .await
         .unwrap()
@@ -1501,7 +1543,7 @@ async fn check_oauth_discovery_lifecycle(case: OAuthDiscoveryCase) {
     provider.auth.profile = Some("copilot-work".into());
     provider.credential = Some(material.to_string());
     provider.credential_store_path = Some(store_path.clone());
-    let result = refresh_provider_models(&provider, &cache_path).await;
+    let result = refresh_provider_models(&provider, None, &cache_path).await;
     let refresh_rejected = matches!(
         case,
         OAuthDiscoveryCase::ExpiredRefreshRejected
@@ -1588,8 +1630,8 @@ async fn oauth_model_discovery_request_uses_the_profile_access_token() {
     let discovery = provider_discovery_definition(&provider).unwrap();
     let request = provider_models_request(
         &provider,
-        discovery,
-        &provider_models_url(&provider).unwrap(),
+        &EffectiveDiscovery::builtin(discovery),
+        &provider_models_url(&provider, None).unwrap(),
     )
     .await
     .unwrap()
@@ -1619,8 +1661,8 @@ async fn oauth_model_discovery_rejects_malformed_material_before_sending_credent
         provider.credential = Some(material.into());
         let error = provider_models_request(
             &provider,
-            provider_discovery_definition(&provider).unwrap(),
-            &provider_models_url(&provider).unwrap(),
+            &EffectiveDiscovery::builtin(provider_discovery_definition(&provider).unwrap()),
+            &provider_models_url(&provider, None).unwrap(),
         )
         .await
         .err()
@@ -1634,8 +1676,8 @@ async fn oauth_model_discovery_rejects_malformed_material_before_sending_credent
     provider.credential = Some("legacy-opaque-token".into());
     let request = provider_models_request(
         &provider,
-        provider_discovery_definition(&provider).unwrap(),
-        &provider_models_url(&provider).unwrap(),
+        &EffectiveDiscovery::builtin(provider_discovery_definition(&provider).unwrap()),
+        &provider_models_url(&provider, None).unwrap(),
     )
     .await
     .unwrap()
@@ -1658,8 +1700,8 @@ async fn model_discovery_request_sends_the_configured_provider_headers() {
     let discovery = provider_discovery_definition(&provider).unwrap();
     let request = provider_models_request(
         &provider,
-        discovery,
-        &provider_models_url(&provider).unwrap(),
+        &EffectiveDiscovery::builtin(discovery),
+        &provider_models_url(&provider, None).unwrap(),
     )
     .await
     .unwrap()
@@ -1675,8 +1717,8 @@ async fn optional_model_discovery_request_allows_missing_credentials() {
     let discovery = provider_discovery_definition(&provider).unwrap();
     let request = provider_models_request(
         &provider,
-        discovery,
-        &provider_models_url(&provider).unwrap(),
+        &EffectiveDiscovery::builtin(discovery),
+        &provider_models_url(&provider, None).unwrap(),
     )
     .await
     .unwrap()
@@ -1692,19 +1734,25 @@ async fn optional_model_discovery_request_allows_missing_credentials() {
 fn tencent_tokenhub_discovery_requires_a_credential_and_uses_its_models_endpoint() {
     let provider = tencent_tokenhub_provider();
     let cache = ModelDiscoveryCacheFile::default();
-    let status =
-        discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+    let status = discovery_cache_status_for_provider(
+        &provider,
+        None,
+        &cache,
+        Duration::from_secs(60),
+        false,
+    );
 
     assert!(status.supports_auto_refresh);
     assert!(!status.credential_configured);
     assert_eq!(status.state, ModelDiscoveryCacheState::Unauthenticated);
     assert!(!discovery_cache_needs_refresh(
         &provider,
+        None,
         &cache,
         Duration::from_secs(60)
     ));
     assert_eq!(
-        provider_models_url(&provider).unwrap(),
+        provider_models_url(&provider, None).unwrap(),
         "https://tokenhub.tencentmaas.com/v1/models"
     );
 }
@@ -1713,19 +1761,25 @@ fn tencent_tokenhub_discovery_requires_a_credential_and_uses_its_models_endpoint
 fn venice_discovery_is_public_and_filters_to_text_models() {
     let provider = venice_provider();
     let cache = ModelDiscoveryCacheFile::default();
-    let status =
-        discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false);
+    let status = discovery_cache_status_for_provider(
+        &provider,
+        None,
+        &cache,
+        Duration::from_secs(60),
+        false,
+    );
 
     assert!(status.supports_auto_refresh);
     assert!(!status.credential_configured);
     assert_eq!(status.state, ModelDiscoveryCacheState::Missing);
     assert!(discovery_cache_needs_refresh(
         &provider,
+        None,
         &cache,
         Duration::from_secs(60)
     ));
     assert_eq!(
-        provider_models_url(&provider).unwrap(),
+        provider_models_url(&provider, None).unwrap(),
         "https://api.venice.ai/api/v1/models?type=text"
     );
 }
@@ -1759,7 +1813,7 @@ async fn custom_openai_compatible_provider_discovers_models_without_authenticati
     let provider = custom_openai_provider(base_url.clone());
     let cache_dir = tempfile::tempdir().unwrap();
     let cache_path = cache_dir.path().join("model-discovery-cache.json");
-    let report = refresh_provider_models(&provider, &cache_path)
+    let report = refresh_provider_models(&provider, None, &cache_path)
         .await
         .unwrap();
     server.join().unwrap();
@@ -1767,17 +1821,27 @@ async fn custom_openai_compatible_provider_discovers_models_without_authenticati
     assert_eq!(report.provider, ProviderId::parse("local-custom").unwrap());
     assert_eq!(report.model_count, 2);
     assert_eq!(
-        provider_models_url(&provider).unwrap(),
+        provider_models_url(&provider, None).unwrap(),
         format!("{base_url}/v1/models")
     );
 
     let cache = load_discovery_cache_at(&cache_path).unwrap();
     let models = cache.models();
-    assert!(models.contains_key(&ModelRef::parse("local-custom/custom-chat").unwrap()));
-    assert!(models.contains_key(&ModelRef::parse("local-custom/org/custom-reasoning").unwrap()));
+    assert!(
+        models.contains_key(&ModelRouteRef::parse_compatible("local-custom/custom-chat").unwrap())
+    );
+    assert!(models.contains_key(
+        &ModelRouteRef::parse_compatible("local-custom/org/custom-reasoning").unwrap()
+    ));
     assert_eq!(
-        discovery_cache_status_for_provider(&provider, &cache, Duration::from_secs(60), false)
-            .state,
+        discovery_cache_status_for_provider(
+            &provider,
+            None,
+            &cache,
+            Duration::from_secs(60),
+            false
+        )
+        .state,
         ModelDiscoveryCacheState::Fresh
     );
 }
@@ -1832,7 +1896,7 @@ fn custom_openai_compatible_provider_derives_v1_models_url() {
     for (base_url, expected) in cases {
         let provider = custom_openai_provider(base_url.to_string());
         assert_eq!(
-            provider_models_url(&provider).unwrap(),
+            provider_models_url(&provider, None).unwrap(),
             expected,
             "base_url {base_url:?}"
         );
@@ -1845,17 +1909,20 @@ fn discovery_cache_status_invalidates_when_source_url_changes() {
     let ttl = Duration::from_secs(60);
     let mut cache = ModelDiscoveryCacheFile::default();
     cache.providers.insert(
-        provider.id.clone(),
+        ModelDiscoveryCacheKey::new(
+            provider.id.clone(),
+            crate::config::ProviderEndpointId::default_endpoint(),
+        ),
         ProviderModelDiscoveryCache {
             provider: provider.id.clone(),
             fetched_at: Utc::now(),
-            source_url: Some(provider_models_url(&provider).unwrap()),
+            source_url: Some(provider_models_url(&provider, None).unwrap()),
             response_hash: None,
             models: Vec::new(),
         },
     );
     assert_eq!(
-        discovery_cache_status_for_provider(&provider, &cache, ttl, false).state,
+        discovery_cache_status_for_provider(&provider, None, &cache, ttl, false).state,
         ModelDiscoveryCacheState::Fresh
     );
 
@@ -1863,10 +1930,10 @@ fn discovery_cache_status_invalidates_when_source_url_changes() {
     // longer describes the current endpoint, so a refresh is required.
     let moved = custom_openai_provider("http://127.0.0.1:9090".into());
     assert_eq!(
-        discovery_cache_status_for_provider(&moved, &cache, ttl, false).state,
+        discovery_cache_status_for_provider(&moved, None, &cache, ttl, false).state,
         ModelDiscoveryCacheState::Stale
     );
-    assert!(discovery_cache_needs_refresh(&moved, &cache, ttl));
+    assert!(discovery_cache_needs_refresh(&moved, None, &cache, ttl));
 }
 
 #[test]
@@ -1934,7 +2001,10 @@ fn github_copilot_discovery_cache_load_preserves_previous_transports() {
         })
         .collect();
         cache.providers.insert(
-            id.clone(),
+            ModelDiscoveryCacheKey::new(
+                id.clone(),
+                crate::config::ProviderEndpointId::default_endpoint(),
+            ),
             ProviderModelDiscoveryCache {
                 provider: id.clone(),
                 fetched_at: Utc::now(),
@@ -1947,7 +2017,10 @@ fn github_copilot_discovery_cache_load_preserves_previous_transports() {
     save_discovery_cache_at(&path, &cache).unwrap();
     let loaded = load_discovery_cache_at(&path).unwrap();
     let endpoints = |id: &ProviderId| {
-        loaded.providers[id]
+        loaded.providers[&ModelDiscoveryCacheKey::new(
+            id.clone(),
+            crate::config::ProviderEndpointId::default_endpoint(),
+        )]
             .models
             .iter()
             .map(|model| model.endpoint.as_ref().map(ProviderEndpointId::as_str))
@@ -1988,11 +2061,13 @@ fn openai_compatible_discovery_ignores_supported_endpoints_for_other_providers()
 
 #[test]
 fn only_ollama_discovery_currently_supplies_model_capabilities() {
-    assert!(provider_discovers_model_capabilities(&ollama_provider(
-        "http://127.0.0.1:11434".into()
-    )));
+    assert!(provider_discovers_model_capabilities(
+        &ollama_provider("http://127.0.0.1:11434".into()),
+        None
+    ));
     assert!(!provider_discovers_model_capabilities(
-        &custom_openai_provider("http://127.0.0.1:8000".into())
+        &custom_openai_provider("http://127.0.0.1:8000".into()),
+        None
     ));
 }
 
@@ -2002,29 +2077,39 @@ fn discovery_cache_status_reports_missing_stale_and_fresh() {
     let ttl = Duration::from_secs(60);
     let mut cache = ModelDiscoveryCacheFile::default();
 
-    let missing = discovery_cache_status_for_provider(&provider, &cache, ttl, false);
+    let missing = discovery_cache_status_for_provider(&provider, None, &cache, ttl, false);
     assert_eq!(missing.state, ModelDiscoveryCacheState::Missing);
-    assert!(discovery_cache_needs_refresh(&provider, &cache, ttl));
+    assert!(discovery_cache_needs_refresh(&provider, None, &cache, ttl));
 
     cache.providers.insert(
-        provider.id.clone(),
+        ModelDiscoveryCacheKey::new(
+            provider.id.clone(),
+            crate::config::ProviderEndpointId::default_endpoint(),
+        ),
         ProviderModelDiscoveryCache {
             provider: provider.id.clone(),
             fetched_at: Utc::now() - chrono::TimeDelta::seconds(120),
-            source_url: Some(provider_models_url(&provider).unwrap()),
+            source_url: Some(provider_models_url(&provider, None).unwrap()),
             response_hash: None,
             models: Vec::new(),
         },
     );
-    let stale = discovery_cache_status_for_provider(&provider, &cache, ttl, true);
+    let stale = discovery_cache_status_for_provider(&provider, None, &cache, ttl, true);
     assert_eq!(stale.state, ModelDiscoveryCacheState::Stale);
     assert!(stale.refresh_in_flight);
-    assert!(discovery_cache_needs_refresh(&provider, &cache, ttl));
+    assert!(discovery_cache_needs_refresh(&provider, None, &cache, ttl));
 
-    cache.providers.get_mut(&provider.id).unwrap().fetched_at = Utc::now();
-    let fresh = discovery_cache_status_for_provider(&provider, &cache, ttl, false);
+    cache
+        .providers
+        .get_mut(&ModelDiscoveryCacheKey::new(
+            provider.id.clone(),
+            crate::config::ProviderEndpointId::default_endpoint(),
+        ))
+        .unwrap()
+        .fetched_at = Utc::now();
+    let fresh = discovery_cache_status_for_provider(&provider, None, &cache, ttl, false);
     assert_eq!(fresh.state, ModelDiscoveryCacheState::Fresh);
-    assert!(!discovery_cache_needs_refresh(&provider, &cache, ttl));
+    assert!(!discovery_cache_needs_refresh(&provider, None, &cache, ttl));
 }
 
 #[test]
@@ -2104,17 +2189,23 @@ async fn ollama_discovery_uses_tags_then_show_without_authentication() {
     let provider = ollama_provider(base_url);
     let cache_dir = tempfile::tempdir().unwrap();
     let cache_path = cache_dir.path().join("model-discovery-cache.json");
-    let report = refresh_provider_models(&provider, &cache_path)
+    let report = refresh_provider_models(&provider, None, &cache_path)
         .await
         .unwrap();
     server.join().unwrap();
 
     assert_eq!(report.model_count, 1);
     let cache = load_discovery_cache_at(&cache_path).unwrap();
-    let entry = cache.providers.get(&provider.id).unwrap();
+    let entry = cache
+        .providers
+        .get(&ModelDiscoveryCacheKey::new(
+            provider.id.clone(),
+            crate::config::ProviderEndpointId::default_endpoint(),
+        ))
+        .unwrap();
     assert_eq!(
         entry.source_url.as_deref(),
-        Some(provider_models_url(&provider).unwrap().as_str())
+        Some(provider_models_url(&provider, None).unwrap().as_str())
     );
     assert!(entry
         .response_hash
@@ -2181,14 +2272,20 @@ async fn ollama_discovery_skips_failed_show_requests_and_caches_healthy_models()
     let provider = ollama_provider(base_url);
     let cache_dir = tempfile::tempdir().unwrap();
     let cache_path = cache_dir.path().join("model-discovery-cache.json");
-    let report = refresh_provider_models(&provider, &cache_path)
+    let report = refresh_provider_models(&provider, None, &cache_path)
         .await
         .unwrap();
     server.join().unwrap();
 
     assert_eq!(report.model_count, 1);
     let cache = load_discovery_cache_at(&cache_path).unwrap();
-    let entry = cache.providers.get(&provider.id).unwrap();
+    let entry = cache
+        .providers
+        .get(&ModelDiscoveryCacheKey::new(
+            provider.id.clone(),
+            crate::config::ProviderEndpointId::default_endpoint(),
+        ))
+        .unwrap();
     assert_eq!(entry.models.len(), 1);
     assert_eq!(entry.models[0].model_ref.model, "healthy:latest");
 }
@@ -2235,7 +2332,10 @@ async fn ollama_discovery_preserves_cache_when_all_show_requests_fail() {
         .into_model_metadata(&provider.id, "cached:latest");
     let mut cache = ModelDiscoveryCacheFile::default();
     cache.providers.insert(
-        provider.id.clone(),
+        ModelDiscoveryCacheKey::new(
+            provider.id.clone(),
+            crate::config::ProviderEndpointId::default_endpoint(),
+        ),
         ProviderModelDiscoveryCache {
             provider: provider.id.clone(),
             fetched_at: Utc::now() - chrono::TimeDelta::hours(1),
@@ -2247,7 +2347,7 @@ async fn ollama_discovery_preserves_cache_when_all_show_requests_fail() {
     save_discovery_cache_at(&cache_path, &cache).unwrap();
     let old_cache = fs::read(&cache_path).unwrap();
 
-    let error = refresh_provider_models(&provider, &cache_path)
+    let error = refresh_provider_models(&provider, None, &cache_path)
         .await
         .unwrap_err();
     server.join().unwrap();
@@ -2259,4 +2359,267 @@ async fn ollama_discovery_preserves_cache_when_all_show_requests_fail() {
         "unexpected error: {error:#}"
     );
     assert_eq!(fs::read(&cache_path).unwrap(), old_cache);
+}
+
+fn discovery_path(path: &str) -> ProviderDiscoveryConfig {
+    ProviderDiscoveryConfig::openai_models(path)
+}
+
+#[test]
+fn configured_discovery_joins_path_onto_endpoint_base() {
+    let provider = custom_openai_provider("https://gateway.example/v1".into());
+    assert_eq!(
+        provider_models_url(&provider, Some(&discovery_path("/models"))).unwrap(),
+        "https://gateway.example/v1/models"
+    );
+
+    // A gateway that keeps the OpenAI base at the host root needs the `/v1`
+    // segment declared explicitly, which is exactly the Magpie shape.
+    let root = custom_openai_provider("https://gateway.example".into());
+    assert_eq!(
+        provider_models_url(&root, Some(&discovery_path("/v1/models"))).unwrap(),
+        "https://gateway.example/v1/models"
+    );
+    assert_eq!(
+        provider_models_url(&root, Some(&discovery_path("/v1/models")))
+            .unwrap()
+            .split('/')
+            .nth(2),
+        Some("gateway.example")
+    );
+}
+
+#[test]
+fn configured_discovery_overrides_and_disables_transport_default() {
+    let provider = custom_openai_provider("http://127.0.0.1:8000/v1".into());
+    assert!(provider_supports_model_discovery(&provider, None));
+    assert_eq!(
+        provider_models_url(&provider, None).unwrap(),
+        "http://127.0.0.1:8000/v1/models"
+    );
+
+    let disabled = ProviderDiscoveryConfig::disabled();
+    assert!(!provider_supports_model_discovery(
+        &provider,
+        Some(&disabled)
+    ));
+    assert!(provider_models_url(&provider, Some(&disabled)).is_err());
+    let cache = ModelDiscoveryCacheFile::default();
+    assert_eq!(
+        discovery_cache_status_for_provider(
+            &provider,
+            Some(&disabled),
+            &cache,
+            Duration::from_secs(60),
+            false
+        )
+        .state,
+        ModelDiscoveryCacheState::Unsupported
+    );
+}
+
+#[test]
+fn configured_discovery_path_rejects_escape_attempts() {
+    for path in [
+        "models",
+        "http://evil.example/models",
+        "//evil.example/models",
+        "/a/../b",
+        "/./models",
+        "/models?format=text",
+        "/models#frag",
+        "/%2e%2e/models",
+        "/models\\..\\.\\.\\evil",
+        "/mo del",
+    ] {
+        assert!(
+            ProviderDiscoveryConfig::openai_models(path)
+                .validate("providers.gateway.discovery")
+                .is_err(),
+            "path {path:?} must be rejected during config parsing"
+        );
+    }
+    assert!(ProviderDiscoveryConfig::openai_models("/v1/models")
+        .validate("providers.gateway.discovery")
+        .is_ok());
+    assert!(ProviderDiscoveryConfig::disabled()
+        .validate("providers.gateway.discovery")
+        .is_ok());
+    assert!(ProviderDiscoveryConfig {
+        kind: ProviderDiscoveryKind::Disabled,
+        path: Some("/models".to_string()),
+    }
+    .validate("providers.gateway.discovery")
+    .is_err());
+    assert!(ProviderDiscoveryConfig {
+        kind: ProviderDiscoveryKind::OpenAiModels,
+        path: None,
+    }
+    .validate("providers.gateway.discovery")
+    .is_err());
+}
+
+#[test]
+fn discovery_cache_key_separates_sibling_endpoints() {
+    let first = custom_openai_provider("https://gateway.example/v1".into());
+    let mut second = first.clone();
+    second.route_endpoint = ProviderEndpointId::parse("anthropic").unwrap();
+    second.base_url = "https://gateway.example".into();
+
+    let mut cache = ModelDiscoveryCacheFile::default();
+    for provider in [&first, &second] {
+        cache.providers.insert(
+            ModelDiscoveryCacheKey::for_provider(provider),
+            ProviderModelDiscoveryCache {
+                provider: provider.route_provider.clone(),
+                fetched_at: Utc::now(),
+                source_url: Some(
+                    provider_models_url(provider, Some(&discovery_path("/models"))).unwrap(),
+                ),
+                response_hash: None,
+                models: vec![BuiltInModelMetadata {
+                    model_ref: ModelRef::new(
+                        ProviderId::parse("local-custom").unwrap(),
+                        "shared-model",
+                    ),
+                    display_name: "shared-model".into(),
+                    description: "remote".into(),
+                    context_window_tokens: None,
+                    effective_context_window_percent: 95,
+                    auto_compact_token_limit: None,
+                    default_max_output_tokens: None,
+                    max_output_tokens_upper_limit: None,
+                    default_verbosity: None,
+                    tool_output_truncation_estimated_tokens: None,
+                    capabilities: ModelCapabilityFlags::default(),
+                    reasoning_effort_options: Vec::new(),
+                    source: ModelMetadataSource::RemoteDiscovered,
+                    endpoint: (provider.route_endpoint.as_str() != ProviderEndpointId::DEFAULT)
+                        .then(|| provider.route_endpoint.clone()),
+                }],
+            },
+        );
+    }
+
+    let models = cache.models();
+    assert_eq!(models.len(), 2, "one entry per endpoint");
+    assert!(models.contains_key(&ModelRouteRef::new(
+        ProviderId::parse("local-custom").unwrap(),
+        ProviderEndpointId::default_endpoint(),
+        "shared-model"
+    )));
+    assert!(models.contains_key(&ModelRouteRef::new(
+        ProviderId::parse("local-custom").unwrap(),
+        ProviderEndpointId::parse("anthropic").unwrap(),
+        "shared-model"
+    )));
+
+    let ttl = Duration::from_secs(60);
+    assert_eq!(
+        discovery_cache_status_for_provider(&first, None, &cache, ttl, false).state,
+        ModelDiscoveryCacheState::Fresh
+    );
+    assert_eq!(
+        discovery_cache_status_for_provider(
+            &second,
+            Some(&discovery_path("/models")),
+            &cache,
+            ttl,
+            false
+        )
+        .state,
+        ModelDiscoveryCacheState::Fresh
+    );
+    // The endpoint-scoped entry describes only `/models` on the root base, so
+    // the transport default `/v1/models` on the same endpoint is still stale.
+    assert_eq!(
+        discovery_cache_status_for_provider(&second, None, &cache, ttl, false).state,
+        ModelDiscoveryCacheState::Stale
+    );
+}
+
+#[test]
+fn discovery_cache_key_reads_legacy_provider_keys() {
+    let legacy = r#"{
+        "providers": {
+            "local-custom": {
+                "provider": "local-custom",
+                "fetched_at": "2026-01-01T00:00:00Z",
+                "source_url": "http://127.0.0.1:8000/v1/models",
+                "models": []
+            }
+        }
+    }"#;
+    let cache: ModelDiscoveryCacheFile = serde_json::from_str(legacy).unwrap();
+    let provider = custom_openai_provider("http://127.0.0.1:8000".into());
+    assert_eq!(
+        discovery_cache_status_for_provider(
+            &provider,
+            None,
+            &cache,
+            Duration::from_secs(60 * 60 * 24 * 365),
+            false
+        )
+        .state,
+        ModelDiscoveryCacheState::Fresh,
+        "a bare provider key keeps the default-endpoint cache entry readable"
+    );
+}
+
+#[tokio::test]
+async fn configured_discovery_attributes_models_to_provider_and_endpoint() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 2048];
+        let read = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert!(
+            request.starts_with("GET /models HTTP/1.1"),
+            "the configured path is relative to the endpoint base: {request}"
+        );
+        let body = r#"{"object":"list","data":[{"id":"vendor/chat-model"}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+
+    let mut provider = custom_openai_provider(base_url);
+    provider.transport = ProviderTransportKind::AnthropicMessages;
+    provider.route_endpoint = ProviderEndpointId::parse("anthropic").unwrap();
+    provider.id = ProviderId::parse("gateway-anthropic").unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let cache_path = cache_dir.path().join("model-discovery-cache.json");
+    let discovery = discovery_path("/models");
+    let report = refresh_provider_models(&provider, Some(&discovery), &cache_path)
+        .await
+        .unwrap();
+    server.join().unwrap();
+
+    assert_eq!(
+        report.endpoint,
+        ProviderEndpointId::parse("anthropic").unwrap()
+    );
+    assert_eq!(report.provider, ProviderId::parse("local-custom").unwrap());
+    let cache = load_discovery_cache_at(&cache_path).unwrap();
+    let models = cache.models();
+    let route = ModelRouteRef::new(
+        ProviderId::parse("local-custom").unwrap(),
+        ProviderEndpointId::parse("anthropic").unwrap(),
+        "vendor/chat-model",
+    );
+    let model = models.get(&route).expect("model keeps its endpoint owner");
+    assert_eq!(
+        model.endpoint,
+        Some(ProviderEndpointId::parse("anthropic").unwrap())
+    );
+    assert_eq!(
+        model.model_ref,
+        ModelRef::parse("local-custom/vendor/chat-model").unwrap()
+    );
 }

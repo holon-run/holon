@@ -162,6 +162,7 @@ fn github_copilot_configured_headers_keep_builtin_integration_id() {
     config.providers.insert(
         id.clone(),
         ProviderConfigFile {
+            discovery: None,
             headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiChatCompletions,
@@ -229,6 +230,7 @@ fn plan_endpoint_alias_headers_recompute_without_default_endpoint_leak() {
     endpoints.insert(
         ProviderEndpointId::parse("default").unwrap(),
         ProviderEndpointConfigFile {
+            discovery: None,
             transport: None,
             base_url: None,
             auth: None,
@@ -242,6 +244,7 @@ fn plan_endpoint_alias_headers_recompute_without_default_endpoint_leak() {
     endpoints.insert(
         ProviderEndpointId::parse("coding").unwrap(),
         ProviderEndpointConfigFile {
+            discovery: None,
             transport: None,
             base_url: Some("https://api.githubcopilot.com".to_string()),
             auth: None,
@@ -259,6 +262,7 @@ fn plan_endpoint_alias_headers_recompute_without_default_endpoint_leak() {
     config.providers.insert(
         id.clone(),
         ProviderConfigFile {
+            discovery: None,
             headers: ProviderHeaders::new([(
                 "x-provider".to_string(),
                 "provider-layer".to_string(),
@@ -345,6 +349,7 @@ fn provider_auth_client_id_config_keys_round_trip() {
     config.providers.insert(
         id.clone(),
         ProviderConfigFile {
+            discovery: None,
             headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiChatCompletions,
@@ -1257,6 +1262,7 @@ fn custom_provider_auth_requires_explicit_contract() {
 fn provider_builtin_web_search_rejects_empty_tool_metadata() {
     let id = ProviderId::parse("custom-anthropic").unwrap();
     let config = ProviderConfigFile {
+        discovery: None,
         headers: Default::default(),
         cache_capabilities: None,
         transport: ProviderTransportKind::AnthropicMessages,
@@ -1289,6 +1295,7 @@ fn provider_builtin_web_search_rejects_empty_tool_metadata() {
 fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
     let id = ProviderId::parse("custom-openai").unwrap();
     let config = ProviderConfigFile {
+        discovery: None,
         headers: Default::default(),
         cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiResponses,
@@ -1320,6 +1327,7 @@ fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
 fn provider_builtin_web_search_rejects_wrong_tool_type() {
     let id = ProviderId::parse("custom-openai").unwrap();
     let config = ProviderConfigFile {
+        discovery: None,
         headers: Default::default(),
         cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiResponses,
@@ -1351,6 +1359,7 @@ fn provider_builtin_web_search_rejects_wrong_tool_type() {
 fn provider_builtin_web_search_accepts_codex_tool_type() {
     let id = ProviderId::openai_codex();
     let config = ProviderConfigFile {
+        discovery: None,
         headers: Default::default(),
         cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiCodexResponses,
@@ -1381,6 +1390,7 @@ fn provider_builtin_web_search_accepts_codex_tool_type() {
 fn provider_builtin_web_search_rejects_wrong_codex_tool_type() {
     let id = ProviderId::openai_codex();
     let config = ProviderConfigFile {
+        discovery: None,
         headers: Default::default(),
         cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiCodexResponses,
@@ -1420,6 +1430,7 @@ fn materialize_provider_config_can_disable_builtin_web_search_for_builtin_provid
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            discovery: None,
             headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiCodexResponses,
@@ -1483,6 +1494,7 @@ fn provider_config_file_overrides_cache_capabilities() {
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            discovery: None,
             headers: Default::default(),
             cache_capabilities: Some(AnthropicCacheCapabilities {
                 cache_control: true,
@@ -1548,6 +1560,7 @@ fn materialize_provider_config_resolves_env_credentials_from_settings() {
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            discovery: None,
             headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiResponses,
@@ -1641,6 +1654,7 @@ fn materialize_provider_config_resolves_credential_profile() {
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            discovery: None,
             headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiResponses,
@@ -1726,6 +1740,7 @@ fn materialize_provider_config_preserves_builtin_runtime_fields() {
     let runtime = super::materialize_provider_config(
         id,
         ProviderConfigFile {
+            discovery: None,
             headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiCodexResponses,
@@ -2660,6 +2675,7 @@ fn load_normalization_drops_empty_endpoint_entries_only() {
     endpoints.insert(
         ProviderEndpointId::parse("stub").unwrap(),
         ProviderEndpointConfigFile {
+            discovery: None,
             transport: None,
             base_url: None,
             auth: Some(ProviderAuthConfig::default()),
@@ -2669,6 +2685,7 @@ fn load_normalization_drops_empty_endpoint_entries_only() {
     endpoints.insert(
         ProviderEndpointId::parse("real").unwrap(),
         ProviderEndpointConfigFile {
+            discovery: None,
             base_url: Some("http://127.0.0.1:3425".into()),
             ..Default::default()
         },
@@ -2676,6 +2693,7 @@ fn load_normalization_drops_empty_endpoint_entries_only() {
     config.providers.insert(
         ProviderId::parse("acme").unwrap(),
         ProviderConfigFile {
+            discovery: None,
             endpoints,
             ..Default::default()
         },
@@ -2685,4 +2703,218 @@ fn load_normalization_drops_empty_endpoint_entries_only() {
     let endpoints = &config.providers[&ProviderId::parse("acme").unwrap()].endpoints;
     assert!(!endpoints.contains_key(&ProviderEndpointId::parse("stub").unwrap()));
     assert!(endpoints.contains_key(&ProviderEndpointId::parse("real").unwrap()));
+}
+
+#[test]
+fn provider_discovery_config_is_endpoint_scoped_and_validates() {
+    let config: HolonConfigFile = toml::from_str(
+        r#"
+[providers.gateway]
+transport = "openai_chat_completions"
+base_url = "https://gateway.example/v1"
+
+[providers.gateway.auth]
+source = "none"
+kind = "none"
+
+[providers.gateway.discovery]
+kind = "openai_models"
+path = "/models"
+
+[providers.gateway.endpoints.anthropic]
+transport = "anthropic_messages"
+base_url = "https://gateway.example"
+
+[providers.gateway.endpoints.anthropic.auth]
+source = "none"
+kind = "none"
+
+[providers.gateway.endpoints.anthropic.discovery]
+kind = "openai_models"
+path = "/v1/models"
+"#,
+    )
+    .unwrap();
+    let provider_id = ProviderId::parse("gateway").unwrap();
+    let gateway = &config.providers[&provider_id];
+    validate_provider_config(&provider_id, gateway).unwrap();
+
+    // Endpoint entries win over the provider-level default.
+    let default = provider_discovery_for(gateway, &ProviderEndpointId::default_endpoint()).unwrap();
+    assert_eq!(default.kind, ProviderDiscoveryKind::OpenAiModels);
+    assert_eq!(default.path.as_deref(), Some("/models"));
+    let anthropic =
+        provider_discovery_for(gateway, &ProviderEndpointId::parse("anthropic").unwrap()).unwrap();
+    assert_eq!(anthropic.path.as_deref(), Some("/v1/models"));
+
+    // Endpoints without their own block inherit the provider default.
+    let inherited =
+        provider_discovery_for(gateway, &ProviderEndpointId::parse("openai").unwrap()).unwrap();
+    assert_eq!(inherited.path.as_deref(), Some("/models"));
+}
+
+#[test]
+fn provider_discovery_config_keeps_legacy_configuration_unchanged() {
+    let config: HolonConfigFile = toml::from_str(
+        r#"
+[providers.local]
+transport = "openai_chat_completions"
+base_url = "http://127.0.0.1:8000/v1"
+
+[providers.local.auth]
+source = "none"
+kind = "none"
+"#,
+    )
+    .unwrap();
+    let provider_id = ProviderId::parse("local").unwrap();
+    let provider = &config.providers[&provider_id];
+    validate_provider_config(&provider_id, provider).unwrap();
+    assert!(
+        provider_discovery_for(provider, &ProviderEndpointId::default_endpoint()).is_none(),
+        "an absent discovery block keeps the transport default behavior"
+    );
+}
+
+#[test]
+fn provider_discovery_config_rejects_unknown_values() {
+    // Unknown kind values fail during deserialization instead of falling back.
+    assert!(toml::from_str::<HolonConfigFile>(
+        r#"
+[providers.gateway.discovery]
+kind = "jsonpath"
+path = "/models"
+"#
+    )
+    .is_err());
+    // Unknown fields inside the discovery block are rejected.
+    assert!(toml::from_str::<HolonConfigFile>(
+        r#"
+[providers.gateway.discovery]
+kind = "openai_models"
+path = "/models"
+endpoint = "other"
+"#
+    )
+    .is_err());
+    // Absolute and escaping paths parse, then fail validation.
+    for path in [
+        "https://evil.example/models",
+        "//evil.example/models",
+        "/v1/../models",
+        "/models?format=text",
+    ] {
+        let config: HolonConfigFile = toml::from_str(&format!(
+            r#"
+[providers.gateway]
+transport = "openai_chat_completions"
+base_url = "https://gateway.example/v1"
+
+[providers.gateway.auth]
+source = "none"
+kind = "none"
+
+[providers.gateway.discovery]
+kind = "openai_models"
+path = "{path}"
+"#
+        ))
+        .unwrap();
+        let provider_id = ProviderId::parse("gateway").unwrap();
+        let error = validate_provider_config(&provider_id, &config.providers[&provider_id])
+            .expect_err("unsafe discovery path must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("providers.gateway.discovery.path"),
+            "{error}"
+        );
+    }
+    // `disabled` must not carry a path, while `openai_models` requires one.
+    for (kind, path) in [("disabled", "/models"), ("openai_models", "")] {
+        let config: HolonConfigFile = toml::from_str(&format!(
+            r#"
+[providers.gateway]
+transport = "openai_chat_completions"
+base_url = "https://gateway.example/v1"
+
+[providers.gateway.auth]
+source = "none"
+kind = "none"
+
+[providers.gateway.discovery]
+kind = "{kind}"
+path = "{path}"
+"#
+        ))
+        .unwrap();
+        let provider_id = ProviderId::parse("gateway").unwrap();
+        assert!(
+            validate_provider_config(&provider_id, &config.providers[&provider_id]).is_err(),
+            "kind={kind} path={path:?} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn provider_discovery_config_keys_round_trip() {
+    let mut config: HolonConfigFile = toml::from_str(
+        r#"
+[providers.gateway]
+transport = "openai_chat_completions"
+base_url = "https://gateway.example/v1"
+
+[providers.gateway.auth]
+source = "none"
+kind = "none"
+"#,
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.gateway.discovery.kind",
+        "openai_models",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.gateway.discovery.path",
+        "/v1/models",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.gateway.endpoints.anthropic.discovery.kind",
+        "disabled",
+    )
+    .unwrap();
+
+    assert_eq!(
+        get_config_key(&config, "providers.gateway.discovery.kind").unwrap(),
+        json!("openai_models")
+    );
+    assert_eq!(
+        get_config_key(&config, "providers.gateway.discovery.path").unwrap(),
+        json!("/v1/models")
+    );
+    assert_eq!(
+        get_config_key(
+            &config,
+            "providers.gateway.endpoints.anthropic.discovery.kind"
+        )
+        .unwrap(),
+        json!("disabled")
+    );
+
+    unset_config_key(&mut config, "providers.gateway.discovery.path").unwrap();
+    assert_eq!(
+        get_config_key(&config, "providers.gateway.discovery.path").unwrap(),
+        Value::Null
+    );
+    assert!(
+        config.providers[&ProviderId::parse("gateway").unwrap()]
+            .discovery
+            .is_none(),
+        "unsetting a discovery key removes the declared block instead of leaving it invalid"
+    );
 }

@@ -71,7 +71,8 @@ mod tests {
             .pop()
             .unwrap();
             let model_ref = decoded.model_ref.clone();
-            let discovered = HashMap::from([(model_ref.clone(), decoded)]);
+            let discovered =
+                holon_model_catalog::discovered_by_route([(model_ref.clone(), decoded)]);
             let empty_discovered = HashMap::new();
             let preferred = catalog.resolve_policy(
                 &model_ref,
@@ -92,7 +93,7 @@ mod tests {
                 let route = ModelRouteRef::parse(&format!("opencode-go@{endpoint}/{id}")).unwrap();
                 let resolve =
                     |overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
-                     discovered: &HashMap<ModelRef, BuiltInModelMetadata>| {
+                     discovered: &HashMap<ModelRouteRef, BuiltInModelMetadata>| {
                         catalog.resolve_route_policy(
                             &route,
                             overrides,
@@ -122,8 +123,13 @@ mod tests {
                 }
                 if native_endpoint == "default" {
                     let mut explicit_default = discovered.clone();
-                    explicit_default.get_mut(&model_ref).unwrap().endpoint =
-                        Some(ProviderEndpointId::default_endpoint());
+                    if let Some(entry) = explicit_default.get_mut(&ModelRouteRef::new(
+                        model_ref.provider.clone(),
+                        ProviderEndpointId::default_endpoint(),
+                        model_ref.model.clone(),
+                    )) {
+                        entry.endpoint = Some(ProviderEndpointId::default_endpoint());
+                    }
                     assert_eq!(
                         resolve(&HashMap::new(), &explicit_default),
                         policy,
@@ -158,20 +164,27 @@ mod tests {
         let cache = ModelDiscoveryCacheFile::default();
 
         assert_eq!(
-            discovery_cache_status_for_provider(litellm, &cache, Duration::from_secs(60), false)
-                .state,
+            discovery_cache_status_for_provider(
+                litellm,
+                None,
+                &cache,
+                Duration::from_secs(60),
+                false
+            )
+            .state,
             ModelDiscoveryCacheState::Unauthenticated
         );
         assert_eq!(
-            provider_models_url(litellm).unwrap(),
+            provider_models_url(litellm, None).unwrap(),
             "http://localhost:4000/v1/models"
         );
         assert_eq!(
-            discovery_cache_status_for_provider(vllm, &cache, Duration::from_secs(60), false).state,
+            discovery_cache_status_for_provider(vllm, None, &cache, Duration::from_secs(60), false)
+                .state,
             ModelDiscoveryCacheState::Missing
         );
         assert_eq!(
-            provider_models_url(vllm).unwrap(),
+            provider_models_url(vllm, None).unwrap(),
             "http://127.0.0.1:8000/v1/models"
         );
     }

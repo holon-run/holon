@@ -2002,7 +2002,7 @@ fn metadata_precedence_matrix_resolves_fields_independently_with_evidence() {
     discovered.capabilities.image_input = false;
     discovered.reasoning_effort_options = vec!["remote".into()];
     discovered.source = ModelMetadataSource::RemoteDiscovered;
-    let discovered_models = HashMap::from([(model_ref.clone(), discovered)]);
+    let discovered_models = discovered_by_route([(model_ref.clone(), discovered)]);
     let overrides = HashMap::from([(
         model_ref.clone(),
         ModelRuntimeOverride {
@@ -2183,7 +2183,7 @@ fn capability_precedence_treats_discovered_false_as_unknown_but_preserves_explic
     let mut discovered_true = model_builtin.clone();
     discovered_true.capabilities.image_input = true;
     discovered_true.source = ModelMetadataSource::RemoteDiscovered;
-    let discovered_models = HashMap::from([(model_ref.clone(), discovered_true)]);
+    let discovered_models = discovered_by_route([(model_ref.clone(), discovered_true)]);
 
     let route_selected = catalog
         .resolve_metadata(
@@ -2219,7 +2219,7 @@ fn capability_precedence_treats_discovered_false_as_unknown_but_preserves_explic
     let mut discovered_false = model_builtin.clone();
     discovered_false.capabilities.image_input = false;
     discovered_false.source = ModelMetadataSource::RemoteDiscovered;
-    let discovered_models = HashMap::from([(model_ref.clone(), discovered_false)]);
+    let discovered_models = discovered_by_route([(model_ref.clone(), discovered_false)]);
     let inherited_model_builtin = catalog
         .resolve_metadata(
             &model_ref,
@@ -2301,7 +2301,7 @@ fn discovered_fixed_reasoning_preserves_an_explicit_empty_effort_contract() {
     let mut discovered = model_builtin.clone();
     discovered.reasoning_effort_options.clear();
     discovered.source = ModelMetadataSource::RemoteDiscovered;
-    let discovered_models = HashMap::from([(model_ref.clone(), discovered)]);
+    let discovered_models = discovered_by_route([(model_ref.clone(), discovered)]);
 
     let policy = catalog.resolve_policy(
         &model_ref,
@@ -2339,7 +2339,7 @@ fn budget_fallback_is_independent_of_partial_metadata() {
     let model_ref = model.model_ref.clone();
     let mut discovered = model.clone();
     discovered.source = ModelMetadataSource::RemoteDiscovered;
-    let discovered_models = HashMap::from([(model_ref.clone(), discovered)]);
+    let discovered_models = discovered_by_route([(model_ref.clone(), discovered)]);
     let overrides = HashMap::new();
 
     for (builtin, discovery, expected_source) in [
@@ -2409,7 +2409,7 @@ fn budget_partial_metadata_keeps_independently_known_context() {
         } else {
             discovered.context_window_tokens = None;
         }
-        let discovery = HashMap::from([(builtin.model_ref.clone(), discovered)]);
+        let discovery = discovered_by_route([(builtin.model_ref.clone(), discovered)]);
         let fallback = ModelRuntimeOverride {
             prompt_budget_estimated_tokens: Some(128_000),
             ..ModelRuntimeOverride::default()
