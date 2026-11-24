@@ -12464,7 +12464,7 @@ async fn bootstrap_completion_releases_all_waiters() {
     };
 
     tokio::task::yield_now().await;
-    runtime.complete_bootstrap(&Ok(()));
+    runtime.complete_bootstrap(&Ok(()), None);
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         first.await.unwrap().unwrap();

@@ -4059,7 +4059,20 @@ impl RuntimeHost {
                 Err(error) if error.downcast_ref::<AgentQuarantined>().is_some() => return Ok(false),
                 Err(error) => return Err(error),
             };
-            agent_observation.observe("bootstrap_wait", runtime.wait_for_bootstrap()).await?;
+            let incarnation = runtime.instance_incarnation();
+            match agent_observation
+                .observe(
+                    "bootstrap_wait",
+                    self.await_bootstrap_isolating_local_failure(&runtime, &agent_id, incarnation),
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(error) if error.downcast_ref::<AgentQuarantined>().is_some() => {
+                    return Ok(false);
+                }
+                Err(error) => return Err(error),
+            }
             Ok(true)
             }.await;
             match agent_result {
@@ -4986,8 +4999,8 @@ impl RuntimeHost {
             .activate_agent(agent_id, RuntimeActivationReason::OperatorControl)
             .await
             .map_err(Self::public_activation_error)?;
-        runtime
-            .wait_for_bootstrap()
+        let incarnation = runtime.instance_incarnation();
+        self.await_bootstrap_isolating_local_failure(&runtime, agent_id, incarnation)
             .await
             .map_err(PublicAgentError::Runtime)?;
         Ok(runtime)
@@ -5002,8 +5015,8 @@ impl RuntimeHost {
             .activate_agent(agent_id, RuntimeActivationReason::OperatorControl)
             .await
             .map_err(Self::public_activation_error)?;
-        runtime
-            .wait_for_bootstrap()
+        let incarnation = runtime.instance_incarnation();
+        self.await_bootstrap_isolating_local_failure(&runtime, agent_id, incarnation)
             .await
             .map_err(PublicAgentError::Runtime)?;
         Ok(runtime)
@@ -5652,8 +5665,12 @@ impl RuntimeHost {
             .activate_agent_observed_for_incarnation(agent_id, reason, None, Some(incarnation))
             .await
             .map_err(Self::public_activation_error)?;
-        runtime
-            .wait_for_bootstrap()
+        let instance_incarnation = runtime.instance_incarnation();
+        self.await_bootstrap_isolating_local_failure(
+            &runtime,
+            agent_id,
+            instance_incarnation,
+        )
             .await
             .map_err(PublicAgentError::Runtime)?;
         Ok(runtime)
@@ -7195,9 +7212,18 @@ impl RuntimeHost {
                 reason,
                 tokio::time::Instant::now(),
             ) {
+                let (stage, entry_reason) = registry
+                    .quarantines
+                    .entry(agent_id, identity.incarnation)
+                    .unwrap_or((
+                        crate::daemon::QuarantineStage::StorageConstructor,
+                        crate::daemon::QuarantineReason::ProjectionChanged,
+                    ));
                 return Err(AgentQuarantined {
                     agent_id: agent_id.to_owned(),
                     incarnation: identity.incarnation,
+                    stage,
+                    reason: entry_reason,
                 }
                 .into());
             }
@@ -7240,6 +7266,8 @@ impl RuntimeHost {
                             agent_id,
                             identity.incarnation,
                             generation,
+                            crate::daemon::QuarantineStage::StorageConstructor,
+                            crate::daemon::QuarantineReason::ProjectionChanged,
                             tokio::time::Instant::now(),
                         );
                         tracing::warn!(

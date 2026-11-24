@@ -24,12 +24,14 @@ const MAX_BOOTS: usize = 3;
 #[serde(rename_all = "snake_case")]
 pub enum QuarantineStage {
     StorageConstructor,
+    StartupRecovery,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QuarantineReason {
     ProjectionChanged,
+    DispatchMemoryMissingStart,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

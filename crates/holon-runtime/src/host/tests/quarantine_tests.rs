@@ -147,6 +147,8 @@ async fn quarantine_retries_only_on_demand_and_serializes_concurrent_requests() 
             agent_id,
             incarnation,
             generation,
+            crate::daemon::QuarantineStage::StorageConstructor,
+            crate::daemon::QuarantineReason::ProjectionChanged,
             tokio::time::Instant::now() - Duration::from_secs(15),
         );
     }
@@ -243,4 +245,112 @@ async fn quarantine_retries_only_on_demand_and_serializes_concurrent_requests() 
         .await
         .expect("host did not shut down")
         .unwrap();
+}
+
+fn local_missing_start_hook(
+    agent_id: &str,
+    incarnation: u64,
+) -> Arc<crate::startup::StartupTestHook> {
+    let agent_id = agent_id.to_owned();
+    Arc::new(move |observation, phase| {
+        let agent_id = agent_id.clone();
+        Box::pin(async move {
+            if phase == "runtime.bootstrap.tasks"
+                && observation.agent_id.as_deref() == Some(agent_id.as_str())
+            {
+                return Err(crate::runtime::AgentLocalMissingStart {
+                    agent_id,
+                    incarnation,
+                }
+                .into());
+            }
+            Ok(())
+        })
+    })
+}
+
+#[tokio::test]
+async fn quarantine_startup_recovery_isolates_certified_local_missing_start() {
+    let (_home, host) = canonical_test_host();
+    for id in ["a-healthy", "b-local-missing", "c-healthy"] {
+        seed_observed_startup_owner(&host, id).await;
+    }
+    let isolated = "b-local-missing";
+    let incarnation = host.active_agent_identity(isolated).unwrap().incarnation;
+    let host = restart_fixture_host(host).await;
+    let observation = StartupObservation::with_id("startup_local_missing_start".into())
+        .with_test_hook(local_missing_start_hook(isolated, incarnation));
+    host.begin_quarantine_report(&observation).await;
+    host.recover_startup_observed(&observation).await.unwrap();
+    for id in ["a-healthy", "c-healthy"] {
+        assert!(host.try_get_loaded_runtime(id).await.is_some(), "{id}");
+    }
+    assert!(host.try_get_loaded_runtime(isolated).await.is_none());
+    assert!(host.agent_is_quarantined(isolated, incarnation).await);
+    let report = serde_json::to_value(read_quarantine_report(host.config().as_ref())).unwrap();
+    assert_eq!(
+        report["summary"]["current"]["entries"][0]["stage"],
+        "startup_recovery"
+    );
+    assert_eq!(
+        report["summary"]["current"]["entries"][0]["reason"],
+        "dispatch_memory_missing_start"
+    );
+    // A non-compliant activation still sees isolation and never retries.
+    let generation = host.inner.runtimes.read().await.next_generation;
+    let error = host
+        .activate_agent(isolated, RuntimeActivationReason::SchedulerDispatch)
+        .await
+        .err()
+        .unwrap();
+    assert!(error.downcast_ref::<AgentQuarantined>().is_some());
+    assert_eq!(host.inner.runtimes.read().await.next_generation, generation);
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn quarantine_default_certified_local_missing_start_can_bind() {
+    let (_home, host) = canonical_test_host();
+    let agent_id = host.config().default_agent_id.clone();
+    let incarnation = host.active_agent_identity(&agent_id).unwrap().incarnation;
+    let host = restart_fixture_host(host).await;
+    let observation = StartupObservation::with_id("startup_default_local_missing".into())
+        .with_test_hook(local_missing_start_hook(&agent_id, incarnation));
+    host.begin_quarantine_report(&observation).await;
+    let listener = host
+        .bind_primary_for_serve(&observation, "127.0.0.1:0")
+        .await
+        .expect("certified local failure must still bind the daemon");
+    assert!(listener.local_addr().unwrap().ip().is_loopback());
+    assert!(host.agent_is_quarantined(&agent_id, incarnation).await);
+    let report = serde_json::to_value(read_quarantine_report(host.config().as_ref())).unwrap();
+    assert_eq!(
+        report["summary"]["current"]["entries"][0]["stage"],
+        "startup_recovery"
+    );
+    assert!(host.try_get_loaded_runtime(&agent_id).await.is_none());
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn quarantine_default_unclassified_bootstrap_failure_still_aborts_bind() {
+    let (_home, host) = canonical_test_host();
+    let host = restart_fixture_host(host).await;
+    let observation = StartupObservation::with_id("startup_default_unclassified".into())
+        .with_test_hook(Arc::new(|_, phase| {
+            Box::pin(async move {
+                if phase == "runtime.bootstrap.tasks" {
+                    anyhow::bail!("fixture unclassified bootstrap failure");
+                }
+                Ok(())
+            })
+        }));
+    host.begin_quarantine_report(&observation).await;
+    let error = host
+        .bind_primary_for_serve(&observation, "127.0.0.1:0")
+        .await
+        .err()
+        .expect("unclassified bootstrap failure must abort binding");
+    assert!(error.to_string().contains("unclassified"), "{error:#}");
+    host.shutdown().await.unwrap();
 }

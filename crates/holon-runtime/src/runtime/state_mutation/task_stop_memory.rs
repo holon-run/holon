@@ -1,9 +1,35 @@
 //! Original automatic Memory decoration shared by ready and sparse Stop actors.
 use super::*;
 use crate::runtime_db::{
-    dispatch_memory::{DispatchMemoryBinding, DispatchMemoryCommandPolicy, DispatchMemoryIntent},
+    dispatch_memory::{
+        DispatchMemoryBinding, DispatchMemoryCommandPolicy, DispatchMemoryError, DispatchMemoryIntent,
+    },
     transitions::PreparedInputTransition,
 };
+
+/// A dispatch-memory binding lookup runs in a read-only transaction before any
+/// persistent write of this transition. A typed `MissingStart` for exactly one
+/// scope therefore proves a single agent's local recovery failure with no
+/// partial commit. Ambiguous scopes stay unclassified and fail closed.
+fn certify_local_missing_start(
+    error: anyhow::Error,
+    prepared: &PreparedInputTransition,
+) -> anyhow::Error {
+    if !matches!(
+        error.downcast_ref::<DispatchMemoryError>(),
+        Some(DispatchMemoryError::MissingStart)
+    ) {
+        return error;
+    }
+    let scopes = prepared.descriptor().scopes();
+    let [scope] = scopes else {
+        return error;
+    };
+    error.context(crate::runtime::AgentLocalMissingStart {
+        agent_id: scope.agent_id.clone(),
+        incarnation: scope.identity_incarnation,
+    })
+}
 
 fn attach_dispatch_memory_with_binding(
     db: &crate::runtime_db::RuntimeDb,
@@ -28,7 +54,9 @@ fn attach_dispatch_memory_with_binding(
         }
         crate::runtime_db::dispatch_memory::OriginalAutoMemory::Unseen => {}
     }
-    let binding = db.transaction(|tx| binding(tx, &prepared))?;
+    let binding = db
+        .transaction(|tx| binding(tx, &prepared))
+        .map_err(|error| certify_local_missing_start(error, &prepared))?;
     let Some(binding) = binding else {
         return Ok(prepared);
     };
@@ -271,4 +299,70 @@ pub(crate) fn attach_original_child_memory_to_owner(
             || now,
         )?;
     prepared.with_original_child_material(material.into_inner())
+}
+
+#[cfg(all(test, holon_lib_test_shard = "d"))]
+mod tests {
+    use super::*;
+    use crate::runtime_db::transitions::{AgentPostureTransitionCommand, AgentStateMutation};
+    use crate::types::AgentState;
+
+    fn posture(agent_id: &str, incarnation: u64) -> PreparedInputTransition {
+        let state = AgentState::new(agent_id);
+        PreparedInputTransition::posture(
+            crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: agent_id.into(),
+                identity_incarnation: incarnation,
+            },
+            "memory-certification-fixture".into(),
+            chrono::Utc::now(),
+            AgentPostureTransitionCommand {
+                agent_id: agent_id.into(),
+                expected_incarnation: Some(incarnation),
+                agent_state: AgentStateMutation {
+                    expected: None,
+                    record: Box::new(state),
+                },
+                audit_events: Vec::new(),
+                fault: None,
+            },
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn single_scope_missing_start_carries_local_evidence() {
+        let prepared = posture("local-agent", 9);
+        let error = certify_local_missing_start(
+            anyhow::Error::new(DispatchMemoryError::MissingStart),
+            &prepared,
+        );
+        let local = error
+            .downcast_ref::<crate::runtime::AgentLocalMissingStart>()
+            .expect("missing start must carry its single local scope");
+        assert_eq!(local.agent_id, "local-agent");
+        assert_eq!(local.incarnation, 9);
+        // The original typed error stays downcastable for existing callers.
+        assert!(matches!(
+            error.downcast_ref::<DispatchMemoryError>(),
+            Some(DispatchMemoryError::MissingStart)
+        ));
+    }
+
+    #[test]
+    fn other_dispatch_memory_errors_stay_unclassified() {
+        let prepared = posture("local-agent", 9);
+        let error = certify_local_missing_start(
+            anyhow::Error::new(DispatchMemoryError::Unfinished),
+            &prepared,
+        );
+        assert!(error
+            .downcast_ref::<crate::runtime::AgentLocalMissingStart>()
+            .is_none());
+        let plain = certify_local_missing_start(anyhow::anyhow!("unrelated"), &prepared);
+        assert!(plain
+            .downcast_ref::<crate::runtime::AgentLocalMissingStart>()
+            .is_none());
+    }
 }
