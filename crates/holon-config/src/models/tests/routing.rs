@@ -773,3 +773,76 @@ fn discovery_cache_keeps_sibling_endpoint_models_separate() {
         messages_policy.context_window_tokens
     );
 }
+
+#[test]
+fn disabled_discovery_drops_cached_endpoint_models() {
+    let mut fixture = catalog_fixture("opencode-go/kimi-k3.1-pro", &[]);
+    let opencode = ProviderId::parse("opencode-go").unwrap();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture
+        .providers
+        .insert(opencode.clone(), built_ins.get(&opencode).unwrap().clone());
+    let model_ref = ModelRef::parse("opencode-go/kimi-k3.1-pro").unwrap();
+    fixture.model_discovery_cache.providers.insert(
+        holon_provider::model_discovery::ModelDiscoveryCacheKey::new(
+            opencode.clone(),
+            ProviderEndpointId::default_endpoint(),
+        ),
+        ProviderModelDiscoveryCache {
+            provider: opencode.clone(),
+            fetched_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            source_url: Some("https://opencode.example/v1/models".into()),
+            response_hash: Some("sha256:test".into()),
+            models: vec![BuiltInModelMetadata {
+                model_ref,
+                display_name: "Remote".into(),
+                description: "Remote discovered model.".into(),
+                context_window_tokens: Some(424_242),
+                effective_context_window_percent: 95,
+                auto_compact_token_limit: None,
+                default_max_output_tokens: None,
+                max_output_tokens_upper_limit: None,
+                default_verbosity: None,
+                tool_output_truncation_estimated_tokens: None,
+                capabilities: Default::default(),
+                reasoning_effort_options: Vec::new(),
+                source: ModelMetadataSource::RemoteDiscovered,
+                endpoint: None,
+            }],
+        },
+    );
+    let context = test_context();
+    let route = route_ref("opencode-go@default/kimi-k3.1-pro");
+    let enabled = RuntimeModelCatalog::from_config(&fixture);
+    assert_eq!(
+        enabled
+            .resolved_model_policy_for_route(&context, &route)
+            .context_window_tokens,
+        Some(424_242),
+        "an enabled endpoint serves its cached discovery metadata"
+    );
+
+    fixture.stored_config.providers.insert(
+        opencode,
+        ProviderConfigFile {
+            endpoints: [(
+                ProviderEndpointId::default_endpoint(),
+                ProviderEndpointConfigFile {
+                    discovery: Some(ProviderDiscoveryConfig::disabled()),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        },
+    );
+    let disabled = RuntimeModelCatalog::from_config(&fixture);
+    assert_ne!(
+        disabled
+            .resolved_model_policy_for_route(&context, &route)
+            .context_window_tokens,
+        Some(424_242),
+        "`disabled` must hide models cached before the opt-out"
+    );
+}
