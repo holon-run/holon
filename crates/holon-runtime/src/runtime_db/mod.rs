@@ -1505,6 +1505,7 @@ impl RuntimeDb {
         configure_new_database_auto_vacuum(&connection)?;
         configure_persistent_database(&connection)?;
         migrations::migrate(&mut connection)?;
+        migrations::backfill_legacy_dispatch_seals(&mut connection)?;
         ensure_runtime_identity_metadata(&connection)?;
         backfill_wait_condition_payload_columns(&connection)?;
         backfill_work_item_recheck_columns(&connection)?;

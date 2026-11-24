@@ -985,6 +985,95 @@ pub(super) fn capture_legacy_dispatches_at_upgrade_tx(tx: &Transaction<'_>) -> R
     Ok(())
 }
 
+/// Startup repair for a database that ran the fixed v99 upgrade while a clean
+/// shutdown had already cleared `agent_states.current_run_id` (#4445).
+///
+/// v99 sealed legacy dispatches only when the Turn payload run still equalled
+/// the State run column. A cross-version upgrade has to stop the daemon first,
+/// and a clean stop clears that run, so a current dispatch that recovery still
+/// has to resolve was never sealed; v99 is recorded and never reruns. This
+/// seals exactly the canonical current-dispatch address that recovery reads,
+/// and only while the migrated database can still prove ownership, terminal
+/// state, a unique original source message and a pre-v99 Turn. Existing
+/// responsibility records are never overwritten or mixed: those addresses keep
+/// their ordinary validation errors.
+pub(super) fn backfill_legacy_dispatch_seals_tx(tx: &Transaction<'_>) -> Result<usize> {
+    for table in [
+        "agent_states",
+        "agent_identities",
+        "turn_records",
+        "messages",
+        "schema_migrations",
+        "dispatch_memory_checkpoints",
+        "dispatch_memory_legacy_dispatches",
+        "dispatch_memory_retired_handoffs",
+    ] {
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(0);
+        }
+    }
+    let applied_at: Option<String> = tx
+        .query_row(
+            "SELECT applied_at FROM schema_migrations WHERE version = 99",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(applied_at) = applied_at else {
+        return Ok(0);
+    };
+    let inserted = tx.execute(
+        "WITH readable_states AS MATERIALIZED (
+             SELECT agent_id,payload_json,current_run_id,turn_index
+             FROM agent_states WHERE json_valid(payload_json)
+         ),
+         readable_identities AS MATERIALIZED (
+             SELECT agent_id,status,payload_json
+             FROM agent_identities WHERE json_valid(payload_json)
+         ),
+         readable_turns AS MATERIALIZED (
+             SELECT agent_id,turn_id,turn_index,terminal_kind,created_at,payload_json
+             FROM turn_records WHERE json_valid(payload_json)
+         )
+         INSERT INTO dispatch_memory_legacy_dispatches(agent_id,identity_incarnation,turn_id,source_message_id,turn_index)
+         SELECT s.agent_id,json_extract(i.payload_json,'$.incarnation'),t.turn_id,json_extract(s.payload_json,'$.current_execution_binding.source_message_id'),t.turn_index
+         FROM readable_states s
+         JOIN readable_identities i ON i.agent_id=s.agent_id
+         JOIN readable_turns t ON t.agent_id=s.agent_id AND t.turn_id=json_extract(s.payload_json,'$.current_turn_id')
+         JOIN messages m ON m.agent_id=s.agent_id AND m.evidence_id=json_extract(s.payload_json,'$.current_execution_binding.source_message_id')
+         WHERE i.status IN ('active','deleting')
+         AND json_extract(i.payload_json,'$.agent_id')=i.agent_id
+         AND json_extract(i.payload_json,'$.status')=i.status
+         AND json_extract(i.payload_json,'$.incarnation')>0
+         AND json_type(s.payload_json,'$.current_execution_binding')='object'
+         AND json_type(s.payload_json,'$.current_execution_binding.turn_id')='text'
+         AND json_type(s.payload_json,'$.current_execution_binding.source_message_id')='text'
+         AND json_type(s.payload_json,'$.current_turn_id')='text'
+         AND json_extract(s.payload_json,'$.current_execution_binding.turn_id')=t.turn_id
+         AND json_extract(s.payload_json,'$.current_turn_id')=t.turn_id
+         AND t.turn_index=s.turn_index
+         AND json_extract(s.payload_json,'$.turn_index')=s.turn_index
+         AND s.current_run_id IS NULL
+         AND json_extract(s.payload_json,'$.current_run_id') IS NULL
+         AND t.terminal_kind IS NOT NULL
+         AND json_type(t.payload_json,'$.terminal')='object'
+         AND (m.turn_id IS NULL OR m.turn_id=t.turn_id)
+         AND (EXISTS(SELECT 1 FROM json_each(json_extract(t.payload_json,'$.input_message_ids')) WHERE value=m.evidence_id)
+              OR json_extract(t.payload_json,'$.trigger.message_id')=m.evidence_id)
+         AND t.created_at < ?1
+         AND NOT EXISTS (SELECT 1 FROM dispatch_memory_checkpoints c WHERE c.agent_id=s.agent_id AND c.identity_incarnation=json_extract(i.payload_json,'$.incarnation') AND c.turn_id=t.turn_id)
+         AND NOT EXISTS (SELECT 1 FROM dispatch_memory_legacy_dispatches d WHERE d.agent_id=s.agent_id AND d.identity_incarnation=json_extract(i.payload_json,'$.incarnation') AND d.turn_id=t.turn_id)
+         AND NOT EXISTS (SELECT 1 FROM dispatch_memory_retired_handoffs r WHERE r.agent_id=s.agent_id AND r.identity_incarnation=json_extract(i.payload_json,'$.incarnation') AND r.turn_id=t.turn_id)",
+        params![applied_at],
+    )?;
+    Ok(inserted)
+}
+
 pub(crate) fn is_legacy_dispatch_tx(
     tx: &Transaction<'_>,
     key: &EpisodeMemoryKey,

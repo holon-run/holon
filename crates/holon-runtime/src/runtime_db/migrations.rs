@@ -16,6 +16,23 @@ pub(super) fn migrate(connection: &mut Connection) -> Result<()> {
     migrations::migrate(connection, apply_runtime_backfill)
 }
 
+/// Seals current dispatches that the fixed v99 upgrade could not seal because a
+/// clean shutdown had already cleared the State run (#4445). Runs after schema
+/// migration and before agent recovery on every open; the routine is
+/// idempotent and proves each address from the migrated database alone.
+pub(super) fn backfill_legacy_dispatch_seals(connection: &mut Connection) -> Result<()> {
+    let transaction = connection.transaction()?;
+    let inserted = super::dispatch_memory::backfill_legacy_dispatch_seals_tx(&transaction)?;
+    transaction.commit()?;
+    if inserted > 0 {
+        tracing::info!(
+            inserted,
+            "sealed legacy current dispatches missed by the fixed v99 upgrade"
+        );
+    }
+    Ok(())
+}
+
 fn apply_runtime_backfill(transaction: &Transaction<'_>, step: RuntimeBackfill) -> Result<()> {
     match step {
         RuntimeBackfill::EpisodeContinuity => {

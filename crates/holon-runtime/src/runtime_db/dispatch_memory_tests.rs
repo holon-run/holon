@@ -807,6 +807,10 @@ fn prepare_start_command(
 mod binding_tests;
 
 #[cfg(holon_lib_test_shard = "b")]
+#[path = "dispatch_memory_backfill_tests.rs"]
+mod backfill_tests;
+
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "dispatch_memory_retired_tests.rs"]
 mod retired_tests;
 
