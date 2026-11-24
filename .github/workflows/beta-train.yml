@@ -32,6 +32,7 @@ jobs:
     outputs:
       beta_tag: ${{ steps.tag.outputs.beta_tag }}
       skipped: ${{ steps.preflight.outputs.skip }}
+      resume: ${{ steps.preflight.outputs.resume }}
     steps:
       - uses: actions/checkout@v4
 
@@ -40,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           date_stamp="$(TZ=Asia/Shanghai date +%Y%m%d)"
-          latest_stable="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-preleases --limit 1 --json tagName --jq '.[0].tagName' | sed 's/^v//')"
+          latest_stable="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName' | sed 's/^v//')"
           major="${latest_stable%%.*}"
           rest="${latest_stable#*.}"
           minor="${rest%%.*}"
@@ -89,7 +90,14 @@ jobs:
             exit 0
           fi
           if git ls-remote --tags origin "refs/tags/${beta_tag}" | grep -q .; then
-            skip "tag ${beta_tag} already exists"
+            # An interrupted train (tagged but never published) must be
+            # resumable: only skip when the beta prerelease already exists.
+            if gh release view "$beta_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              skip "tag ${beta_tag} exists and its prerelease is already published"
+            else
+              echo "resume=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Tag ${beta_tag} exists without a prerelease; resuming the Release handoff for the interrupted train."
+            fi
             exit 0
           fi
           ci="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --branch main --commit "$sha" --limit 1 --json conclusion --jq '.[0].conclusion // "none"')"
@@ -108,31 +116,75 @@ jobs:
           echo "Preflight passed: nightly E2E green ($(( e2e_age / 3600 ))h ago), ${commits} new commits, main CI ${ci}, tag ${beta_tag} free."
 
       - name: Run Release E2E attestation for the candidate
-        if: steps.preflight.outputs.skip != 'true'
+        if: steps.preflight.outputs.skip != 'true' && steps.preflight.outputs.resume != 'true'
         id: attest
         run: |
           set -euo pipefail
           beta_tag="${{ steps.tag.outputs.beta_tag }}"
           prev="${{ steps.tag.outputs.latest_stable }}"
+          dispatch_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run release-e2e.yml --repo "$GITHUB_REPOSITORY" --ref main \
             -f candidate_ref="$GITHUB_SHA" \
             -f release_tag="$beta_tag" \
             -f previous_ref="$prev"
-          sleep 20
-          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-e2e.yml --event workflow_dispatch --created "$(date -u -d '-3 minutes' +%Y-%m-%dT%H:%M:%SZ)" --limit 1 --json databaseId --jq '.[0].databaseId')"
+          # Lock the attestation to THIS dispatch. Picking the latest run in a
+          # time window is not safe when trains can be dispatched concurrently;
+          # first bind the run to this dispatch time, then verify its
+          # attestation artifact, whose name embeds this candidate SHA and tag,
+          # before anything is tagged. head_sha alone is not an identity gate
+          # because harness_ref checkouts can differ from the candidate.
+          run_id=""
+          for _ in $(seq 1 30); do
+            sleep 10
+            run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-e2e.yml/runs?event=workflow_dispatch&per_page=30" \
+              --jq "[.workflow_runs[] | select(.created_at >= \"${dispatch_at}\")][0].databaseId // \"\"")"
+            [ -n "$run_id" ] && break
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::no Release E2E run created at or after ${dispatch_at}; refusing to tag an unverified candidate" >&2
+            exit 1
+          fi
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
           echo "Attestation run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
           gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status --interval 60
+          attestation="release-e2e-attestation-${GITHUB_SHA}-${beta_tag}"
+          found="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+            --jq "[.artifacts[] | select(.name == \"${attestation}\")] | length")"
+          if [ "$found" -eq 0 ]; then
+            echo "::error::run ${run_id} did not produce attestation artifact ${attestation}; its result is not bound to this candidate SHA + tag" >&2
+            exit 1
+          fi
+          echo "Attestation artifact ${attestation} confirmed on run ${run_id}."
 
       - name: Tag the daily beta
+        if: steps.preflight.outputs.skip != 'true' && steps.preflight.outputs.resume != 'true'
+        run: |
+          set -euo pipefail
+          beta_tag="${{ steps.tag.outputs.beta_tag }}"
+          if git ls-remote --tags origin "refs/tags/${beta_tag}" | grep -q .; then
+            echo "tag ${beta_tag} already exists (concurrent run); not re-creating"
+          else
+            git tag "$beta_tag" "$GITHUB_SHA"
+            git push origin "refs/tags/${beta_tag}"
+          fi
+
+      - name: Hand off publishing to the Release workflow
         if: steps.preflight.outputs.skip != 'true'
         run: |
           set -euo pipefail
           beta_tag="${{ steps.tag.outputs.beta_tag }}"
-          git tag "$beta_tag" "$GITHUB_SHA"
-          git push origin "refs/tags/${beta_tag}"
+          # A GITHUB_TOKEN tag push does not trigger the tag-push Release
+          # workflow (GitHub does not chain workflows off events created by
+          # the default token), so publishing is an explicit, permissioned
+          # handoff: dispatch Release on the tag ref. Release's own e2e-gate
+          # re-verifies the attestation binding for this SHA + tag before
+          # anything is published.
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$beta_tag" \
+            -f tag="$beta_tag" \
+            -f reason="daily beta train from ${GITHUB_SHA}"
+          echo "Release workflow dispatched for ${beta_tag}."
 
-      - name: Heartbeat — train tagged beta
+      - name: Heartbeat — beta handed off
         if: steps.preflight.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -140,8 +192,13 @@ jobs:
           set -euo pipefail
           issue="${{ vars.BETA_TRAIN_HEARTBEAT_ISSUE || '' }}"
           if [ -n "$issue" ]; then
-            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" \
-              --body "beta-train: tagged \`${{ steps.tag.outputs.beta_tag }}\` from \`${GITHUB_SHA}\` (dispatch reason: ${TRAIN_REASON}); attestation run <https://github.com/${GITHUB_REPOSITORY}/actions/runs/${{ steps.attest.outputs.run_id }}> green. Next: holon-release upgrades the demo canary to this prerelease."
+            if [ "${{ steps.preflight.outputs.resume }}" = "true" ]; then
+              gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" \
+                --body "beta-train: resumed the interrupted train for \`${{ steps.tag.outputs.beta_tag }}\` (tag existed without a prerelease); Release workflow re-dispatched."
+            else
+              gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" \
+                --body "beta-train: tagged \`${{ steps.tag.outputs.beta_tag }}\` from \`${GITHUB_SHA}\` (dispatch reason: ${TRAIN_REASON}); attestation run <https://github.com/${GITHUB_REPOSITORY}/actions/runs/${{ steps.attest.outputs.run_id }}> green; Release workflow dispatched for publishing. Next: holon-release upgrades the demo canary to this prerelease."
+            fi
           fi
 
   notify:

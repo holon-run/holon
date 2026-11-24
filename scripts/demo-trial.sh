@@ -11,10 +11,17 @@
 #   discover                       Print the Railway project/environment/service
 #                                  that serves DEMO_DOMAIN as JSON.
 #   upgrade --image <ref>          Point the demo service at <ref> and redeploy,
-#                                  then wait for the new deployment to succeed.
+#                                  then wait for the new deployment to succeed
+#                                  (bound to the new deployment id).
 #   verify [--expect-version <v>]  Public health + control status + agent
 #                                  round-trip against the running demo daemon.
-#   run --image <ref> [...]        upgrade followed by verify (daily timer path).
+#   run --image <ref> [--expect-version <v>]
+#                                  upgrade followed by verify (daily timer path).
+#                                  The candidate beta version is required: pass
+#                                  it explicitly or use a version-bearing image
+#                                  tag; the trial clock only starts after this
+#                                  deployment succeeds and the running daemon
+#                                  reports that version.
 #
 # Environment:
 #   RAILWAY_TOKEN             Railway token for the workspace owning the demo
@@ -106,15 +113,28 @@ service_state() { # <environmentId> <serviceId>
        }' "$(jq -cn --arg e "$1" --arg s "$2" '{environmentId: $e, serviceId: $s}')"
 }
 
-wait_for_deployment() { # <environmentId> <serviceId> <image>
-  local env_id="$1" service_id="$2" image="$3" deadline status
+wait_for_deployment() { # <environmentId> <serviceId> <image> <previousDeploymentId>
+  local env_id="$1" service_id="$2" image="$3" before_id="$4" deadline status
+  local tracked_id=""
   deadline=$(( $(date -u +%s) + UPGRADE_TIMEOUT ))
   while [ "$(date -u +%s)" -lt "$deadline" ]; do
     status="$(service_state "$env_id" "$service_id")"
-    local deploy_status current_image
+    local deploy_status current_image current_id
     deploy_status="$(jq -r '.data.serviceInstance.latestDeployment.status // "none"' <<<"$status")"
     current_image="$(jq -r '.data.serviceInstance.source.image // "none"' <<<"$status")"
-    log "deployment ${deploy_status}; source image ${current_image}"
+    current_id="$(jq -r '.data.serviceInstance.latestDeployment.id // "none"' <<<"$status")"
+    log "deployment ${deploy_status} (${current_id}); source image ${current_image}"
+    if [ "$current_id" = "$before_id" ]; then
+      # The pre-upgrade deployment is still the latest one; a stale instance
+      # staying online must never be mistaken for this trial starting.
+      log "waiting for the new deployment (previous ${before_id} still latest)"
+      sleep 15
+      continue
+    fi
+    if [ -n "$tracked_id" ] && [ "$tracked_id" != "$current_id" ]; then
+      log "another deployment superseded ${tracked_id}; following ${current_id}"
+    fi
+    tracked_id="$current_id"
     case "$deploy_status" in
       SUCCESS)
         [ "$current_image" = "$image" ] ||
@@ -161,7 +181,8 @@ upgrade() { # <image>
     die "could not redeploy the demo service"
 
   log "redeploy requested for ${image}"
-  wait_for_deployment "$env_id" "$service_id" "$image" >/dev/null
+  wait_for_deployment "$env_id" "$service_id" "$image" \
+    "$(jq -r '.data.serviceInstance.latestDeployment.id // "none"' <<<"$before")" >/dev/null
   log "demo service is running ${image}"
   heartbeat "demo upgraded to ${image} (deployment succeeded)"
 }
@@ -239,7 +260,16 @@ case "$SCENARIO" in
   verify) verify "$EXPECT" ;;
   run)
     [ -n "$IMAGE" ] || die "run needs --image <ref>"
+    # The trial may only start for the verified candidate version: require it
+    # explicitly, or derive it from a version-bearing image tag.
+    if [ -z "$EXPECT" ]; then
+      case "$IMAGE" in
+        *:v?*-beta.*) EXPECT="${IMAGE##*:}"; EXPECT="${EXPECT#v}" ;;
+        *) die "run requires the candidate beta version: pass --expect-version <vX.Y.Z-beta.date> or --image <registry>:<name>:<version-tag>" ;;
+      esac
+    fi
     upgrade "$IMAGE"
+    log "this deployment succeeded and reports the expected version; the 24h trial window starts now"
     verify "$EXPECT"
     ;;
   ''|-h|--help) usage ;;

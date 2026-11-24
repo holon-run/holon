@@ -74,10 +74,14 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: ${{ steps.image.outputs.ref }}
+          # Bake the release identity into the daemon binary, not just the
+          # image label, so the promoted candidate reports the expected beta
+          # version via `holon --version` and control-status product_version.
           build-args: |
             OCI_VERSION=${{ inputs.release_tag }}
             OCI_REVISION=${{ steps.image.outputs.commit }}
             OCI_SOURCE=https://github.com/${{ github.repository }}
+            HOLON_PKG_VERSION_OVERRIDE=${{ inputs.release_tag }}
           cache-from: type=gha,scope=holon-docker
           cache-to: type=gha,mode=max,scope=holon-docker
 

@@ -89,8 +89,27 @@ log "snapshot size: $(du -sh "$SANDBOX/.holon/state/runtime.sqlite" | awk '{prin
 LOG="$SANDBOX/serve.log"
 WEB_ARGS=()
 [ -n "${SMOKE_WEB_DIST:-}" ] && WEB_ARGS=(--web-dist "$SMOKE_WEB_DIST")
-setsid "$BINARY" serve --access local --port "$PORT" "${WEB_ARGS[@]}" >"$LOG" 2>&1 &
+setsid env -u HOLON_SOCKET_PATH "HOLON_HOME=$SANDBOX/.holon" \
+  "$BINARY" serve --access local --port "$PORT" "${WEB_ARGS[@]}" >"$LOG" 2>&1 &
 SERVER_PID=$!
+
+# The runtime loads config, credentials, state and its socket under HOLON_HOME
+# (default ~/.holon). Without an explicit override the beta would open and
+# migrate the real daemon home; assert the process env is actually bound to
+# the snapshot before treating the run as a real-library smoke. /proc environ
+# can still be empty right after fork+exec, so retry briefly before failing.
+env_bound=0
+for _ in $(seq 1 10); do
+  if tr '\0' '\n' <"/proc/$SERVER_PID/environ" 2>/dev/null | grep -qx "HOLON_HOME=$SANDBOX/.holon"; then
+    env_bound=1
+    break
+  fi
+  sleep 0.5
+done
+if [ "$env_bound" -ne 1 ]; then
+  KEEP=1
+  die "serve process is not bound to the sandbox HOLON_HOME; aborting to protect the real home"
+fi
 
 healthy=0
 for _ in $(seq 1 120); do

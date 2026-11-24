@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish; must match the dispatch ref (daily beta train handoff).'
+        required: false
+        default: ''
+      reason:
+        description: 'Dispatch reason (recorded for the operator).'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -19,6 +29,20 @@ jobs:
       candidate_image: ${{ steps.gate.outputs.candidate_image }}
       e2e_run_id: ${{ steps.gate.outputs.e2e_run_id }}
     steps:
+      - name: Validate dispatch handoff
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          # The train dispatches this workflow on the tag ref, so the
+          # checkout/GITHUB_REF_NAME/GITHUB_SHA identity comes from the tag.
+          # Refuse a handoff whose tag input disagrees with that ref.
+          if [ -n "$DISPATCH_TAG" ] && [ "$DISPATCH_TAG" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::dispatch tag '${DISPATCH_TAG}' does not match the dispatch ref '${GITHUB_REF_NAME}'; refusing to publish" >&2
+            exit 1
+          fi
+
       - name: Verify matching Release E2E attestation
         id: gate
         env:
@@ -859,7 +883,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          prev="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-preleases --limit 1 --json tagName --jq '.[0].tagName')"
+          prev="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')"
           {
             echo "Daily beta train build \`${GITHUB_REF_NAME}\` (candidate \`${GITHUB_SHA}\`)."
             echo
@@ -888,6 +912,22 @@ jobs:
             dist-artifacts/*android*.sha256
             dist-artifacts/appcast.xml
             dist-artifacts/checksums.txt
+
+      - name: Resume check for an existing beta prerelease
+        if: ${{ contains(github.ref_name, '-beta.') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Re-dispatching Release for the same beta tag (an interrupted train)
+          # must be idempotent: the publish step below updates the existing
+          # prerelease in place, replacing same-named assets, instead of
+          # creating a duplicate or failing the resume.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "existing prerelease for ${GITHUB_REF_NAME}; this run will update it in place (resume)"
+          else
+            echo "no existing prerelease for ${GITHUB_REF_NAME}; creating it"
+          fi
 
       - name: Publish GitHub beta prerelease
         if: ${{ contains(github.ref_name, '-beta.') }}
