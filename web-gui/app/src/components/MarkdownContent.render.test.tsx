@@ -120,6 +120,18 @@ describe("MarkdownContent resolve degradation", () => {
     expect(html).not.toContain('href="#');
   });
 
+  it("autolinks explicit file: URLs in prose, including directories", () => {
+    const html = renderToStaticMarkup(<MarkdownContent text={
+      "记录在 file:///data/holon-home/.holon/agents/holon-ops 目录下。\n\n" +
+      "file:///data/holon-home/notes.md，路径file:///data/broken.md 与 /data/holon-home/dir 均不链接。"
+    } />);
+    expect(html.match(/file-reference-unresolved/g)).toHaveLength(2);
+    expect(html).toContain(">file:///data/holon-home/.holon/agents/holon-ops</span>");
+    expect(html).toContain(">file:///data/holon-home/notes.md</span>");
+    expect(html).toContain("路径file:///data/broken.md 与 /data/holon-home/dir 均不链接。");
+    expect(html).not.toContain('href="#"');
+  });
+
   it("never emits executable or confused App hrefs while retaining host file degradation", () => {
     const html = renderToStaticMarkup(<MarkdownContent text={
       "[js](javascript:alert(1)) [data](data:text/html,hello) " +
