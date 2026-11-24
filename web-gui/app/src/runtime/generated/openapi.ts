@@ -3856,7 +3856,7 @@ export interface components {
                      * @description User preference; adapters own wire values such as Codex's `priority`.
                      * @enum {string|null}
                      */
-                    effective_service_tier?: "default" | "fast" | null;
+                    effective_service_tier?: "default" | "fast" | "ultrafast" | null;
                     /** @default false */
                     fallback_active: boolean;
                     override_model?: string | null;
@@ -3865,7 +3865,7 @@ export interface components {
                      * @description User preference; adapters own wire values such as Codex's `priority`.
                      * @enum {string|null}
                      */
-                    override_service_tier?: "default" | "fast" | null;
+                    override_service_tier?: "default" | "fast" | "ultrafast" | null;
                     requested_model?: string | null;
                     runtime_default_model: string;
                     /** @enum {string} */
@@ -4191,7 +4191,7 @@ export interface components {
                      * @description User preference; adapters own wire values such as Codex's `priority`.
                      * @enum {string|null}
                      */
-                    effective_service_tier?: "default" | "fast" | null;
+                    effective_service_tier?: "default" | "fast" | "ultrafast" | null;
                     /** @default false */
                     fallback_active: boolean;
                     override_model?: string | null;
@@ -4200,7 +4200,7 @@ export interface components {
                      * @description User preference; adapters own wire values such as Codex's `priority`.
                      * @enum {string|null}
                      */
-                    override_service_tier?: "default" | "fast" | null;
+                    override_service_tier?: "default" | "fast" | "ultrafast" | null;
                     requested_model?: string | null;
                     runtime_default_model: string;
                     /** @enum {string} */
@@ -4417,7 +4417,7 @@ export interface components {
                          * @description User preference; adapters own wire values such as Codex's `priority`.
                          * @enum {string|null}
                          */
-                        effective_service_tier?: "default" | "fast" | null;
+                        effective_service_tier?: "default" | "fast" | "ultrafast" | null;
                         /** @default false */
                         fallback_active: boolean;
                         override_model?: string | null;
@@ -4426,7 +4426,7 @@ export interface components {
                          * @description User preference; adapters own wire values such as Codex's `priority`.
                          * @enum {string|null}
                          */
-                        override_service_tier?: "default" | "fast" | null;
+                        override_service_tier?: "default" | "fast" | "ultrafast" | null;
                         requested_model?: string | null;
                         runtime_default_model: string;
                         /** @enum {string} */
@@ -8129,7 +8129,7 @@ export interface components {
          * @description User preference; adapters own wire values such as Codex's `priority`.
          * @enum {string}
          */
-        ServiceTier: "default" | "fast";
+        ServiceTier: "default" | "fast" | "ultrafast";
         /** SessionExchangeRequest */
         SessionExchangeRequest: {
             credential: string;

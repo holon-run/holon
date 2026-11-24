@@ -26,9 +26,10 @@ pub fn parse_service_tier_flag(value: &str) -> Result<crate::config::ServiceTier
     match value {
         "default" => Ok(crate::config::ServiceTier::Default),
         "fast" | "priority" => Ok(crate::config::ServiceTier::Fast),
+        "ultrafast" => Ok(crate::config::ServiceTier::Ultrafast),
         _ => Err(format!(
             "invalid service_tier '{value}'; supported values: default, fast (alias: priority), \
-             or '{MODEL_OVERRIDE_CLEAR}' to remove the override"
+             ultrafast, or '{MODEL_OVERRIDE_CLEAR}' to remove the override"
         )),
     }
 }
@@ -1218,9 +1219,9 @@ pub enum AgentModelCommands {
         /// override. `clear`: remove it.
         #[arg(long, value_name = "VALUE|clear")]
         reasoning_effort: Option<String>,
-        /// Service tier for the new override (`default`, `fast`, alias
-        /// `priority`). Omitted: keep the existing override. `clear`: remove
-        /// it.
+        /// Service tier for the new override (`default`, `fast` alias
+        /// `priority`, `ultrafast`). Omitted: keep the existing override.
+        /// `clear`: remove it.
         #[arg(long, value_name = "VALUE|clear")]
         service_tier: Option<String>,
     },
@@ -1437,9 +1438,17 @@ mod tests {
             parse_service_tier_flag("priority"),
             Ok(crate::config::ServiceTier::Fast)
         ));
+        assert!(matches!(
+            parse_service_tier_flag("ultrafast"),
+            Ok(crate::config::ServiceTier::Ultrafast)
+        ));
         let error = parse_service_tier_flag("bogus").expect_err("invalid tier must fail");
         assert!(error.contains("default"), "error lists 'default': {error}");
         assert!(error.contains("fast"), "error lists 'fast': {error}");
+        assert!(
+            error.contains("ultrafast"),
+            "error lists 'ultrafast': {error}"
+        );
         assert!(error.contains("clear"), "error mentions 'clear': {error}");
     }
 

@@ -1445,6 +1445,7 @@ const zh: Record<string, any> = {
     speedAutoHint: "自动跟随此模型路由的默认速度；未配置时使用服务默认行为。",
     speedStandard: "标准",
     fastUsageHint: "Fast 会增加额度消耗或费用。设置绑定当前模型路由，从下一轮开始生效。",
+    ultrafastUsageHint: "Ultrafast 会增加额度消耗或费用，并可能受套餐与地域限制。设置绑定当前模型路由，从下一轮开始生效。",
     thinkingAria: "思考：{{level}}",
     thinkingLevelValue: "思考级别：{{level}}",
     thinkingLevel: "思考级别",

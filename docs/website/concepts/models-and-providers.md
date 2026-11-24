@@ -82,6 +82,11 @@ routes use their own defaults, and an upstream service may serve a different
 tier from the requested one. Treat Fast as a request, not a latency guarantee;
 inspect requested and served tiers when diagnosing it.
 
+Ultrafast is a separate tier with its own model list on supported routes, such
+as GPT-6.2 Sol on the OpenAI API. It is not a substitute for Fast and is not
+advertised on routes that only support Fast. Plan entitlement and residency are
+decided by the upstream service. The Codex route does not declare Ultrafast yet.
+
 ## Advisory decisions
 
 The optional Decision subsystem can supply a bounded second opinion among

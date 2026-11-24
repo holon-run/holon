@@ -11,10 +11,15 @@ resolved endpoint `accepted_parameters` contract, projected to clients.
 alongside the existing model and reasoning selection. Precedence is exact agent
 route override, exact runtime route options, then unchanged adapter behavior.
 Missing means inherit; `default` explicitly selects standard; `fast` requests
-Fast. `priority` is accepted as an input alias and serialized as `fast`.
+Fast; `ultrafast` requests Ultrafast. `priority` is accepted as an input alias
+and serialized as `fast`.
 
 Only supported model IDs on official OpenAI/Codex endpoints advertise this
 parameter initially. OpenAI-compatible transport alone does not enable it.
+Each route advertises an independent capability set, so `allowed_values` is
+`default` plus whichever of `fast` and `ultrafast` the route actually supports.
+Fast and Ultrafast use separate model lists; neither is assumed to be a subset
+of the other.
 Unsupported explicit choices fail validation, without silently filtering the
 chosen model out of the fallback chain. Each fallback resolves its own options;
 an agent override applies only to its canonical selected route. Model switches
@@ -29,14 +34,21 @@ legacy headers. Tier lowering happens before continuation planning so replay
 and request shape validation preserve the setting. Request diagnostics record
 requested wire tier and the independently reported served tier.
 
-The Web GUI renders an independent speed selector using the backend capability
-contract. Auto (inherit the exact route default), Standard, and Fast remain
-distinct; changing reasoning keeps
-the route's speed override, while selecting another model drops it.
+Ultrafast is sent as `service_tier: "ultrafast"` on OpenAI Responses and Chat
+Completions. It is not declared on the Codex route yet: the Codex backend has no
+verified Ultrafast response, so the route advertises only `default` and `fast`,
+Codex standard mode omits the body field for Ultrafast, and the routing header
+keeps the standard `model=<model>` shape instead of an unverified
+`tier=ultrafast`.
 
-Fast can consume more quota or cost more. Account entitlement is checked by the
-upstream service, and a requested tier is not proof of a served tier. No new
-automatic downgrade or retry loop is introduced.
+The Web GUI renders an independent speed selector using the backend capability
+contract. Auto (inherit the exact route default), Standard, Fast, and Ultrafast
+remain distinct, and options come from `allowed_values`; changing reasoning
+keeps the route's speed override, while selecting another model drops it.
+
+Fast and Ultrafast can consume more quota or cost more. Account entitlement and
+residency are checked by the upstream service, and a requested tier is not proof
+of a served tier. No new automatic downgrade or retry loop is introduced.
 
 References: [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode),
 [Codex speed](https://learn.chatgpt.com/docs/agent-configuration/speed),
