@@ -1641,6 +1641,13 @@ budget priorities, pinned minima, owner filters, and cache stability rules
 continue to apply. `build_context` does not create plan files or resolve
 recovery lineage from the database.
 
+The runtime owns capture, qualification, and the lifetime of resource and
+budget guards. It passes borrowed records to `holon-context`, which assembles
+candidates, applies the Prompt budget, records projection evidence, and renders
+the already prepared history windows. Reprojection retains its original
+captured history in the runtime. The renderer borrows that history when the
+caller selects a prepared window.
+
 Initial assembly, history-selector changes within prepared policy bounds,
 ordinary tool follow-ups, and budget retries use resident data. New request
 snapshots may include newly committed tool results and admitted input. A retry

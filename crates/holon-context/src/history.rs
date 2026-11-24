@@ -12,6 +12,7 @@ use holon_system::utf8::truncate_text;
 use serde_json::Value;
 
 use crate::budget::{estimate_text_tokens, truncate_section_content};
+use crate::records::CapturedRecords;
 use crate::render::{
     body_preview, bounded_inline, indent_block, message_body_text, sanitize_inline,
 };
@@ -21,6 +22,21 @@ pub trait TurnHistoryObservations {
     fn message_belongs_to_turn(&self, turn: &TurnRecord, id: &str) -> bool;
     fn brief_text<'a>(&'a self, brief: &'a BriefRecord) -> &'a str;
     fn trigger_summary_valid(&self, turn: &TurnRecord) -> bool;
+}
+
+/// Observations used when assigning projection evidence to its original Turn.
+pub trait ProjectionHistoryObservations: TurnHistoryObservations {
+    fn assigned_turn_for_message(&self, message_id: &str) -> Option<&str>;
+}
+
+#[derive(Clone, Copy)]
+pub struct CapturedHistory<'a> {
+    pub observations: &'a dyn ProjectionHistoryObservations,
+    pub turn_records: CapturedRecords<'a, TurnRecord>,
+    pub messages: CapturedRecords<'a, MessageEnvelope>,
+    pub briefs: CapturedRecords<'a, BriefRecord>,
+    pub tools: CapturedRecords<'a, ToolContextProjection>,
+    pub transcript: CapturedRecords<'a, TranscriptEntry>,
 }
 
 pub fn history_turns_without_current_input(
@@ -273,13 +289,21 @@ pub fn latest_trusted_operator_input<'a>(
     messages: &'a [impl std::borrow::Borrow<MessageEnvelope>],
     current_message: &'a MessageEnvelope,
 ) -> Option<&'a MessageEnvelope> {
+    latest_operator_input(
+        messages.iter().map(std::borrow::Borrow::borrow),
+        current_message,
+    )
+}
+
+fn latest_operator_input<'a>(
+    messages: impl Iterator<Item = &'a MessageEnvelope>,
+    current_message: &'a MessageEnvelope,
+) -> Option<&'a MessageEnvelope> {
     if is_trusted_operator_input(current_message) {
         return Some(current_message);
     }
 
     messages
-        .iter()
-        .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
         .filter(|message| is_trusted_operator_input(message) && message.message_seq.is_some())
         .max_by(|left, right| compare_message_recency(left, right))
 }
@@ -352,6 +376,30 @@ pub fn render_turn_records_with_budget_from_snapshot(
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
+    render_captured_turns(
+        observations,
+        CapturedRecords::from_slice(&turn_records),
+        CapturedRecords::from_slice(&messages),
+        CapturedRecords::from_slice(&briefs),
+        CapturedRecords::from_slice(&tools),
+        CapturedRecords::from_slice(&transcript),
+        current_message,
+        current_work_item,
+        budget,
+    )
+}
+
+pub(crate) fn render_captured_turns(
+    observations: &dyn TurnHistoryObservations,
+    turn_records: CapturedRecords<'_, TurnRecord>,
+    messages: CapturedRecords<'_, MessageEnvelope>,
+    briefs: CapturedRecords<'_, BriefRecord>,
+    tools: CapturedRecords<'_, ToolContextProjection>,
+    transcript: CapturedRecords<'_, TranscriptEntry>,
+    current_message: &MessageEnvelope,
+    current_work_item: Option<&WorkItemRecord>,
+    budget: usize,
+) -> Option<String> {
     if turn_records.is_empty() {
         return None;
     }
@@ -359,19 +407,17 @@ pub fn render_turn_records_with_budget_from_snapshot(
     let recovery_turn_id = provider_recovery_source_turn_id(current_message);
     let latest_operator_for_continuation = (recovery_turn_id.is_none()
         && !is_trusted_operator_input(current_message))
-    .then(|| latest_trusted_operator_input(messages, current_message))
+    .then(|| latest_operator_input(messages.iter(), current_message))
     .flatten();
     let continuation_turn_id = latest_operator_for_continuation
         .and_then(|operator| {
             turn_records
                 .iter()
-                .map(std::borrow::Borrow::<TurnRecord>::borrow)
                 .find(|record| observations.message_belongs_to_turn(record, &operator.id))
         })
         .map(|record| record.turn_id.clone());
     let latest_previous_turn_id = turn_records
         .iter()
-        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .rev()
         .map(|record| record.turn_id.clone())
         .next();
@@ -382,7 +428,6 @@ pub fn render_turn_records_with_budget_from_snapshot(
     });
     let nearby_turn_ids = turn_records
         .iter()
-        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .rev()
         .filter(|record| continuity_turn_id.as_deref() != Some(record.turn_id.as_str()))
         .take(2)
@@ -391,7 +436,6 @@ pub fn render_turn_records_with_budget_from_snapshot(
 
     let mut rendered_turns = turn_records
         .iter()
-        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .filter(|record| continuation_turn_id.as_deref() != Some(record.turn_id.as_str()))
         .filter_map(|record| {
             let mode = recent_turn_projection_mode(
@@ -399,7 +443,7 @@ pub fn render_turn_records_with_budget_from_snapshot(
                 continuity_turn_id.as_deref(),
                 &nearby_turn_ids,
             );
-            render_turn_record_projection_with_transcript_from_snapshot(
+            render_captured_turn(
                 observations,
                 record,
                 messages,
@@ -416,7 +460,6 @@ pub fn render_turn_records_with_budget_from_snapshot(
     if let Some(operator) = latest_operator_for_continuation {
         if let Some(record) = turn_records
             .iter()
-            .map(std::borrow::Borrow::<TurnRecord>::borrow)
             .find(|record| observations.message_belongs_to_turn(record, &operator.id))
         {
             if let Some(rendered) = render_current_continuation_turn_record_projection_from_snapshot(
@@ -468,17 +511,38 @@ pub fn render_turn_record_projection_with_transcript_from_snapshot(
     mode: RecentTurnProjectionMode,
     budget: usize,
 ) -> Option<String> {
+    render_captured_turn(
+        observations,
+        record,
+        CapturedRecords::from_slice(&messages),
+        CapturedRecords::from_slice(&briefs),
+        CapturedRecords::from_slice(&tools),
+        CapturedRecords::from_slice(&transcript),
+        continuation,
+        mode,
+        budget,
+    )
+}
+
+fn render_captured_turn(
+    observations: &dyn TurnHistoryObservations,
+    record: &TurnRecord,
+    messages: CapturedRecords<'_, MessageEnvelope>,
+    briefs: CapturedRecords<'_, BriefRecord>,
+    tools: CapturedRecords<'_, ToolContextProjection>,
+    transcript: CapturedRecords<'_, TranscriptEntry>,
+    continuation: Option<&MessageEnvelope>,
+    mode: RecentTurnProjectionMode,
+    budget: usize,
+) -> Option<String> {
     let trigger_message_id = record
         .trigger
         .as_ref()
         .and_then(|trigger| trigger.message_id.as_ref());
     let find_owned_message = |id: &String| {
-        messages
-            .iter()
-            .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
-            .find(|message| {
-                message.id == *id && observations.message_belongs_to_turn(record, &message.id)
-            })
+        messages.iter().find(|message| {
+            message.id == *id && observations.message_belongs_to_turn(record, &message.id)
+        })
     };
     let trigger_message = match trigger_message_id {
         Some(id) => find_owned_message(id),
@@ -560,7 +624,7 @@ pub fn render_turn_record_projection_with_transcript_from_snapshot(
     }
 
     let (execution_sequence, has_execution_sequence) =
-        render_turn_execution_sequence(record, briefs, tools, transcript, mode);
+        render_captured_execution_sequence(record, briefs, tools, transcript, mode);
     if has_execution_sequence {
         lines.push("  - execution sequence:".to_string());
         lines.extend(execution_sequence);
@@ -569,12 +633,9 @@ pub fn render_turn_record_projection_with_transcript_from_snapshot(
     let mut related_briefs = Vec::new();
     let mut brief_budget = budget.saturating_sub(estimate_text_tokens(&lines.join("\n")));
     for brief in record.produced_brief_ids.iter().filter_map(|id| {
-        briefs
-            .iter()
-            .map(std::borrow::Borrow::<BriefRecord>::borrow)
-            .find(|brief| {
-                brief.id == *id && turn_record_owns_object(record, brief.turn_id.as_deref())
-            })
+        briefs.iter().find(|brief| {
+            brief.id == *id && turn_record_owns_object(record, brief.turn_id.as_deref())
+        })
     }) {
         if let Some(rendered) =
             render_recent_turn_brief_line_from_snapshot(observations, brief, mode, brief_budget)
@@ -590,7 +651,6 @@ pub fn render_turn_record_projection_with_transcript_from_snapshot(
         } else {
             let sequence_brief_ids = transcript
                 .iter()
-                .map(std::borrow::Borrow::<TranscriptEntry>::borrow)
                 .filter(|entry| {
                     entry.agent_id == record.agent_id
                         && entry
@@ -603,7 +663,6 @@ pub fn render_turn_record_projection_with_transcript_from_snapshot(
                 .filter_map(|entry| {
                     briefs
                         .iter()
-                        .map(std::borrow::Borrow::<BriefRecord>::borrow)
                         .find(|brief| {
                             brief.finalizes_assistant_round_id.as_deref() == Some(entry.id.as_str())
                                 && turn_record_owns_object(record, brief.turn_id.as_deref())
@@ -614,12 +673,7 @@ pub fn render_turn_record_projection_with_transcript_from_snapshot(
             let fallback_refs = record
                 .produced_brief_ids
                 .iter()
-                .filter_map(|id| {
-                    briefs
-                        .iter()
-                        .map(std::borrow::Borrow::<BriefRecord>::borrow)
-                        .find(|brief| &brief.id == id)
-                })
+                .filter_map(|id| briefs.iter().find(|brief| &brief.id == id))
                 .filter(|brief| {
                     turn_record_owns_object(record, brief.turn_id.as_deref())
                         && !sequence_brief_ids.contains(brief.id.as_str())
@@ -642,12 +696,9 @@ pub fn render_turn_record_projection_with_transcript_from_snapshot(
         .tool_execution_ids
         .iter()
         .filter_map(|id| {
-            tools
-                .iter()
-                .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
-                .find(|tool| {
-                    tool.id == *id && turn_record_owns_object(record, tool.turn_id.as_deref())
-                })
+            tools.iter().find(|tool| {
+                tool.id == *id && turn_record_owns_object(record, tool.turn_id.as_deref())
+            })
         })
         .collect::<Vec<_>>();
     if !related_tools.is_empty() && !has_execution_sequence {
@@ -669,20 +720,32 @@ pub fn render_turn_execution_sequence(
     transcript: &[impl std::borrow::Borrow<TranscriptEntry>],
     mode: RecentTurnProjectionMode,
 ) -> (Vec<String>, bool) {
+    render_captured_execution_sequence(
+        record,
+        CapturedRecords::from_slice(&briefs),
+        CapturedRecords::from_slice(&tools),
+        CapturedRecords::from_slice(&transcript),
+        mode,
+    )
+}
+
+fn render_captured_execution_sequence(
+    record: &TurnRecord,
+    briefs: CapturedRecords<'_, BriefRecord>,
+    tools: CapturedRecords<'_, ToolContextProjection>,
+    transcript: CapturedRecords<'_, TranscriptEntry>,
+    mode: RecentTurnProjectionMode,
+) -> (Vec<String>, bool) {
     let mut rendered = Vec::new();
     let mut rendered_tool_ids = BTreeSet::new();
-    for entry in transcript
-        .iter()
-        .map(std::borrow::Borrow::<TranscriptEntry>::borrow)
-        .filter(|entry| {
-            entry.agent_id == record.agent_id
-                && entry
-                    .data
-                    .get("turn_id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|turn_id| turn_id == record.turn_id)
-        })
-    {
+    for entry in transcript.iter().filter(|entry| {
+        entry.agent_id == record.agent_id
+            && entry
+                .data
+                .get("turn_id")
+                .and_then(Value::as_str)
+                .is_some_and(|turn_id| turn_id == record.turn_id)
+    }) {
         match entry.kind {
             TranscriptEntryKind::AssistantRound if is_projectable_assistant_round(&entry) => {
                 if let Some(text) = assistant_round_text_preview(&entry) {
@@ -693,7 +756,6 @@ pub fn render_turn_execution_sequence(
                     };
                     let brief_ref = briefs
                         .iter()
-                        .map(std::borrow::Borrow::<BriefRecord>::borrow)
                         .find(|brief| {
                             brief.finalizes_assistant_round_id.as_deref() == Some(entry.id.as_str())
                                 && turn_record_owns_object(record, brief.turn_id.as_deref())
@@ -722,14 +784,10 @@ pub fn render_turn_execution_sequence(
                     else {
                         continue;
                     };
-                    let Some(tool) = tools
-                        .iter()
-                        .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
-                        .find(|tool| {
-                            tool.id == tool_id
-                                && turn_record_owns_object(record, tool.turn_id.as_deref())
-                        })
-                    else {
+                    let Some(tool) = tools.iter().find(|tool| {
+                        tool.id == tool_id
+                            && turn_record_owns_object(record, tool.turn_id.as_deref())
+                    }) else {
                         continue;
                     };
                     if !rendered_tool_ids.insert(tool.id.as_str()) {
@@ -766,14 +824,11 @@ pub fn render_turn_execution_sequence(
             .tool_execution_ids
             .iter()
             .filter_map(|id| {
-                tools
-                    .iter()
-                    .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
-                    .find(|tool| {
-                        tool.id == *id
-                            && turn_record_owns_object(record, tool.turn_id.as_deref())
-                            && !rendered_tool_ids.contains(tool.id.as_str())
-                    })
+                tools.iter().find(|tool| {
+                    tool.id == *id
+                        && turn_record_owns_object(record, tool.turn_id.as_deref())
+                        && !rendered_tool_ids.contains(tool.id.as_str())
+                })
             })
             .collect::<Vec<_>>();
         rendered.extend(unsequenced_tools.into_iter().map(|tool| {
@@ -798,14 +853,14 @@ fn render_current_continuation_turn_record_projection_from_snapshot(
     record: &TurnRecord,
     current_message: &MessageEnvelope,
     operator: &MessageEnvelope,
-    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
-    briefs: &[impl std::borrow::Borrow<BriefRecord>],
-    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
-    transcript: &[impl std::borrow::Borrow<TranscriptEntry>],
+    messages: CapturedRecords<'_, MessageEnvelope>,
+    briefs: CapturedRecords<'_, BriefRecord>,
+    tools: CapturedRecords<'_, ToolContextProjection>,
+    transcript: CapturedRecords<'_, TranscriptEntry>,
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
-    let mut rendered = render_turn_record_projection_with_transcript_from_snapshot(
+    let mut rendered = render_captured_turn(
         observations,
         record,
         messages,

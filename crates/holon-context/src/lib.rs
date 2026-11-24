@@ -3,12 +3,14 @@
 pub use holon_domain::PromptStability;
 use serde::{Deserialize, Serialize};
 
+pub mod assembly;
 pub mod budget;
 pub mod episodes;
 pub mod fingerprint;
 pub mod history;
 pub mod planner;
 pub mod projection_eval;
+pub mod records;
 pub mod render;
 pub mod system_prompt;
 pub mod time;
