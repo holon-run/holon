@@ -1004,6 +1004,10 @@ const zh: Record<string, any> = {
         label: "Google 可编程搜索",
         description: "通过 Custom Search JSON API 获取官方 Google 结果；需要引擎 ID（cx）。",
       },
+      searchapi: {
+        label: "SearchApi",
+        description: "通过 SearchApi 的 Google 引擎以结构化 JSON 获取 Google 结果页。",
+      },
       tavily: {
         label: "Tavily",
         description: "面向智能体和 RAG 工作流优化的搜索 API。",

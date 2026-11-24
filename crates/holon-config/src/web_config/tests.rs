@@ -324,6 +324,23 @@ fn searxng_and_brave_capabilities_advertise_region_or_language_support() {
 }
 
 #[test]
+fn searchapi_kind_serializes_as_searchapi_and_consumes_region_or_language() {
+    assert_eq!(WebProviderKind::SearchApi.as_str(), "searchapi");
+    assert_eq!(
+        serde_json::to_value(WebProviderKind::SearchApi).unwrap(),
+        "searchapi"
+    );
+    assert_eq!(
+        serde_json::from_value::<WebProviderKind>(serde_json::json!("searchapi")).unwrap(),
+        WebProviderKind::SearchApi
+    );
+    let capabilities = WebProviderKind::SearchApi.capabilities();
+    assert_eq!(capabilities.auth, WebProviderAuthClass::ApiKey);
+    assert!(capabilities.supports_region_or_language);
+    assert_eq!(capabilities.status, WebProviderSupportStatus::Supported);
+}
+
+#[test]
 fn provider_capabilities_mark_reserved_kinds() {
     assert_eq!(
         WebProviderKind::OpenAiNative.capabilities().status,

@@ -580,7 +580,7 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `x_search.enabled` | boolean | `true` | Enable `XSearch` automatically when xAI credentials are available; set `false` to hide it |
 | `x_search.model` | model_ref | — | Optional xAI model route for isolated `XSearch` requests |
 | `x_search.timeout_seconds` | integer | `60` | Timeout for isolated xAI `XSearch` requests |
-| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `google`, `deepseek`, `zai`, `bigmodel`, `tencent_cloud_wsa`, `bocha`, `tavily`, `keenable`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
+| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `google`, `deepseek`, `zai`, `bigmodel`, `tencent_cloud_wsa`, `bocha`, `tavily`, `keenable`, `exa`, `searchapi`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
 | `web.providers.<name>.base_url` | string | unset | Custom provider endpoint |
 | `web.providers.<name>.credential_profile` | string | unset | Credential profile for API-backed providers |
 | `web.providers.<name>.engine_id` | string | required for `google` | Engine selector. For `kind=google` it is the Programmable Search engine id (`cx`); create the engine at programmablesearchengine.google.com with "Search the entire web" enabled to query the whole web rather than a site-restricted index. For `kind=zai` it selects the Z.AI engine (`search-prime`, the default). For `kind=bigmodel` it selects the BigModel engine (`search_std`, `search_pro`, `search_pro_sogou`, `search_pro_quark`; default `search_pro`). Other kinds reject `engine_id` |

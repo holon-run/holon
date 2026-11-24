@@ -1003,6 +1003,10 @@ const en = {
         label: "Google Programmable Search",
         description: "Official Google results through the Custom Search JSON API; needs an engine id (cx).",
       },
+      searchapi: {
+        label: "SearchApi",
+        description: "Google's results page as structured JSON through the SearchApi Google engine.",
+      },
       tavily: {
         label: "Tavily",
         description: "Search API optimized for agent and RAG workflows.",

@@ -357,6 +357,7 @@ fn search_api_key<'a>(id: &str, provider: &'a WebProviderConfig) -> Result<&'a s
         WebProviderKind::BigModel => "BigModel Web Search",
         WebProviderKind::Tavily => "Tavily",
         WebProviderKind::Exa => "Exa",
+        WebProviderKind::SearchApi => "SearchApi",
         WebProviderKind::Perplexity => "Perplexity",
         _ => return Ok(key),
     };
@@ -970,6 +971,18 @@ async fn search_configured_provider(
             )
             .await
         }
+        WebProviderKind::SearchApi => {
+            searchapi_search(
+                query,
+                max_results,
+                language,
+                region,
+                provider_id,
+                provider_config,
+                fetch_config,
+            )
+            .await
+        }
         WebProviderKind::TencentCloudWsa => {
             tencent_cloud_wsa_search(query, max_results, provider_id, provider_config, fetch_config)
                 .await
@@ -1024,7 +1037,7 @@ async fn search_configured_provider(
             "provider_unavailable",
             format!("WebSearch provider kind `{kind:?}` is reserved for future provider support"),
             provider_id,
-            "configure a duckduckgo, searxng, brave, google, tencent_cloud_wsa, bocha, tavily, keenable, deepseek, zai, bigmodel, exa, perplexity, or firecrawl provider for this Holon version",
+            "configure a duckduckgo, searxng, brave, google, searchapi, tencent_cloud_wsa, bocha, tavily, keenable, deepseek, zai, bigmodel, exa, perplexity, or firecrawl provider for this Holon version",
         )),
     }?;
     Ok(ProviderSearchOutput::new(results))
@@ -1689,6 +1702,130 @@ async fn google_search(
             "Google Programmable Search returned no parseable search results",
             provider_id,
             "check the engine_id (cx) or try a different query",
+        ));
+    }
+    Ok(results)
+}
+
+/// Google's results page through SearchApi (`engine=google`): one GET request
+/// with the key as a Bearer token, `organic_results` mapped to title, link and
+/// snippet.
+async fn searchapi_search(
+    query: &str,
+    max_results: usize,
+    language: Option<&str>,
+    region: Option<&str>,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    let api_key = search_api_key(provider_id, provider)?;
+    let client = Client::builder().timeout(timeout(fetch_config)).build()?;
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://www.searchapi.io");
+    // The Google engine answers one results page; `num` is honored up to 10.
+    let mut url = format!(
+        "{}/api/v1/search?engine=google&q={}&num={}",
+        base_url.trim_end_matches('/'),
+        form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>(),
+        max_results.min(10),
+    );
+    // SearchApi's `supports_region_or_language` capability: `hl` selects the
+    // Google interface language and `gl` the result country.
+    if let Some(language) = language.map(str::trim).filter(|value| !value.is_empty()) {
+        append_encoded_pair(&mut url, "hl", language);
+    }
+    if let Some(region) = region.map(str::trim).filter(|value| !value.is_empty()) {
+        append_encoded_pair(&mut url, "gl", region);
+    }
+    let response = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .map_err(|error| {
+            search_error(
+                "network_failed",
+                format!("SearchApi request failed: {error}"),
+                provider_id,
+                "retry later or check the API key",
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let kind = if status == reqwest::StatusCode::UNAUTHORIZED {
+            "provider_unavailable"
+        } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            "rate_limited"
+        } else {
+            "network_failed"
+        };
+        return Err(search_error(
+            kind,
+            format!("SearchApi returned HTTP {status}"),
+            provider_id,
+            "check the API key or retry later",
+        ));
+    }
+    let body = read_search_response(response, provider_id).await?;
+    let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("SearchApi returned invalid JSON: {error}"),
+            provider_id,
+            "check the API key or retry later",
+        )
+    })?;
+    let entries = match payload.get("organic_results") {
+        // A query without matches is HTTP 200 with an `error` sentence and no
+        // `organic_results`; that is a legitimate empty result, not a failure.
+        None => return Ok(Vec::new()),
+        Some(results) => results.as_array().ok_or_else(|| {
+            search_error(
+                "parse_failed",
+                "SearchApi returned an unexpected organic_results payload",
+                provider_id,
+                "try a different query or check the API subscription",
+            )
+        })?,
+    };
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Some `link` values are `google.com/goto?url=...` redirects; they are
+    // valid URLs and pass through unchanged, as every other provider's do.
+    let results = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let title = entry.get("title")?.as_str()?.trim().to_string();
+            let link = entry.get("link")?.as_str()?.trim().to_string();
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url: link,
+                    snippet: entry
+                        .get("snippet")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    published_at: None,
+                    ..ProviderRawSearchResult::default()
+                },
+            )
+        })
+        .take(max_results)
+        .collect::<Vec<_>>();
+    if results.is_empty() {
+        return Err(search_error(
+            "parse_failed",
+            "SearchApi returned no parseable search results",
+            provider_id,
+            "try a different query or check the API subscription",
         ));
     }
     Ok(results)

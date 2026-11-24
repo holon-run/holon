@@ -127,8 +127,8 @@ structured results with citations.
 | `query` | yes | Search query string |
 | `max_results` | no | Maximum number of results to return |
 | `provider` | no | Omit for configured default/mode; `"auto"` for automatic candidate order; `"aggregate"` to query automatic candidates in order and deduplicate by canonical URL; or a specific provider ID (no fallback) |
-| `language` | no | Optional language hint; only providers whose capability metadata declares region-or-language support consume it (Google maps it to `hl`, Brave to `search_lang`, SearXNG to its `language` parameter instead of auto-detection); other providers ignore it |
-| `region` | no | Optional region hint consumed by the same providers (Google maps it to `gl`, Brave to `country`; SearXNG merges it into the `language` locale when a language hint without its own region subtag is present, while a region-only hint keeps auto-detection) |
+| `language` | no | Optional language hint; only providers whose capability metadata declares region-or-language support consume it (Google and SearchApi map it to `hl`, Brave to `search_lang`, SearXNG to its `language` parameter instead of auto-detection); other providers ignore it |
+| `region` | no | Optional region hint consumed by the same providers (Google and SearchApi map it to `gl`, Brave to `country`; SearXNG merges it into the `language` locale when a language hint without its own region subtag is present, while a region-only hint keeps auto-detection) |
 
 ### Routing and provider discovery
 
@@ -173,6 +173,11 @@ take precedence over this chain.
   with `holon config set web.providers.google.kind google`,
   `holon config set web.providers.google.engine_id <cx>`, and
   `holon config set web.providers.google.credential_profile <profile>`.
+- **SearchApi** — Google's results page as structured JSON through the
+  SearchApi Google engine; no search engine id to create. Requires an API key
+  set via credential profile. Configure with
+  `holon config set web.providers.searchapi.kind searchapi` and
+  `holon config set web.providers.searchapi.credential_profile <profile>`.
 - **Keenable** — an independent web index for agents. The public endpoint works
   without an API key; a key switches it to the authenticated endpoint. Configure
   with `holon config set web.providers.keenable.kind keenable` and, for keyed
