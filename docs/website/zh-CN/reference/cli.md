@@ -215,6 +215,7 @@ holon agent delete reviewer --yes
 holon config set model.default "deepseek-anthropic@default/deepseek-v4-pro"
 holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
 holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort high --service-tier fast
+holon agent model set "openai@default/gpt-6.2-sol" reviewer --service-tier ultrafast
 holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort clear --service-tier clear
 holon agent model get reviewer
 holon agent model clear reviewer

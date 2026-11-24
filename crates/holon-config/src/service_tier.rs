@@ -10,66 +10,160 @@ pub struct ModelRouteOptions {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("model route {0} does not support service_tier")]
-pub struct ServiceTierValidationError(String);
+pub enum ServiceTierValidationError {
+    #[error("model route {0} does not support service_tier")]
+    UnsupportedRoute(String),
+    #[error(
+        "model route {route} does not support service_tier '{requested}'; supported values: \
+         {supported}"
+    )]
+    UnsupportedValue {
+        route: String,
+        requested: String,
+        supported: String,
+    },
+}
 
 impl ServiceTierValidationError {
     #[doc(hidden)]
     pub fn new(route: String) -> Self {
-        Self(route)
+        Self::UnsupportedRoute(route)
     }
 }
 
 impl ResolvedModelRoute {
-    pub fn validate_service_tier(&self, _tier: ServiceTier) -> Result<()> {
-        if self
+    pub fn validate_service_tier(&self, tier: ServiceTier) -> Result<()> {
+        let declared = self
             .capabilities
             .endpoint
             .accepted_parameters
             .iter()
-            .any(|p| p.name == "service_tier")
-        {
-            return Ok(());
-        }
-        Err(ServiceTierValidationError::new(self.route_ref.as_string()).into())
+            .find(|p| p.name == "service_tier")
+            .map(|parameter| parameter.allowed_values.as_slice());
+        validate_declared_service_tier(&self.route_ref.as_string(), declared, tier)
     }
 }
 
+/// Validate a tier against the contract the route advertises.
+///
+/// Validating against the same `allowed_values` clients read keeps one source
+/// of truth: a tier cannot be accepted while the route advertises fewer tiers.
 #[doc(hidden)]
-pub fn service_tier_supported(route: &ModelRouteRef, endpoint: &ProviderRuntimeConfig) -> bool {
-    // Sharing an OpenAI wire family does not imply sharing its service tiers.
-    let Ok(url) = url::Url::parse(&endpoint.base_url) else {
-        return false;
+pub fn validate_declared_service_tier(
+    route: &str,
+    declared_allowed_values: Option<&[String]>,
+    tier: ServiceTier,
+) -> Result<()> {
+    let Some(allowed_values) = declared_allowed_values else {
+        return Err(ServiceTierValidationError::UnsupportedRoute(route.to_string()).into());
     };
-    let official_endpoint = match (route.provider.as_str(), endpoint.transport) {
-        ("openai-codex", ProviderTransportKind::OpenAiCodexResponses) => {
-            url.scheme() == "https"
+    let requested = tier.preference_value();
+    if allowed_values.iter().any(|value| value == requested) {
+        return Ok(());
+    }
+    Err(ServiceTierValidationError::UnsupportedValue {
+        route: route.to_string(),
+        requested: requested.to_string(),
+        supported: allowed_values.join(", "),
+    }
+    .into())
+}
+
+/// Service tiers a single route advertises, independent of each other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SupportedServiceTiers {
+    pub fast: bool,
+    pub ultrafast: bool,
+}
+
+impl SupportedServiceTiers {
+    pub fn is_empty(&self) -> bool {
+        !self.fast && !self.ultrafast
+    }
+
+    /// Preference values for `accepted_parameters.allowed_values`.
+    ///
+    /// `default` is always available where `service_tier` is declared at all.
+    pub fn allowed_values(&self) -> Vec<String> {
+        let mut values = vec![ServiceTier::Default.preference_value().to_string()];
+        if self.fast {
+            values.push(ServiceTier::Fast.preference_value().to_string());
+        }
+        if self.ultrafast {
+            values.push(ServiceTier::Ultrafast.preference_value().to_string());
+        }
+        values
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceTierEndpoint {
+    OpenAiApi,
+    OpenAiCodex,
+}
+
+/// Fast and Ultrafast model lists stay separate on purpose: one is not a
+/// superset of the other, and #4460 owns collapsing them into catalog metadata.
+const FAST_MODELS: &[&str] = &[
+    "gpt-6.2-sol",
+    "gpt-6.2-astra",
+    "gpt-6.1-sol",
+    "gpt-6.1-terra",
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.5",
+];
+
+const ULTRAFAST_MODELS: &[&str] = &["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6-astra", "gpt-6.1-sol"];
+
+fn service_tier_endpoint(
+    route: &ModelRouteRef,
+    endpoint: &ProviderRuntimeConfig,
+) -> Option<ServiceTierEndpoint> {
+    // Sharing an OpenAI wire family does not imply sharing its service tiers.
+    let url = url::Url::parse(&endpoint.base_url).ok()?;
+    match (route.provider.as_str(), endpoint.transport) {
+        ("openai-codex", ProviderTransportKind::OpenAiCodexResponses)
+            if url.scheme() == "https"
                 && url.host_str() == Some("chatgpt.com")
-                && url.path().trim_end_matches('/') == "/backend-api/codex"
+                && url.path().trim_end_matches('/') == "/backend-api/codex" =>
+        {
+            Some(ServiceTierEndpoint::OpenAiCodex)
         }
         (
             "openai",
             ProviderTransportKind::OpenAiResponses | ProviderTransportKind::OpenAiChatCompletions,
-        ) => {
-            url.scheme() == "https"
-                && url.host_str() == Some("api.openai.com")
-                && url.path().trim_end_matches('/') == "/v1"
+        ) if url.scheme() == "https"
+            && url.host_str() == Some("api.openai.com")
+            && url.path().trim_end_matches('/') == "/v1" =>
+        {
+            Some(ServiceTierEndpoint::OpenAiApi)
         }
-        _ => false,
+        _ => None,
+    }
+}
+
+#[doc(hidden)]
+pub fn supported_service_tiers(
+    route: &ModelRouteRef,
+    endpoint: &ProviderRuntimeConfig,
+) -> SupportedServiceTiers {
+    let Some(endpoint_kind) = service_tier_endpoint(route, endpoint) else {
+        return SupportedServiceTiers::default();
     };
-    official_endpoint
-        && matches!(
-            route.model.as_str(),
-            "gpt-6.2-sol"
-                | "gpt-6.2-astra"
-                | "gpt-6.1-sol"
-                | "gpt-6.1-terra"
-                | "gpt-6-astra"
-                | "gpt-6-sol"
-                | "gpt-6-luna"
-                | "gpt-5.6-sol"
-                | "gpt-5.5"
-        )
+    let model = route.model.as_str();
+    let ultrafast = match endpoint_kind {
+        // Codex Ultrafast is not verified against the live backend, so it stays
+        // undeclared instead of advertising a tier the route cannot confirm.
+        ServiceTierEndpoint::OpenAiCodex => false,
+        ServiceTierEndpoint::OpenAiApi => ULTRAFAST_MODELS.contains(&model),
+    };
+    SupportedServiceTiers {
+        fast: FAST_MODELS.contains(&model),
+        ultrafast,
+    }
 }
 
 pub fn validate_model_route_options(catalog: &RuntimeModelCatalog) -> Result<()> {
@@ -128,12 +222,16 @@ mod tests {
         ModelRouteRef::parse_compatible(value).unwrap()
     }
 
-    #[test]
-    fn codex_fast_mode_is_limited_to_supported_models_on_the_official_endpoint() {
-        let official = runtime_config(
+    fn official_codex() -> ProviderRuntimeConfig {
+        runtime_config(
             ProviderTransportKind::OpenAiCodexResponses,
             "https://chatgpt.com/backend-api/codex",
-        );
+        )
+    }
+
+    #[test]
+    fn codex_fast_mode_is_limited_to_supported_models_on_the_official_endpoint() {
+        let official = official_codex();
         // Fast availability is per model, not per provider: newer generations
         // keep arriving after the original list.
         for model in [
@@ -147,40 +245,166 @@ mod tests {
             "gpt-5.6-sol",
         ] {
             let route = route(&format!("openai-codex@default/{model}"));
-            assert!(
-                service_tier_supported(&route, &official),
-                "{model} should declare Fast"
+            assert_eq!(
+                supported_service_tiers(&route, &official),
+                SupportedServiceTiers {
+                    fast: true,
+                    ultrafast: false
+                },
+                "{model} should declare Fast but not Ultrafast"
             );
         }
-        assert!(!service_tier_supported(
-            &route("openai-codex@default/gpt-9-unknown"),
-            &official
-        ));
+        assert!(
+            supported_service_tiers(&route("openai-codex@default/gpt-9-unknown"), &official)
+                .is_empty()
+        );
 
         let proxy = runtime_config(
             ProviderTransportKind::OpenAiCodexResponses,
             "https://gateway.example/v1",
         );
-        assert!(!service_tier_supported(
-            &route("openai-codex@default/gpt-6.2-sol"),
-            &proxy
-        ));
+        assert!(
+            supported_service_tiers(&route("openai-codex@default/gpt-6.2-sol"), &proxy).is_empty()
+        );
     }
 
     #[test]
-    fn openai_api_fast_mode_covers_gpt_6_2_on_the_official_endpoint() {
-        let route = route("openai@default/gpt-6.2-sol");
+    fn openai_api_advertises_fast_and_ultrafast_per_model_on_the_official_endpoint() {
         for transport in [
             ProviderTransportKind::OpenAiResponses,
             ProviderTransportKind::OpenAiChatCompletions,
         ] {
             let official = runtime_config(transport, "https://api.openai.com/v1");
-            assert!(service_tier_supported(&route, &official));
+            assert_eq!(
+                supported_service_tiers(&route("openai@default/gpt-6.2-sol"), &official),
+                SupportedServiceTiers {
+                    fast: true,
+                    ultrafast: true
+                }
+            );
+            // Fast-only: Ultrafast must not leak onto routes that do not list it.
+            assert_eq!(
+                supported_service_tiers(&route("openai@default/gpt-5.5"), &official),
+                SupportedServiceTiers {
+                    fast: true,
+                    ultrafast: false
+                }
+            );
+            assert!(
+                supported_service_tiers(&route("openai@default/gpt-9-unknown"), &official)
+                    .is_empty()
+            );
         }
         let proxy = runtime_config(
             ProviderTransportKind::OpenAiResponses,
             "https://api.openai.com.evil.example/v1",
         );
-        assert!(!service_tier_supported(&route, &proxy));
+        assert!(supported_service_tiers(&route("openai@default/gpt-6.2-sol"), &proxy).is_empty());
+    }
+
+    #[test]
+    fn allowed_values_follow_the_advertised_tiers() {
+        assert_eq!(
+            SupportedServiceTiers {
+                fast: true,
+                ultrafast: true
+            }
+            .allowed_values(),
+            vec!["default", "fast", "ultrafast"]
+        );
+        assert_eq!(
+            SupportedServiceTiers {
+                fast: true,
+                ultrafast: false
+            }
+            .allowed_values(),
+            vec!["default", "fast"]
+        );
+        assert!(SupportedServiceTiers::default().allowed_values() == vec!["default"]);
+    }
+
+    fn advertised(
+        route_value: &str,
+        transport: ProviderTransportKind,
+        base_url: &str,
+    ) -> Vec<String> {
+        supported_service_tiers(&route(route_value), &runtime_config(transport, base_url))
+            .allowed_values()
+    }
+
+    #[test]
+    fn validation_rejects_values_the_route_does_not_advertise() {
+        let openai = advertised(
+            "openai@default/gpt-6.2-sol",
+            ProviderTransportKind::OpenAiResponses,
+            "https://api.openai.com/v1",
+        );
+        for tier in [
+            ServiceTier::Default,
+            ServiceTier::Fast,
+            ServiceTier::Ultrafast,
+        ] {
+            assert!(
+                validate_declared_service_tier("openai@default/gpt-6.2-sol", Some(&openai), tier)
+                    .is_ok(),
+                "{tier:?} should be accepted on the Ultrafast route"
+            );
+        }
+
+        let fast_only = advertised(
+            "openai@default/gpt-5.5",
+            ProviderTransportKind::OpenAiResponses,
+            "https://api.openai.com/v1",
+        );
+        assert!(validate_declared_service_tier(
+            "openai@default/gpt-5.5",
+            Some(&fast_only),
+            ServiceTier::Fast
+        )
+        .is_ok());
+        let error = validate_declared_service_tier(
+            "openai@default/gpt-5.5",
+            Some(&fast_only),
+            ServiceTier::Ultrafast,
+        )
+        .expect_err("Fast-only route must reject ultrafast");
+        let message = error.to_string();
+        assert!(message.contains("ultrafast"), "{message}");
+        assert!(message.contains("gpt-5.5"), "{message}");
+        assert!(message.contains("default, fast"), "{message}");
+
+        let codex = advertised(
+            "openai-codex@default/gpt-6.2-sol",
+            ProviderTransportKind::OpenAiCodexResponses,
+            "https://chatgpt.com/backend-api/codex",
+        );
+        assert!(validate_declared_service_tier(
+            "openai-codex@default/gpt-6.2-sol",
+            Some(&codex),
+            ServiceTier::Fast
+        )
+        .is_ok());
+        assert!(validate_declared_service_tier(
+            "openai-codex@default/gpt-6.2-sol",
+            Some(&codex),
+            ServiceTier::Ultrafast
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn validation_rejects_routes_without_the_parameter() {
+        let proxy = advertised(
+            "openai@default/gpt-6.2-sol",
+            ProviderTransportKind::OpenAiResponses,
+            "https://gateway.example/v1",
+        );
+        assert_eq!(proxy, vec!["default"]);
+        assert!(validate_declared_service_tier(
+            "openai@default/gpt-6.2-sol",
+            None,
+            ServiceTier::Default
+        )
+        .is_err());
     }
 }

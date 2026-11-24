@@ -2960,6 +2960,7 @@
                     "enum": [
                       "default",
                       "fast",
+                      "ultrafast",
                       null
                     ],
                     "type": [
@@ -2988,6 +2989,7 @@
                     "enum": [
                       "default",
                       "fast",
+                      "ultrafast",
                       null
                     ],
                     "type": [
@@ -4201,6 +4203,7 @@
                     "enum": [
                       "default",
                       "fast",
+                      "ultrafast",
                       null
                     ],
                     "type": [
@@ -4229,6 +4232,7 @@
                     "enum": [
                       "default",
                       "fast",
+                      "ultrafast",
                       null
                     ],
                     "type": [
@@ -5055,6 +5059,7 @@
                           "enum": [
                             "default",
                             "fast",
+                            "ultrafast",
                             null
                           ],
                           "type": [
@@ -5083,6 +5088,7 @@
                           "enum": [
                             "default",
                             "fast",
+                            "ultrafast",
                             null
                           ],
                           "type": [
@@ -17776,7 +17782,8 @@
         "description": "User preference; adapters own wire values such as Codex's `priority`.",
         "enum": [
           "default",
-          "fast"
+          "fast",
+          "ultrafast"
         ],
         "type": "string"
       },

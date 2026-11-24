@@ -118,6 +118,7 @@ holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
 
 # 可选：随路由一起设置或清除推理强度（reasoning effort）与服务等级（service tier）
 holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort high --service-tier fast
+holon agent model set "openai@default/gpt-6.2-sol" reviewer --service-tier ultrafast
 holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort clear --service-tier clear
 
 # 查看该 Agent 当前的独立模型配置

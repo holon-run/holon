@@ -526,11 +526,12 @@ impl RuntimeModelCatalog {
                 self.resolve_anthropic_cache_policy(&canonical_route_ref, &endpoint.runtime_config),
             );
         }
-        if service_tier_supported(&canonical_route_ref, &endpoint.runtime_config) {
+        let service_tiers = supported_service_tiers(&canonical_route_ref, &endpoint.runtime_config);
+        if !service_tiers.is_empty() {
             capabilities.endpoint.accepted_parameters.push(
                 holon_model_catalog::ModelParameterSupport {
                     name: "service_tier".into(),
-                    allowed_values: vec!["default".into(), "fast".into()],
+                    allowed_values: service_tiers.allowed_values(),
                 },
             );
         }

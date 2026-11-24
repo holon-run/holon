@@ -285,6 +285,21 @@ pub enum ServiceTier {
     Default,
     #[serde(alias = "priority")]
     Fast,
+    Ultrafast,
+}
+
+impl ServiceTier {
+    /// Preference value advertised in route capability contracts.
+    ///
+    /// This is the stored/projected spelling, not an adapter wire value: the
+    /// OpenAI adapters still send `Fast` as `service_tier: "priority"`.
+    pub fn preference_value(self) -> &'static str {
+        match self {
+            ServiceTier::Default => "default",
+            ServiceTier::Fast => "fast",
+            ServiceTier::Ultrafast => "ultrafast",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

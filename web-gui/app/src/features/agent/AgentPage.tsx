@@ -301,9 +301,15 @@ export function AgentPage({
   const canSendPrompt = composerHasDraft && !sendingPrompt && !sendDisabledReason;
   const selectedModelRoute = activeAgent.modelSelection ?? activeAgent.model;
   const selectedModelOption = modelCatalog.options.find((option) => option.routeRef === selectedModelRoute);
-  const supportsFast = selectedModelOption?.serviceTierOptions?.includes("fast") ?? false;
+  const serviceTierValues = selectedModelOption?.serviceTierOptions ?? [];
+  const hasServiceTier = serviceTierValues.length > 0;
   const speedValue = activeAgent.modelServiceTierOverride ?? "inherit";
-  const speedLabel = speedValue === "fast" ? "Fast" : t(speedValue === "default" ? "agent.speedStandard" : "agent.speedAuto");
+  const serviceTierLabel = (value: string): string => {
+    if (value === "fast") return "Fast";
+    if (value === "ultrafast") return "Ultrafast";
+    return t(value === "default" ? "agent.speedStandard" : "agent.speedAuto");
+  };
+  const speedLabel = serviceTierLabel(speedValue);
   const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.routeRef === activeAgent.model), [activeAgent.model, modelCatalog.options]);
   const selectionLabel = selectedModelOption ? `${selectedModelOption.displayName} · ${modelSourceLabel(selectedModelOption)}` : activeAgent.modelSelection ?? activeAgent.model;
   const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
@@ -755,7 +761,7 @@ export function AgentPage({
   }
 
   async function handleServiceTierChange(value: string) {
-    if (changingModel || !supportsFast) return;
+    if (changingModel || !hasServiceTier) return;
     setOptionPopover(null);
     setChangingModel("service_tier:" + value);
     try {
@@ -1009,20 +1015,19 @@ export function AgentPage({
                     <span className="model-button-label">{shortModelLabel(activeAgent.model)}</span>
                     <span aria-hidden="true">⌄</span>
                   </Button>
-                  {supportsFast ? (
+                  {hasServiceTier ? (
                     <ComposerOptionPicker
                       kind="speed"
                       title={t("agent.speedMode")}
                       label={speedLabel}
                       triggerLabel={t("agent.speedAria", { speed: speedLabel })}
-                      icon={speedValue === "fast" ? <Zap className="composer-option-icon" size={14} aria-hidden="true" /> : <Gauge size={14} aria-hidden="true" />}
+                      icon={speedValue === "fast" || speedValue === "ultrafast" ? <Zap className="composer-option-icon" size={14} aria-hidden="true" /> : <Gauge size={14} aria-hidden="true" />}
                       value={speedValue}
                       options={[
                         { value: "inherit", label: t("agent.speedAuto") },
-                        { value: "default", label: t("agent.speedStandard") },
-                        { value: "fast", label: "Fast" },
+                        ...serviceTierValues.map((value) => ({ value, label: serviceTierLabel(value) })),
                       ]}
-                      description={`${t("agent.speedAutoHint")} ${t("agent.fastUsageHint")}`}
+                      description={`${t("agent.speedAutoHint")} ${speedValue === "ultrafast" ? t("agent.ultrafastUsageHint") : t("agent.fastUsageHint")}`}
                       disabled={changingModel !== null}
                       open={optionPopover === "speed"}
                       onOpenChange={(open) => { if (open) setModelPickerOpen(false); setOptionPopover(open ? "speed" : null); }}

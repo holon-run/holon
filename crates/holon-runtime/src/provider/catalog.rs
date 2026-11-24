@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn service_tier_capability_requires_a_supported_model_and_official_endpoint() {
-        use crate::config::{service_tier_supported, ModelRouteOptions, ServiceTier};
+        use crate::config::{supported_service_tiers, ModelRouteOptions, ServiceTier};
         let mut config = codex_config("gpt-6-astra", "low");
         let primary = config.default_model.clone();
         let codex = config
@@ -459,22 +459,22 @@ mod tests {
             .get(&crate::config::ProviderId::openai_codex())
             .unwrap()
             .clone();
-        assert!(service_tier_supported(&primary, &codex));
+        assert!(!supported_service_tiers(&primary, &codex).is_empty());
         let mut proxy = codex.clone();
         proxy.base_url = "https://gateway.example/v1".into();
-        assert!(!service_tier_supported(&primary, &proxy));
+        assert!(supported_service_tiers(&primary, &proxy).is_empty());
         let mut unsupported = primary.clone();
         unsupported.model = "gpt-unknown".into();
-        assert!(!service_tier_supported(&unsupported, &codex));
+        assert!(supported_service_tiers(&unsupported, &codex).is_empty());
         let openai = config
             .providers
             .get(&crate::config::ProviderId::openai())
             .unwrap();
         let api_route = ModelRouteRef::parse("openai@default/gpt-6-sol").unwrap();
-        assert!(service_tier_supported(&api_route, openai));
+        assert!(!supported_service_tiers(&api_route, openai).is_empty());
         let mut third_party = api_route.clone();
         third_party.provider = crate::config::ProviderId::parse("compatible").unwrap();
-        assert!(!service_tier_supported(&third_party, openai));
+        assert!(supported_service_tiers(&third_party, openai).is_empty());
         config
             .providers
             .get_mut(&crate::config::ProviderId::openai_codex())

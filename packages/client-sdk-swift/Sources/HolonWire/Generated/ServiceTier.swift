@@ -14,6 +14,7 @@ import AnyCodable
 public enum ServiceTier: String, Codable, CaseIterable, CaseIterableDefaultsLast {
     case _default = "default"
     case fast = "fast"
+    case ultrafast = "ultrafast"
     case unknownDefaultOpenApi = "unknown_default_open_api"
 }
 

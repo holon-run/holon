@@ -21,5 +21,8 @@ value class ServiceTier(val value: kotlin.String) {
         val fast: ServiceTier =
             ServiceTier("fast")
 
+        val ultrafast: ServiceTier =
+            ServiceTier("ultrafast")
+
     }
 }

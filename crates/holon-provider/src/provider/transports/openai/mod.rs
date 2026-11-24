@@ -843,10 +843,9 @@ impl AgentProvider for OpenAiProvider {
                     let controls = sent_diagnostics
                         .openai_request_controls
                         .get_or_insert_with(Default::default);
-                    controls.service_tier = self.service_tier.map(|tier| match tier {
-                        crate::config::ServiceTier::Default => "default".into(),
-                        crate::config::ServiceTier::Fast => "priority".into(),
-                    });
+                    controls.service_tier = self
+                        .service_tier
+                        .map(|tier| service_tier_wire_value(tier).to_string());
                     controls.served_service_tier = parsed.served_service_tier.clone();
                 }
                 sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
@@ -1321,10 +1320,9 @@ impl AgentProvider for OpenAiCodexProvider {
             let controls = sent_diagnostics
                 .openai_request_controls
                 .get_or_insert_with(Default::default);
-            controls.service_tier = self.service_tier.map(|tier| match tier {
-                crate::config::ServiceTier::Default => "default".into(),
-                crate::config::ServiceTier::Fast => "priority".into(),
-            });
+            controls.service_tier = self
+                .service_tier
+                .map(|tier| service_tier_wire_value(tier).to_string());
             controls.served_service_tier = parsed.served_service_tier.clone();
         }
         sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
@@ -1881,17 +1879,37 @@ impl OpenAiChatCompletionsProvider {
     }
 }
 
+/// OpenAI wire value for a service tier preference.
+///
+/// `Fast` predates `fast` on the wire and is still sent as `priority`; the
+/// stored preference spelling lives in `ServiceTier::preference_value`.
+pub(crate) fn service_tier_wire_value(tier: crate::config::ServiceTier) -> &'static str {
+    match tier {
+        crate::config::ServiceTier::Default => "default",
+        crate::config::ServiceTier::Fast => "priority",
+        crate::config::ServiceTier::Ultrafast => "ultrafast",
+    }
+}
+
 fn apply_service_tier(
     body: &mut Value,
     tier: Option<crate::config::ServiceTier>,
     codex_standard: bool,
 ) {
-    if let Some(tier) = tier {
-        if tier == crate::config::ServiceTier::Fast || !codex_standard {
-            body["service_tier"] = json!(match tier {
-                crate::config::ServiceTier::Fast => "priority",
-                crate::config::ServiceTier::Default => "default",
-            });
+    let Some(tier) = tier else {
+        return;
+    };
+    match tier {
+        // Fast is the Codex client contract even in standard mode.
+        crate::config::ServiceTier::Fast => {
+            body["service_tier"] = json!(service_tier_wire_value(tier));
+        }
+        // Codex Ultrafast is unverified, so standard mode omits the field
+        // instead of sending a tier the backend does not confirm.
+        crate::config::ServiceTier::Default | crate::config::ServiceTier::Ultrafast => {
+            if !codex_standard {
+                body["service_tier"] = json!(service_tier_wire_value(tier));
+            }
         }
     }
 }

@@ -77,10 +77,8 @@ impl OpenAiChatCompletionsProvider {
     }
 
     pub fn service_tier(&self) -> Option<&'static str> {
-        self.service_tier.map(|tier| match tier {
-            ServiceTier::Default => "default",
-            ServiceTier::Fast => "priority",
-        })
+        self.service_tier
+            .map(crate::provider::transports::openai::service_tier_wire_value)
     }
 
     pub fn authorization_headers(&self) -> Vec<(&'static str, String)> {

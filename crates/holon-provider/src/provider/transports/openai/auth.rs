@@ -530,7 +530,12 @@ pub(super) fn openai_codex_routing_hint(
 ) -> Option<(&'static str, String)> {
     let value = match tier? {
         crate::config::ServiceTier::Fast => format!("model={model};tier=priority"),
-        crate::config::ServiceTier::Default => format!("model={model}"),
+        // Codex Ultrafast is unverified: fall back to the standard header shape
+        // instead of inventing a `tier=ultrafast` value, and never return `None`
+        // (that is the legacy-header form with different semantics).
+        crate::config::ServiceTier::Default | crate::config::ServiceTier::Ultrafast => {
+            format!("model={model}")
+        }
     };
     is_valid_header_value(&value).then_some(("x-codex-routing-hint", value))
 }

@@ -125,6 +125,7 @@ holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
 
 # Optional: set or clear reasoning effort and service tier alongside the route
 holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort high --service-tier fast
+holon agent model set "openai@default/gpt-6.2-sol" reviewer --service-tier ultrafast
 holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort clear --service-tier clear
 
 # Inspect the agent's effective model setting
