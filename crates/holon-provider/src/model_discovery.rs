@@ -505,6 +505,9 @@ pub async fn refresh_provider_models(
         ModelDiscoveryDecoder::Kilo => serde_json::from_slice::<KiloModelsResponse>(&raw)
             .context("failed to parse Kilo Gateway model discovery response")?
             .into_model_metadata(&provider.id),
+        ModelDiscoveryDecoder::Magpie => serde_json::from_slice::<MagpieModelsResponse>(&raw)
+            .context("failed to parse Magpie model discovery response")?
+            .into_model_metadata(&provider.id),
         ModelDiscoveryDecoder::OpenAiCompatible => {
             serde_json::from_slice::<OpenAiCompatibleModelsResponse>(&raw)
                 .context("failed to parse OpenAI-compatible model discovery response")?
@@ -1006,6 +1009,157 @@ fn vercel_models_url(base_url: &str) -> Result<String> {
     let path = url.path().trim_end_matches('/');
     url.set_path(&format!("{path}/v1/models"));
     Ok(url.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct MagpieModelsResponse {
+    #[serde(default)]
+    data: Vec<MagpieModel>,
+}
+
+impl MagpieModelsResponse {
+    fn into_model_metadata(self, provider: &ProviderId) -> Vec<BuiltInModelMetadata> {
+        let mut models = self
+            .data
+            .into_iter()
+            .filter_map(|model| model.into_model_metadata(provider))
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| left.model_ref.model.cmp(&right.model_ref.model));
+        models
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct MagpieModel {
+    #[serde(default)]
+    id: serde_json::Value,
+    #[serde(default)]
+    display_name: serde_json::Value,
+    #[serde(default)]
+    owned_by: serde_json::Value,
+    #[serde(default)]
+    reasoning: serde_json::Value,
+    #[serde(default)]
+    supported_reasoning_levels: serde_json::Value,
+    #[serde(default)]
+    reasoning_levels: serde_json::Value,
+    #[serde(default)]
+    context_window: serde_json::Value,
+    #[serde(default)]
+    context_length: serde_json::Value,
+    #[serde(default)]
+    max_output_tokens: serde_json::Value,
+    #[serde(default)]
+    modalities: serde_json::Value,
+    #[serde(default)]
+    kind: serde_json::Value,
+}
+
+impl MagpieModel {
+    fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
+        let id = magpie_string(&self.id)?;
+        if let Some(kind) = magpie_string(&self.kind) {
+            if !kind.eq_ignore_ascii_case("chat") {
+                return None;
+            }
+        }
+
+        let display_name = magpie_string(&self.display_name).unwrap_or(id).to_string();
+        let description = magpie_string(&self.owned_by)
+            .map(|owned_by| format!("Magpie catalog (provider: {owned_by})"))
+            .unwrap_or_else(|| "Magpie catalog.".to_string());
+        let context_window_tokens = magpie_positive_usize(&self.context_window)
+            .or_else(|| magpie_positive_usize(&self.context_length));
+        let reasoning_effort_options =
+            magpie_supported_reasoning_levels(&self.supported_reasoning_levels)
+                .or_else(|| magpie_string_list(&self.reasoning_levels))
+                .unwrap_or_default();
+        let supports_reasoning =
+            self.reasoning.as_bool().unwrap_or(false) || !reasoning_effort_options.is_empty();
+        let capabilities = ModelCapabilityFlags {
+            image_input: magpie_modalities_contain_image(&self.modalities, "input"),
+            image_generation: magpie_modalities_contain_image(&self.modalities, "output"),
+            supports_reasoning,
+            ..ModelCapabilityFlags::default()
+        };
+
+        Some(BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider.clone(), id.to_string()),
+            display_name,
+            description,
+            context_window_tokens,
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: magpie_positive_u32(&self.max_output_tokens),
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities,
+            reasoning_effort_options,
+            source: ModelMetadataSource::RemoteDiscovered,
+            endpoint: None,
+        })
+    }
+}
+
+fn magpie_string(value: &serde_json::Value) -> Option<&str> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn magpie_positive_usize(value: &serde_json::Value) -> Option<usize> {
+    value
+        .as_u64()
+        .filter(|value| *value > 0)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn magpie_positive_u32(value: &serde_json::Value) -> Option<u32> {
+    value
+        .as_u64()
+        .filter(|value| *value > 0)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn magpie_modalities_contain_image(value: &serde_json::Value, key: &str) -> bool {
+    value
+        .as_object()
+        .and_then(|modalities| modalities.get(key))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|modalities| {
+            modalities.iter().any(|modality| {
+                magpie_string(modality)
+                    .is_some_and(|modality| modality.eq_ignore_ascii_case("image"))
+            })
+        })
+}
+
+fn magpie_supported_reasoning_levels(value: &serde_json::Value) -> Option<Vec<String>> {
+    let mut options = Vec::new();
+    for effort in value
+        .as_array()?
+        .iter()
+        .filter_map(|level| level.as_object())
+        .filter_map(|level| level.get("effort"))
+        .filter_map(magpie_string)
+    {
+        if !options.iter().any(|option| option == effort) {
+            options.push(effort.to_string());
+        }
+    }
+    (!options.is_empty()).then_some(options)
+}
+
+fn magpie_string_list(value: &serde_json::Value) -> Option<Vec<String>> {
+    let mut options = Vec::new();
+    for option in value.as_array()?.iter().filter_map(magpie_string) {
+        if !options.iter().any(|existing| existing == option) {
+            options.push(option.to_string());
+        }
+    }
+    (!options.is_empty()).then_some(options)
 }
 
 #[derive(Debug, Deserialize)]

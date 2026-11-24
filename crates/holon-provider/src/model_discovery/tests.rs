@@ -1874,6 +1874,57 @@ fn openai_compatible_discovery_keeps_only_non_empty_server_model_ids() {
 }
 
 #[test]
+fn magpie_models_decoder_maps_metadata_and_degrades_invalid_fields() {
+    let payload: MagpieModelsResponse =
+        serde_json::from_str(include_str!("fixtures/magpie_models.json")).unwrap();
+    let models = payload.into_model_metadata(&ProviderId::parse("magpie").unwrap());
+
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.model_ref.model.as_str())
+            .collect::<Vec<_>>(),
+        vec!["invalid-fields", "legacy-chat", "openai/gpt-5"]
+    );
+
+    let complete = &models[2];
+    assert_eq!(complete.model_ref.as_string(), "magpie/openai/gpt-5");
+    assert_eq!(
+        ModelRef::parse(&complete.model_ref.as_string()).unwrap(),
+        complete.model_ref
+    );
+    assert_eq!(complete.display_name, "GPT-5");
+    assert_eq!(complete.description, "Magpie catalog (provider: openai)");
+    assert_eq!(complete.context_window_tokens, Some(128_000));
+    assert_eq!(complete.default_max_output_tokens, None);
+    assert_eq!(complete.max_output_tokens_upper_limit, Some(8_192));
+    assert!(complete.capabilities.image_input);
+    assert!(complete.capabilities.image_generation);
+    assert!(complete.capabilities.supports_reasoning);
+    assert_eq!(complete.reasoning_effort_options, ["low", "high"]);
+    assert_eq!(complete.source, ModelMetadataSource::RemoteDiscovered);
+
+    let fallback = &models[1];
+    assert_eq!(fallback.display_name, "legacy-chat");
+    assert_eq!(fallback.description, "Magpie catalog.");
+    assert_eq!(fallback.context_window_tokens, Some(4_096));
+    assert!(!fallback.capabilities.image_input);
+    assert!(!fallback.capabilities.image_generation);
+    assert!(fallback.capabilities.supports_reasoning);
+    assert_eq!(fallback.reasoning_effort_options, ["minimal", "medium"]);
+
+    let invalid = &models[0];
+    assert_eq!(invalid.display_name, "invalid-fields");
+    assert_eq!(invalid.description, "Magpie catalog.");
+    assert_eq!(invalid.context_window_tokens, None);
+    assert_eq!(invalid.max_output_tokens_upper_limit, None);
+    assert!(!invalid.capabilities.image_input);
+    assert!(!invalid.capabilities.image_generation);
+    assert!(!invalid.capabilities.supports_reasoning);
+    assert!(invalid.reasoning_effort_options.is_empty());
+}
+
+#[test]
 fn custom_openai_compatible_provider_derives_v1_models_url() {
     // `OpenAiV1` de-duplicates `/v1`, so both root and `/v1` base URLs land on
     // `/v1/models` while an explicit path prefix is preserved.
