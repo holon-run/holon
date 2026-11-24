@@ -3181,7 +3181,16 @@ phase holder; no new phase or return holder is introduced. Reservation/release
 clock timestamps use that same pre-format gate on the caller's original phase
 and remain synchronous SQL temporaries. Reservation samples its clock at the
 original point but skips formatting on the retired short circuit, retaining
-the original rejection/idempotent verdict. The fresh Episode continuity insert
+the original rejection/idempotent verdict.
+
+Episode continuity uses transaction-scoped SQLite operations in
+`holon-storage` for the fixed boundary, seeds, bindings, capture membership,
+and recent Episode window. `holon-runtime` discovers live references, selects
+the upgrade transaction, and coordinates seed capture across domains. It also
+validates each qualifying receipt on the same connection as the Episode window
+and supplies the budget callbacks and guard for owned seed material.
+
+The fresh Episode continuity insert
 encodes its original UTC RFC3339 AutoSi timestamp into a checked stack buffer,
 then borrows those bytes synchronously in SQL. Naive datetime streaming avoids
 both the output String and DateTime formatting's owned offset name; wide years,

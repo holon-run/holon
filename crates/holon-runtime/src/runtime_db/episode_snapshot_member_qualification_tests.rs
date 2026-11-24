@@ -117,42 +117,6 @@ fn original(
 }
 
 #[test]
-fn member_qualification_fixed_json_matches_all_combinations_and_borrows_text() -> Result<()> {
-    let connection = Connection::open_in_memory()?;
-    for mask in 0..8 {
-        let reasons: Vec<_> = REASONS
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| mask & (1 << index) != 0)
-            .map(|(_, reason)| *reason)
-            .collect();
-        let expected = serde_json::to_string(&reasons)?;
-        let json = member_qualification_json(&reasons)?;
-        let ToSqlOutput::Borrowed(ValueRef::Text(bound)) = json.to_sql()? else {
-            panic!("qualification JSON must bind borrowed SQL TEXT");
-        };
-        assert_eq!(bound.as_ptr(), json.bytes.as_ptr());
-        assert_eq!(bound, expected.as_bytes());
-        assert_eq!(json.len, expected.len());
-        if mask == 7 {
-            assert_eq!(json.len, MEMBER_QUALIFICATION_JSON_MAX_BYTES);
-        }
-        let result: (String, String) =
-            connection.query_row("SELECT typeof(?1), ?1", [&json], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?;
-        assert_eq!(result, ("text".to_owned(), expected));
-    }
-    // A future longer reason must fail rather than truncate or grow the buffer.
-    let oversized = "x".repeat(MEMBER_QUALIFICATION_JSON_MAX_BYTES);
-    let error = member_qualification_json(&[&oversized])
-        .err()
-        .expect("bounded qualification encoder unexpectedly grew");
-    assert!(error.downcast_ref::<serde_json::Error>().unwrap().is_io());
-    Ok(())
-}
-
-#[test]
 fn member_qualification_capture_preserves_original_phase_tls_and_last_holder() -> Result<()> {
     let mut connection = connection()?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;

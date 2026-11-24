@@ -1,32 +1,16 @@
 //! The operator inbox projects committed facts, not agent-authored text.
 
 use anyhow::Result;
-use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use chrono::{DateTime, Utc};
+use holon_storage::notifications::{self as storage, record_cause};
+use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::types::{BriefRecord, MessageEnvelope, MessageOrigin, WakeSource};
+use crate::types::{BriefRecord, MessageEnvelope, MessageOrigin};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum NotificationKind {
-    OperatorFirstBrief,
-    WorkItemCompleted,
-    OperatorInputRequired,
-}
-
-pub(super) fn record_work_owner(
-    conn: &Connection,
-    work_item_id: &str,
-    principal: &str,
-) -> Result<()> {
-    conn.execute(
-        "INSERT INTO operator_inbox_work_owners (work_item_id, principal_id) VALUES (?1, ?2)",
-        params![work_item_id, principal],
-    )?;
-    Ok(())
-}
+pub(super) use storage::record_work_owner;
+pub(crate) use storage::{InboxNotification, NotificationKind, NotificationTarget};
 
 /// Only called inside the transaction publishing the canonical brief. Claim
 /// each cause even when a higher-priority cause wins the display entry.
@@ -39,15 +23,7 @@ pub(super) fn project_brief(
         return Ok(());
     }
     if let Some(input_id) = brief.related_message_id.as_deref() {
-        let payload: Option<String> = conn
-            .query_row(
-                "SELECT payload_json FROM messages WHERE evidence_id = ?1 AND agent_id = ?2",
-                params![input_id, brief.agent_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(payload) = payload {
-            let input: MessageEnvelope = serde_json::from_str(&payload)?;
+        if let Some(input) = storage::related_input(conn, input_id, &brief.agent_id)? {
             if let Some(principal) = trusted_operator_principal(&input) {
                 record_cause(
                     conn,
@@ -61,16 +37,7 @@ pub(super) fn project_brief(
         }
     }
     if let Some(work_id) = brief.work_item_id.as_deref() {
-        let principal: Option<String> = conn
-            .query_row(
-                "SELECT o.principal_id FROM operator_inbox_work_owners o
-                 JOIN work_items w ON w.work_item_id = o.work_item_id
-                 WHERE w.work_item_id = ?1 AND w.agent_id = ?2 AND w.state = 'completed'
-                   AND json_extract(w.payload_json, '$.result_brief_id') = ?3",
-                params![work_id, brief.agent_id, brief.id],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let principal = storage::completed_work_owner(conn, work_id, &brief.agent_id, &brief.id)?;
         if let Some(principal) = principal {
             record_cause(
                 conn,
@@ -99,115 +66,6 @@ pub(super) fn project_brief(
         }
     }
     Ok(())
-}
-
-fn record_cause(
-    conn: &Connection,
-    brief: &BriefRecord,
-    principal: &str,
-    kind: NotificationKind,
-    cause_id: &str,
-    work_id: Option<&str>,
-) -> Result<()> {
-    // The FK is immediate, so create the display entry before binding the
-    // cause, but only when the cause is still unclaimed.
-    let priority = kind.priority();
-    let stored = conn.execute(
-        "INSERT INTO operator_inbox_recent
-             (principal_id, brief_id, agent_id, work_item_id, priority, created_at)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6
-         WHERE NOT EXISTS (
-             SELECT 1 FROM operator_inbox_causes
-             WHERE principal_id = ?1 AND priority = ?5 AND cause_id = ?7
-         )
-         ON CONFLICT(principal_id, brief_id) DO UPDATE SET
-             priority = max(priority, excluded.priority),
-             work_item_id = CASE WHEN excluded.priority > priority
-                                 THEN excluded.work_item_id ELSE work_item_id END",
-        params![
-            principal,
-            brief.id,
-            brief.agent_id,
-            work_id,
-            priority,
-            brief.created_at.to_rfc3339_opts(SecondsFormat::Nanos, true),
-            cause_id
-        ],
-    )?;
-    if stored > 0 {
-        conn.execute(
-            "INSERT INTO operator_inbox_causes (principal_id, priority, cause_id, brief_id)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![principal, priority, cause_id, brief.id],
-        )?;
-    }
-    Ok(())
-}
-
-pub(crate) fn recent(
-    conn: &Connection,
-    recipient: &NotificationRecipient,
-    now: DateTime<Utc>,
-) -> Result<Vec<InboxNotification>> {
-    let cutoff = (now - chrono::Duration::days(30)).to_rfc3339_opts(SecondsFormat::Nanos, true);
-    let mut stmt = conn.prepare_cached(
-        "SELECT r.brief_id, r.priority, r.created_at, r.agent_id, w.work_item_id
-         FROM operator_inbox_recent r
-         JOIN agent_identities i ON i.agent_id = r.agent_id AND i.status = 'active'
-         LEFT JOIN work_items w ON w.work_item_id = r.work_item_id AND w.agent_id = r.agent_id
-         WHERE r.principal_id = ?1 AND r.created_at >= ?2
-           AND (i.visibility = 'public' OR ?3)
-         ORDER BY r.created_at DESC, r.brief_id LIMIT 100",
-    )?;
-    let mut rows = stmt.query(params![
-        recipient.principal_id,
-        cutoff,
-        recipient.local_control
-    ])?;
-    let mut items = Vec::new();
-    while let Some(row) = rows.next()? {
-        let kind = match row.get::<_, i64>(1)? {
-            1 => NotificationKind::OperatorFirstBrief,
-            2 => NotificationKind::WorkItemCompleted,
-            3 => NotificationKind::OperatorInputRequired,
-            _ => anyhow::bail!("invalid operator inbox priority"),
-        };
-        items.push(InboxNotification {
-            id: row.get(0)?,
-            kind,
-            created_at: row.get::<_, String>(2)?.parse()?,
-            target: NotificationTarget {
-                agent_id: row.get(3)?,
-                work_item_id: row.get(4)?,
-            },
-        });
-    }
-    Ok(items)
-}
-
-impl NotificationKind {
-    fn priority(self) -> i64 {
-        match self {
-            Self::OperatorFirstBrief => 1,
-            Self::WorkItemCompleted => 2,
-            Self::OperatorInputRequired => 3,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, JsonSchema, Serialize)]
-pub(crate) struct NotificationTarget {
-    pub agent_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub work_item_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, JsonSchema, Serialize)]
-pub(crate) struct InboxNotification {
-    pub id: String,
-    pub kind: NotificationKind,
-    pub created_at: DateTime<Utc>,
-    pub target: NotificationTarget,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, JsonSchema)]
@@ -295,43 +153,15 @@ fn wait_recipient(
     agent_id: &str,
     turn_id: &str,
 ) -> Result<Option<(String, Option<String>)>> {
-    let row = conn
-        .query_row(
-            "SELECT w.work_item_id, w.wake_sources_json, m.payload_json, o.principal_id, EXISTS (
-             SELECT 1 FROM json_each(t.payload_json, '$.input_message_ids') inputs
-             JOIN messages other ON other.evidence_id = inputs.value AND other.agent_id = w.agent_id
-             WHERE other.kind = 'operator_prompt' AND other.evidence_id IS NOT t.trigger_message_id
-         )
-         FROM wait_conditions w
-         JOIN agent_identities i ON i.agent_id = w.agent_id AND i.status = 'active'
-         JOIN turn_records t ON t.turn_id = w.last_turn_id AND t.agent_id = w.agent_id
-         LEFT JOIN messages m ON m.evidence_id = t.trigger_message_id AND m.agent_id = w.agent_id
-         LEFT JOIN operator_inbox_work_owners o ON o.work_item_id = w.work_item_id
-         WHERE w.wait_condition_id = ?1 AND w.agent_id = ?2 AND w.last_turn_id = ?3
-           AND w.source = 'WaitFor' AND w.kind = 'operator' AND w.status = 'active'
-           AND (w.work_item_id IS NULL OR EXISTS (
-               SELECT 1 FROM work_items k WHERE k.work_item_id = w.work_item_id
-                 AND k.agent_id = w.agent_id AND k.state = 'open'
-           ))",
-            params![wait_id, agent_id, turn_id],
-            |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, bool>(4)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((work_id, wake_json, input, owner, ambiguous)) = row else {
+    let Some(storage::WaitOrigin {
+        work_item_id,
+        input,
+        owner,
+        ambiguous,
+    }) = storage::load_wait_origin(conn, wait_id, agent_id, turn_id)?
+    else {
         return Ok(None);
     };
-    if !serde_json::from_str::<Vec<WakeSource>>(&wake_json)?.contains(&WakeSource::OperatorInput) {
-        return Ok(None);
-    }
-    let input: Option<MessageEnvelope> = input.as_deref().map(serde_json::from_str).transpose()?;
     let principal = input
         .as_ref()
         .and_then(trusted_operator_principal)
@@ -340,98 +170,46 @@ fn wait_recipient(
     if ambiguous && principal != "control" {
         return Ok(None);
     }
-    Ok(Some((principal.to_owned(), work_id)))
+    Ok(Some((principal.to_owned(), work_item_id)))
 }
 
-/// Pending is current authority: no notification table owns a second copy of
-/// waiting state. Check the registered wake, live agent and exact work owner
-/// in the same read, and never silently truncate the resulting snapshot.
 pub(crate) fn pending(
     conn: &Connection,
     recipient: &NotificationRecipient,
     now: DateTime<Utc>,
 ) -> Result<Vec<InboxNotification>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT w.wait_condition_id, w.agent_id, w.work_item_id, w.status, w.kind, w.source,
-                w.subject_ref, w.waiting_for, w.created_at, w.updated_at, w.expires_at,
-                w.resolved_at, w.cancelled_at, w.last_turn_id, w.trigger_message_id, w.triggered_at,
-                w.wake_sources_json, w.continuation_json, m.payload_json, o.principal_id,
-                EXISTS (
-                    SELECT 1 FROM json_each(t.payload_json, '$.input_message_ids') inputs
-                    JOIN messages other ON other.evidence_id = inputs.value
-                     AND other.agent_id = w.agent_id
-                    WHERE other.kind = 'operator_prompt'
-                      AND other.evidence_id IS NOT t.trigger_message_id
-                )
-         FROM wait_conditions w
-         JOIN agent_identities i ON i.agent_id = w.agent_id AND i.status = 'active'
-         LEFT JOIN agent_states a ON a.agent_id = w.agent_id
-         LEFT JOIN turn_records t ON t.turn_id = w.last_turn_id AND t.agent_id = w.agent_id
-         LEFT JOIN messages m
-           ON m.evidence_id = t.trigger_message_id
-          AND m.agent_id = w.agent_id
-         LEFT JOIN operator_inbox_work_owners o ON o.work_item_id = w.work_item_id
-         WHERE w.status = 'active' AND w.kind = 'operator' AND w.source = 'WaitFor'
-           AND COALESCE(a.status, '') NOT IN ('stopped', 'paused')
-           AND (i.visibility = 'public' OR ?1)
-           AND (w.work_item_id IS NULL OR EXISTS (
-                   SELECT 1 FROM work_items k
-                   WHERE k.work_item_id = w.work_item_id AND k.agent_id = w.agent_id
-                     AND k.state = 'open'
-               ))",
-    )?;
-    let mut rows = stmt.query([recipient.local_control])?;
-    let mut items = Vec::new();
-    while let Some(row) = rows.next()? {
-        let wait = holon_storage::wait::decode_wait_condition_row(row)?;
-        if !wait.wake_sources.contains(&WakeSource::OperatorInput)
-            || wait.expires_at.is_some_and(|at| at <= now)
-        {
-            continue;
-        }
-        let input: Option<String> = row.get(18)?;
-        let input: Option<MessageEnvelope> =
-            input.as_deref().map(serde_json::from_str).transpose()?;
-        let owner: Option<String> = row.get(19)?;
-        let has_other_operator_input: bool = row.get(20)?;
-        let assigned_principal = input
-            .as_ref()
-            .and_then(trusted_operator_principal)
-            .or(owner.as_deref());
-        if (!recipient.local_control && has_other_operator_input)
-            || !recipient.can_handle_operator_wait(assigned_principal)
-        {
-            continue;
-        }
-        items.push(InboxNotification {
-            id: wait.id,
-            kind: NotificationKind::OperatorInputRequired,
-            created_at: wait.created_at,
-            target: NotificationTarget {
-                agent_id: wait.agent_id,
-                work_item_id: wait.work_item_id,
-            },
-        });
-    }
-    items.sort_unstable_by(|left, right| {
-        right
-            .created_at
-            .cmp(&left.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    Ok(items)
+    storage::pending(
+        conn,
+        recipient.local_control,
+        now,
+        |input, owner, has_other_operator_input| {
+            let assigned_principal = input.and_then(trusted_operator_principal).or(owner);
+            (recipient.local_control || !has_other_operator_input)
+                && recipient.can_handle_operator_wait(assigned_principal)
+        },
+    )
+}
+
+pub(crate) fn recent(
+    conn: &Connection,
+    recipient: &NotificationRecipient,
+    now: DateTime<Utc>,
+) -> Result<Vec<InboxNotification>> {
+    storage::recent(conn, &recipient.principal_id, recipient.local_control, now)
 }
 
 #[cfg(all(test, holon_lib_test_shard = "b"))]
 mod tests {
     use super::*;
     use crate::runtime_db::tests::test_support::TempRuntimeDb;
+    use crate::types::WakeSource;
     use crate::types::{
         AdmissionContext, AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset,
         AgentVisibility, AuthorityClass, MessageBody, MessageDeliverySurface, MessageKind,
         Priority, TurnRecord, TurnTriggerSummary, WaitConditionKind, WaitConditionRecord,
         WaitConditionStatus,
     };
+    use rusqlite::params;
 
     #[test]
     fn first_formal_brief_is_atomic_and_deduplicated_by_input_and_recipient() -> Result<()> {

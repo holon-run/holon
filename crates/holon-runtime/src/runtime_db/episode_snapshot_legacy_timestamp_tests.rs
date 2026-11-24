@@ -53,7 +53,7 @@ fn seed(
         agent_id: identity.agent_id.clone(),
         incarnation,
         import_required,
-        _material: ResourceReadMaterial::active_guard()?,
+        _material: crate::runtime::agent_observation::active_observation_material()?,
     })
 }
 

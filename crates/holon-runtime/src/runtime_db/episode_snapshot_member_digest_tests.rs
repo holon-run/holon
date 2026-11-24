@@ -58,45 +58,6 @@ fn stored(connection: &Connection) -> Result<Vec<StoredMember>> {
 }
 
 #[test]
-fn member_digest_fixed_hex_matches_original_bytes_and_borrows_sql_text() -> Result<()> {
-    let connection = Connection::open_in_memory()?;
-    assert_eq!(
-        &member_content_digest(b""),
-        b"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    );
-    assert_eq!(
-        &member_content_digest(b"abc"),
-        b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-    );
-    let binary: Vec<u8> = (0..=255).collect();
-    let long = "  {\n \"escaped\": \"\\u754c\", \"x\": 1 }\0\\\"\n".repeat(2048);
-    for payload in [
-        b"".as_slice(),
-        b"abc",
-        b"\0\"\\\r\n",
-        "界é🦀".as_bytes(),
-        binary.as_slice(),
-        long.as_bytes(),
-    ] {
-        let hex = member_content_digest(payload);
-        let text = ToSqlOutput::Borrowed(ValueRef::Text(&hex));
-        let ToSqlOutput::Borrowed(ValueRef::Text(bound)) = text.to_sql()? else {
-            panic!("member digest must bind borrowed SQL TEXT");
-        };
-        assert_eq!(bound.as_ptr(), hex.as_ptr());
-        assert_eq!(bound.len(), 64);
-        let expected = format!("{:x}", Sha256::digest(payload));
-        assert_eq!(bound, expected.as_bytes());
-        let result: (String, String) =
-            connection.query_row("SELECT typeof(?1), ?1", [text], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?;
-        assert_eq!(result, ("text".to_owned(), expected));
-    }
-    Ok(())
-}
-
-#[test]
 fn member_digest_capture_keeps_exhausted_original_phase_tls_and_last_holder() -> Result<()> {
     let mut connection = connection()?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;

@@ -1332,26 +1332,7 @@ impl RuntimeDb {
     }
 
     pub fn storage_domains(&self) -> Result<Vec<StorageDomainSnapshot>> {
-        self.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT domain, schema_version, import_status, canonical_source,
-                    source_checkpoint_json, imported_at, updated_at
-             FROM storage_domains
-             ORDER BY domain ASC",
-            )?;
-            let rows = statement.query_map([], |row| {
-                Ok(StorageDomainSnapshot {
-                    domain: row.get(0)?,
-                    schema_version: row.get(1)?,
-                    import_status: row.get(2)?,
-                    canonical_source: row.get(3)?,
-                    source_checkpoint_json: row.get(4)?,
-                    imported_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                })
-            })?;
-            rows.map(|row| row.map_err(Into::into)).collect()
-        })
+        self.with_read(|connection| holon_storage::storage_domain::list_storage_domains(connection))
     }
 
     pub fn diagnose_cutover(&self, expected: &[ExpectedStorageDomain]) -> Result<Vec<String>> {
