@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish; must match the dispatch ref (daily beta train handoff).'
+        required: false
+        default: ''
+      reason:
+        description: 'Dispatch reason (recorded for the operator).'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -19,6 +29,20 @@ jobs:
       candidate_image: ${{ steps.gate.outputs.candidate_image }}
       e2e_run_id: ${{ steps.gate.outputs.e2e_run_id }}
     steps:
+      - name: Validate dispatch handoff
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          # The train dispatches this workflow on the tag ref, so the
+          # checkout/GITHUB_REF_NAME/GITHUB_SHA identity comes from the tag.
+          # Refuse a handoff whose tag input disagrees with that ref.
+          if [ -n "$DISPATCH_TAG" ] && [ "$DISPATCH_TAG" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::dispatch tag '${DISPATCH_TAG}' does not match the dispatch ref '${GITHUB_REF_NAME}'; refusing to publish" >&2
+            exit 1
+          fi
+
       - name: Verify matching Release E2E attestation
         id: gate
         env:
@@ -155,6 +179,10 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
+        env:
+          # Report the full release identity (including beta date suffixes)
+          # in `holon --version`; stable tags match Cargo.toml exactly.
+          HOLON_PKG_VERSION_OVERRIDE: ${{ github.ref_name }}
         run: cargo build --release --locked --features local-onnx --target "${{ matrix.target }}"
 
       - name: Package release archive
@@ -177,6 +205,9 @@ jobs:
 
   macos-app:
     name: Build macOS menu app
+    # Daily beta trains ship the CLI binaries only; signed desktop/mobile
+    # apps and their appcast stay on the stable channel.
+    if: ${{ !contains(github.ref_name, '-beta.') }}
     runs-on: macos-latest
     needs: e2e-gate
     env:
@@ -293,6 +324,7 @@ jobs:
 
   android-app:
     name: Build signed Android app
+    if: ${{ !contains(github.ref_name, '-beta.') }}
     needs: e2e-gate
     uses: ./.github/workflows/android-release.yml
     with:
@@ -311,6 +343,9 @@ jobs:
       - macos-app
       - android-app
       - e2e-gate
+    # Beta trains skip the signed macOS/Android app jobs above; a skipped
+    # `needs` job would normally skip this one too, so re-gate explicitly.
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.e2e-gate.result == 'success' && (contains(github.ref_name, '-beta.') || (needs.macos-app.result == 'success' && needs.android-app.result == 'success')) }}
     permissions:
       contents: write
     steps:
@@ -324,6 +359,7 @@ jobs:
           merge-multiple: true
 
       - name: Validate release version
+        if: ${{ !contains(github.ref_name, '-beta.') }}
         run: |
           set -euo pipefail
           crate_version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
@@ -333,20 +369,47 @@ jobs:
             exit 1
           fi
 
+      - name: Validate beta tag format
+        if: ${{ contains(github.ref_name, '-beta.') }}
+        run: |
+          set -euo pipefail
+          crate_version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          case "$tag_version" in
+            "$crate_version"-beta.*) ;;
+            *)
+              echo "Beta tag $tag_version must be v${crate_version}-beta.<date> (Cargo.toml declares $crate_version)." >&2
+              exit 1
+              ;;
+          esac
+
       - name: Prepare checksums and Homebrew formula
+        env:
+          IS_BETA: ${{ contains(github.ref_name, '-beta.') }}
         run: |
           set -euo pipefail
           (
             cd dist-artifacts
             rm -f ./*.tar.gz.sha256
-            shasum -a 256 ./*.tar.gz ./*.dmg ./*.apk ./*.aab ./*android*.json | sort -k2 > checksums.txt
+            shopt -s nullglob
+            files=(./*.tar.gz ./*.dmg ./*.apk ./*.aab ./*android*.json)
+            if [ "${#files[@]}" -eq 0 ]; then
+              echo "No release artifacts found to checksum." >&2
+              exit 1
+            fi
+            shasum -a 256 "${files[@]}" | sort -k2 > checksums.txt
           )
-          bash scripts/generate-homebrew-formula.sh \
-            "$GITHUB_REF_NAME" \
-            dist-artifacts/checksums.txt \
-            homebrew-tap/Formula/holon.rb
+          if [ "$IS_BETA" = "true" ]; then
+            echo "Beta train: keep the Homebrew tap on the latest stable only."
+          else
+            bash scripts/generate-homebrew-formula.sh \
+              "$GITHUB_REF_NAME" \
+              dist-artifacts/checksums.txt \
+              homebrew-tap/Formula/holon.rb
+          fi
 
       - name: Upload Homebrew formula artifact
+        if: ${{ !contains(github.ref_name, '-beta.') }}
         uses: actions/upload-artifact@v4
         with:
           name: homebrew-formula
@@ -814,7 +877,27 @@ jobs:
           \`\`\`
           EOF
 
+      - name: Prepare beta release notes
+        if: ${{ contains(github.ref_name, '-beta.') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prev="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')"
+          {
+            echo "Daily beta train build \`${GITHUB_REF_NAME}\` (candidate \`${GITHUB_SHA}\`)."
+            echo
+            echo "Channel contract: beta-channel machines install this prerelease only after the Release E2E attestation and the real-library smoke check both pass. The \`[smoke: ...]\` line below is that smoke marker; \`[smoke: pending]\` means do not upgrade yet."
+            echo
+            echo "## Commits since ${prev}"
+            gh api "repos/${GITHUB_REPOSITORY}/compare/${prev}...${GITHUB_SHA}" \
+              --jq '.commits[:40][] | "- [" + (.sha | .[0:8]) + "] " + (.commit.message | split("\n")[0])'
+            echo
+            echo "[smoke: pending]"
+          } > beta-release-notes.md
+
       - name: Publish GitHub release
+        if: ${{ !contains(github.ref_name, '-beta.') }}
         uses: softprops/action-gh-release@v2
         with:
           body_path: release-notes.md
@@ -830,7 +913,35 @@ jobs:
             dist-artifacts/appcast.xml
             dist-artifacts/checksums.txt
 
+      - name: Resume check for an existing beta prerelease
+        if: ${{ contains(github.ref_name, '-beta.') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Re-dispatching Release for the same beta tag (an interrupted train)
+          # must be idempotent: the publish step below updates the existing
+          # prerelease in place, replacing same-named assets, instead of
+          # creating a duplicate or failing the resume.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "existing prerelease for ${GITHUB_REF_NAME}; this run will update it in place (resume)"
+          else
+            echo "no existing prerelease for ${GITHUB_REF_NAME}; creating it"
+          fi
+
+      - name: Publish GitHub beta prerelease
+        if: ${{ contains(github.ref_name, '-beta.') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: beta-release-notes.md
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: |
+            dist-artifacts/*.tar.gz
+            dist-artifacts/checksums.txt
+
       - name: Push Homebrew formula
+        if: ${{ !contains(github.ref_name, '-beta.') }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
@@ -892,7 +1003,13 @@ jobs:
           set -euo pipefail
           repository="$(printf '%s' "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
           version="${GITHUB_REF_NAME#v}"
-          docker buildx imagetools create \
-            --tag "${repository}:${version}" \
-            --tag "${repository}:latest" \
-            "${SOURCE_IMAGE}"
+          channel_tags=(latest)
+          if [[ "$GITHUB_REF_NAME" == *-beta.* ]]; then
+            # Beta trains update the rolling `beta` tag and never move `latest`.
+            channel_tags=(beta)
+          fi
+          args=(--tag "${repository}:${version}")
+          for channel in "${channel_tags[@]}"; do
+            args+=(--tag "${repository}:${channel}")
+          done
+          docker buildx imagetools create "${args[@]}" "${SOURCE_IMAGE}"

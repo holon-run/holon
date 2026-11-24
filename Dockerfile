@@ -34,6 +34,10 @@ RUN npm run build
 
 FROM rust:bookworm AS rust-builder
 
+# Optional release-identity override for build.rs; empty keeps the
+# Cargo.toml version, so dev/local image builds are unaffected.
+ARG HOLON_PKG_VERSION_OVERRIDE=
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         cmake \
@@ -47,7 +51,8 @@ COPY --from=web-builder /src/packages/app-sdk/dist ./packages/app-sdk/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \
-    cargo build --release --locked \
+    if [ -n "$HOLON_PKG_VERSION_OVERRIDE" ]; then export HOLON_PKG_VERSION_OVERRIDE="$HOLON_PKG_VERSION_OVERRIDE"; fi \
+    && cargo build --release --locked \
     && cp target/release/holon /tmp/holon
 
 FROM debian:bookworm-slim AS runtime
