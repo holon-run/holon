@@ -3996,6 +3996,19 @@ mod tests {
         );
     }
 
+    /// PID of a live process that is not this one (#4468).
+    ///
+    /// Run-file fixtures that must look like a running daemon cannot use
+    /// `std::process::id()`: the daemon treats a recorded pid equal to its own
+    /// as stale residue. The test process's parent stays alive for the whole
+    /// run and is always a different process.
+    #[cfg(unix)]
+    fn live_foreign_pid() -> u32 {
+        let pid = std::os::unix::process::parent_id();
+        assert_ne!(pid, std::process::id());
+        pid
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn serve_profile_running_legacy_start_compares_effective_options() {
@@ -4008,7 +4021,7 @@ mod tests {
             config.http_addr = "127.0.0.1:9".into();
             config.control_token = None;
             let mut metadata = runtime_metadata_with_serve_args(&config, recorded_args, false);
-            metadata.pid = std::process::id();
+            metadata.pid = live_foreign_pid();
             let initial = resolve_recorded_daemon_serve_plan(&config, &metadata).unwrap();
             metadata.config_fingerprint =
                 holon::daemon::config_fingerprint(&initial.config).unwrap();

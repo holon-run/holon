@@ -1274,6 +1274,7 @@ async fn daemon_status_reports_read_error_for_unreadable_persisted_failure_file(
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn daemon_status_bounds_tcp_fallback_when_socket_missing_and_pid_alive() {
     // Socket missing, metadata records a different live PID, and the TCP
