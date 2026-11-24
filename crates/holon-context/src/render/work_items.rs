@@ -9,7 +9,7 @@ use holon_domain::{
 use holon_system::utf8::truncate_text;
 
 use super::bounded_inline;
-use crate::history::assistant_round_text_preview;
+use crate::{history::assistant_round_text_preview, records::CapturedRecords};
 
 pub trait PlanArtifactLookup {
     fn plan(&self, id: &str) -> Option<&WorkItemPlanArtifact>;
@@ -169,15 +169,14 @@ fn work_item_plan_status_label(status: holon_domain::WorkItemPlanStatus) -> &'st
 
 pub fn render_current_work_item_process_trace(
     work_item: &WorkItemRecord,
-    briefs: &[impl std::borrow::Borrow<BriefRecord>],
-    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
-    transcript: &[impl std::borrow::Borrow<TranscriptEntry>],
+    briefs: CapturedRecords<'_, BriefRecord>,
+    tools: CapturedRecords<'_, ToolContextProjection>,
+    transcript: CapturedRecords<'_, TranscriptEntry>,
 ) -> Option<String> {
     let mut lines = vec!["Recent current WorkItem process trace:".to_string()];
     let mut added = 0usize;
     for brief in briefs
         .iter()
-        .map(std::borrow::Borrow::<BriefRecord>::borrow)
         .rev()
         .filter(|brief| brief.agent_id == work_item.agent_id)
         .filter(|brief| brief.work_item_id.as_deref() == Some(work_item.id.as_str()))
@@ -192,7 +191,6 @@ pub fn render_current_work_item_process_trace(
     }
     for tool in tools
         .iter()
-        .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
         .rev()
         .filter(|tool| tool.agent_id == work_item.agent_id)
         .filter(|tool| tool.work_item_id.as_deref() == Some(work_item.id.as_str()))
@@ -207,7 +205,6 @@ pub fn render_current_work_item_process_trace(
     }
     for entry in transcript
         .iter()
-        .map(std::borrow::Borrow::<TranscriptEntry>::borrow)
         .rev()
         .filter(|entry| entry.agent_id == work_item.agent_id)
         .filter(|entry| entry.kind == TranscriptEntryKind::AssistantRound)
@@ -226,7 +223,7 @@ pub fn render_work_item_candidates<'a>(
     projection: &'a ContextWorkQueue,
     displayed_work_item_id: Option<&str>,
     completion_reports: impl Fn(&'a WorkItemRecord) -> Option<CompletionReport<'a>>,
-    plan_observations: &impl PlanArtifactLookup,
+    plan_observations: &dyn PlanArtifactLookup,
 ) -> Option<String> {
     let mut lines = vec!["Work item candidates by scheduler ranking:".to_string()];
     append_candidate_group(
@@ -305,7 +302,7 @@ fn append_candidate_group<'a>(
     items: &'a [WorkItemSchedulingProjection],
     displayed_work_item_id: Option<&str>,
     completion_reports: &impl Fn(&'a WorkItemRecord) -> Option<CompletionReport<'a>>,
-    plan_observations: &impl PlanArtifactLookup,
+    plan_observations: &dyn PlanArtifactLookup,
 ) {
     if items.is_empty() {
         return;
@@ -401,7 +398,7 @@ fn render_work_item_plan_artifact_lines(
 
 fn render_work_item_plan_ref(
     work_item: &WorkItemRecord,
-    plan_observations: &impl PlanArtifactLookup,
+    plan_observations: &dyn PlanArtifactLookup,
 ) -> Option<String> {
     if let Some(artifact) = work_item.plan_artifact.as_ref() {
         return Some(format!("Plan ref: {}", artifact.path.display()));

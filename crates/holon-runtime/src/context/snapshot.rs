@@ -236,6 +236,20 @@ pub(super) struct HistorySnapshot {
     pub transcript: Vec<ContextHistoryTranscript>,
     pub observations: HistoryObservations,
 }
+impl HistorySnapshot {
+    pub(super) fn captured(&self) -> holon_context::history::CapturedHistory<'_> {
+        use holon_context::{history::CapturedHistory, records::CapturedRecords};
+        CapturedHistory {
+            observations: &self.observations,
+            turn_records: CapturedRecords::new(&self.turn_records),
+            messages: CapturedRecords::new(&self.messages),
+            briefs: CapturedRecords::new(&self.briefs),
+            tools: CapturedRecords::new(&self.tools),
+            transcript: CapturedRecords::new(&self.transcript),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct HistoryObservations {
     brief_text: BTreeMap<String, ContextHistoryBriefText>,
@@ -390,6 +404,12 @@ impl holon_context::history::TurnHistoryObservations for HistoryObservations {
 
     fn trigger_summary_valid(&self, turn: &TurnRecord) -> bool {
         self.trigger_summary_valid(turn)
+    }
+}
+
+impl holon_context::history::ProjectionHistoryObservations for HistoryObservations {
+    fn assigned_turn_for_message(&self, message_id: &str) -> Option<&str> {
+        self.assigned_turn_for_message(message_id)
     }
 }
 

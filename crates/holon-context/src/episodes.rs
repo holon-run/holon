@@ -131,12 +131,10 @@ pub fn build_relevant_episode_memory_section(
     ))
 }
 
-pub fn recent_turn_window_start(
-    turn_records: &[impl std::borrow::Borrow<TurnRecord>],
+pub(crate) fn recent_turn_window_start<'a>(
+    turn_records: impl Iterator<Item = &'a TurnRecord>,
 ) -> Option<u64> {
     turn_records
-        .iter()
-        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .filter_map(|turn| (turn.turn_index != 0).then_some(turn.turn_index))
         .min()
 }

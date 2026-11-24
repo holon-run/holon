@@ -19,8 +19,7 @@ pub(crate) const INPUT_BATCH_BYTES: usize = 24 * 1024;
 pub(crate) const INPUT_BATCH_SCAN: usize = 64;
 #[cfg(test)]
 const OVERSIZE_PREVIEW_BYTES: usize = 4096;
-pub(crate) const BATCH_HEADER: &str =
-    "Current input batch (receive order; each item retains its own authority and reply route):\n";
+pub(crate) use holon_context::render::input_batches::{render_batch, BATCH_HEADER};
 
 fn selected_pending_result<'a>(
     record: &'a TaskResultSettlementRecord,
@@ -238,14 +237,6 @@ pub(super) fn item_evidence(
         source_ref,
         rendered: format!("{prefix}{}{suffix}", &body[..end]),
     }))
-}
-
-pub(crate) fn render_batch(batch: &IdleInputBatchRecord) -> String {
-    let mut text = String::from(BATCH_HEADER);
-    for item in &batch.items {
-        text.push_str(&item.rendered);
-    }
-    text
 }
 
 #[cfg(test)]

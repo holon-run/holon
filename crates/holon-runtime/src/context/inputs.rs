@@ -1248,6 +1248,7 @@ mod resident_tests {
             TranscriptEntryKind,
         },
     };
+    use holon_context::records::CapturedRecords;
     use std::{
         collections::{BTreeMap, BTreeSet},
         sync::Arc,
@@ -1421,15 +1422,15 @@ mod resident_tests {
         assert_eq!(
             super::super::render_current_work_item_process_trace(
                 &work,
-                &[] as &[BriefRecord],
-                &[] as &[ToolContextProjection],
-                &full
+                CapturedRecords::empty(),
+                CapturedRecords::empty(),
+                CapturedRecords::new(&full)
             ),
             super::super::render_current_work_item_process_trace(
                 &work,
-                &[] as &[BriefRecord],
-                &[] as &[ToolContextProjection],
-                &selected
+                CapturedRecords::empty(),
+                CapturedRecords::empty(),
+                CapturedRecords::new(&selected)
             )
         );
         // The full owning API still rejects the same ignored source material.
@@ -2071,18 +2072,18 @@ mod resident_tests {
         current_work.id = "work-tool-history".into();
         let expected_trace = super::super::render_current_work_item_process_trace(
             &current_work,
-            &[] as &[BriefRecord],
-            std::slice::from_ref(&tool),
-            &[] as &[TranscriptEntry],
+            CapturedRecords::empty(),
+            CapturedRecords::from_slice(&std::slice::from_ref(&tool)),
+            CapturedRecords::empty(),
         );
         assert!(expected_trace.is_some());
         for item in &selected {
             assert_eq!(
                 super::super::render_current_work_item_process_trace(
                     &current_work,
-                    &[] as &[BriefRecord],
-                    std::slice::from_ref(item),
-                    &[] as &[TranscriptEntry],
+                    CapturedRecords::empty(),
+                    CapturedRecords::from_slice(&std::slice::from_ref(item)),
+                    CapturedRecords::empty(),
                 ),
                 expected_trace,
             );
@@ -3232,12 +3233,18 @@ mod resident_tests {
         .unwrap();
         tx.commit().unwrap();
         // Pure prompt projection consumes only the already-frozen relation.
-        let evidence = crate::context::build_recent_turn_projection_evidence(
-            &resident_observations,
-            std::slice::from_ref(&turn),
-            &messages,
-            &[] as &[BriefRecord],
-            &[] as &[ToolContextProjection],
+        use holon_context::history::CapturedHistory;
+
+        let turns = std::slice::from_ref(&turn);
+        let evidence = holon_context::assembly::build_recent_turn_projection_evidence(
+            CapturedHistory {
+                observations: &resident_observations,
+                turn_records: CapturedRecords::from_slice(&turns),
+                messages: CapturedRecords::new(&messages),
+                briefs: CapturedRecords::empty(),
+                tools: CapturedRecords::empty(),
+                transcript: CapturedRecords::empty(),
+            },
             crate::projection_eval::ProjectionOwner::Command,
         );
         assert!(evidence

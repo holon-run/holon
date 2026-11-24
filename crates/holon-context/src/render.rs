@@ -9,6 +9,7 @@ use holon_domain::{
 use holon_system::utf8::truncate_text;
 
 pub mod continuation;
+pub mod input_batches;
 pub mod task_results;
 pub mod tasks;
 pub mod work_items;

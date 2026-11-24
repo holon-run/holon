@@ -2,7 +2,9 @@
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+#[cfg(target_os = "linux")]
+use std::fs;
+use std::fs::{File, OpenOptions};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]

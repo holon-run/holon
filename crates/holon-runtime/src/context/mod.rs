@@ -1,9 +1,7 @@
 //! Context assembly: builds prompt sections from runtime state.
 pub(crate) mod inputs;
-use holon_context::episodes::{build_relevant_episode_memory_section, recent_turn_window_start};
 use holon_context::history::{
     compare_message_recency, history_turns_without_current_input, is_trusted_operator_input,
-    latest_trusted_operator_input, render_recent_turns_with_budget_from_snapshot,
     render_turn_records_with_budget_from_snapshot, turn_record_owns_object,
 };
 use holon_context::{budget, planner, render};
@@ -15,18 +13,12 @@ use inputs::{ContextHistoryBrief, ContextHistoryMessage, ContextInputs};
 pub(crate) use planner::ContextPlanEvidence;
 pub(crate) use planner::ContextPlanningError;
 pub(crate) use planner::{ContextPlanDecision, ContextPlanOutcome, ContextPlanReason};
-use render::continuation::{
-    continuation_context, render_continuation_anchor, render_message_body_for_anchor,
-    render_wake_hint_context,
-};
 pub(crate) use render::message_reply_expectation_context as render_message_reply_expectation_context;
-use render::tasks::{render_active_tasks, ACTIVE_TASKS_CONTEXT_LIMIT};
+use render::sanitize_inline;
+use render::tasks::ACTIVE_TASKS_CONTEXT_LIMIT;
 pub(crate) use render::work_items::COMPLETION_SUMMARY_CHAR_LIMIT;
-use render::work_items::{
-    render_compact_current_work_item, render_current_work_item_process_trace,
-    render_current_work_refs, render_empty_current_work_item, render_work_item_candidates,
-    CompletionReport,
-};
+use render::work_items::{render_current_work_item_process_trace, CompletionReport};
+use replay_reference::{classify_message_reference, MessageReferenceClass};
 use resources::PlanArtifactLookup;
 #[cfg(test)]
 pub(crate) use snapshot::prepare_work_item_scoped_history;
@@ -40,17 +32,6 @@ pub use snapshot::{
     ContextSourceDescriptor, ContextSourceKind,
 };
 use snapshot::{HistoryObservations, HistorySnapshot, PreparedScopedHistory};
-// Re-import budget helpers for use within this module.
-use budget::truncate_section_content;
-use planner::{
-    plan_context, ContextCandidate, ContextCandidatePolicy, DropTier, RetentionPriority,
-};
-use replay_reference::{classify_message_reference, MessageReferenceClass};
-// Re-import render helpers for use within this module.
-use render::{
-    message_body_text, message_header, render_current_input_section, sanitize_inline, section,
-    turn_section,
-};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -69,13 +50,11 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::{
-    projection_eval::{
-        ProjectionEvidenceIndex, ProjectionEvidenceRef, ProjectionEvidenceRole, ProjectionOwner,
-    },
+    projection_eval::{ProjectionEvidenceIndex, ProjectionEvidenceRef, ProjectionOwner},
     prompt::PromptSection,
     runtime::resident_input_evidence::ToolContextProjection,
     storage::AppStorage,
-    system::{execution_policy_summary_lines, ExecutionSnapshot},
+    system::ExecutionSnapshot,
     tool::helpers::truncate_text,
     types::{
         AgentState, AuthorityClass, BriefRecord, CallbackDeliveryMode, ContextEpisodeRecord,
@@ -182,19 +161,12 @@ pub(crate) fn reproject_recent_turns(
     reprojection: &RecentTurnsReprojection,
     budget: usize,
 ) -> Option<PromptSection> {
-    let history = &reprojection.history;
-    render_recent_turns_with_budget_from_snapshot(
-        &history.observations,
-        &history.turn_records,
-        &history.messages,
-        &history.briefs,
-        &history.tools,
-        &history.transcript,
+    holon_context::assembly::reproject_recent_turns(
+        reprojection.history.captured(),
         &reprojection.current_message,
         reprojection.current_work_item.as_ref(),
         budget,
     )
-    .map(|content| turn_section("recent_turns", content))
 }
 
 pub(crate) fn reproject_work_item_scoped_with_limit(
@@ -206,38 +178,20 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
         return Ok(WorkItemScopedReprojection::NoCurrentWorkItem);
     };
     let selected = reprojection.select_scoped(window_limit)?;
-    let history = &selected.history;
-    if history.turn_records.is_empty() {
-        return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
-    }
-    let Some(content) = render_turn_records_with_budget_from_snapshot(
-        &history.observations,
-        &history.turn_records,
-        &history.messages,
-        &history.briefs,
-        &history.tools,
-        &history.transcript,
+    Ok(holon_context::assembly::reproject_work_item_history(
+        selected.history.captured(),
         &reprojection.current_message,
-        Some(work_item),
+        work_item,
         budget,
-    ) else {
-        return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
-    };
-    let evidence = build_recent_turn_projection_evidence(
-        &history.observations,
-        &history.turn_records,
-        &history.messages,
-        &history.briefs,
-        &history.tools,
-        ProjectionOwner::WorkItem {
-            work_item_id: work_item.id.clone(),
+    )
+    .map_or(
+        WorkItemScopedReprojection::NoOwnedTurnRecords,
+        |projection| WorkItemScopedReprojection::Rendered {
+            section: projection.section,
+            evidence: projection.evidence,
+            turns_loaded: projection.turns_loaded,
         },
-    );
-    Ok(WorkItemScopedReprojection::Rendered {
-        section: turn_section("recent_turns", content),
-        evidence,
-        turns_loaded: history.turn_records.len(),
-    })
+    ))
 }
 
 pub fn build_context(
@@ -261,49 +215,6 @@ pub fn build_context(
         agent_home,
         None,
     )
-}
-
-fn context_candidate(
-    full: PromptSection,
-    compact: Option<PromptSection>,
-    pinned: bool,
-) -> ContextCandidate {
-    let policy = context_candidate_policy(&full.id, pinned);
-    ContextCandidate::new(full, compact, policy)
-}
-
-fn context_candidate_policy(id: &str, pinned: bool) -> ContextCandidatePolicy {
-    let (priority, drop_tier, render_order) = match id {
-        "agent" => (RetentionPriority::High, DropTier::Last, 10),
-        "default_external_ingress" => (RetentionPriority::Normal, DropTier::Normal, 20),
-        "execution_environment" => (RetentionPriority::High, DropTier::Last, 30),
-        "active_tasks" => (RetentionPriority::High, DropTier::Late, 40),
-        "current_work_item" => (RetentionPriority::Critical, DropTier::Last, 50),
-        "current_work_refs" => (RetentionPriority::High, DropTier::Late, 60),
-        "relevant_episode_memory" => (RetentionPriority::Normal, DropTier::Normal, 70),
-        "current_work_item_process_trace" => (RetentionPriority::Normal, DropTier::Normal, 80),
-        "queued_blocked_work_items" => (RetentionPriority::Normal, DropTier::Normal, 90),
-        "worktree_session" => (RetentionPriority::Normal, DropTier::Late, 100),
-        "agent_templates_catalog" => (RetentionPriority::Low, DropTier::Early, 110),
-        "skills_catalog" => (RetentionPriority::Low, DropTier::Early, 120),
-        "active_skills" => (RetentionPriority::Normal, DropTier::Normal, 130),
-        "agent_home_notes_catalog" => (RetentionPriority::Low, DropTier::Early, 140),
-        "context_contract" => (RetentionPriority::High, DropTier::Last, 150),
-        "continuation_anchor" => (RetentionPriority::Critical, DropTier::Last, 160),
-        "recent_turns" => (RetentionPriority::High, DropTier::Late, 170),
-        "continuation_context" => (RetentionPriority::High, DropTier::Last, 180),
-        "pending_task_results" => (RetentionPriority::Critical, DropTier::Last, 185),
-        "current_input" => (RetentionPriority::Critical, DropTier::Last, 190),
-        "recovery_input_batches" => (RetentionPriority::Critical, DropTier::Last, 192),
-        "current_live_input_batches" => (RetentionPriority::Critical, DropTier::Last, 195),
-        _ => (RetentionPriority::Normal, DropTier::Normal, u16::MAX),
-    };
-    ContextCandidatePolicy {
-        pinned,
-        priority,
-        drop_tier,
-        render_order,
-    }
 }
 
 pub fn build_context_with_default_external_ingress(
@@ -378,776 +289,105 @@ fn build_context_inner(
     budget: usize,
     input_admission: bool,
 ) -> Result<(BuiltContext, usize)> {
-    anyhow::ensure!(
-        input_admission || !snapshot.data.admission_planning,
-        "admission planning snapshots cannot be used as an execution prompt"
-    );
-    anyhow::ensure!(
-        budget <= snapshot.data.config.prompt_budget_estimated_tokens,
-        "context budget expansion requires a newly prepared snapshot"
-    );
-    let mut config = snapshot.data.config.clone();
-    config.prompt_budget_estimated_tokens = budget;
-    let config = &config;
+    use holon_context::assembly::{assemble_context, ContextAssemblyInput, RecoveryContext};
+    use holon_context::records::CapturedRecords;
+
     let _timer = crate::diagnostics::attribution::CONTEXT_RENDER.start();
     let data = &snapshot.data;
-    let agent = data.agent.as_ref();
-    let execution = &data.execution;
-    let skills = data.skills.view();
-    let current_message = &data.current_message;
-    let continuation = data.continuation.as_ref();
-    let recovery_source = data.recovery_source.as_ref();
-    let continuation_anchor_messages = &data.continuation_anchor_messages;
-    let continuation_anchor_operator =
-        latest_trusted_operator_input(continuation_anchor_messages, current_message);
-    let HistorySnapshot {
-        turn_records,
-        messages,
-        briefs,
-        tools,
-        transcript,
-        observations,
-    } = data.history.as_ref();
-    let active_wait_conditions = &data.active_wait_conditions;
-    let episodes = &data.episodes;
-    let work_queue_projection = &data.work_queue_projection;
-    let current_work_item = data.current_work_item.as_ref();
-    let default_ingress = data.default_ingress.as_ref();
-    let active_task_count = data.active_task_count;
-    let active_tasks = &data.active_tasks;
-    let plan_observations = &data.resource_views;
-    let notes_content = data.resource_views.notes();
-    let completion_reports = &data.completion_reports;
-    let pending_task_results = &data.pending_task_results;
-    let current_turn = data.current_turn.as_deref();
-    let mut seen_messages: BTreeSet<_> = recovery_source
-        .iter()
-        .map(|source| source.root_message.id.clone())
-        .collect();
-    let mut candidates = Vec::new();
-    candidates.push(context_candidate(
-        section("agent", format!("Agent id: {}", agent.id)),
-        None,
-        false,
-    ));
-    if let Some(default_ingress) = default_ingress {
-        candidates.push(context_candidate(
-            section(
-                "default_external_ingress",
-                render_default_external_ingress(&config.callback_base_url, &default_ingress),
-            ),
-            None,
-            false,
-        ));
-    }
-    let execution_summary = execution_policy_summary_lines(execution).join("\n");
-    candidates.push(context_candidate(
-        section(
-            "execution_environment",
-            format!(
-                "Execution environment summary (policy snapshot; host-local is not a strong sandbox guarantee):\n\
-                 {}",
-                execution_summary,
-            ),
-        ),
-        None,
-        false,
-    ));
-    if active_task_count > 0 {
-        candidates.push(context_candidate(
-            section(
-                "active_tasks",
-                render_active_tasks(
-                    active_tasks,
-                    active_task_count,
-                    crate::tool::helpers::command_preview,
-                ),
-            ),
-            None,
-            false,
-        ));
-    }
-
-    if let Some(work_item) = current_work_item {
-        candidates.push(context_candidate(
-            turn_section(
-                "current_work_item",
-                render_current_work_item(work_item, plan_observations, active_wait_conditions),
-            ),
-            Some(turn_section(
-                "current_work_item",
-                render_compact_current_work_item(work_item),
-            )),
-            true,
-        ));
-        if let Some(content) =
-            render_current_work_refs(work_item, crate::work_item_refs::MAX_ACTIVE_WORK_REFS)
-        {
-            candidates.push(context_candidate(
-                turn_section("current_work_refs", content),
-                None,
-                false,
-            ));
-        }
-    } else {
-        candidates.push(context_candidate(
-            turn_section("current_work_item", render_empty_current_work_item()),
-            None,
-            false,
-        ));
-    }
-
-    let recent_turn_window_start = recent_turn_window_start(&turn_records);
-    if let Some(section) = build_relevant_episode_memory_section(
-        &episodes,
-        agent,
-        current_work_item,
-        current_message,
-        config,
-        config.prompt_budget_estimated_tokens,
-        recent_turn_window_start,
-    ) {
-        candidates.push(context_candidate(section, None, false));
-    }
-
-    if let Some(work_item) = current_work_item {
-        if let Some(content) =
-            render_current_work_item_process_trace(work_item, &briefs, &tools, &transcript)
-        {
-            candidates.push(context_candidate(
-                turn_section("current_work_item_process_trace", content),
-                None,
-                false,
-            ));
-        }
-    }
-
-    if let Some(content) = render_work_item_candidates(
-        &work_queue_projection,
-        current_work_item.map(|item| item.id.as_str()),
-        |record| completion_report_for_work_item(completion_reports, record),
-        plan_observations,
-    ) {
-        candidates.push(context_candidate(
-            turn_section("queued_blocked_work_items", content),
-            None,
-            false,
-        ));
-    }
-
-    if let Some(worktree) = &agent.worktree_session {
-        candidates.push(context_candidate(
-            section(
-                "worktree_session",
-                format!(
-                    "Managed worktree active:\n\
-                     - Original working directory: {}\n\
-                     - Original branch: {}\n\
-                     - Worktree path: {}\n\
-                     - Worktree branch: {}",
-                    worktree.original_cwd.display(),
-                    worktree.original_branch,
-                    worktree.worktree_path.display(),
-                    worktree.worktree_branch
-                ),
-            ),
-            None,
-            false,
-        ));
-    }
-
-    if !skills.agent_templates_catalog.is_empty() {
-        let rendered = skills
-            .agent_templates_catalog
-            .iter()
-            .map(|entry| {
-                let skills = if entry.included_skills.is_empty() {
-                    "skills=none".to_string()
-                } else {
-                    format!("skills={}", entry.included_skills.join(","))
-                };
-                let path = entry
-                    .path
-                    .as_ref()
-                    .map(|path| format!(" path={}", path.display()))
-                    .unwrap_or_default();
-                let display = if entry.name.is_empty() || entry.name == entry.description {
-                    entry.description.clone()
-                } else if entry.description.is_empty() {
-                    entry.name.clone()
-                } else {
-                    format!("{} - {}", entry.name, entry.description)
-                };
-                format!(
-                    "- [{}] {} template={} :: {}{} ({skills})",
-                    entry.source.label(),
-                    entry.catalog_id,
-                    entry.template,
-                    display,
-                    path
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        candidates.push(context_candidate(
-            section(
-                "agent_templates_catalog",
-                format!("Discovered agent templates catalog:\n{rendered}"),
-            ),
-            None,
-            false,
-        ));
-    }
-
-    if !skills.discoverable_skills.is_empty() {
-        let rendered = skills
-            .discoverable_skills
-            .iter()
-            .map(|skill| {
-                format!(
-                    "- [{}] {} :: {} ({})",
-                    scope_label(&skill.scope),
-                    skill.name,
-                    skill.path.display(),
-                    skill.description
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        candidates.push(context_candidate(
-            section(
-                "skills_catalog",
-                format!(
-                    "Discovered skills catalog (same-name precedence: workspace > agent > user; lower-precedence duplicates are omitted):\n{rendered}"
-                ),
-            ),
-            None,
-            false,
-        ));
-    }
-
-    if !skills.active_skills.is_empty() {
-        let rendered = skills
-            .active_skills
-            .iter()
-            .map(|skill| {
-                format!(
-                    "- [{}][{}][{}] {} :: {}",
-                    scope_label(&skill.scope),
-                    activation_source_label(skill.activation_source),
-                    activation_state_label(skill.activation_state),
-                    skill.skill_id,
-                    skill.path.display()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        candidates.push(context_candidate(
-            section(
-                "active_skills",
-                format!("Active skills (same-name precedence follows skills_catalog):\n{rendered}"),
-            ),
-            None,
-            false,
-        ));
-    }
-
-    if let Some(notes_content) = notes_content {
-        candidates.push(context_candidate(
-            section("agent_home_notes_catalog", notes_content.clone()),
-            None,
-            false,
-        ));
-    }
-
-    candidates.push(context_candidate(
-        section(
-            "context_contract",
-            "Interpret the memory block with this priority: current work item objective first, durable plan artifact second, todo_list third, and current work refs after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and plan artifact as the ground truth unless the current input explicitly changes it."
-                .to_string(),
-        ),
-        None,
-        false,
-    ));
-
-    if let Some(source) = recovery_source.as_ref() {
-        let root = &source.root_message;
-        let root_projection = source
-            .predecessors
-            .iter()
-            .filter(|attempt| attempt.source_message_id.as_deref() == Some(root.id.as_str()))
-            .find_map(|attempt| attempt.input_projection.as_ref())
-            .or_else(|| {
-                source
-                    .source_turns
-                    .iter()
-                    .filter_map(|turn| turn.idle_input_batch.as_ref())
-                    .flat_map(|batch| &batch.items)
-                    .find(|item| item.message_id == root.id)
-            });
-        let root_content = root_projection
-            .map(|item| item.rendered.clone())
-            .unwrap_or_else(|| {
-                format!(
-                    "{}\n{}",
-                    message_header(root),
-                    render_message_body_for_anchor(&root.body),
-                )
-            });
-        let anchor = format!(
-            "Provider recovery: continue the task of source turn {}, predecessor attempt {}. The current focus is not the recovery authority.\nRoot task input {} (original provenance):\n{}",
-            source.source_turn().turn_id,
-            source.predecessor.attempt_id,
-            root.id,
-            root_content,
-        );
-        candidates.push(context_candidate(
-            turn_section("continuation_anchor", anchor.clone()),
-            Some(turn_section("continuation_anchor", anchor)),
-            true,
-        ));
-    } else if let Some(anchor) = render_continuation_anchor(
-        continuation_anchor_operator,
-        current_message,
-        continuation,
-        current_work_item,
-        config.prompt_budget_estimated_tokens,
-    ) {
-        let compact_anchor = render_continuation_anchor(
-            continuation_anchor_operator,
-            current_message,
-            continuation,
-            current_work_item,
-            48,
-        )
-        .expect("full continuation anchor implies compact continuation anchor");
-        candidates.push(context_candidate(
-            turn_section("continuation_anchor", anchor),
-            Some(turn_section("continuation_anchor", compact_anchor)),
-            true,
-        ));
-    }
-
-    let recent_turns_budget = config
-        .prompt_budget_estimated_tokens
-        .min(config.turn_projection_budget());
-    let recent_turns_compact_budget = recent_turns_budget.min(128);
-    let projection_evidence = build_projection_evidence(
-        &snapshot.data.history.observations,
-        agent,
-        current_message,
-        current_work_item,
-        &turn_records,
-        &messages,
-        &briefs,
-        &tools,
-    );
-    let mut recent_turns_reprojection =
-        (!turn_records.is_empty()).then(|| RecentTurnsReprojection {
-            history: snapshot.data.history.clone(),
-            agent_history: snapshot.data.history.clone(),
-            agent_evidence: projection_evidence
-                .get("recent_turns")
-                .cloned()
-                .unwrap_or_default(),
-            prepared_scoped: snapshot.data.scoped_history.clone(),
-            current_message: current_message.clone(),
-            current_work_item: current_work_item.cloned(),
-            initial_budget: recent_turns_budget,
-            snapshot_id: snapshot.id(),
-        });
-    if let Some(content) = render_recent_turns_with_budget_from_snapshot(
-        observations,
-        &turn_records,
-        &messages,
-        &briefs,
-        &tools,
-        &transcript,
-        current_message,
-        current_work_item,
-        recent_turns_budget,
-    ) {
-        let compact = render_recent_turns_with_budget_from_snapshot(
-            observations,
-            &turn_records,
-            &messages,
-            &briefs,
-            &tools,
-            &transcript,
-            current_message,
-            current_work_item,
-            recent_turns_compact_budget,
-        )
-        .map(|content| turn_section("recent_turns", content));
-        candidates.push(context_candidate(
-            turn_section("recent_turns", content),
-            compact,
-            false,
-        ));
-    }
-
-    let continuation_present =
-        if let Some(content) = continuation_context(current_message, continuation) {
-            candidates.push(context_candidate(
-                turn_section("continuation_context", content),
-                None,
-                false,
-            ));
-            true
-        } else {
-            false
-        };
-
-    let wake_hint_fallback = (!continuation_present)
-        .then(|| render_wake_hint_context(current_message))
-        .flatten();
-    if let Some(content) = render_pending_task_results_excluding(
-        pending_task_results,
-        current_message,
-        &data.pending_excluded_messages,
-    ) {
-        let section = turn_section("pending_task_results", content);
-        candidates.push(context_candidate(section.clone(), Some(section), true));
-    }
-    let batch = current_turn
-        .and_then(|turn| turn.idle_input_batch.as_ref())
-        .filter(|batch| batch.anchor_message_id == current_message.id);
-    let (current_input_full, current_input_compact) = if let Some(batch) = batch {
-        let mut visible = batch.clone();
-        visible
-            .items
-            .retain(|item| seen_messages.insert(item.message_id.clone()));
-        let section = turn_section(
-            "current_input",
-            crate::runtime::input_consumption::render_batch(&visible),
-        );
-        // Already admitted evidence cannot be dropped to make room for new input.
-        (section.clone(), section)
-    } else if let Some(item) = data.current_input_projection.as_ref() {
-        seen_messages.insert(current_message.id.clone());
-        let section = turn_section(
-            "current_input",
-            format!(
-                "{}{}",
-                crate::runtime::input_consumption::BATCH_HEADER,
-                item.rendered
-            ),
-        );
-        (section.clone(), section)
-    } else {
-        seen_messages.insert(current_message.id.clone());
-        (
-            render_current_input_section(
-                current_message,
-                config.prompt_budget_estimated_tokens,
-                wake_hint_fallback.as_deref(),
-            ),
-            render_current_input_section(current_message, 48, wake_hint_fallback.as_deref()),
+    let completion_report =
+        |record| completion_report_for_work_item(&data.completion_reports, record);
+    let render_pending_task_results = || {
+        render_pending_task_results_excluding(
+            &data.pending_task_results,
+            &data.current_message,
+            &data.pending_excluded_messages,
         )
     };
-    if !input_admission {
-        candidates.push(context_candidate(
-            current_input_full,
-            Some(current_input_compact),
-            true,
-        ));
-    }
-    if let Some(source) = recovery_source.as_ref() {
-        let mut parts = Vec::new();
-        for turn in &source.source_turns {
-            if let Some(content) =
-                render_recovery_input_batches(&data.operator_inputs, turn, &mut seen_messages)?
-            {
-                parts.push(content);
-            }
-        }
-        if !parts.is_empty() {
-            let section = turn_section("recovery_input_batches", parts.join("\n"));
-            candidates.push(context_candidate(section.clone(), Some(section), true));
-        }
-    }
-    if let Some(turn) = current_turn {
-        if let Some(content) =
-            render_live_input_batches(&turn.live_input_batches, &mut seen_messages)
-        {
-            let section = turn_section("current_live_input_batches", content);
-            candidates.push(context_candidate(section.clone(), Some(section), true));
-        }
-        if turn.replay.is_some() {
-            if let Some(content) =
-                render_operator_inputs(&data.operator_inputs, turn, &mut seen_messages)?
-            {
-                let section = turn_section("recovered_operator_inputs", content);
-                candidates.push(context_candidate(section.clone(), Some(section), true));
-            }
-        }
-    }
-
-    let pinned_tokens = candidates
-        .iter()
-        .filter(|candidate| candidate.policy.pinned)
-        .map(|candidate| {
-            estimate_section_tokens(candidate.compact.as_ref().unwrap_or(&candidate.full))
-        })
-        .sum::<usize>();
-    let admission_tokens = config
-        .prompt_budget_estimated_tokens
-        .saturating_sub(pinned_tokens);
-    let plan = plan_context(candidates, config.prompt_budget_estimated_tokens)?;
-    let drop_recent_turns_reprojection =
-        if let Some(reprojection) = recent_turns_reprojection.as_mut() {
-            match plan
-                .evidence
-                .decisions
-                .iter()
-                .find(|decision| decision.candidate_id == "recent_turns")
-            {
-                Some(decision) if decision.outcome == planner::ContextPlanOutcome::Full => false,
-                Some(decision) if decision.outcome == planner::ContextPlanOutcome::Compact => {
-                    reprojection.initial_budget = recent_turns_compact_budget;
-                    false
-                }
-                Some(decision) if decision.outcome == planner::ContextPlanOutcome::Truncated => {
-                    reprojection.initial_budget = decision.allocated_estimated_tokens;
-                    false
-                }
-                _ => true,
-            }
-        } else {
-            false
-        };
-    if drop_recent_turns_reprojection {
-        recent_turns_reprojection = None;
-    }
-
+    let operator_inputs = |id: &str| {
+        data.operator_inputs
+            .get(id)
+            .map_or_else(CapturedRecords::empty, CapturedRecords::new)
+    };
+    let input = ContextAssemblyInput {
+        admission_planning: data.admission_planning,
+        config: &data.config,
+        agent: &data.agent,
+        execution: &data.execution,
+        skills: data.skills.view(),
+        current_message: &data.current_message,
+        continuation: data.continuation.as_ref(),
+        recovery_source: data.recovery_source.as_ref().map(|source| RecoveryContext {
+            root_message: &source.root_message,
+            predecessor_attempt_id: &source.predecessor.attempt_id,
+            predecessors: &source.predecessors,
+            source_turns: &source.source_turns,
+        }),
+        continuation_anchor_messages: &data.continuation_anchor_messages,
+        history: data.history.captured(),
+        active_wait_conditions: &data.active_wait_conditions,
+        episodes: &data.episodes,
+        work_queue: &data.work_queue_projection,
+        current_work_item: data.current_work_item.as_ref(),
+        default_ingress: data.default_ingress.as_ref(),
+        active_task_count: data.active_task_count,
+        active_tasks: &data.active_tasks,
+        plan_observations: &data.resource_views,
+        notes: data.resource_views.notes().map(String::as_str),
+        current_turn: data.current_turn.as_deref(),
+        current_input_projection: data.current_input_projection.as_ref(),
+        completion_report: &completion_report,
+        render_pending_task_results: &render_pending_task_results,
+        operator_inputs: &operator_inputs,
+        command_preview: crate::tool::helpers::command_preview,
+        callback_url: crate::callbacks::build_callback_url,
+        current_work_scheduling,
+        max_active_work_refs: crate::work_item_refs::MAX_ACTIVE_WORK_REFS,
+    };
+    let assembly = assemble_context(&input, budget, input_admission)?;
+    let recent_turns_reprojection =
+        assembly
+            .recent_turns_budget
+            .map(|initial_budget| RecentTurnsReprojection {
+                history: data.history.clone(),
+                agent_history: data.history.clone(),
+                agent_evidence: assembly
+                    .projection_evidence
+                    .get("recent_turns")
+                    .cloned()
+                    .unwrap_or_default(),
+                prepared_scoped: data.scoped_history.clone(),
+                current_message: data.current_message.clone(),
+                current_work_item: data.current_work_item.clone(),
+                initial_budget,
+                snapshot_id: snapshot.id(),
+            });
     Ok((
         BuiltContext {
+            sections: assembly.plan.sections,
+            plan_evidence: assembly.plan.evidence,
+            projection_evidence: assembly.projection_evidence,
+            recent_turns_reprojection,
             history_policy: data.history_policy,
             projection_budget: data.config.turn_projection_budget(),
             recent_message_limit: data.config.recent_messages,
-            sections: plan.sections,
-            plan_evidence: plan.evidence,
-            projection_evidence,
-            recent_turns_reprojection,
         },
-        admission_tokens,
+        assembly.admission_tokens,
     ))
 }
 
-fn build_projection_evidence(
-    observations: &HistoryObservations,
-    agent: &AgentState,
-    current_message: &MessageEnvelope,
-    current_work_item: Option<&WorkItemRecord>,
-    turn_records: &[impl std::borrow::Borrow<TurnRecord>],
-    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
-    briefs: &[impl std::borrow::Borrow<BriefRecord>],
-    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
-) -> ProjectionEvidenceIndex {
-    let mut evidence = ProjectionEvidenceIndex::new();
-    let current_owner = agent
-        .current_execution_binding
-        .as_ref()
-        .and_then(|binding| binding.owner.as_ref())
-        .map(ProjectionOwner::from)
-        .unwrap_or_else(|| projection_owner(current_message.work_item_id.as_deref(), &agent.id));
-    evidence.insert(
-        "current_input".into(),
-        vec![ProjectionEvidenceRef::new(
-            format!("message:{}", current_message.id),
-            ProjectionEvidenceRole::CurrentInput,
-            current_owner,
-        )],
-    );
-    if let Some(work_item) = current_work_item {
-        let owner = projection_owner(Some(&work_item.id), &agent.id);
-        let work_item_ref = ProjectionEvidenceRef::new(
-            format!("work_item:{}", work_item.id),
-            ProjectionEvidenceRole::WorkItemState,
-            owner.clone(),
-        );
-        evidence.insert("current_work_item".into(), vec![work_item_ref]);
-        let work_refs = work_item
-            .work_refs
-            .iter()
-            .filter(|work_ref| work_ref.status == WorkItemRefStatus::Active)
-            .take(crate::work_item_refs::MAX_ACTIVE_WORK_REFS)
-            .map(|work_ref| {
-                ProjectionEvidenceRef::new(
-                    work_ref.ref_id.clone(),
-                    ProjectionEvidenceRole::Supporting,
-                    owner.clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        if !work_refs.is_empty() {
-            evidence.insert("current_work_refs".into(), work_refs);
-        }
-    }
-
-    let turn_owners = turn_records
-        .iter()
-        .map(std::borrow::Borrow::<TurnRecord>::borrow)
-        .map(|turn| (turn.turn_id.as_str(), turn.effective_owner()))
-        .collect::<BTreeMap<_, _>>();
-    let mut recent_turn_refs = turn_records
-        .iter()
-        .map(std::borrow::Borrow::<TurnRecord>::borrow)
-        .map(|turn| {
-            ProjectionEvidenceRef::new(
-                format!("turn:{}", turn.turn_id),
-                ProjectionEvidenceRole::Turn,
-                ProjectionOwner::from(&turn.effective_owner()),
-            )
-        })
-        .collect::<Vec<_>>();
-    let direct_predecessor_id = messages
-        .iter()
-        .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
-        .max_by(|left, right| compare_message_recency(left, right))
-        .map(|message| message.id.as_str());
-    for message in messages
-        .iter()
-        .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
-    {
-        let owner = observations
-            .assigned_turn_for_message(&message.id)
-            .and_then(|turn_id| turn_owners.get(turn_id))
-            .map(ProjectionOwner::from)
-            .unwrap_or_else(|| projection_owner(message.work_item_id.as_deref(), &agent.id));
-        recent_turn_refs.push(ProjectionEvidenceRef::new(
-            format!("message:{}", message.id),
-            if direct_predecessor_id == Some(message.id.as_str()) {
-                ProjectionEvidenceRole::DirectPredecessor
-            } else {
-                ProjectionEvidenceRole::Input
-            },
-            owner,
-        ));
-    }
-    for brief in briefs {
-        let brief: &BriefRecord = brief.borrow();
-        let owner = brief
-            .turn_id
-            .as_deref()
-            .and_then(|turn_id| turn_owners.get(turn_id))
-            .map(ProjectionOwner::from)
-            .unwrap_or_else(|| projection_owner(brief.work_item_id.as_deref(), &agent.id));
-        recent_turn_refs.push(ProjectionEvidenceRef::new(
-            format!("brief:{}", brief.id),
-            ProjectionEvidenceRole::Result,
-            owner,
-        ));
-    }
-    for tool in tools {
-        let tool: &ToolContextProjection = tool.borrow();
-        let owner = tool
-            .turn_id
-            .as_deref()
-            .and_then(|turn_id| turn_owners.get(turn_id))
-            .map(ProjectionOwner::from)
-            .unwrap_or_else(|| projection_owner(tool.work_item_id.as_deref(), &agent.id));
-        recent_turn_refs.push(ProjectionEvidenceRef::new(
-            format!("tool_execution:{}", tool.id),
-            ProjectionEvidenceRole::ToolResult,
-            owner,
-        ));
-    }
-    recent_turn_refs.sort();
-    if !recent_turn_refs.is_empty() {
-        evidence.insert("recent_turns".into(), recent_turn_refs);
-    }
-    evidence
-}
-
-fn build_recent_turn_projection_evidence(
-    observations: &HistoryObservations,
-    turn_records: &[impl std::borrow::Borrow<TurnRecord>],
-    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
-    briefs: &[impl std::borrow::Borrow<BriefRecord>],
-    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
-    fallback_owner: ProjectionOwner,
-) -> Vec<ProjectionEvidenceRef> {
-    let turn_owners = turn_records
-        .iter()
-        .map(std::borrow::Borrow::<TurnRecord>::borrow)
-        .map(|turn| (turn.turn_id.as_str(), turn.effective_owner()))
-        .collect::<BTreeMap<_, _>>();
-    let owner_for_turn = |turn_id: Option<&str>| {
-        turn_id
-            .and_then(|turn_id| turn_owners.get(turn_id))
-            .map(ProjectionOwner::from)
-            .unwrap_or_else(|| fallback_owner.clone())
-    };
-    let mut evidence = turn_records
-        .iter()
-        .map(std::borrow::Borrow::<TurnRecord>::borrow)
-        .map(|turn| {
-            ProjectionEvidenceRef::new(
-                format!("turn:{}", turn.turn_id),
-                ProjectionEvidenceRole::Turn,
-                ProjectionOwner::from(&turn.effective_owner()),
-            )
-        })
-        .collect::<Vec<_>>();
-    let direct_predecessor_id = messages
-        .iter()
-        .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
-        .max_by(|left, right| compare_message_recency(left, right))
-        .map(|message| message.id.as_str());
-    evidence.extend(
-        messages
-            .iter()
-            .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
-            .map(|message| {
-                ProjectionEvidenceRef::new(
-                    format!("message:{}", message.id),
-                    if direct_predecessor_id == Some(message.id.as_str()) {
-                        ProjectionEvidenceRole::DirectPredecessor
-                    } else {
-                        ProjectionEvidenceRole::Input
-                    },
-                    owner_for_turn(observations.assigned_turn_for_message(&message.id)),
-                )
-            }),
-    );
-    evidence.extend(
-        briefs
-            .iter()
-            .map(std::borrow::Borrow::<BriefRecord>::borrow)
-            .map(|brief| {
-                ProjectionEvidenceRef::new(
-                    format!("brief:{}", brief.id),
-                    ProjectionEvidenceRole::Result,
-                    owner_for_turn(brief.turn_id.as_deref()),
-                )
-            }),
-    );
-    evidence.extend(
-        tools
-            .iter()
-            .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
-            .map(|tool| {
-                ProjectionEvidenceRef::new(
-                    format!("tool_execution:{}", tool.id),
-                    ProjectionEvidenceRole::ToolResult,
-                    owner_for_turn(tool.turn_id.as_deref()),
-                )
-            }),
-    );
-    evidence.sort();
-    evidence.dedup();
-    evidence
-}
-
-fn projection_owner(work_item_id: Option<&str>, agent_id: &str) -> ProjectionOwner {
-    work_item_id
-        .map(|work_item_id| ProjectionOwner::WorkItem {
-            work_item_id: work_item_id.to_string(),
-        })
-        .unwrap_or_else(|| ProjectionOwner::LegacyUnbound {
-            agent_id: agent_id.to_string(),
-        })
+fn current_work_scheduling(
+    work_item: &WorkItemRecord,
+    active_wait_conditions: &[WaitConditionRecord],
+) -> crate::work_item_scheduling::WorkItemSchedulingProjection {
+    crate::work_item_scheduling::derive_work_item_scheduling(
+        crate::work_item_scheduling::WorkItemSchedulingFacts {
+            work_item,
+            is_current: true,
+            is_yielded: false,
+            active_wait_conditions,
+            trigger_delivery_by_id: &BTreeMap::new(),
+        },
+    )
 }
 
 fn hydrate_recent_turn_references(
@@ -1320,28 +560,6 @@ fn default_external_ingress(
         }))
 }
 
-fn render_default_external_ingress(
-    callback_base_url: &str,
-    record: &ExternalTriggerRecord,
-) -> String {
-    let url = record
-        .token
-        .as_ref()
-        .map_or("<unavailable>".to_string(), |token| {
-            crate::callbacks::build_callback_url(callback_base_url, &record.delivery_mode, token)
-        });
-    format!(
-        "Default external ingress:\n\
-         - url: {url}\n\
-         - mode: wake_hint\n\
-         - status: active\n\
-         - external_trigger_id: {}\n\
-         - capability_secret: true\n\
-         - handling: Treat this URL as a capability secret. Do not repeat, store, or forward it unless the current task is explicitly configuring an external system to wake this agent.",
-        record.external_trigger_id
-    )
-}
-
 #[cfg(test)]
 pub(crate) fn render_pending_task_results_from_snapshot(
     pending: &[PendingTaskResult],
@@ -1438,112 +656,6 @@ pub(crate) fn pending_task_results_preview_measure_with_projection_views<'a>(
     )
 }
 
-fn render_recovery_input_batches(
-    operator_inputs: &BTreeMap<String, Vec<snapshot::RecoveredOperatorInput>>,
-    turn: &TurnRecord,
-    seen_messages: &mut BTreeSet<String>,
-) -> Result<Option<String>> {
-    let mut parts = Vec::new();
-    if let Some(batch) = turn.idle_input_batch.as_ref() {
-        let mut visible = batch.clone();
-        visible
-            .items
-            .retain(|item| seen_messages.insert(item.message_id.clone()));
-        if !visible.items.is_empty() {
-            parts.push(crate::runtime::input_consumption::render_batch(&visible));
-        }
-    }
-    if let Some(content) = render_live_input_batches(&turn.live_input_batches, seen_messages) {
-        parts.push(content);
-    }
-    if let Some(content) = render_operator_inputs(operator_inputs, turn, seen_messages)? {
-        parts.push(content);
-    }
-    Ok((!parts.is_empty()).then(|| {
-        format!(
-            "Provider recovery evidence from source turn {} (original provenance):\n{}",
-            turn.turn_id,
-            parts.join("\n")
-        )
-    }))
-}
-
-fn render_operator_inputs(
-    operator_inputs: &BTreeMap<String, Vec<snapshot::RecoveredOperatorInput>>,
-    turn: &TurnRecord,
-    seen_messages: &mut BTreeSet<String>,
-) -> Result<Option<String>> {
-    let Some(inputs) = operator_inputs.get(&turn.turn_id) else {
-        return Ok(None);
-    };
-    let parts = inputs
-        .iter()
-        .filter(|input| seen_messages.insert(input.id.clone()))
-        .map(|message| {
-            let mut provenance = serde_json::to_value(&**message)?;
-            provenance.as_object_mut().expect("message envelope is an object").remove("body");
-            Ok(format!(
-                "Recovered operator interjection (original admission and provenance):\nsource_ref: message:{}\nprovenance: {}\nbody:\n{}\n",
-                message.id,
-                serde_json::to_string(&provenance)?,
-                message_body_text(&message.body),
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok((!parts.is_empty()).then(|| parts.join("\n")))
-}
-
-fn render_live_input_batches(
-    batches: &[LiveInputBatchRecord],
-    seen_messages: &mut BTreeSet<String>,
-) -> Option<String> {
-    let mut seen_batches = BTreeSet::new();
-    let mut text = String::new();
-    for batch in batches {
-        if !seen_batches.insert(&batch.safe_point) {
-            continue;
-        }
-        let items: Vec<_> = batch
-            .items
-            .iter()
-            .filter(|item| seen_messages.insert(item.message_id.clone()))
-            .cloned()
-            .collect();
-        if items.is_empty() {
-            continue;
-        }
-        let mut visible = batch.clone();
-        visible.items = items;
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(&visible.rendered_text());
-    }
-    (!text.is_empty()).then_some(text)
-}
-
-fn render_current_work_item(
-    work_item: &WorkItemRecord,
-    plan_observations: &impl PlanArtifactLookup,
-    active_wait_conditions: &[WaitConditionRecord],
-) -> String {
-    let scheduling = crate::work_item_scheduling::derive_work_item_scheduling(
-        crate::work_item_scheduling::WorkItemSchedulingFacts {
-            work_item,
-            is_current: true,
-            is_yielded: false,
-            active_wait_conditions,
-            trigger_delivery_by_id: &BTreeMap::new(),
-        },
-    );
-    render::work_items::render_current_work_item(
-        work_item,
-        &scheduling,
-        plan_observations.plan(&work_item.id),
-        active_wait_conditions,
-    )
-}
-
 fn completion_report_for_work_item<'a>(
     completion_reports: &'a BTreeMap<String, CompletionReportProjection>,
     record: &'a WorkItemRecord,
@@ -1620,30 +732,6 @@ fn latest_completion_report_by_work_item(
             });
     }
     Ok(summaries)
-}
-
-fn scope_label(scope: &crate::types::SkillScope) -> &'static str {
-    match scope {
-        crate::types::SkillScope::UserGlobal => "user_global",
-        crate::types::SkillScope::Agent => "agent",
-        crate::types::SkillScope::Workspace => "workspace",
-    }
-}
-
-fn activation_source_label(source: crate::types::SkillActivationSource) -> &'static str {
-    match source {
-        crate::types::SkillActivationSource::Explicit => "explicit",
-        crate::types::SkillActivationSource::ImplicitFromCatalog => "implicit_from_catalog",
-        crate::types::SkillActivationSource::Restored => "restored",
-        crate::types::SkillActivationSource::Inherited => "inherited",
-    }
-}
-
-fn activation_state_label(state: crate::types::SkillActivationState) -> &'static str {
-    match state {
-        crate::types::SkillActivationState::TurnActive => "turn_active",
-        crate::types::SkillActivationState::SessionActive => "session_active",
-    }
 }
 
 #[cfg(test)]
@@ -2081,6 +1169,10 @@ mod tests {
         },
     };
     use holon_context::history::render_recent_tool_execution_rollup;
+    use holon_context::{
+        episodes::build_relevant_episode_memory_section,
+        render::work_items::render_empty_current_work_item,
+    };
 
     use super::*;
 
@@ -5129,65 +4221,6 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "d")]
     #[test]
-    fn build_context_omits_working_memory_sections_by_default() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "continue".to_string(),
-            },
-        );
-
-        let mut session = AgentState::new("default");
-        session.working_memory.current_working_memory = WorkingMemorySnapshot {
-            objective: Some("ship working memory".into()),
-            plan: Some(vec!["[InProgress] wire post-turn refresh"].join("\n")),
-            ..WorkingMemorySnapshot::default()
-        };
-
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &crate::types::SkillsRuntimeView::default(),
-            &current_message,
-            None,
-            &ContextConfig {
-                recent_messages: 4,
-                recent_briefs: 4,
-                compaction_trigger_messages: 10,
-                compaction_keep_recent_messages: 4,
-                ..ContextConfig::default()
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        assert!(!built
-            .sections
-            .iter()
-            .any(|section| section.name == "working_memory"));
-        assert!(!built
-            .sections
-            .iter()
-            .any(|section| section.name == "working_memory_delta"));
-        assert!(!built
-            .sections
-            .iter()
-            .any(|section| section.name == "compacted_summary"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
     fn build_context_keeps_verification_as_raw_evidence_without_promoting_session_fact() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -5312,303 +4345,6 @@ mod tests {
             .sections
             .iter()
             .any(|section| section.name == "recent_tool_executions"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_does_not_emit_follow_up_specific_contracts() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Analyze the runtime architecture and suggest next steps.".to_string(),
-            },
-        );
-
-        let session = AgentState::new("default");
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &crate::types::SkillsRuntimeView::default(),
-            &current_message,
-            None,
-            &ContextConfig {
-                recent_messages: 4,
-                recent_briefs: 4,
-                compaction_trigger_messages: 10,
-                compaction_keep_recent_messages: 4,
-                ..ContextConfig::default()
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        assert!(built
-            .sections
-            .iter()
-            .all(|section| section.name != "follow_up_context_contract"));
-
-        let context_contract = built
-            .sections
-            .iter()
-            .find(|section| section.name == "context_contract")
-            .expect("context contract section should be present");
-        assert!(context_contract
-            .content
-            .contains("Use prior briefs and recent tool results"));
-        let context_contract_index = built
-            .sections
-            .iter()
-            .position(|section| section.name == "context_contract")
-            .expect("context contract index should be present");
-        let current_input_index = built
-            .sections
-            .iter()
-            .position(|section| section.name == "current_input")
-            .expect("current input index should be present");
-        assert!(context_contract_index < current_input_index);
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_lists_skill_metadata_without_skill_body() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Use the demo skill".to_string(),
-            },
-        );
-
-        let session = AgentState::new("default");
-        let skills = SkillsRuntimeView {
-            agent_templates_catalog: Vec::new(),
-            discovered_roots: Vec::new(),
-            catalog_only_roots: Vec::new(),
-            discoverable_skills: vec![
-                crate::types::SkillCatalogEntry {
-                    skill_id: "agent:demo".into(),
-                    root_id: "agent_home:test-root".into(),
-                    skill_dir: "demo".into(),
-                    name: "demo".into(),
-                    description: "agent demo skill summary".into(),
-                    path: PathBuf::from("/tmp/agent/skills/demo/SKILL.md"),
-                    scope: crate::types::SkillScope::Agent,
-                },
-                crate::types::SkillCatalogEntry {
-                    skill_id: "workspace:other".into(),
-                    root_id: "workspace:test-root".into(),
-                    skill_dir: "other".into(),
-                    name: "other".into(),
-                    description: "other skill summary".into(),
-                    path: PathBuf::from("/tmp/workspace/.agents/skills/other/SKILL.md"),
-                    scope: crate::types::SkillScope::Workspace,
-                },
-            ]
-            .into(),
-            attached_skills: Default::default(),
-            active_skills: vec![crate::types::ActiveSkillRecord {
-                skill_id: "agent:demo".into(),
-                name: "demo".into(),
-                path: PathBuf::from("/tmp/agent/skills/demo/SKILL.md"),
-                scope: crate::types::SkillScope::Agent,
-                agent_id: "default".into(),
-                activation_source: crate::types::SkillActivationSource::ImplicitFromCatalog,
-                activation_state: crate::types::SkillActivationState::SessionActive,
-                activated_at_turn: 2,
-            }],
-        };
-
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &skills,
-            &current_message,
-            None,
-            &ContextConfig {
-                recent_messages: 4,
-                recent_briefs: 4,
-                compaction_trigger_messages: 10,
-                compaction_keep_recent_messages: 4,
-                ..ContextConfig::default()
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        let catalog = built
-            .sections
-            .iter()
-            .find(|section| section.name == "skills_catalog")
-            .expect("skills_catalog section should be present");
-        assert!(catalog
-            .content
-            .contains("same-name precedence: workspace > agent > user"));
-        assert!(catalog.content.contains("agent demo skill summary"));
-        assert!(catalog.content.contains("/tmp/agent/skills/demo/SKILL.md"));
-        assert!(catalog.content.contains("other skill summary"));
-        assert!(!catalog.content.contains("Follow the demo workflow."));
-
-        let active = built
-            .sections
-            .iter()
-            .find(|section| section.name == "active_skills")
-            .expect("active_skills section should be present");
-        assert!(active
-            .content
-            .contains("same-name precedence follows skills_catalog"));
-        assert!(active.content.contains("agent:demo"));
-        assert!(active.content.contains("session_active"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_lists_agent_template_catalog_without_template_body() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Use a helper template".to_string(),
-            },
-        );
-
-        let session = AgentState::new("default");
-        let skills = SkillsRuntimeView {
-            agent_templates_catalog: vec![crate::types::AgentTemplateCatalogEntry {
-                catalog_id: "builtin:demo".into(),
-                template: "demo".into(),
-                template_id: "demo".into(),
-                source: crate::types::AgentTemplateSourceKind::Builtin,
-                path: None,
-                name: "Demo".into(),
-                schema_version: Some("holon.agent_template.v1".into()),
-                description: "demo template summary".into(),
-                included_skills: vec!["ghx".into()],
-                source_url: None,
-                source_id: None,
-                resolved_ref: None,
-                resolved_revision: None,
-            }],
-            ..SkillsRuntimeView::default()
-        };
-
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &skills,
-            &current_message,
-            None,
-            &ContextConfig {
-                recent_messages: 4,
-                recent_briefs: 4,
-                compaction_trigger_messages: 10,
-                compaction_keep_recent_messages: 4,
-                ..ContextConfig::default()
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        let catalog = built
-            .sections
-            .iter()
-            .find(|section| section.name == "agent_templates_catalog")
-            .expect("agent_templates_catalog section should be present");
-        assert!(catalog.content.contains("builtin:demo"));
-        assert!(catalog.content.contains("template=demo"));
-        assert!(catalog.content.contains("demo template summary"));
-        assert!(catalog.content.contains("skills=ghx"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_includes_worktree_session_when_active() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Make changes in the worktree".to_string(),
-            },
-        );
-
-        let mut session = AgentState::new("default");
-        session.worktree_session = Some(crate::types::WorktreeSession {
-            original_cwd: PathBuf::from("/original/repo"),
-            original_branch: "main".to_string(),
-            worktree_path: PathBuf::from("/tmp/worktree-feature-branch"),
-            worktree_branch: "feature-branch".to_string(),
-        });
-
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &crate::types::SkillsRuntimeView::default(),
-            &current_message,
-            None,
-            &ContextConfig {
-                recent_messages: 4,
-                recent_briefs: 4,
-                compaction_trigger_messages: 10,
-                compaction_keep_recent_messages: 4,
-                ..ContextConfig::default()
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        let worktree_section = built
-            .sections
-            .iter()
-            .find(|section| section.name == "worktree_session")
-            .expect("worktree_session section should be present when active");
-
-        assert!(worktree_section.content.contains("Managed worktree active"));
-        assert!(worktree_section.content.contains("/original/repo"));
-        assert!(worktree_section.content.contains("main"));
-        assert!(worktree_section
-            .content
-            .contains("/tmp/worktree-feature-branch"));
-        assert!(worktree_section.content.contains("feature-branch"));
     }
 
     #[cfg(holon_lib_test_shard = "d")]
@@ -6388,125 +5124,6 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "d")]
     #[test]
-    fn build_context_omits_worktree_session_when_not_active() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Make changes".to_string(),
-            },
-        );
-
-        let session = AgentState::new("default");
-
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &crate::types::SkillsRuntimeView::default(),
-            &current_message,
-            None,
-            &ContextConfig {
-                recent_messages: 4,
-                recent_briefs: 4,
-                compaction_trigger_messages: 10,
-                compaction_keep_recent_messages: 4,
-                ..ContextConfig::default()
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        assert!(built
-            .sections
-            .iter()
-            .all(|section| section.name != "worktree_session"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_includes_execution_environment() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Inspect the environment".to_string(),
-            },
-        );
-        let session = AgentState::new("default");
-
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &crate::types::SkillsRuntimeView::default(),
-            &current_message,
-            None,
-            &ContextConfig {
-                recent_messages: 4,
-                recent_briefs: 4,
-                compaction_trigger_messages: 10,
-                compaction_keep_recent_messages: 4,
-                ..ContextConfig::default()
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        let execution_section = built
-            .sections
-            .iter()
-            .find(|section| section.name == "execution_environment")
-            .expect("execution_environment section should be present");
-        assert!(execution_section
-            .content
-            .contains("policy snapshot; host-local is not a strong sandbox guarantee"));
-        assert!(execution_section
-            .content
-            .contains("Process execution exposed: true"));
-        assert!(execution_section
-            .content
-            .contains("Background tasks supported: true"));
-        assert!(execution_section
-            .content
-            .contains("Managed worktrees supported: true"));
-        assert!(execution_section
-            .content
-            .contains("path_confinement: not_enforced"));
-        assert!(execution_section
-            .content
-            .contains("write_confinement: not_enforced"));
-        assert!(execution_section
-            .content
-            .contains("network_confinement: not_enforced"));
-        assert!(execution_section
-            .content
-            .contains("secret_isolation: not_enforced"));
-        assert!(execution_section
-            .content
-            .contains("child_process_containment: not_enforced"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
     fn build_context_omits_active_tasks_when_none() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -6718,118 +5335,6 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "d")]
     #[test]
-    fn live_input_recovery_renders_each_persisted_batch_and_body_once() {
-        use crate::types::IdleInputBatchItem;
-
-        let mut first = LiveInputBatchRecord {
-            activation_id: "recovered-activation".into(),
-            safe_point: crate::types::LiveInputSafePoint::new("original-activation", 2),
-            cutoff: chrono::Utc::now(),
-            max_items: 8,
-            max_bytes: 24 * 1024,
-            rendered_bytes: 0,
-            result_identities: Vec::new(),
-            ordinary_message_ids: Vec::new(),
-            items: vec![IdleInputBatchItem {
-                message_id: "reply-original".into(),
-                source_ref: "message:reply-original".into(),
-                rendered: "persisted original reply body\n".into(),
-            }],
-        };
-        first.rendered_bytes = first.rendered_text().len();
-        let mut second = first.clone();
-        second.safe_point = crate::types::LiveInputSafePoint::new("recovered-activation", 2);
-        second.items.push(IdleInputBatchItem {
-            message_id: "later-result".into(),
-            source_ref: "message:later-result".into(),
-            rendered: "persisted later result body\n".into(),
-        });
-        second.rendered_bytes = second.rendered_text().len();
-        let rendered =
-            render_live_input_batches(&[first.clone(), first, second], &mut BTreeSet::new())
-                .unwrap();
-        assert_eq!(rendered.matches("Current live input batch").count(), 2);
-        assert_eq!(rendered.matches("persisted original reply body").count(), 1);
-        assert_eq!(rendered.matches("persisted later result body").count(), 1);
-        assert!(rendered.find("original reply").unwrap() < rendered.find("later result").unwrap());
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn recovery_input_projection_keeps_full_source_evidence_and_shared_message_deduplication() {
-        use crate::types::{IdleInputBatchItem, IdleInputBatchRecord};
-
-        let item = |id: &str, body: &str| IdleInputBatchItem {
-            message_id: id.into(),
-            source_ref: format!("message:{id}"),
-            rendered: format!("source_ref: message:{id}\n{body}\n"),
-        };
-        let full_body = format!("live-body-start{}live-body-end", "evidence".repeat(400));
-        let mut source = TurnRecord::new("default", "validated-source-turn", 1);
-        source.idle_input_batch = Some(IdleInputBatchRecord {
-            anchor_message_id: "root".into(),
-            activation_id: Some("source-activation".into()),
-            sender_agent_id: "sender".into(),
-            cutoff: chrono::Utc::now(),
-            max_items: 8,
-            max_bytes: 24 * 1024,
-            rendered_bytes: 0,
-            items: vec![
-                item("root", "root body already anchored"),
-                item("idle-follower", "idle follower full body"),
-                item("current-idle", "current idle body already projected"),
-            ],
-        });
-        let live = LiveInputBatchRecord {
-            activation_id: "source-activation".into(),
-            safe_point: crate::types::LiveInputSafePoint::new("source-activation", 2),
-            cutoff: chrono::Utc::now(),
-            max_items: 8,
-            max_bytes: 24 * 1024,
-            rendered_bytes: 0,
-            result_identities: Vec::new(),
-            ordinary_message_ids: vec!["live-follower".into()],
-            items: vec![
-                item("root", "root body already anchored"),
-                item("idle-follower", "idle follower full body"),
-                item("live-follower", &full_body),
-            ],
-        };
-        source.live_input_batches = vec![live.clone()];
-        source.input_message_ids = vec![
-            "root".into(),
-            "idle-follower".into(),
-            "current-idle".into(),
-            "live-follower".into(),
-        ];
-        let mut seen =
-            BTreeSet::from(["root".into(), "current-input".into(), "current-idle".into()]);
-        let rendered = render_recovery_input_batches(&BTreeMap::new(), &source, &mut seen)
-            .unwrap()
-            .unwrap();
-        assert!(rendered.contains("source turn validated-source-turn (original provenance)"));
-        assert!(!rendered.contains("already anchored"));
-        assert!(!rendered.contains("already projected"));
-        assert_eq!(rendered.matches("idle follower full body").count(), 1);
-        assert_eq!(rendered.matches(full_body.as_str()).count(), 1);
-        assert!(rendered.contains("source_ref: message:live-follower"));
-        assert!(render_live_input_batches(&[live], &mut seen).is_none());
-
-        let section = turn_section("recovery_input_batches", rendered.clone());
-        let candidate = context_candidate(section.clone(), Some(section), true);
-        assert!(candidate.policy.pinned);
-        assert_eq!(
-            candidate.full.content,
-            candidate.compact.as_ref().unwrap().content
-        );
-        let budget = estimate_section_tokens(&candidate.full);
-        let plan = plan_context(vec![candidate.clone()], budget).unwrap();
-        assert_eq!(plan.sections[0].content, rendered);
-        assert!(plan_context(vec![candidate], budget.saturating_sub(1)).is_err());
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
     fn recovered_operator_context_preserves_full_body_provenance_and_shared_deduplication() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -6939,16 +5444,15 @@ mod tests {
             .unwrap();
         assert!(!live.content.contains(&operator.id));
         assert_eq!(turn.live_input_batches[0].items.len(), 1);
-        let candidate = context_candidate(evidence.clone(), Some(evidence.clone()), true);
-        let budget = estimate_section_tokens(evidence);
-        assert_eq!(
-            plan_context(vec![candidate.clone()], budget)
-                .unwrap()
-                .sections[0]
-                .content,
-            evidence.content
-        );
-        assert!(plan_context(vec![candidate], budget.saturating_sub(1)).is_err());
+        let decision = built
+            .plan_evidence
+            .decisions
+            .iter()
+            .find(|decision| decision.candidate_id == "recovered_operator_inputs")
+            .unwrap();
+        let tokens = estimate_section_tokens(evidence);
+        assert_eq!(decision.minimum_estimated_tokens, tokens);
+        assert_eq!(decision.allocated_estimated_tokens, tokens);
         let mut seen = BTreeSet::from([operator.id.clone()]);
         assert!(
             crate::runtime::input_consumption::render_recovered_operator_inputs(
@@ -7374,78 +5878,6 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "d")]
     #[test]
-    fn build_context_includes_continuation_context_for_system_tick() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let mut system_tick = MessageEnvelope::new(
-            "default",
-            MessageKind::SystemTick,
-            MessageOrigin::System {
-                subsystem: "wake_hint".to_string(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Next,
-            MessageBody::Text {
-                text: "wake hint: github inbox updated".to_string(),
-            },
-        );
-        system_tick.metadata = Some(json!({
-            "wake_hint": {
-                "reason": "github inbox updated",
-                "source": "agentinbox",
-                "resource": "interest/pr-reviews",
-                "content_type": "application/json",
-                "body": {
-                    "type": "json",
-                    "value": {
-                        "notification_type": "pr_review_requested",
-                        "pr": 123
-                    }
-                }
-            }
-        }));
-
-        let session = AgentState::new("default");
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &crate::types::SkillsRuntimeView::default(),
-            &system_tick,
-            Some(&ContinuationResolution {
-                trigger_kind: crate::types::ContinuationTriggerKind::SystemTick,
-                class: ContinuationClass::ResumeExpectedWait,
-                model_reentry: true,
-                prior_closure_outcome: crate::types::ClosureOutcome::Waiting,
-                prior_waiting_reason: Some(crate::types::WaitingReason::AwaitingExternalChange),
-                matched_waiting_reason: true,
-                evidence: vec![],
-            }),
-            &ContextConfig {
-                recent_messages: 10,
-                recent_briefs: 4,
-                compaction_trigger_messages: 10,
-                compaction_keep_recent_messages: 4,
-                ..ContextConfig::default()
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        let activation = built
-            .sections
-            .iter()
-            .find(|section| section.name == "continuation_context")
-            .expect("continuation_context section should be present");
-        assert!(activation.content.contains("agentinbox"));
-        assert!(activation.content.contains("interest/pr-reviews"));
-        assert!(activation.content.contains("pr_review_requested"));
-        assert!(activation.content.contains("\"pr\": 123"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
     fn recent_turns_summarizes_wake_hint_without_inlining_payload() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -7535,70 +5967,6 @@ mod tests {
         assert!(!recent_turns.content.contains("payload_secret"));
         assert!(!recent_turns.content.contains("do not inline"));
         assert!(!recent_turns.content.contains("notification_type"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_includes_continuation_context_for_work_queue_system_tick() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let mut system_tick = MessageEnvelope::new(
-            "default",
-            MessageKind::SystemTick,
-            MessageOrigin::System {
-                subsystem: "work_queue".to_string(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Continue current work item: fix stale pid handling".to_string(),
-            },
-        );
-        system_tick.metadata = Some(json!({
-            "work_queue": {
-                "reason": "continue_active",
-                "work_item_id": "work_123",
-                "objective": "fix stale pid handling",
-                "runtime_switched_current_item": false
-            }
-        }));
-
-        let session = AgentState::new("default");
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &crate::types::SkillsRuntimeView::default(),
-            &system_tick,
-            Some(&ContinuationResolution {
-                trigger_kind: crate::types::ContinuationTriggerKind::SystemTick,
-                class: ContinuationClass::LocalContinuation,
-                model_reentry: true,
-                prior_closure_outcome: crate::types::ClosureOutcome::Completed,
-                prior_waiting_reason: None,
-                matched_waiting_reason: false,
-                evidence: vec![],
-            }),
-            &ContextConfig {
-                recent_messages: 10,
-                recent_briefs: 4,
-                compaction_trigger_messages: 10,
-                compaction_keep_recent_messages: 4,
-                ..ContextConfig::default()
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        let activation = built
-            .sections
-            .iter()
-            .find(|section| section.name == "continuation_context")
-            .expect("continuation_context section should be present");
-        assert!(activation.content.contains("continue_active"));
-        assert!(activation.content.contains("work_123"));
-        assert!(activation.content.contains("fix stale pid handling"));
     }
 
     #[cfg(holon_lib_test_shard = "d")]
@@ -7825,65 +6193,6 @@ mod tests {
         assert!(anchor.content.contains("Latest trusted operator input:"));
         assert!(anchor.content.contains("runtime system-tick continuation"));
         assert!(anchor.content.contains("not a new operator request"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_marks_fresh_operator_input_as_the_only_new_task() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let prior_operator = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Continue the old database investigation.".to_string(),
-            },
-        );
-        append_turn_for_message(&storage, &prior_operator, "turn-old-topic", 1);
-
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Interject,
-            MessageBody::Text {
-                text: "Push the documentation update.".to_string(),
-            },
-        );
-        let session = AgentState::new("default");
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &crate::types::SkillsRuntimeView::default(),
-            &current_message,
-            None,
-            &ContextConfig::default(),
-            dir.path(),
-        )
-        .unwrap();
-
-        let anchor = built
-            .sections
-            .iter()
-            .find(|section| section.name == "continuation_anchor")
-            .expect("continuation_anchor section should be present");
-        assert!(anchor.content.contains("the only new operator task"));
-        assert!(anchor.content.contains("historical/background evidence"));
-        assert!(anchor.content.contains(
-            "do not resume old tasks or waits unless current_input or the current WorkItem"
-        ));
     }
 
     #[cfg(holon_lib_test_shard = "d")]
@@ -8187,355 +6496,6 @@ mod tests {
             .content
             .contains("Implement continuation anchor runtime behavior"));
         assert!(!anchor.content.contains("Current WorkItem"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_preserves_pinned_truth_at_exact_minimum_and_fails_below_it() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let operator_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Preserve this trusted operator intent for the active implementation."
-                    .repeat(8),
-            },
-        );
-        storage.append_message(&operator_message).unwrap();
-
-        let active = crate::types::WorkItemRecord::new(
-            "default",
-            "Implement the deterministic context budget planner without losing durable truth."
-                .repeat(6),
-            crate::types::WorkItemState::Open,
-        );
-        storage.append_work_item(&active).unwrap();
-        let mut agent = AgentState::new("default");
-        agent.current_work_item_id = Some(active.id.clone());
-        storage.write_agent_for_fixture(&agent).unwrap();
-
-        let mut system_tick = MessageEnvelope::new(
-            "default",
-            MessageKind::SystemTick,
-            MessageOrigin::System {
-                subsystem: "work_queue".to_string(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Continue the focused work item after a runtime scheduling wake.".repeat(8),
-            },
-        );
-        system_tick.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
-        let continuation = ContinuationResolution {
-            trigger_kind: ContinuationTriggerKind::SystemTick,
-            class: ContinuationClass::LocalContinuation,
-            model_reentry: true,
-            prior_closure_outcome: crate::types::ClosureOutcome::Continuable,
-            prior_waiting_reason: None,
-            matched_waiting_reason: false,
-            evidence: vec![],
-        };
-
-        let build = |budget| {
-            build_context(
-                &storage,
-                &agent,
-                &execution_snapshot_for(&agent),
-                &crate::types::SkillsRuntimeView::default(),
-                &system_tick,
-                Some(&continuation),
-                &ContextConfig {
-                    recent_messages: 4,
-                    recent_briefs: 4,
-                    prompt_budget_estimated_tokens: budget,
-                    ..ContextConfig::default()
-                },
-                dir.path(),
-            )
-        };
-
-        let initial = build(4096).unwrap();
-        let pinned_ids = ["current_input", "current_work_item", "continuation_anchor"];
-        let pinned_minimum = initial
-            .plan_evidence
-            .decisions
-            .iter()
-            .filter(|decision| pinned_ids.contains(&decision.candidate_id.as_str()))
-            .map(|decision| decision.minimum_estimated_tokens)
-            .sum::<usize>();
-        assert!(pinned_minimum > 0);
-
-        let exact = build(pinned_minimum).unwrap();
-        for candidate_id in pinned_ids {
-            assert!(
-                exact
-                    .sections
-                    .iter()
-                    .any(|section| section.id == candidate_id),
-                "missing pinned candidate {candidate_id}"
-            );
-            let decision = exact
-                .plan_evidence
-                .decisions
-                .iter()
-                .find(|decision| decision.candidate_id == candidate_id)
-                .expect("pinned decision should be present");
-            assert_ne!(
-                decision.outcome,
-                super::planner::ContextPlanOutcome::Omitted
-            );
-            assert!(decision.allocated_estimated_tokens >= decision.minimum_estimated_tokens);
-        }
-        assert!(exact.plan_evidence.allocated_estimated_tokens <= pinned_minimum);
-
-        let error = build(pinned_minimum - 1).unwrap_err();
-        assert!(error.to_string().contains("pinned_minimum_over_budget"));
-        assert!(error
-            .to_string()
-            .contains(&format!("pinned_minimum={pinned_minimum}")));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_bounds_recent_turn_reprojection_to_planned_compact_budget() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let mut historical_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "large historical context ".repeat(4_000),
-            },
-        );
-        historical_message.turn_id = Some("turn-large-history".to_string());
-        storage.append_message(&historical_message).unwrap();
-        let mut historical_turn = crate::types::TurnRecord::new("default", "turn-large-history", 1);
-        historical_turn.input_message_ids = vec![historical_message.id.clone()];
-        historical_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
-            &historical_message,
-        ));
-        storage.append_turn(&historical_turn).unwrap();
-
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Continue with the current task.".to_string(),
-            },
-        );
-        let agent = AgentState::new("default");
-        let config_for_budget = |budget| ContextConfig {
-            prompt_budget_estimated_tokens: budget,
-            turn_projection_budget_ratio: 1.0,
-            turn_projection_min_budget: 0,
-            turn_projection_max_budget: budget,
-            ..ContextConfig::default()
-        };
-        let initial = build_context(
-            &storage,
-            &agent,
-            &execution_snapshot_for(&agent),
-            &crate::types::SkillsRuntimeView::default(),
-            &current_message,
-            None,
-            &config_for_budget(20_000),
-            dir.path(),
-        )
-        .unwrap();
-        let requested = |candidate_id: &str| {
-            initial
-                .plan_evidence
-                .decisions
-                .iter()
-                .find(|decision| decision.candidate_id == candidate_id)
-                .expect("candidate decision")
-                .requested_estimated_tokens
-        };
-        let recent_turns_minimum = initial
-            .plan_evidence
-            .decisions
-            .iter()
-            .find(|decision| decision.candidate_id == "recent_turns")
-            .expect("recent_turns decision")
-            .minimum_estimated_tokens;
-        let compact_plan_budget = [
-            "current_input",
-            "current_work_item",
-            "agent",
-            "execution_environment",
-            "context_contract",
-        ]
-        .into_iter()
-        .map(requested)
-        .sum::<usize>()
-            + recent_turns_minimum;
-
-        let (compact_plan_budget, compact) = (compact_plan_budget..compact_plan_budget + 512)
-            .find_map(|budget| {
-                let built = build_context(
-                    &storage,
-                    &agent,
-                    &execution_snapshot_for(&agent),
-                    &crate::types::SkillsRuntimeView::default(),
-                    &current_message,
-                    None,
-                    &config_for_budget(budget),
-                    dir.path(),
-                )
-                .unwrap();
-                built
-                    .plan_evidence
-                    .decisions
-                    .iter()
-                    .any(|decision| {
-                        decision.candidate_id == "recent_turns"
-                            && decision.outcome == super::planner::ContextPlanOutcome::Compact
-                    })
-                    .then_some((budget, built))
-            })
-            .expect("a nearby budget should select compact recent_turns");
-        let decision = compact
-            .plan_evidence
-            .decisions
-            .iter()
-            .find(|decision| decision.candidate_id == "recent_turns")
-            .expect("recent_turns decision");
-        assert_eq!(
-            decision.outcome,
-            super::planner::ContextPlanOutcome::Compact
-        );
-        assert_eq!(
-            compact
-                .recent_turns_reprojection
-                .as_ref()
-                .expect("selected recent_turns remains reprojectable")
-                .initial_budget(),
-            compact_plan_budget.min(128)
-        );
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_keeps_full_current_input_body_for_long_operator_prompt() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-
-        let long_path =
-            "/very/long/path/to/a/workspace/projects/example/agentinbox/operator-guides/agentinbox-cli-quickstart-for-review-workflow-2026-04.md";
-        let long_prompt = format!(
-            "Read this file first and follow it exactly: {long_path}\n\nDo not invent APIs."
-        );
-        let operator_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: long_prompt.clone(),
-            },
-        );
-
-        let session = AgentState::new("default");
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &crate::types::SkillsRuntimeView::default(),
-            &operator_message,
-            None,
-            &ContextConfig {
-                recent_messages: 10,
-                recent_briefs: 4,
-                compaction_trigger_messages: 10,
-                compaction_keep_recent_messages: 4,
-                ..ContextConfig::default()
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        let current_input = built
-            .sections
-            .iter()
-            .find(|section| section.name == "current_input")
-            .expect("current_input section should be present");
-        assert!(current_input.content.contains(long_path));
-        assert!(current_input.content.contains("Do not invent APIs."));
-        assert!(current_input
-            .content
-            .contains("[operator][operator_instruction][OperatorPrompt]"));
-        assert!(current_input.content.contains("\n  Read this file first"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn build_context_renders_provenance_admission_and_authority_labels() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let session = AgentState::new("default");
-        let current_message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: Some("operator:jolestar".into()),
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Continue from the operator surface.".into(),
-            },
-        )
-        .with_admission(
-            MessageDeliverySurface::CliPrompt,
-            AdmissionContext::LocalProcess,
-        );
-
-        let built = build_context(
-            &storage,
-            &session,
-            &execution_snapshot_for(&session),
-            &crate::types::SkillsRuntimeView::default(),
-            &current_message,
-            None,
-            &ContextConfig::default(),
-            dir.path(),
-        )
-        .unwrap();
-
-        let current_input = built
-            .sections
-            .iter()
-            .find(|section| section.name == "current_input")
-            .expect("current_input section should be present");
-        assert!(current_input.content.contains(
-            "[operator][cli_prompt][local_process][operator_instruction][OperatorPrompt]"
-        ));
     }
 
     #[cfg(holon_lib_test_shard = "d")]

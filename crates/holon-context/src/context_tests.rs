@@ -235,7 +235,7 @@ fn recent_turn_window_start_ignores_zero_sentinel_turn_index() {
     let sentinel = holon_domain::TurnRecord::new("default", "turn-zero", 0);
     let recent = holon_domain::TurnRecord::new("default", "turn-recent", 6);
 
-    assert_eq!(recent_turn_window_start(&[sentinel, recent]), Some(6));
+    assert_eq!(recent_turn_window_start([sentinel, recent].iter()), Some(6));
 }
 #[test]
 fn message_header_sanitizes_dynamic_binding_labels() {
