@@ -52,7 +52,7 @@ export function OnboardingModal({
   const { t } = useTranslation();
   const [step, setStep] = useState<1 | 2>(1);
   const [model, setModel] = useState("");
-  const [agentId, setAgentId] = useState("holon-bot");
+  const [agentId, setAgentId] = useState("holonbot");
   const [name, setName] = useState("Holon Bot");
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE_ID);
   const [busy, setBusy] = useState(false);

@@ -34,6 +34,8 @@ const en = {
   },
   agentCreation: {
     title: "Agent creation",
+    summary: "Agent created",
+    details: "Initialization details",
     budgetFailure: "Run failed: the prompt baseline exceeds the configured model budget (baseline_over_budget). Review the model and budget settings before explicitly continuing. This is not a failed agent creation.",
     uncertain: "Creation result is not confirmed. Check existing Agents before submitting again; do not change the ID and create another agent.",
     checkExisting: "Check existing agent",
@@ -42,10 +44,10 @@ const en = {
     doNotRecreate: "The agent was created. Do not create it again. Inspect incomplete initialization steps and explicitly repair them if needed.",
     executionSeparate: "Initialization is complete; queued, running, or failed turns are shown separately in the conversation. This does not confirm a successful first response.",
     progress: {
-      initializing: "Created — initializing",
-      ready: "Created — initialization complete",
-      degraded: "Created — initialization incomplete",
-      uncertain: "Created — initialization status unconfirmed",
+      initializing: "Initializing",
+      ready: "Initialization complete",
+      degraded: "Initialization incomplete",
+      uncertain: "Status unconfirmed",
     },
     problems: {
       conflict: "The ID or display name is already in use. Check the existing identity or choose a different display name.",

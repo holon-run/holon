@@ -37,6 +37,8 @@ const zh: Record<string, any> = {
   },
   agentCreation: {
     title: "智能体创建",
+    summary: "智能体已创建",
+    details: "初始化详情",
     budgetFailure: "运行失败：提示词基线超过当前模型预算（baseline_over_budget）。请检查模型与预算配置，再显式继续运行。这不表示智能体创建失败。",
     uncertain: "创建结果待确认。请先检查已有智能体，再决定是否重新提交；不要换 ID 重复创建。",
     checkExisting: "检查已有智能体",
@@ -45,10 +47,10 @@ const zh: Record<string, any> = {
     doNotRecreate: "智能体已创建，请勿重复创建。请检查未完成的初始化步骤，必要时显式执行修复。",
     executionSeparate: "初始化已完成；排队、运行中或运行失败会在会话中单独展示。这不代表首轮已成功响应。",
     progress: {
-      initializing: "已创建，正在初始化",
-      ready: "已创建，初始化完成",
-      degraded: "已创建，初始化未完成",
-      uncertain: "已创建，初始化状态待确认",
+      initializing: "正在初始化",
+      ready: "初始化完成",
+      degraded: "初始化未完成",
+      uncertain: "状态待确认",
     },
     problems: {
       conflict: "该 ID 或显示名称已被使用。请检查已有身份，或调整显示名称。",

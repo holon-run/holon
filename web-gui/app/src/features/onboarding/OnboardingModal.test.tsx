@@ -194,11 +194,11 @@ describe("OnboardingModal template selection", () => {
     await advanceToAgentStep(container);
     const inputs = container.querySelectorAll<HTMLInputElement>("form input");
     expect(inputs[0].value).toBe("Holon Bot");
-    expect(inputs[1].value).toBe("holon-bot");
+    expect(inputs[1].value).toBe("holonbot");
     await act(async () => setValue(inputs[0], "My Assistant"));
-    expect(inputs[1].value).toBe("holon-bot");
+    expect(inputs[1].value).toBe("holonbot");
     await act(async () => container.querySelector("form")!.requestSubmit());
-    expect(create).toHaveBeenCalledWith("holon-bot", "holon-default", "My Assistant");
+    expect(create).toHaveBeenCalledWith("holonbot", "holon-default", "My Assistant");
   });
 
   it("does not create an Agent while authoritative setup is blocked", async () => {
@@ -214,7 +214,7 @@ describe("OnboardingModal template selection", () => {
 
   it("keeps existing ID collisions explicit and never overwrites the Agent", async () => {
     const create = vi.fn(accepted);
-    const container = await renderOnboardingModal(catalogState([]), create, runtimeConfig, [{ id: "holon-bot" }]);
+    const container = await renderOnboardingModal(catalogState([]), create, runtimeConfig, [{ id: "holonbot" }]);
     await advanceToAgentStep(container);
     await act(async () => container.querySelector("form")!.requestSubmit());
     expect(container.querySelector('[role="alert"]')!.textContent).toContain("already in use");

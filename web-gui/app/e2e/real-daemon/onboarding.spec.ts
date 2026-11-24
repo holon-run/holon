@@ -167,10 +167,10 @@ test("truly unconfigured runtime persists first-run setup without invoking a mod
     const agentId = dialog.getByLabel("Agent ID", { exact: true });
     await expect(agentId).not.toBeVisible();
     await dialog.locator("summary").filter({ hasText: "Advanced: Agent ID and template" }).click();
-    await expect(agentId).toHaveValue("holon-bot");
+    await expect(agentId).toHaveValue("holonbot");
     await expect(dialog.getByRole("combobox", { name: "Template", exact: true })).toBeVisible();
     await dialog.getByRole("button", { name: "Create Agent", exact: true }).click();
-    await expect(page).toHaveURL(/\/agents\/holon-bot(?:\/conversation)?$/);
+    await expect(page).toHaveURL(/\/agents\/holonbot(?:\/conversation)?$/);
     await expect(page.locator(".agent-row").filter({ hasText: "Holon Bot" })).toBeVisible();
 
     const roster = async () => {
@@ -180,7 +180,7 @@ test("truly unconfigured runtime persists first-run setup without invoking a mod
     };
     await expect.poll(roster).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        identity: expect.objectContaining({ agent_id: "holon-bot", name: "Holon Bot" }),
+        identity: expect.objectContaining({ agent_id: "holonbot", name: "Holon Bot" }),
       }),
     ]));
     const persisted = JSON.parse(await readFile(initial.config_file_path, "utf8"));
@@ -188,7 +188,7 @@ test("truly unconfigured runtime persists first-run setup without invoking a mod
     expect(persisted.providers.openai.base_url).toBe(provider.baseUrl);
 
     await page.reload();
-    await expect(page).toHaveURL(/\/agents\/holon-bot(?:\/conversation)?$/);
+    await expect(page).toHaveURL(/\/agents\/holonbot(?:\/conversation)?$/);
     await expect(page.locator(".agent-row").filter({ hasText: "Holon Bot" })).toBeVisible();
     await page.goto(`${daemon.baseUrl}/settings`);
     await expect(setup.getByText("Configuration ready", { exact: true })).toBeVisible();

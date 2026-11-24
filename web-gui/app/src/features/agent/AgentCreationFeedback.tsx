@@ -44,29 +44,58 @@ export function AgentCreationError({ result, onCheck, onOpen }: {
   );
 }
 
+type BootstrapStepStatus = "succeeded" | "failed" | "pending";
+
+function stepStatusOf(status: string | undefined): BootstrapStepStatus {
+  return status === "succeeded" ? "succeeded" : status === "failed" ? "failed" : "pending";
+}
+
 export function AgentCreationStatus({ progress, onRefresh }: {
   progress: AgentCreationProgress;
   onRefresh: () => Promise<void>;
 }) {
   const { t } = useTranslation();
   const [checking, setChecking] = useState(false);
+  // Only a fully initialized creation collapses its step detail; degraded or
+  // still-pending steps stay expanded so the operator sees what needs repair.
+  const collapsed = progress.status === "ready";
   return (
-    <section className="agent-creation-status" aria-label={t("agentCreation.title")} role="status">
-      <strong>{t(`agentCreation.progress.${progress.status}`)}</strong>
-      <p>{t(progress.status === "ready" ? "agentCreation.executionSeparate" : "agentCreation.doNotRecreate")}</p>
+    <section
+      className={`agent-creation-status agent-creation-status--${progress.status}`}
+      aria-label={t("agentCreation.title")}
+      role="status"
+    >
+      <div className="agent-creation-head">
+        <span className="agent-creation-indicator" aria-hidden="true" />
+        <span className="agent-creation-heading">{t("agentCreation.summary")}</span>
+        <span className="agent-creation-badge">{t(`agentCreation.progress.${progress.status}`)}</span>
+      </div>
+      <p className="agent-creation-hint">
+        {t(progress.status === "ready" ? "agentCreation.executionSeparate" : "agentCreation.doNotRecreate")}
+      </p>
       {progress.bootstrap ? (
-        <ul>{BOOTSTRAP_STEPS.map((key) => (
-          <li key={key}>{t(`agentCreation.steps.${key}`)}: {t(`agentCreation.stepStatus.${
-            progress.bootstrap![key]?.status === "succeeded" ? "succeeded"
-              : progress.bootstrap![key]?.status === "failed" ? "failed" : "pending"
-          }`)}</li>
-        ))}</ul>
+        <details className="agent-creation-details" open={!collapsed}>
+          <summary>{t("agentCreation.details")}</summary>
+          <ul className="agent-creation-steps">
+            {BOOTSTRAP_STEPS.map((key) => {
+              const status = stepStatusOf(progress.bootstrap![key]?.status);
+              return (
+                <li key={key} className={`agent-creation-step agent-creation-step--${status}`}>
+                  <span className="agent-creation-step-name">{t(`agentCreation.steps.${key}`)}</span>
+                  <span className="agent-creation-step-state">{t(`agentCreation.stepStatus.${status}`)}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </details>
       ) : null}
       {progress.status !== "ready" ? (
-        <button type="button" disabled={checking} onClick={async () => {
-          setChecking(true);
-          try { await onRefresh(); } finally { setChecking(false); }
-        }}>{t("agentCreation.checkInitialization")}</button>
+        <div className="agent-creation-actions">
+          <button type="button" disabled={checking} onClick={async () => {
+            setChecking(true);
+            try { await onRefresh(); } finally { setChecking(false); }
+          }}>{t("agentCreation.checkInitialization")}</button>
+        </div>
       ) : null}
     </section>
   );
