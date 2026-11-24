@@ -513,6 +513,22 @@ impl RuntimeModelCatalog {
                 runtime_config,
             });
         }
+        // `discovery: disabled` stops future refreshes, and a cache written
+        // while discovery was enabled must not keep supplying models either:
+        // otherwise the catalog would serve metadata that the current config
+        // explicitly opted out of.
+        let discovery_disabled_endpoints = provider_endpoints
+            .iter()
+            .filter(|endpoint| {
+                let configured =
+                    resolved_provider_discovery(config.stored_config, &endpoint.runtime_config);
+                !holon_provider::model_discovery::provider_supports_model_discovery(
+                    &endpoint.runtime_config,
+                    configured.as_ref(),
+                )
+            })
+            .map(|endpoint| (endpoint.provider.clone(), endpoint.endpoint.clone()))
+            .collect::<HashSet<_>>();
         Self {
             route_options: config.stored_config.model.route_options.clone(),
             default_model: config.default_model.clone(),
@@ -527,6 +543,10 @@ impl RuntimeModelCatalog {
                 .model_discovery_cache
                 .models()
                 .into_iter()
+                .filter(|(route, _)| {
+                    !discovery_disabled_endpoints
+                        .contains(&(route.provider.clone(), route.endpoint.clone()))
+                })
                 .collect::<HashMap<_, _>>(),
             model_overrides: config.validated_model_overrides.clone(),
             model_route_overrides: resolve_model_route_overrides(config.stored_config)

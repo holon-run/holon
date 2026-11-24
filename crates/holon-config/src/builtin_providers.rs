@@ -369,15 +369,36 @@ pub(crate) fn set_provider_config_key(
             .discovery
             .get_or_insert_with(|| ProviderDiscoveryConfig { kind, path: None });
         discovery.kind = kind;
+        // `disabled` never carries a path; switching kind must not leave the
+        // rejected `disabled` + `path` pair behind in the stored config.
+        if kind == ProviderDiscoveryKind::Disabled {
+            discovery.path = None;
+        }
         return Ok(());
     }
     if key.ends_with(".discovery.path") {
         let value = raw_value.trim().to_string();
         let provider = persisted_provider_config_mut(config, key, ".discovery.path")?;
+        if value.is_empty() {
+            // An empty path cannot describe `openai_models`, so this drops the
+            // block exactly like `unset` instead of persisting an invalid pair.
+            provider.discovery = None;
+            return Ok(());
+        }
         let discovery = provider
             .discovery
             .get_or_insert_with(|| ProviderDiscoveryConfig::openai_models("/models"));
-        discovery.path = (!value.is_empty()).then_some(value);
+        if discovery.kind == ProviderDiscoveryKind::Disabled {
+            return Err(anyhow!(
+                "{key} cannot be set while discovery kind is disabled; unset discovery or set the kind first"
+            ));
+        }
+        let discovery = ProviderDiscoveryConfig {
+            kind: discovery.kind,
+            path: Some(value),
+        };
+        discovery.validate(key.strip_suffix(".path").unwrap_or(key))?;
+        provider.discovery = Some(discovery);
         return Ok(());
     }
     if key.ends_with(".transport") {
@@ -514,6 +535,11 @@ fn set_provider_endpoint_config_key(
             .discovery
             .get_or_insert_with(|| ProviderDiscoveryConfig { kind, path: None });
         discovery.kind = kind;
+        // `disabled` never carries a path; switching kind must not leave the
+        // rejected `disabled` + `path` pair behind in the stored config.
+        if kind == ProviderDiscoveryKind::Disabled {
+            discovery.path = None;
+        }
         return Ok(true);
     }
     if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".discovery.path") {
@@ -521,10 +547,26 @@ fn set_provider_endpoint_config_key(
         let value = raw_value.trim();
         let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
         let endpoint = provider.endpoints.entry(endpoint_id).or_default();
+        if value.is_empty() {
+            // An empty path cannot describe `openai_models`, so this drops the
+            // block exactly like `unset` instead of persisting an invalid pair.
+            endpoint.discovery = None;
+            return Ok(true);
+        }
         let discovery = endpoint
             .discovery
             .get_or_insert_with(|| ProviderDiscoveryConfig::openai_models("/models"));
-        discovery.path = (!value.is_empty()).then(|| value.to_string());
+        if discovery.kind == ProviderDiscoveryKind::Disabled {
+            return Err(anyhow!(
+                "{key} cannot be set while discovery kind is disabled; unset discovery or set the kind first"
+            ));
+        }
+        let discovery = ProviderDiscoveryConfig {
+            kind: discovery.kind,
+            path: Some(value.to_string()),
+        };
+        discovery.validate(key.strip_suffix(".path").unwrap_or(key))?;
+        endpoint.discovery = Some(discovery);
         return Ok(true);
     }
     if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".transport") {
@@ -1554,6 +1596,10 @@ pub fn materialize_provider_config(
     built_in: Option<ProviderRuntimeConfig>,
 ) -> Result<ProviderRuntimeConfig> {
     validate_provider_headers(&id, &provider_config)?;
+    // Discovery declares a load-time contract too: an `openai_models` entry
+    // without a valid relative path must fail loudly instead of silently
+    // degrading to "no discovery" at request time.
+    validate_provider_discovery(&id, &provider_config)?;
     let effective_provider_config = provider_config_for_default_endpoint(&provider_config);
     validate_provider_auth(&id, &effective_provider_config.auth)?;
     let credential = resolve_provider_credential(

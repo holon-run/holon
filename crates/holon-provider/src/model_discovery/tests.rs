@@ -2623,3 +2623,101 @@ async fn configured_discovery_attributes_models_to_provider_and_endpoint() {
         ModelRef::parse("local-custom/vendor/chat-model").unwrap()
     );
 }
+
+#[tokio::test]
+async fn configured_discovery_bounds_same_origin_redirect_loops() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let location = format!("{base_url}/models");
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_server = stop.clone();
+    let server = thread::spawn(move || {
+        let mut served = 0_usize;
+        while !stop_server.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    let mut request = [0_u8; 2048];
+                    let _ = stream.read(&mut request).unwrap();
+                    served += 1;
+                    write!(
+                        stream,
+                        "HTTP/1.1 302 Found\r\nlocation: {location}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+        served
+    });
+
+    let provider = custom_openai_provider(base_url);
+    let discovery = discovery_path("/models");
+    let cache_dir = tempfile::tempdir().unwrap();
+    let cache_path = cache_dir.path().join("model-discovery-cache.json");
+    let error = refresh_provider_models(&provider, Some(&discovery), &cache_path)
+        .await
+        .expect_err("a same-origin redirect loop must fail instead of looping forever");
+    stop.store(true, Ordering::Relaxed);
+    let served = server.join().unwrap();
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("exceeded 10 redirects"),
+        "loop must stop at the hop cap: {message}"
+    );
+    assert!(
+        served <= DISCOVERY_REDIRECT_LIMIT + 2,
+        "redirect loop issued {served} discovery requests"
+    );
+}
+
+#[tokio::test]
+async fn configured_discovery_does_not_follow_cross_origin_redirects() {
+    let target_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    target_listener.set_nonblocking(true).unwrap();
+    let target_location = format!("http://{}/models", target_listener.local_addr().unwrap());
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 2048];
+        let _ = stream.read(&mut request).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 302 Found\r\nlocation: {target_location}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        )
+        .unwrap();
+    });
+
+    let provider = custom_openai_provider(base_url);
+    let discovery = discovery_path("/models");
+    let cache_dir = tempfile::tempdir().unwrap();
+    let cache_path = cache_dir.path().join("model-discovery-cache.json");
+    let error = refresh_provider_models(&provider, Some(&discovery), &cache_path)
+        .await
+        .expect_err("a cross-origin redirect must not be followed");
+    server.join().unwrap();
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("cross-origin redirects are not allowed")
+            || message.contains("redirect was not followed"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        matches!(target_listener.accept(), Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "the cross-origin redirect target must never be contacted"
+    );
+}

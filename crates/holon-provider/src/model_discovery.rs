@@ -26,6 +26,13 @@ const OLLAMA_TAGS_PATH: &str = "/api/tags";
 const OLLAMA_SHOW_PATH: &str = "/api/show";
 const COPILOT_CHAT_ENDPOINT: &str = "chat-completions";
 pub const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Same cap reqwest applies to its built-in redirect policy. Configuration
+/// driven discovery uses a custom policy (same-origin only) and therefore has
+/// to enforce the hop limit itself.
+const DISCOVERY_REDIRECT_LIMIT: usize = 10;
+/// Total request timeout for one discovery metadata GET, so an unresponsive
+/// gateway cannot pin a refresh slot and its in-flight guard indefinitely.
+const DISCOVERY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Transport-level default discovery used for `openai_chat_completions`
 /// providers that have no built-in discovery definition. Custom OpenAI-compatible
@@ -590,7 +597,13 @@ fn provider_models_request_with_authorization(
     authorization: Option<String>,
     same_origin_redirects_only: bool,
 ) -> Result<reqwest::RequestBuilder> {
-    let mut client = reqwest::Client::builder().user_agent("holon-model-discovery");
+    // Discovery is a small metadata GET. Both a hop cap and a request timeout
+    // are required: a custom redirect policy does not inherit reqwest's
+    // built-in hop limit, and an unresponsive gateway must not keep a refresh
+    // slot (and the in-flight guard) occupied forever.
+    let mut client = reqwest::Client::builder()
+        .user_agent("holon-model-discovery")
+        .timeout(DISCOVERY_REQUEST_TIMEOUT);
     if same_origin_redirects_only {
         // A configured discovery request must never follow a redirect onto a
         // different host: the endpoint base URL owns the request target.
@@ -598,6 +611,12 @@ fn provider_models_request_with_authorization(
         client =
             client.redirect(reqwest::redirect::Policy::custom(
                 move |attempt| match endpoint_origin.as_ref() {
+                    // `Policy::custom` bypasses reqwest's own hop limit, so the
+                    // cap has to live in the callback to keep same-origin
+                    // redirect cycles from looping indefinitely.
+                    _ if attempt.previous().len() > DISCOVERY_REDIRECT_LIMIT => attempt.error(
+                        anyhow!("model discovery exceeded {DISCOVERY_REDIRECT_LIMIT} redirects"),
+                    ),
                     Some(origin) if &attempt.url().origin() == origin => attempt.follow(),
                     _ => attempt.stop(),
                 },
