@@ -109,11 +109,14 @@ log "snapshot size: $(du -sh "$SANDBOX/.holon/state/runtime.sqlite" | awk '{prin
 # Fail closed: the sandbox must be credential-free and config-free before
 # boot. The snapshot step never copies these files; this guards the invariant
 # against future edits or stray files turning the sandbox into an executable
-# agent home.
-if [ -e "$SANDBOX/.holon/credentials.json" ] || [ -e "$SANDBOX/.holon/config.json" ]; then
+# agent home. The sandbox is also the daemon's HOME, so a stray .codex home
+# (codex CLI OAuth) would make the built-in openai-codex provider ready.
+if [ -e "$SANDBOX/.holon/credentials.json" ] \
+  || [ -e "$SANDBOX/.holon/config.json" ] \
+  || [ -e "$SANDBOX/.codex/auth.json" ]; then
   rm -rf "$SANDBOX"
   unset SANDBOX
-  die "sandbox would contain credentials.json/config.json; refusing to boot an executable agent home"
+  die "sandbox would contain credentials.json/config.json/.codex/auth.json; refusing to boot an executable agent home"
 fi
 
 LOG="$SANDBOX/serve.log"
@@ -123,7 +126,13 @@ WEB_ARGS=()
 # abort at startup ("no default model configured ..."). HOLON_BOOTSTRAP=1
 # selects bootstrap mode instead: the daemon boots and every agent turn is
 # rejected by the bootstrap provider, so execution isolation is unchanged.
-setsid env -i PATH="$PATH" "HOLON_HOME=$SANDBOX/.holon" "HOLON_BOOTSTRAP=1" \
+# HOME/CODEX_HOME are pinned into the sandbox because the built-in
+# openai-codex provider falls back to the relative path ./.codex when HOME is
+# unset (holon-config default_codex_home). Leaving HOME unset would let a
+# .codex/auth.json next to the invocation directory authenticate a real agent
+# turn and silently defeat HOLON_BOOTSTRAP=1.
+setsid env -i PATH="$PATH" "HOME=$SANDBOX" "CODEX_HOME=$SANDBOX/.codex" \
+  "HOLON_HOME=$SANDBOX/.holon" "HOLON_BOOTSTRAP=1" \
   "$BINARY" serve --access local --port "$PORT" "${WEB_ARGS[@]}" >"$LOG" 2>&1 &
 SERVER_PID=$!
 
@@ -134,8 +143,10 @@ SERVER_PID=$!
 # The runtime loads config, credentials, state and its socket under HOLON_HOME
 # (default ~/.holon). Without an explicit override the beta would open and
 # migrate the real daemon home; assert the process env is actually bound to
-# the snapshot before treating the run as a real-library smoke. /proc environ
-# can still be empty right after fork+exec, so retry briefly before failing.
+# the snapshot before treating the run as a real-library smoke. HOME and
+# CODEX_HOME are asserted too: a dropped binding would re-open the host
+# credential lookup paths. /proc environ can still be empty right after
+# fork+exec, so retry briefly before failing.
 env_bound=0
 for _ in $(seq 1 10); do
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -143,7 +154,10 @@ for _ in $(seq 1 10); do
     tail -n 20 "$LOG" >&2 || true
     die "serve process exited during the env check (see log above)"
   fi
-  if tr '\0' '\n' <"/proc/$SERVER_PID/environ" 2>/dev/null | grep -qx "HOLON_HOME=$SANDBOX/.holon"; then
+  proc_env="$(tr '\0' '\n' <"/proc/$SERVER_PID/environ" 2>/dev/null || true)"
+  if printf '%s\n' "$proc_env" | grep -qxF "HOLON_HOME=$SANDBOX/.holon" \
+    && printf '%s\n' "$proc_env" | grep -qxF "HOME=$SANDBOX" \
+    && printf '%s\n' "$proc_env" | grep -qxF "CODEX_HOME=$SANDBOX/.codex"; then
     env_bound=1
     break
   fi
@@ -151,7 +165,7 @@ for _ in $(seq 1 10); do
 done
 if [ "$env_bound" -ne 1 ]; then
   KEEP=1
-  die "serve process is not bound to the sandbox HOLON_HOME; aborting to protect the real home"
+  die "serve process is not bound to the sandbox HOLON_HOME/HOME/CODEX_HOME; aborting to protect the real home"
 fi
 
 healthy=0
