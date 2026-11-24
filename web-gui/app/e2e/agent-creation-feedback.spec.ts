@@ -56,10 +56,10 @@ for (const outcome of ["ready", "degraded", "lost-job"] as const) {
     await dialog.getByRole("button", { name: "Create", exact: true }).click();
     await expect(dialog).not.toBeVisible();
     await expect(page).toHaveURL(new RegExp(`/agents/${id}/conversation\\?incarnation=1`));
-    await expect(page.getByText("Created — initializing", { exact: true })).toBeVisible();
+    await expect(page.getByText("Initializing", { exact: true })).toBeVisible();
     expect(posted).toBe(1);
     finished = true;
-    await expect(page.getByText(outcome === "degraded" ? "Created — initialization incomplete" : "Created — initialization complete", { exact: true })).toBeVisible();
+    await expect(page.getByText(outcome === "degraded" ? "Initialization incomplete" : "Initialization complete", { exact: true })).toBeVisible();
     await expect(page.locator(".agent-creation-status")).not.toContainText("SQL");
     await expect(page.locator(".agent-creation-status")).not.toContainText("/home/private");
     if (outcome !== "degraded") {
@@ -74,7 +74,7 @@ for (const outcome of ["ready", "degraded", "lost-job"] as const) {
         }],
       } });
       await expect(page.getByText(/Run failed: the prompt baseline/)).toBeVisible();
-      await expect(page.getByText("Created — initialization complete", { exact: true })).toBeVisible();
+      await expect(page.getByText("Initialization complete", { exact: true })).toBeVisible();
     }
     expect(posted).toBe(1);
     if (outcome === "ready") {
@@ -106,7 +106,7 @@ test("200 bootstrapped navigates immediately with initialization complete", asyn
   await dialog.getByRole("button", { name: "Create", exact: true }).click();
   await expect(dialog).not.toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/agents/${id}/conversation\\?incarnation=1`));
-  await expect(page.getByText("Created — initialization complete", { exact: true })).toBeVisible();
+  await expect(page.getByText("Initialization complete", { exact: true })).toBeVisible();
   expect(posted).toBe(1);
 });
 
@@ -213,9 +213,9 @@ test("300 a settled successful turn retires the creation banner", async ({ page,
   const dialog = await openCreate(page, id);
   await dialog.getByRole("button", { name: "Create", exact: true }).click();
   await expect(dialog).not.toBeVisible();
-  await expect(page.getByText("Created — initializing", { exact: true })).toBeVisible();
+  await expect(page.getByText("Initializing", { exact: true })).toBeVisible();
   finished = true;
-  await expect(page.getByText("Created — initialization complete", { exact: true })).toBeVisible();
+  await expect(page.getByText("Initialization complete", { exact: true })).toBeVisible();
   await request.post(`/__e2e__/conversation?session=${encodeURIComponent(session)}`, { data: {
     agentId: id,
     turns: [{
