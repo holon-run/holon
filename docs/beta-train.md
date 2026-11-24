@@ -30,12 +30,25 @@ E2E.
 |---|---|---|
 | ~02:40–03:00 | existing schedules | Nightly full-sweep CI (`40 2 * * *`) and E2E Scheduler Nightly (`0 3 * * *`) run. The train never starts before the scheduled E2E finishes. |
 | ~06:00 | `holon-release` timer | 24h promotion gate for yesterday's beta (below). Pass → standard prep PR → dual verification → stable tag → Release workflow → channel verification. |
-| ~06:10 | `holon-release` timer | Dispatch `beta-train.yml` (`workflow_dispatch`). Preflight refuses to run unless the latest scheduled E2E run is green and less than 36h old; then requires new commits on `main` in the last 24h, the tag free, main CI green on HEAD, and no queued/running Release workflow (milestone releases keep the stable slot). Dispatches the Release E2E attestation (`candidate_ref` = main HEAD, `release_tag` = the beta tag, `previous_ref` = latest stable). |
+| ~06:10 | `holon-release` timer | Dispatch `beta-train.yml` (`workflow_dispatch`). Preflight refuses to run unless the latest scheduled E2E run is green and less than 36h old; then requires no open `priority:critical` (P0) issues, new commits on `main` in the last 24h, the tag free, main CI green on HEAD, and no queued/running Release workflow (milestone releases keep the stable slot). Dispatches the Release E2E attestation (`candidate_ref` = main HEAD, `release_tag` = the beta tag, `previous_ref` = latest stable). |
 | ~07:00–10:00 | `beta-train.yml` | When the attestation is green, tags `vX.Y.Z-beta.<date>` on main HEAD. The existing tag-triggered Release workflow runs in **beta mode**: CLI binaries + GHCR `:beta` + `:<version>` image, GitHub prerelease, no latest/Homebrew/appcast/mobile apps. |
 | after publish | `scripts/beta-real-lib-smoke.sh` (runs on the real-library Linux host) | Snapshots the live daemon home (sqlite `.backup` of `state/runtime.sqlite` + config/credentials) into a sandbox, boots the published beta against it, and flips the release-body marker to `[smoke: passed]`. |
 | after publish | `scripts/demo-trial.sh run --image ghcr.io/holon-run/holon:<beta>` | Points the Railway demo service at the beta image, waits for the deployment to succeed, then verifies the web GUI, the control status (`product_version`), and a live agent round-trip. The 24h trial starts here. |
 | next day ~06:00 | `holon-release` timer | Promotion gate: attestation green, the demo ran the beta for ≥20h without a failed deployment or restart loop, the agent round-trip is healthy at the end of the window, no release-blocking issue, stable slot free. Pass → stable promotion. Fail → the beta dies; the next train restarts from the new `main`. |
 | after stable verification | owner machine(s) | `channel-upgrade.sh` installs the new stable and restarts. |
+
+## Operator release principles
+
+Two operator-set gates (2026-11-24) apply to every daily beta:
+
+1. **An open P0 blocks the train.** While any issue labeled `priority:critical`
+   (the repository's P0 equivalent) is open, the preflight skips the day and the
+   train waits until the issue is resolved.
+2. **A red main CI is work, not a skip.** When main CI fails on the HEAD commit,
+   the preflight skips the day and `holon-release` diagnoses the failure: a real
+   regression is fixed (dispatching a developer agent for release-blocking
+   fixes) before the next train is dispatched; only a proven infrastructure
+   flake unblocks the train without a code fix.
 
 ## Demo canary on Railway
 

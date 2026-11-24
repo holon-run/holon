@@ -73,6 +73,16 @@ jobs:
             exit 0
           fi
 
+          # Operator release principles (2026-11-24): a beta never ships while a
+          # P0 issue is open, and a red main CI must be fixed (or proven to be an
+          # infrastructure flake) before the next train. The repo has no literal
+          # "p0" label; priority:critical is the P0 equivalent.
+          p0="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "priority:critical" --json number --jq 'length')"
+          if [ "$p0" -gt 0 ]; then
+            skip "$p0 open priority:critical (P0) issue(s); the train waits until they are resolved"
+            exit 0
+          fi
+
           commits="$(gh api "repos/${GITHUB_REPOSITORY}/commits?sha=main&since=${since}&per_page=100" --jq 'length')"
           if [ "$commits" -eq 0 ]; then
             skip "no new commits on main in the last 24h"
@@ -84,7 +94,7 @@ jobs:
           fi
           ci="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --branch main --commit "$sha" --limit 1 --json conclusion --jq '.[0].conclusion // "none"')"
           if [ "$ci" != "success" ]; then
-            skip "main CI on ${sha} is ${ci}"
+            skip "main CI on ${sha} is ${ci}; fix the failure or rule out an infrastructure flake before the next train"
             exit 0
           fi
           queued="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow Release --status queued --json databaseId --jq 'length')"
