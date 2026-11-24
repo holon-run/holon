@@ -1370,6 +1370,40 @@ fn tavily_results_json() -> serde_json::Value {
     })
 }
 
+fn searchapi_results_json() -> serde_json::Value {
+    serde_json::json!({
+        "search_metadata": { "id": "search_test", "status": "Success" },
+        "search_parameters": { "engine": "google", "q": "test", "num": 5 },
+        "organic_results": [
+            {
+                "position": 1,
+                "title": "SearchApi",
+                "link": "https://www.searchapi.io/",
+                "domain": "www.searchapi.io",
+                "snippet": "Google results as structured JSON",
+                "date": "Jan 1, 2026"
+            },
+            {
+                "position": 2,
+                "title": "SearchApi Docs",
+                "link": "https://www.google.com/goto?url=https://www.searchapi.io/docs",
+                "link_token": "token",
+                "snippet": "Documentation for the Google engine"
+            },
+            { "position": 3, "title": "No link" }
+        ]
+    })
+}
+
+fn empty_searchapi_results_json() -> serde_json::Value {
+    // A query without matches: HTTP 200, an `error` sentence, no `organic_results`.
+    serde_json::json!({
+        "search_metadata": { "id": "search_test", "status": "Success" },
+        "search_parameters": { "engine": "google", "q": "test" },
+        "error": "Google didn't return any results."
+    })
+}
+
 fn exa_results_json() -> serde_json::Value {
     serde_json::json!({
         "results": [
@@ -2629,6 +2663,264 @@ fn keenable_request_is_key_free_without_api_key() {
 }
 
 #[tokio::test]
+async fn searchapi_search_integration_success() {
+    let router = axum::Router::new().route(
+        "/api/v1/search",
+        axum::routing::get(
+            |headers: axum::http::HeaderMap, uri: axum::http::Uri| async move {
+                assert_eq!(headers["authorization"], "Bearer test-key-123");
+                let query = uri.query().unwrap_or_default();
+                assert!(query.contains("engine=google"), "query: {query}");
+                assert!(query.contains("q=test"), "query: {query}");
+                assert!(query.contains("num=5"), "query: {query}");
+                axum::Json(searchapi_results_json())
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{}", addr);
+
+    let provider = test_provider(WebProviderKind::SearchApi, &base_url);
+    let results = searchapi_search(
+        "test",
+        5,
+        None,
+        None,
+        "searchapi_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 2, "the entry without a link is skipped");
+    assert_eq!(results[0].title, "SearchApi");
+    assert_eq!(results[0].url, "https://www.searchapi.io/");
+    assert_eq!(
+        results[0].snippet.as_deref(),
+        Some("Google results as structured JSON")
+    );
+    assert_eq!(results[0].source, "searchapi_test");
+    assert_eq!(results[0].rank, Some(1));
+    // Google redirect links are valid URLs and pass through unchanged.
+    assert_eq!(results[1].title, "SearchApi Docs");
+    assert_eq!(
+        results[1].url,
+        "https://www.google.com/goto?url=https://www.searchapi.io/docs"
+    );
+}
+
+#[tokio::test]
+async fn searchapi_search_sends_language_and_region_as_hl_gl_and_caps_num() {
+    let queries: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = queries.clone();
+    let router = axum::Router::new().route(
+        "/api/v1/search",
+        axum::routing::get(move |uri: axum::http::Uri| {
+            let captured = captured.clone();
+            async move {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(uri.query().unwrap_or_default().to_string());
+                axum::Json(searchapi_results_json())
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{addr}/");
+    let provider = test_provider(WebProviderKind::SearchApi, &base_url);
+
+    let results = searchapi_search(
+        "test",
+        5,
+        Some("pt"),
+        Some("br"),
+        "searchapi_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 2);
+
+    // Absent hints must not append hl/gl parameters.
+    let results = searchapi_search(
+        "test",
+        5,
+        None,
+        None,
+        "searchapi_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 2);
+
+    // Single-sided, whitespace-padded hints are trimmed and forwarded; the
+    // Google engine serves at most 10 results per request.
+    let results = searchapi_search(
+        "test",
+        25,
+        Some(" en "),
+        None,
+        "searchapi_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 2);
+
+    let queries = queries.lock().unwrap();
+    assert_eq!(queries.len(), 3);
+    assert!(queries[0].contains("hl=pt"), "query: {}", queries[0]);
+    assert!(queries[0].contains("gl=br"), "query: {}", queries[0]);
+    assert!(!queries[1].contains("hl="), "query: {}", queries[1]);
+    assert!(!queries[1].contains("gl="), "query: {}", queries[1]);
+    assert!(queries[2].contains("hl=en"), "query: {}", queries[2]);
+    assert!(!queries[2].contains("gl="), "query: {}", queries[2]);
+    assert!(queries[2].contains("num=10"), "query: {}", queries[2]);
+    for query in queries.iter() {
+        assert!(query.starts_with("engine=google&"), "query: {query}");
+    }
+}
+
+#[tokio::test]
+async fn searchapi_search_no_results_is_empty() {
+    let router = axum::Router::new().route(
+        "/api/v1/search",
+        axum::routing::get(|| async { axum::Json(empty_searchapi_results_json()) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{}", addr);
+
+    let provider = test_provider(WebProviderKind::SearchApi, &base_url);
+    let results = searchapi_search(
+        "test",
+        5,
+        None,
+        None,
+        "searchapi_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn searchapi_search_http_401_is_error() {
+    let router = axum::Router::new().route(
+        "/api/v1/search",
+        axum::routing::get(|| async {
+            (
+                axum::http::StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({ "error": "Invalid API key." })),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{}", addr);
+
+    let provider = test_provider(WebProviderKind::SearchApi, &base_url);
+    let err = searchapi_search(
+        "test",
+        5,
+        None,
+        None,
+        "searchapi_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap_err();
+    let tool_error = crate::test_tool_error(&err);
+    assert_eq!(tool_error.kind, "provider_unavailable");
+    assert!(
+        format!("{err}").contains("HTTP 401"),
+        "expected HTTP 401 error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn searchapi_search_http_429_is_error() {
+    let router = axum::Router::new().route(
+        "/api/v1/search",
+        axum::routing::get(|| async { axum::http::StatusCode::TOO_MANY_REQUESTS }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{}", addr);
+
+    let provider = test_provider(WebProviderKind::SearchApi, &base_url);
+    let err = searchapi_search(
+        "test",
+        5,
+        None,
+        None,
+        "searchapi_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap_err();
+    let tool_error = crate::test_tool_error(&err);
+    assert_eq!(tool_error.kind, "rate_limited");
+}
+
+#[tokio::test]
+async fn searchapi_search_missing_api_key_is_error() {
+    let provider = WebProviderConfig {
+        kind: WebProviderKind::SearchApi,
+        base_url: Some("http://localhost:1".to_string()),
+        engine_id: None,
+        api_key: String::new(),
+        model_route: None,
+        command: None,
+        output: None,
+        limits: Default::default(),
+    };
+    let err = searchapi_search(
+        "test",
+        5,
+        None,
+        None,
+        "searchapi_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap_err();
+    let tool_error = crate::test_tool_error(&err);
+    assert_eq!(tool_error.kind, "provider_unavailable");
+    assert!(
+        format!("{err}").contains("API key"),
+        "expected API key error, got: {err}"
+    );
+}
+
+#[tokio::test]
 async fn exa_search_integration_success() {
     let router = axum::Router::new().route(
         "/search",
@@ -3386,6 +3678,64 @@ async fn exa_search_empty_results_is_error() {
 // ---------------------------------------------------------------------------
 // Real API integration tests (opt-in, requires API keys)
 // ---------------------------------------------------------------------------
+
+/// Real SearchApi integration test.
+/// Set SEARCHAPI_API_KEY env var to run: SEARCHAPI_API_KEY=... cargo test searchapi_search_live -- --ignored
+#[tokio::test]
+#[ignore = "requires SEARCHAPI_API_KEY env var and network access"]
+async fn searchapi_search_live_integration() {
+    let api_key = std::env::var("SEARCHAPI_API_KEY").ok();
+    if api_key.is_none() {
+        eprintln!("SKIP: SEARCHAPI_API_KEY not set");
+        return;
+    }
+    let api_key = api_key.unwrap();
+    assert!(!api_key.is_empty(), "SEARCHAPI_API_KEY is empty");
+
+    let provider = WebProviderConfig {
+        kind: WebProviderKind::SearchApi,
+        base_url: None, // use default https://www.searchapi.io
+        engine_id: None,
+        api_key,
+        model_route: None,
+        command: None,
+        output: None,
+        limits: Default::default(),
+    };
+    let fetch_config = test_fetch_config();
+
+    let results = searchapi_search(
+        "Rust programming language",
+        3,
+        Some("en"),
+        Some("us"),
+        "searchapi_live",
+        &provider,
+        &fetch_config,
+    )
+    .await
+    .expect("SearchApi live search should succeed");
+
+    eprintln!("SearchApi live search returned {} results", results.len());
+    for (i, r) in results.iter().enumerate() {
+        eprintln!(
+            "  [{i}] title={} url={} snippet={:?}",
+            r.title, r.url, r.snippet
+        );
+    }
+    assert!(
+        !results.is_empty(),
+        "SearchApi live search should return at least 1 result"
+    );
+    assert!(
+        !results[0].title.is_empty(),
+        "first result should have a title"
+    );
+    assert!(
+        results[0].url.starts_with("http"),
+        "first result should have a URL"
+    );
+}
 
 /// Real Brave Search API integration test.
 /// Set BRAVE_API_KEY env var to run: BRAVE_API_KEY=... cargo test brave_search_live -- --ignored

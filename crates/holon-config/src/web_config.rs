@@ -905,6 +905,8 @@ pub enum WebProviderKind {
     Tavily,
     Keenable,
     Exa,
+    #[serde(rename = "searchapi")]
+    SearchApi,
     Perplexity,
     Firecrawl,
     OpenAiNative,
@@ -918,7 +920,7 @@ impl WebProviderKind {
     ///
     /// Missing entries are not caught at compile time, so keep this in sync
     /// when adding or removing enum variants.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::DuckDuckGo,
         Self::Searxng,
         Self::Brave,
@@ -931,6 +933,7 @@ impl WebProviderKind {
         Self::Tavily,
         Self::Keenable,
         Self::Exa,
+        Self::SearchApi,
         Self::Perplexity,
         Self::Firecrawl,
         Self::OpenAiNative,
@@ -962,6 +965,7 @@ impl WebProviderKind {
             WebProviderKind::Tavily => "tavily",
             WebProviderKind::Keenable => "keenable",
             WebProviderKind::Exa => "exa",
+            WebProviderKind::SearchApi => "searchapi",
             WebProviderKind::Perplexity => "perplexity",
             WebProviderKind::Firecrawl => "firecrawl",
             WebProviderKind::OpenAiNative => "open_ai_native",
@@ -1126,6 +1130,21 @@ impl WebProviderKind {
                 supports_full_content: true,
                 supports_native_citations: false,
                 default_priority: 70,
+                status: WebProviderSupportStatus::Supported,
+            },
+            // SearchApi's Google engine: Google's results page as structured
+            // JSON behind one API key; `hl` and `gl` select language and
+            // country, so the region-or-language hints are consumed.
+            WebProviderKind::SearchApi => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Keyword,
+                supports_domain_filter: false,
+                supports_freshness: false,
+                supports_region_or_language: true,
+                supports_full_content: false,
+                supports_native_citations: false,
+                default_priority: 78,
                 status: WebProviderSupportStatus::Supported,
             },
             WebProviderKind::Perplexity => WebProviderCapabilityMetadata {

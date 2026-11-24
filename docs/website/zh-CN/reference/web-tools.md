@@ -112,8 +112,8 @@ Search 支持 `site:`、`-site:`、`lang:`、`after:`、`before:` 等查询运�
 | `query` | 是 | 搜索查询字符串 |
 | `max_results` | 否 | 返回的最大结果数 |
 | `provider` | 否 | 省略则沿用已配置默认与模式；`"auto"` 按自动候选顺序配合已配置模式执行；`"aggregate"` 仅本次按顺序聚合查询并按规范 URL 去重；或传具体提供商 ID（不回退） |
-| `language` | 否 | 可选语言提示；仅能力元数据声明支持区域/语言的提供商会消费（Google 映射为 `hl`，Brave 映射为 `search_lang`，SearXNG 传入其 `language` 参数以替代自动检测），其余提供商忽略 |
-| `region` | 否 | 可选区域提示；由同一批提供商消费（Google 映射为 `gl`，Brave 映射为 `country`；SearXNG 在存在不含区域子标签的语言提示时将其合并进 `language` 区域字段，仅传区域提示时保持自动检测） |
+| `language` | 否 | 可选语言提示；仅能力元数据声明支持区域/语言的提供商会消费（Google 和 SearchApi 映射为 `hl`，Brave 映射为 `search_lang`，SearXNG 传入其 `language` 参数以替代自动检测），其余提供商忽略 |
+| `region` | 否 | 可选区域提示；由同一批提供商消费（Google 和 SearchApi 映射为 `gl`，Brave 映射为 `country`；SearXNG 在存在不含区域子标签的语言提示时将其合并进 `language` 区域字段，仅传区域提示时保持自动检测） |
 
 ### 路由与提供商发现
 
@@ -152,6 +152,10 @@ Holon 使用基于提供商的搜索模型，有多种提供商可选。未配�
   `holon config set web.providers.google.kind google`、
   `holon config set web.providers.google.engine_id <cx>` 和
   `holon config set web.providers.google.credential_profile <profile>`。
+- **SearchApi**：通过 SearchApi 的 Google 引擎以结构化 JSON 获取 Google 结果页，
+  无需创建搜索引擎 ID。需要把 API key 存为凭据 profile。配置方式：
+  `holon config set web.providers.searchapi.kind searchapi` 和
+  `holon config set web.providers.searchapi.credential_profile <profile>`。
 - **Keenable**：面向 Agent 的独立网页索引。公共端点无需 API key，配置密钥后改用
   认证端点，且属于默认免 key 回退链。配置方式：`holon config set web.providers.keenable.kind keenable`；
   需要密钥时再加
