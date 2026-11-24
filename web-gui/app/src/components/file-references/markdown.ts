@@ -21,12 +21,15 @@ export function remarkFileReferences(options: Options = {}) {
     visit(tree, (node, index, parent) => {
       if (node.type === "link" || node.type === "linkReference") return SKIP;
       if (node.type !== "text" || index == null || !parent) return;
-      const pattern = /workspace:\/\/[^\s<>"')\]]+|\/[^\s<>"'，。；！？、（）【】《》]+/g;
+      const pattern = /[fF][iI][lL][eE]:\/\/[^\s<>"'，。；！？、（）【】《》]+|workspace:\/\/[^\s<>"')\]]+|\/[^\s<>"'，。；！？、（）【】《》]+/g;
       const segments: any[] = [];
       let last = 0;
       for (const match of node.value.matchAll(pattern)) {
         let url = match[0].replace(/[.,;!?:]+$/, "");
-        if (!url.startsWith("workspace:") && !url.startsWith("/apps/")) {
+        // An explicit file: URL is unambiguous intent, so it skips the bare-path
+        // heuristics below and may also point at a directory.
+        const explicitFileUrl = /^file:\/\//i.test(url);
+        if (!explicitFileUrl && !url.startsWith("workspace:") && !url.startsWith("/apps/")) {
           // Prose-glued CJK suffixes are not part of bare host paths; path-internal CJK stays.
           url = url.replace(/[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+$/, "");
         }
@@ -37,12 +40,14 @@ export function remarkFileReferences(options: Options = {}) {
           if (url.split(close).length <= url.split(open).length) break;
           url = url.slice(0, -1);
         }
-        if (url.startsWith("/apps/")) {
+        if (explicitFileUrl) {
+          const preceding = node.value.slice(0, match.index);
+          if (preceding && !/[\s([{<"'：:，。；！？、（【]$/.test(preceding)) continue;
+        } else if (url.startsWith("/apps/")) {
           const preceding = node.value.slice(0, match.index);
           if (preceding && !/[\s(（[【:：，。；！？、]$/.test(preceding)) continue;
           if (!isAppPath(url.split(/[?#]/, 1)[0]) || classifyReference(url).kind !== "web") continue;
-        }
-        if (!url.startsWith("workspace:") && !url.startsWith("/apps/")) {
+        } else if (!url.startsWith("workspace:")) {
           // Bare host file paths: need a boundary, must lose to Web routes, and end in a file-like segment.
           const preceding = node.value.slice(0, match.index);
           if (preceding && !/[\s([{<"'：:，。；！？、（【]$/.test(preceding)) continue;
