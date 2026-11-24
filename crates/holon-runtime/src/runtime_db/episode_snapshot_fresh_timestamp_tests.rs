@@ -38,63 +38,6 @@ fn bound_at(connection: &Connection, incarnation: u64) -> Result<String> {
 }
 
 #[test]
-fn fresh_timestamp_sql_bytes_match_original_for_wide_years_fractions_and_leap_seconds() -> Result<()>
-{
-    let mut connection = connection()?;
-    let mut identity = identity();
-    let mut values = vec![DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC];
-    for year in [
-        DateTime::<Utc>::MIN_UTC.year(),
-        -10000,
-        -1,
-        0,
-        9999,
-        10000,
-        DateTime::<Utc>::MAX_UTC.year(),
-    ] {
-        for nanos in [
-            0,
-            1_000_000,
-            1_000,
-            1,
-            123_000_000,
-            123_456_000,
-            123_456_789,
-            1_000_000_000,
-            1_123_456_789,
-        ] {
-            values.push(
-                NaiveDate::from_ymd_opt(year, 10, 17)
-                    .unwrap()
-                    .and_hms_nano_opt(23, 59, 59, nanos)
-                    .unwrap()
-                    .and_utc(),
-            );
-        }
-    }
-    for (index, value) in values.into_iter().enumerate() {
-        identity.incarnation = (index + 1) as u64;
-        let tx = connection.transaction()?;
-        ensure_fresh_episode_continuity_tx(&tx, &identity, value)?;
-        tx.commit()?;
-        assert_eq!(
-            bound_at(&connection, identity.incarnation)?,
-            value.to_rfc3339()
-        );
-    }
-    let mut buffer = ContinuityTimestamp {
-        bytes: [0; 40],
-        len: 0,
-    };
-    use std::fmt::Write;
-    assert!(buffer.write_str(&"x".repeat(41)).is_err());
-    assert_eq!(buffer.len, 0);
-    buffer.write_str("valid")?;
-    assert_eq!(&buffer.bytes[..buffer.len], b"valid");
-    Ok(())
-}
-
-#[test]
 fn fresh_timestamp_needs_no_remaining_budget_and_preserves_original_phase_and_last_holder(
 ) -> Result<()> {
     let mut connection = connection()?;

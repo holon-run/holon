@@ -8086,9 +8086,7 @@ pub(crate) fn decode_work_item_delegation_payload(
     serde_json::from_str(payload).context("decoding work item delegation payload from runtime db")
 }
 
-pub(crate) fn decode_context_episode_payload(payload: &str) -> Result<ContextEpisodeRecord> {
-    serde_json::from_str(payload).context("decoding context episode payload from runtime db")
-}
+pub(crate) use holon_storage::episode_continuity::decode_context_episode_payload;
 
 pub(crate) fn decode_operator_notification_payload(
     payload: &str,

@@ -54,7 +54,10 @@ fn loaded_seed_exact_cost_accumulates_and_last_returned_holder_retains_it() -> R
             assert_eq!(value.agent_id, AGENT);
             assert_eq!(value.incarnation, None);
             assert!(!value.import_required);
-            assert!(Arc::ptr_eq(value._material.as_ref().unwrap(), &holder));
+            assert!(crate::runtime::agent_observation::same_observation_guard(
+                value._material.as_ref().unwrap(),
+                &holder
+            ));
         }
         (first, last)
     };
@@ -98,7 +101,10 @@ fn loaded_seed_rejects_each_dimension_without_refunding_or_detaching_prior_holde
             let error = find_seed(&tx, AGENT).unwrap_err();
             assert!(format!("{error:#}").contains("ResourceExhausted"));
             assert!(ResourceReadMaterial::active_guard().is_err());
-            assert!(Arc::ptr_eq(retained._material.as_ref().unwrap(), &holder));
+            assert!(crate::runtime::agent_observation::same_observation_guard(
+                retained._material.as_ref().unwrap(),
+                &holder
+            ));
             tx.rollback()?;
             retained
         };

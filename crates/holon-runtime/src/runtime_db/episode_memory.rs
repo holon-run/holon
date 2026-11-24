@@ -25,7 +25,7 @@ use crate::{
     },
 };
 
-pub(crate) const EPISODE_MEMORY_PHASE: &str = "post_dispatch_memory/v1";
+pub(crate) use holon_storage::episode_continuity::EPISODE_MEMORY_PHASE;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct EpisodeMemoryKey {

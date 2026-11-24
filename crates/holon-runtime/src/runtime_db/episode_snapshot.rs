@@ -6,7 +6,6 @@
 pub(super) use holon_storage::schema::EPISODE_CONTINUITY_SCHEMA;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fmt;
 
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{DateTime, Utc};
@@ -27,10 +26,32 @@ use crate::{
 use super::{
     episode_memory::{
         load_receipt, EpisodeMemoryInvocation, EpisodeMemoryKey, EpisodeMemoryReceipt,
-        EPISODE_MEMORY_PHASE,
     },
-    repositories::{decode_agent_identity_payload, decode_context_episode_payload},
+    repositories::decode_context_episode_payload,
     RuntimeDb,
+};
+
+use holon_storage::episode_continuity::{
+    self as storage, bytes_digest, insert_legacy_binding_tx, load_continuity_binding,
+    load_identity, seed_identity_digest, ContinuitySeed, EpisodeContinuityStorage, EpisodeRow,
+    EPISODE_CONTINUITY_POLICY, UPGRADE_BOUNDARY_KEY,
+};
+
+pub(super) use storage::{
+    ensure_fresh_episode_continuity_tx, validate_immutable_episode_upsert_tx,
+};
+pub(crate) use storage::{EpisodeContinuityBinding, EpisodeMemoryLoadScope, EpisodeSnapshotError};
+
+#[cfg(test)]
+use storage::{
+    ensure_no_prior_binding, episode_import_complete, has_any_binding, member_content_digest,
+    member_qualification_json, CandidatePayloadDigest, SeedIdentityDigest,
+    LEGACY_EPISODE_RECENT_CANDIDATES,
+};
+
+const EPISODE_STORAGE: EpisodeContinuityStorage = EpisodeContinuityStorage {
+    material: super::AGENT_REGISTRY_MATERIAL,
+    active_material: crate::runtime::agent_observation::active_observation_material,
 };
 
 #[path = "current_read_upgrade.rs"]
@@ -100,23 +121,12 @@ mod upgrade;
 #[path = "episode_snapshot_work.rs"]
 pub(super) mod work_checkpoint;
 
-pub(crate) const EPISODE_CONTINUITY_POLICY: i64 = 1;
-pub(crate) const LEGACY_EPISODE_RECENT_CANDIDATES: usize = 12;
 // Large legacy fixtures verify that adoption is not truncated at former caps.
 #[cfg(all(test, holon_lib_test_shard = "b"))]
 const CONTINUITY_MAX_RECORDS: usize = 65_536;
 #[cfg(all(test, holon_lib_test_shard = "b"))]
 const CONTINUITY_MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 const CONTINUITY_MAX_REF_DEPTH: usize = 64;
-const UPGRADE_BOUNDARY_KEY: &str = "episode_continuity/v1/upgrade_boundary";
-
-/// Installed only by migration v82, before identity creation or runtime activation.
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EpisodeMemoryLoadScope {
-    pub agent_id: String,
-    pub identity_incarnation: u64,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct EpisodeMemoryCurrentSnapshot {
@@ -148,67 +158,10 @@ impl EpisodeMemoryBootstrapSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub(crate) enum EpisodeContinuityBinding {
-    FreshEmpty,
-    LegacyAdopted {
-        seed_id: String,
-        boundary_id: String,
-        source_kind: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EpisodeSnapshotError {
-    RetiredScope,
-    MissingContinuityBinding,
-    LegacyImportPending,
-    BindingConflict,
-    LegacyContentChanged { episode_id: String },
-    ActiveBuilderCollision { episode_id: String },
-}
-
-impl fmt::Display for EpisodeSnapshotError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RetiredScope => f.write_str("episode snapshot identity scope is retired"),
-            Self::MissingContinuityBinding => {
-                f.write_str("episode snapshot has no explicit continuity binding")
-            }
-            Self::LegacyImportPending => {
-                f.write_str("episode continuity first legacy import has not completed")
-            }
-            Self::BindingConflict => f.write_str("immutable episode continuity binding conflicts"),
-            Self::LegacyContentChanged { episode_id } => {
-                write!(f, "adopted legacy episode content changed: {episode_id}")
-            }
-            Self::ActiveBuilderCollision { episode_id } => {
-                write!(
-                    f,
-                    "active episode builder is already archived: {episode_id}"
-                )
-            }
-        }
-    }
-}
-impl std::error::Error for EpisodeSnapshotError {}
-
 impl RuntimeDb {
     /// Detect an unfinished retired import before admitting SQLite-only work.
     pub(crate) fn pending_legacy_episode_import_agent_ids(&self) -> Result<Vec<String>> {
-        self.read_for_preparation(|tx| {
-            let mut statement = tx.prepare(
-                "SELECT s.agent_id FROM episode_continuity_seeds s
-             WHERE s.import_required = 1
-               AND NOT EXISTS (SELECT 1 FROM episode_continuity_imports i WHERE i.seed_id = s.seed_id)
-               AND NOT EXISTS (SELECT 1 FROM agent_episode_continuity b WHERE b.agent_id = s.agent_id AND b.mode = 'fresh_empty')
-             ORDER BY s.agent_id",
-            )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(Into::into)
-        })
+        self.read_for_preparation(|tx| storage::pending_legacy_episode_import_agent_ids(tx))
     }
 
     /// This fresh read transaction is also the receipt resolver's observation.
@@ -282,64 +235,27 @@ fn load_episode_memory_snapshot_inner(
     let (state, control_revision) = load_state(connection, &scope.agent_id)?;
     validate_active_builder(connection, state.as_ref())?;
     let continuity = load_continuity_binding(connection, scope)?;
-    let seed_id = match &continuity {
-        EpisodeContinuityBinding::FreshEmpty => None,
-        EpisodeContinuityBinding::LegacyAdopted { seed_id, .. } => Some(seed_id.as_str()),
-    };
-    let limit = i64::try_from(
-        recent_limit
-            .checked_add(1)
-            .context("Episode window count overflow")?,
-    )?;
-    let mut statement = connection.prepare(
-        "SELECT e.episode_id, e.agent_id, e.work_item_id, e.payload_json
-         FROM context_episode_anchors e
-         WHERE e.agent_id = ?1 AND (
-           EXISTS (SELECT 1 FROM episode_memory_results r
-             WHERE r.agent_id = ?1 AND r.identity_incarnation = ?2
-               AND r.phase_version = ?3 AND r.finalized_episode_id = e.episode_id)
-           OR (?4 IS NOT NULL AND EXISTS (
-             SELECT 1 FROM episode_continuity_members m
-             WHERE m.seed_id = ?4 AND m.episode_id = e.episode_id)))
-         ORDER BY e.ended_at DESC, e.started_at DESC, e.episode_id ASC LIMIT ?5",
-    )?;
-    let rows = statement.query_map(
-        params![
-            scope.agent_id,
-            i64::try_from(scope.identity_incarnation)?,
-            EPISODE_MEMORY_PHASE,
-            seed_id,
-            limit
-        ],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-            ))
+    let (episodes, has_more) = storage::recent_episode_window(
+        connection,
+        scope,
+        &continuity,
+        recent_limit,
+        |turn_id, digest, invocation, episode| {
+            let key = EpisodeMemoryKey {
+                agent_id: scope.agent_id.clone(),
+                identity_incarnation: scope.identity_incarnation,
+                actual_dispatch_turn_id: turn_id,
+            };
+            let invocation = serde_json::from_str(invocation)?;
+            let receipt = load_receipt(connection, &key, Some(digest), &invocation)?
+                .context("qualified Episode receipt disappeared inside read snapshot")?;
+            ensure!(
+                receipt.outcome.finalized_episode_id.as_deref() == Some(episode.id.as_str()),
+                "Episode receipt payload does not qualify its projection"
+            );
+            Ok(())
         },
     )?;
-    let mut episodes = Vec::new();
-    let mut payload_bytes = 0usize;
-    for row in rows {
-        let (id, agent_id, work_item_id, payload) = row?;
-        payload_bytes = payload_bytes.saturating_add(payload.len());
-
-        let episode = decode_context_episode_payload(&payload)?;
-        ensure!(
-            episode.id == id
-                && episode.agent_id == agent_id
-                && episode.agent_id == scope.agent_id
-                && episode.current_work_item_id == work_item_id,
-            "Episode columns and payload disagree"
-        );
-        validate_episode_qualification(connection, scope, seed_id, &episode, &payload)?;
-        episodes.push(episode);
-    }
-    let has_more = episodes.len() > recent_limit;
-    episodes.truncate(recent_limit);
-    episodes.reverse();
     Ok(EpisodeMemoryBootstrapSnapshot::Current(
         EpisodeMemoryCurrentSnapshot {
             identity,
@@ -351,25 +267,6 @@ fn load_episode_memory_snapshot_inner(
             receipt,
         },
     ))
-}
-
-fn load_identity(connection: &Connection, agent_id: &str) -> Result<Option<AgentIdentityRecord>> {
-    connection
-        .query_row(
-            "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
-            [agent_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .map(|payload| {
-            let identity = decode_agent_identity_payload(&payload)?;
-            ensure!(
-                identity.agent_id == agent_id,
-                "identity projection and payload disagree"
-            );
-            Ok(identity)
-        })
-        .transpose()
 }
 
 fn load_state(
@@ -409,11 +306,7 @@ fn validate_active_builder(connection: &Connection, state: Option<&AgentState>) 
         "active Episode alias and builder disagree"
     );
     if let Some(builder) = memory.active_episode_builder.as_ref() {
-        let archived: bool = connection.query_row(
-            "SELECT EXISTS (SELECT 1 FROM context_episode_anchors WHERE episode_id = ?1)",
-            [&builder.id],
-            |row| row.get(0),
-        )?;
+        let archived = storage::episode_is_archived(connection, &builder.id)?;
         if archived {
             return Err(EpisodeSnapshotError::ActiveBuilderCollision {
                 episode_id: builder.id.clone(),
@@ -422,151 +315,6 @@ fn validate_active_builder(connection: &Connection, state: Option<&AgentState>) 
         }
     }
     Ok(())
-}
-
-fn load_continuity_binding(
-    connection: &Connection,
-    scope: &EpisodeMemoryLoadScope,
-) -> Result<EpisodeContinuityBinding> {
-    let row = connection
-        .query_row(
-            "SELECT mode, seed_id FROM agent_episode_continuity
-         WHERE agent_id = ?1 AND identity_incarnation = ?2 AND policy_version = ?3",
-            params![
-                scope.agent_id,
-                i64::try_from(scope.identity_incarnation)?,
-                EPISODE_CONTINUITY_POLICY
-            ],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-        )
-        .optional()?
-        .ok_or(EpisodeSnapshotError::MissingContinuityBinding)?;
-    match row {
-        (mode, None) if mode == "fresh_empty" => Ok(EpisodeContinuityBinding::FreshEmpty),
-        (mode, Some(seed_id)) if mode == "legacy_adopted" => {
-            let (agent_id, incarnation, boundary_id, source_kind, required, sealed) = connection.query_row(
-                "SELECT s.agent_id, s.identity_incarnation, s.boundary_id, s.source_kind, s.import_required,
-                  EXISTS (SELECT 1 FROM episode_continuity_imports i WHERE i.seed_id = s.seed_id)
-                 FROM episode_continuity_seeds s WHERE s.seed_id = ?1 AND s.policy_version = ?2",
-                params![seed_id, EPISODE_CONTINUITY_POLICY],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, bool>(4)?, row.get::<_, bool>(5)?)),
-            )?;
-            ensure!(
-                agent_id == scope.agent_id
-                    && incarnation.is_none_or(
-                        |inc| u64::try_from(inc).ok() == Some(scope.identity_incarnation)
-                    ),
-                "continuity seed scope does not match its binding"
-            );
-            if required && !sealed {
-                return Err(EpisodeSnapshotError::LegacyImportPending.into());
-            }
-            Ok(EpisodeContinuityBinding::LegacyAdopted {
-                seed_id,
-                boundary_id,
-                source_kind,
-            })
-        }
-        _ => Err(EpisodeSnapshotError::BindingConflict.into()),
-    }
-}
-
-fn validate_episode_qualification(
-    connection: &Connection,
-    scope: &EpisodeMemoryLoadScope,
-    seed_id: Option<&str>,
-    episode: &ContextEpisodeRecord,
-    payload: &str,
-) -> Result<()> {
-    let mut receipt_statement = connection.prepare(
-        "SELECT turn_id, command_digest, invocation_json FROM episode_memory_results
-         WHERE agent_id = ?1 AND identity_incarnation = ?2 AND phase_version = ?3 AND finalized_episode_id = ?4",
-    )?;
-    let rows = receipt_statement.query_map(
-        params![
-            scope.agent_id,
-            i64::try_from(scope.identity_incarnation)?,
-            EPISODE_MEMORY_PHASE,
-            episode.id
-        ],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        },
-    )?;
-    let mut qualified = false;
-    for row in rows {
-        let (turn_id, digest, invocation) = row?;
-        let key = EpisodeMemoryKey {
-            agent_id: scope.agent_id.clone(),
-            identity_incarnation: scope.identity_incarnation,
-            actual_dispatch_turn_id: turn_id,
-        };
-        let invocation = serde_json::from_str(&invocation)?;
-        let receipt = load_receipt(connection, &key, Some(&digest), &invocation)?
-            .context("qualified Episode receipt disappeared inside read snapshot")?;
-        ensure!(
-            receipt.outcome.finalized_episode_id.as_deref() == Some(episode.id.as_str()),
-            "Episode receipt payload does not qualify its projection"
-        );
-        qualified = true;
-    }
-    if let Some(seed_id) = seed_id {
-        let mut statement = connection.prepare("SELECT content_digest FROM episode_continuity_members WHERE seed_id = ?1 AND episode_id = ?2")?;
-        let digests =
-            statement.query_map(params![seed_id, episode.id], |row| row.get::<_, String>(0))?;
-        for digest in digests {
-            if digest? != bytes_digest(payload.as_bytes()) {
-                return Err(EpisodeSnapshotError::LegacyContentChanged {
-                    episode_id: episode.id.clone(),
-                }
-                .into());
-            }
-            qualified = true;
-        }
-    }
-    ensure!(qualified, "Episode has no current scope qualification");
-    Ok(())
-}
-
-fn bytes_digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
-struct SeedIdentityDigest([u8; 64]);
-
-impl rusqlite::types::ToSql for SeedIdentityDigest {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(rusqlite::types::ToSqlOutput::Borrowed(
-            rusqlite::types::ValueRef::Text(&self.0),
-        ))
-    }
-}
-
-fn seed_identity_digest(identity: &AgentIdentityRecord) -> Result<SeedIdentityDigest> {
-    let mut hasher = Sha256::new();
-    serde_json::to_writer(&mut hasher, identity)?;
-    let digest = hasher.finalize();
-    let mut hex = [0; 64];
-    for (byte, pair) in digest.iter().zip(hex.chunks_exact_mut(2)) {
-        pair[0] = b"0123456789abcdef"[(byte >> 4) as usize];
-        pair[1] = b"0123456789abcdef"[(byte & 15) as usize];
-    }
-    Ok(SeedIdentityDigest(hex))
-}
-
-struct CandidatePayloadDigest(sha2::digest::Output<Sha256>);
-
-impl Serialize for CandidatePayloadDigest {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.collect_str(&format_args!("{:x}", self.0))
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -586,16 +334,6 @@ struct EpisodeContinuityRoots {
         Option<super::scheduling_snapshot::SchedulingContinuityCheckpoint>,
 }
 
-#[derive(Debug)]
-struct ContinuitySeed {
-    id: String,
-    agent_id: String,
-    incarnation: Option<u64>,
-    import_required: bool,
-    // Drop owned text before releasing its original caller phase.
-    _material: Option<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
-}
-
 /// Called once inside migration v82, under the existing DB migration lease.
 /// The boundary and each initial membership set are frozen in that transaction.
 /// Existing Deleting scopes retain their admitted cleanup provenance; this does
@@ -604,22 +342,14 @@ pub(super) fn capture_episode_continuity_upgrade_tx(
     tx: &Transaction<'_>,
     captured_at: DateTime<Utc>,
 ) -> Result<()> {
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT value FROM runtime_metadata WHERE key = ?1",
-            [UPGRADE_BOUNDARY_KEY],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if existing.is_some() {
+    if storage::read_upgrade_boundary(tx)?.is_some() {
         return Ok(());
     }
     task_checkpoint::queries::ensure_schema(tx)?;
-    let boundary = crate::ids::runtime_id("episode_cutover");
-    let at = captured_at.to_rfc3339();
-    tx.execute(
-        "INSERT INTO runtime_metadata (key, value, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-        params![UPGRADE_BOUNDARY_KEY, boundary, at],
+    storage::insert_upgrade_boundary_tx(
+        tx,
+        &crate::ids::runtime_id("episode_cutover"),
+        captured_at,
     )?;
     // Released name-accepted histories may lack an original source table.
     // Freeze only rows that exist at this exact upgrade checkpoint; the fixed
@@ -694,74 +424,19 @@ pub(super) fn capture_episode_continuity_upgrade_tx(
             &[],
         )?;
         if tables.contains("context_episode_anchors") {
-            upgrade::capture_episodes(tx, &agent_id, &seed.id, &roots)?;
+            EPISODE_STORAGE.capture_upgrade_episodes(
+                tx,
+                &agent_id,
+                &seed.id,
+                &roots.work_item_ids,
+                &roots.source_refs,
+            )?;
         }
         if let Some(identity) = identity.as_ref() {
             insert_legacy_binding_tx(tx, identity, &seed, captured_at)?;
         }
     }
     Ok(())
-}
-
-/// The central identity upsert calls this only for a newly created namespace.
-/// Existing explicit legacy binding is preserved; a Fresh binding never upgrades.
-pub(super) fn ensure_fresh_episode_continuity_tx(
-    tx: &Transaction<'_>,
-    identity: &AgentIdentityRecord,
-    bound_at: DateTime<Utc>,
-) -> Result<()> {
-    ensure!(identity.incarnation > 0, "invalid fresh Episode namespace");
-    // Earlier migrations also use the common identity upsert helper.
-    let installed: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_episode_continuity')", [], |row| row.get(0))?;
-    if !installed {
-        return Ok(());
-    }
-    let timestamp = ContinuityTimestamp::encode(bound_at)?;
-    let bound_at = timestamp.as_str()?;
-    tx.execute(
-        "INSERT INTO agent_episode_continuity (agent_id, identity_incarnation, policy_version, mode, seed_id, bound_at)
-         VALUES (?1, ?2, ?3, 'fresh_empty', NULL, ?4) ON CONFLICT DO NOTHING",
-        params![identity.agent_id, i64::try_from(identity.incarnation)?, EPISODE_CONTINUITY_POLICY, bound_at],
-    )?;
-    Ok(())
-}
-
-struct ContinuityTimestamp {
-    // Chrono's signed six-digit year, nanoseconds and UTC offset need at most 38 bytes.
-    bytes: [u8; 40],
-    len: usize,
-}
-
-impl ContinuityTimestamp {
-    fn encode(value: DateTime<Utc>) -> Result<Self> {
-        let mut timestamp = Self {
-            bytes: [0; 40],
-            len: 0,
-        };
-        // Naive formatting avoids the owned offset name in DateTime::format.
-        value
-            .naive_utc()
-            .format("%Y-%m-%dT%H:%M:%S%.f+00:00")
-            .write_to(&mut timestamp)?;
-        Ok(timestamp)
-    }
-
-    fn as_str(&self) -> Result<&str> {
-        Ok(std::str::from_utf8(&self.bytes[..self.len])?)
-    }
-}
-
-impl fmt::Write for ContinuityTimestamp {
-    fn write_str(&mut self, value: &str) -> fmt::Result {
-        let output = self
-            .bytes
-            .get_mut(self.len..)
-            .and_then(|remaining| remaining.get_mut(..value.len()))
-            .ok_or(fmt::Error)?;
-        output.copy_from_slice(value.as_bytes());
-        self.len += value.len();
-        Ok(())
-    }
 }
 
 /// Historical SQL seed fixture, never a runtime import entrypoint.
@@ -809,121 +484,17 @@ pub(super) fn prepare_imported_identity_continuity_tx(
     insert_legacy_binding_tx(tx, identity, &seed, captured_at)
 }
 
-/// Sole explicit no-identity legacy bootstrap actor. Call before the first identity
-/// upsert in the SAME identity/relations transaction, after legacy import completes.
 pub(super) fn bind_unbound_episode_continuity_tx(
     tx: &Transaction<'_>,
     identity: &AgentIdentityRecord,
     bound_at: DateTime<Utc>,
 ) -> Result<bool> {
-    ensure!(
-        identity.status == AgentRegistryStatus::Active,
-        "legacy materialization requires an Active identity"
-    );
-    ensure!(
-        load_identity(tx, &identity.agent_id)?.is_none(),
-        "legacy materialization requires no current identity"
-    );
-    ensure_no_prior_binding(tx, &identity.agent_id)?;
-    let Some(seed) = find_seed(tx, &identity.agent_id)? else {
-        return Ok(false);
-    };
-    ensure!(
-        seed.incarnation.is_none(),
-        "legacy materialization cannot adopt a different identity scope"
-    );
-    if seed.import_required {
-        let sealed: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM episode_continuity_imports WHERE seed_id = ?1)",
-            [&seed.id],
-            |row| row.get(0),
-        )?;
-        if !sealed {
-            return Err(EpisodeSnapshotError::LegacyImportPending.into());
-        }
-    }
-    insert_legacy_binding_tx(tx, identity, &seed, bound_at)?;
-    Ok(true)
-}
-
-/// Existing public/fixture/legacy upsert cannot overwrite a qualified Episode.
-/// Unqualified writes acquire no continuity membership by themselves.
-pub(super) fn validate_immutable_episode_upsert_tx(
-    tx: &Transaction<'_>,
-    record: &ContextEpisodeRecord,
-) -> Result<bool> {
-    let qualified: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM episode_memory_results WHERE finalized_episode_id = ?1)
-          OR EXISTS (SELECT 1 FROM episode_continuity_members WHERE episode_id = ?1)",
-        [&record.id],
-        |row| row.get(0),
-    )?;
-    if qualified {
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT payload_json FROM context_episode_anchors WHERE episode_id = ?1",
-                [&record.id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let existing = existing.context("qualified Episode payload is missing")?;
-        ensure!(
-            decode_context_episode_payload(&existing)? == *record,
-            "qualified Episode is immutable: {}",
-            record.id
-        );
-        // Preserve the exact old bytes, including legacy field order/defaults.
-        return Ok(true);
-    }
-    Ok(false)
+    EPISODE_STORAGE.bind_unbound_episode_continuity_tx(tx, identity, bound_at)
 }
 
 #[cfg(test)]
-fn episode_import_complete(connection: &Connection) -> Result<bool> {
-    Ok(connection.query_row(
-        "SELECT EXISTS (SELECT 1 FROM storage_domains WHERE domain = 'context_episode_anchors' AND import_status = 'complete' AND canonical_source = 'db')",
-        [], |row| row.get(0),
-    )?)
-}
-
 fn find_seed(connection: &Connection, agent_id: &str) -> Result<Option<ContinuitySeed>> {
-    let mut statement = connection.prepare(
-        "SELECT seed_id, identity_incarnation, import_required FROM episode_continuity_seeds WHERE agent_id = ?1 AND policy_version = ?2",
-    )?;
-    let mut rows = statement.query(params![agent_id, EPISODE_CONTINUITY_POLICY])?;
-    let Some(row) = rows.next()? else {
-        return Ok(None);
-    };
-    let id = row.get_ref(0)?.as_str()?;
-    let incarnation = row.get::<_, Option<i64>>(1)?;
-    let import_required = row.get::<_, bool>(2)?;
-    let material = crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?;
-    crate::diagnostics::resource_io::charge_owned_metadata(
-        u64::try_from(id.len().saturating_add(agent_id.len()))?,
-        2,
-    )?;
-    Ok(Some(ContinuitySeed {
-        id: id.to_owned(),
-        agent_id: agent_id.to_owned(),
-        incarnation: incarnation.map(u64::try_from).transpose()?,
-        import_required,
-        _material: material,
-    }))
-}
-
-fn has_any_binding(connection: &Connection, agent_id: &str) -> Result<bool> {
-    Ok(connection.query_row(
-        "SELECT EXISTS (SELECT 1 FROM agent_episode_continuity WHERE agent_id = ?1)",
-        [agent_id],
-        |row| row.get(0),
-    )?)
-}
-
-fn ensure_no_prior_binding(connection: &Connection, agent_id: &str) -> Result<()> {
-    if has_any_binding(connection, agent_id)? {
-        return Err(EpisodeSnapshotError::BindingConflict.into());
-    }
-    Ok(())
+    EPISODE_STORAGE.find_seed(connection, agent_id)
 }
 
 #[cfg(test)]
@@ -959,125 +530,60 @@ fn insert_seed_with_candidates_tx(
     captured_at: DateTime<Utc>,
     records: &[EpisodeRow],
 ) -> Result<ContinuitySeed> {
-    let mut boundary_statement = tx.prepare("SELECT value FROM runtime_metadata WHERE key = ?1")?;
-    let mut boundary_rows = boundary_statement.query([UPGRADE_BOUNDARY_KEY])?;
-    let boundary_row = boundary_rows
-        .next()?
-        .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-    let boundary = boundary_row.get_ref(0)?.as_str()?;
-    let mut seed_hasher = Sha256::new();
-    serde_json::to_writer(
-        &mut seed_hasher,
-        &(boundary, agent_id, EPISODE_CONTINUITY_POLICY),
+    let seed = EPISODE_STORAGE.insert_seed_tx(
+        tx,
+        agent_id,
+        identity,
+        source_kind,
+        roots,
+        import_required,
+        captured_at,
+        records,
     )?;
-    let material = crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?;
-    crate::diagnostics::resource_io::charge_owned_metadata(
-        u64::try_from("episode_seed_".len() + 64 + agent_id.len())?,
-        2,
-    )?;
-    let seed_id = format!("episode_seed_{:x}", seed_hasher.finalize());
-    let incarnation = identity.map(|identity| identity.incarnation);
-    let candidates = seed_candidate_payloads(records)?;
-    let timestamp = ContinuityTimestamp::encode(captured_at)?;
-    tx.execute(
-        "INSERT INTO episode_continuity_seeds (seed_id, agent_id, policy_version, boundary_id, identity_incarnation, source_kind,
-          identity_digest, roots_json, candidate_payloads_json, import_required, captured_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![seed_id, agent_id, EPISODE_CONTINUITY_POLICY, boundary, incarnation.map(i64::try_from).transpose()?, source_kind,
-            identity.map(seed_identity_digest).transpose()?, continuity_roots_json(roots)?,
-            seed_candidate_payloads_json(&candidates)?, import_required, timestamp.as_str()?],
-    )?;
-    drop(boundary_rows);
-    drop(boundary_statement);
+    let seed_id = &seed.id;
     if matches!(
         source_kind,
         "legacy_identity_import" | "legacy_state_import"
     ) {
         super::input_evidence_snapshot::capture_input_evidence_seed_tx(
             tx,
-            &seed_id,
+            seed_id,
             "legacy_import",
             true,
         )?;
-        super::work_snapshot::capture_work_domain_seed_if_ready_tx(tx, &seed_id, "legacy_import")?;
-        super::task_snapshot::capture_task_domain_seed_if_ready_tx(tx, &seed_id, "legacy_import")?;
+        super::work_snapshot::capture_work_domain_seed_if_ready_tx(tx, seed_id, "legacy_import")?;
+        super::task_snapshot::capture_task_domain_seed_if_ready_tx(tx, seed_id, "legacy_import")?;
         super::scheduling_snapshot::capture_scheduling_seed_if_ready_tx(
             tx,
-            &seed_id,
+            seed_id,
             "legacy_import",
         )?;
     }
-    Ok(ContinuitySeed {
-        id: seed_id,
-        agent_id: agent_id.to_owned(),
-        incarnation,
-        import_required,
-        _material: material,
-    })
+    Ok(seed)
 }
 
+#[cfg(test)]
 fn continuity_roots_json(roots: &EpisodeContinuityRoots) -> Result<String> {
-    crate::diagnostics::resource_io::admit_serialized_value(roots)?;
-    Ok(serde_json::to_string(roots)?)
+    EPISODE_STORAGE.continuity_roots_json(roots)
 }
 
+#[cfg(test)]
 fn seed_candidate_payloads_json(
     candidates: &BTreeMap<&str, CandidatePayloadDigest>,
 ) -> Result<String> {
-    crate::diagnostics::resource_io::admit_serialized_value(candidates)?;
-    Ok(serde_json::to_string(candidates)?)
+    EPISODE_STORAGE.seed_candidate_payloads_json(candidates)
 }
 
+#[cfg(test)]
 fn seed_candidate_payloads(
     records: &[EpisodeRow],
 ) -> Result<BTreeMap<&str, CandidatePayloadDigest>> {
-    let mut candidates = BTreeMap::new();
-    for row in records.iter().filter(|row| !row.receipted) {
-        let digest = CandidatePayloadDigest(Sha256::digest(row.payload.as_bytes()));
-        match candidates.entry(row.record.id.as_str()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                // The phase's eightfold envelope covers the tree node, not borrowed ID text.
-                crate::diagnostics::resource_io::charge_owned_metadata(256, 1)?;
-                entry.insert(digest);
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                entry.insert(digest);
-            }
-        }
-    }
-    Ok(candidates)
+    EPISODE_STORAGE.seed_candidate_payloads(records)
 }
 
-fn insert_legacy_binding_tx(
-    tx: &Transaction<'_>,
-    identity: &AgentIdentityRecord,
-    seed: &ContinuitySeed,
-    bound_at: DateTime<Utc>,
-) -> Result<()> {
-    ensure!(
-        matches!(
-            identity.status,
-            AgentRegistryStatus::Active | AgentRegistryStatus::Deleting
-        ) && identity.incarnation > 0
-            && identity.agent_id == seed.agent_id
-            && seed
-                .incarnation
-                .is_none_or(|incarnation| incarnation == identity.incarnation),
-        "legacy Episode binding scope mismatch"
-    );
-    let timestamp = ContinuityTimestamp::encode(bound_at)?;
-    let bound_at = timestamp.as_str()?;
-    tx.execute(
-        "INSERT INTO agent_episode_continuity (agent_id, identity_incarnation, policy_version, mode, seed_id, bound_at)
-         VALUES (?1, ?2, ?3, 'legacy_adopted', ?4, ?5)",
-        params![identity.agent_id, i64::try_from(identity.incarnation)?, EPISODE_CONTINUITY_POLICY, seed.id, bound_at],
-    )?;
-    Ok(())
-}
-
-struct EpisodeRow {
-    record: ContextEpisodeRecord,
-    payload: String,
-    receipted: bool,
+#[cfg(test)]
+fn member_has_explicit_ref(roots: &EpisodeContinuityRoots, id: &str) -> Result<bool> {
+    EPISODE_STORAGE.member_has_explicit_ref(&roots.source_refs, id)
 }
 
 #[cfg(test)]
@@ -1181,57 +687,6 @@ fn member_capture_order(records: &[EpisodeRow]) -> Result<Vec<usize>> {
             .then_with(|| left.cmp(&right))
     });
     Ok(order)
-}
-
-fn member_has_explicit_ref(roots: &EpisodeContinuityRoots, id: &str) -> Result<bool> {
-    if roots.source_refs.is_empty() {
-        return Ok(false);
-    }
-    crate::diagnostics::resource_io::charge_owned_metadata(
-        ("episode:".len() as u64).saturating_add(id.len() as u64),
-        1,
-    )?;
-    Ok(roots.source_refs.contains(&format!("episode:{id}")))
-}
-
-const MEMBER_QUALIFICATION_JSON_MAX_BYTES: usize =
-    b"[\"explicit_live_ref\",\"explicit_upgrade_recent_candidate\",\"live_owner\"]".len();
-
-struct MemberQualificationJson {
-    bytes: [u8; MEMBER_QUALIFICATION_JSON_MAX_BYTES],
-    len: usize,
-}
-
-impl rusqlite::types::ToSql for MemberQualificationJson {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(rusqlite::types::ToSqlOutput::Borrowed(
-            rusqlite::types::ValueRef::Text(&self.bytes[..self.len]),
-        ))
-    }
-}
-
-fn member_qualification_json(reasons: &[&str]) -> Result<MemberQualificationJson> {
-    let mut json = MemberQualificationJson {
-        bytes: [0; MEMBER_QUALIFICATION_JSON_MAX_BYTES],
-        len: 0,
-    };
-    let mut writer = std::io::Cursor::new(json.bytes.as_mut_slice());
-    serde_json::to_writer(&mut writer, reasons)?;
-    json.len = writer.position() as usize;
-    Ok(json)
-}
-
-fn member_content_digest(payload: &[u8]) -> [u8; 64] {
-    sha256_hex(Sha256::digest(payload))
-}
-
-fn sha256_hex(digest: sha2::digest::Output<Sha256>) -> [u8; 64] {
-    let mut hex = [0; 64];
-    for (byte, pair) in digest.iter().zip(hex.chunks_exact_mut(2)) {
-        pair[0] = b"0123456789abcdef"[(byte >> 4) as usize];
-        pair[1] = b"0123456789abcdef"[(byte & 15) as usize];
-    }
-    hex
 }
 
 #[cfg(test)]

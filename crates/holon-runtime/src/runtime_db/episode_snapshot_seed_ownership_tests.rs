@@ -24,7 +24,10 @@ fn returned_seed_alone_retains_original_phase_after_sql_and_tls_exit() -> Result
         let _entry = phase.enter();
         let tx = connection.transaction()?;
         let seed = insert(&tx, AGENT)?;
-        assert!(Arc::ptr_eq(seed._material.as_ref().unwrap(), &holder));
+        assert!(crate::runtime::agent_observation::same_observation_guard(
+            seed._material.as_ref().unwrap(),
+            &holder
+        ));
         assert_eq!(seed.id, original_seed_id("fixed-boundary", AGENT)?);
         assert_eq!(seed.agent_id, AGENT);
         tx.commit()?;
@@ -118,9 +121,9 @@ fn failed_seed_sql_rolls_back_without_releasing_the_retained_original_seed() -> 
         tx.execute("INSERT INTO seed_id_markers VALUES ('rollback')", [])?;
         let error = insert(&tx, AGENT).unwrap_err();
         assert!(format!("{error:#}").contains("returned seed SQL failure"));
-        assert!(Arc::ptr_eq(
+        assert!(crate::runtime::agent_observation::same_observation_guard(
+            seed._material.as_ref().unwrap(),
             &ResourceReadMaterial::active_guard()?.unwrap(),
-            seed._material.as_ref().unwrap()
         ));
         tx.rollback()?;
     }
@@ -158,7 +161,10 @@ fn loaded_seed_transfers_original_holder_and_no_phase_call_stays_unbudgeted() ->
         let _entry = phase.enter();
         assert!(find_seed(&connection, "missing")?.is_none());
         let seed = find_seed(&connection, AGENT)?.unwrap();
-        assert!(Arc::ptr_eq(seed._material.as_ref().unwrap(), &holder));
+        assert!(crate::runtime::agent_observation::same_observation_guard(
+            seed._material.as_ref().unwrap(),
+            &holder
+        ));
         seed
     };
     assert!(ResourceReadMaterial::active_guard()?.is_none());

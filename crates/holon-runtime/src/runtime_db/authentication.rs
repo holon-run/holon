@@ -1,8 +1,8 @@
 //! Persistent authentication records.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::{params, OptionalExtension};
+use holon_storage::authentication as storage;
 
 use crate::authentication::{
     AuthSessionRecord, AuthUserRecord, BootstrapCredentialRecord, LoginTransactionRecord,
@@ -15,127 +15,32 @@ pub struct AuthenticationRepository<'a> {
 
 impl AuthenticationRepository<'_> {
     pub fn upsert_user(&self, user: &AuthUserRecord) -> Result<()> {
-        self.db.transaction(|tx| {
-            let existing_identity = tx
-                .query_row(
-                    "SELECT issuer, subject FROM auth_users WHERE user_id = ?1",
-                    [user.user_id.as_str()],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()?;
-            if let Some((issuer, subject)) = existing_identity {
-                if issuer != user.issuer || subject != user.subject {
-                    anyhow::bail!(
-                        "authentication user_id {} is already bound to a different issuer/subject",
-                        user.user_id
-                    );
-                }
-            }
-            tx.execute(
-                "INSERT INTO auth_users (
-                    user_id, issuer, subject, display_name, email,
-                    created_at, updated_at, disabled_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(user_id) DO UPDATE SET
-                    issuer = excluded.issuer,
-                    subject = excluded.subject,
-                    display_name = excluded.display_name,
-                    email = excluded.email,
-                    updated_at = excluded.updated_at,
-                    disabled_at = excluded.disabled_at",
-                params![
-                    user.user_id,
-                    user.issuer,
-                    user.subject,
-                    user.display_name,
-                    user.email,
-                    timestamp(user.created_at),
-                    timestamp(user.updated_at),
-                    user.disabled_at.map(timestamp),
-                ],
-            )?;
-            Ok(())
-        })
+        self.db.transaction(|tx| storage::upsert_user(tx, user))
     }
 
     pub fn find_user(&self, issuer: &str, subject: &str) -> Result<Option<AuthUserRecord>> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT user_id, issuer, subject, display_name, email,
-                            created_at, updated_at, disabled_at
-                     FROM auth_users WHERE issuer = ?1 AND subject = ?2",
-                    params![issuer, subject],
-                    row_to_user,
-                )
-                .optional()
-                .context("looking up authenticated user")
-        })
+        self.db
+            .with_read(|connection| storage::find_user(connection, issuer, subject))
     }
 
     pub fn find_user_by_id(&self, user_id: &str) -> Result<Option<AuthUserRecord>> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT user_id, issuer, subject, display_name, email,
-                            created_at, updated_at, disabled_at
-                     FROM auth_users WHERE user_id = ?1",
-                    [user_id],
-                    row_to_user,
-                )
-                .optional()
-                .context("looking up authenticated user by id")
-        })
+        self.db
+            .with_read(|connection| storage::find_user_by_id(connection, user_id))
     }
 
     pub fn create_session(&self, session: &AuthSessionRecord) -> Result<()> {
-        self.db.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO auth_sessions (
-                    session_digest, user_id, auth_method,
-                    created_at, expires_at, last_seen_at, revoked_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    session.session_digest,
-                    session.user_id,
-                    session.auth_method,
-                    timestamp(session.created_at),
-                    session.expires_at.map(timestamp),
-                    timestamp(session.last_seen_at),
-                    session.revoked_at.map(timestamp),
-                ],
-            )?;
-            Ok(())
-        })
+        self.db
+            .transaction(|tx| storage::create_session(tx, session))
     }
 
     pub fn find_session(&self, session_digest: &str) -> Result<Option<AuthSessionRecord>> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT session_digest, user_id, auth_method,
-                            created_at, expires_at, last_seen_at, revoked_at
-                     FROM auth_sessions WHERE session_digest = ?1",
-                    [session_digest],
-                    row_to_session,
-                )
-                .optional()
-                .context("looking up authentication session")
-        })
+        self.db
+            .with_read(|connection| storage::find_session(connection, session_digest))
     }
 
     pub fn touch_session(&self, session_digest: &str, last_seen_at: DateTime<Utc>) -> Result<bool> {
-        self.db.transaction(|tx| {
-            Ok(tx.execute(
-                "UPDATE auth_sessions
-                 SET last_seen_at = ?2
-                 WHERE session_digest = ?1
-                   AND revoked_at IS NULL
-                    AND (expires_at IS NULL OR expires_at > ?2)
-                   AND last_seen_at <= ?2",
-                params![session_digest, timestamp(last_seen_at)],
-            )? == 1)
-        })
+        self.db
+            .transaction(|tx| storage::touch_session(tx, session_digest, last_seen_at))
     }
 
     pub(crate) fn checkpoint_session_activity(
@@ -147,54 +52,21 @@ impl AuthenticationRepository<'_> {
                 "authentication.checkpoint_session_activity",
                 "auth_sessions",
             ),
-            |tx| {
-                let mut statement = tx.prepare_cached(
-                    "UPDATE auth_sessions SET last_seen_at = ?2
-                     WHERE session_digest = ?1 AND revoked_at IS NULL
-                       AND (expires_at IS NULL OR expires_at > ?2)
-                       AND last_seen_at < ?2",
-                )?;
-                for (digest, last_seen_at) in sessions {
-                    statement.execute(params![digest, timestamp(*last_seen_at)])?;
-                }
-                Ok(())
-            },
+            |tx| storage::checkpoint_session_activity(tx, sessions),
         )
     }
 
     pub fn revoke_session(&self, session_digest: &str, revoked_at: DateTime<Utc>) -> Result<bool> {
-        self.db.transaction(|tx| {
-            Ok(tx.execute(
-                "UPDATE auth_sessions
-                 SET revoked_at = ?2
-                 WHERE session_digest = ?1 AND revoked_at IS NULL",
-                params![session_digest, timestamp(revoked_at)],
-            )? == 1)
-        })
+        self.db
+            .transaction(|tx| storage::revoke_session(tx, session_digest, revoked_at))
     }
 
     pub fn insert_bootstrap_credential(
         &self,
         credential: &BootstrapCredentialRecord,
     ) -> Result<()> {
-        self.db.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO auth_bootstrap_credentials (
-                    credential_digest, user_id, scope,
-                    created_at, expires_at, consumed_at, revoked_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    credential.credential_digest,
-                    credential.user_id,
-                    credential.scope,
-                    timestamp(credential.created_at),
-                    timestamp(credential.expires_at),
-                    credential.consumed_at.map(timestamp),
-                    credential.revoked_at.map(timestamp),
-                ],
-            )?;
-            Ok(())
-        })
+        self.db
+            .transaction(|tx| storage::insert_bootstrap_credential(tx, credential))
     }
 
     pub fn consume_bootstrap_credential(
@@ -213,67 +85,18 @@ impl AuthenticationRepository<'_> {
         allowed_scopes: Option<&[&str]>,
     ) -> Result<Option<BootstrapCredentialRecord>> {
         self.db.transaction(|tx| {
-            if let Some(scopes) = allowed_scopes {
-                let scope: Option<String> = tx
-                    .query_row(
-                        "SELECT scope FROM auth_bootstrap_credentials WHERE credential_digest = ?1",
-                        [credential_digest],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if !scope
-                    .as_deref()
-                    .is_some_and(|value| scopes.contains(&value))
-                {
-                    return Ok(None);
-                }
-            }
-            let updated = tx.execute(
-                "UPDATE auth_bootstrap_credentials
-                 SET consumed_at = ?2
-                 WHERE credential_digest = ?1
-                   AND consumed_at IS NULL
-                   AND revoked_at IS NULL
-                   AND expires_at > ?2",
-                params![credential_digest, timestamp(consumed_at)],
-            )?;
-            if updated == 0 {
-                return Ok(None);
-            }
-            tx.query_row(
-                "SELECT credential_digest, user_id, scope,
-                        created_at, expires_at, consumed_at, revoked_at
-                 FROM auth_bootstrap_credentials
-                 WHERE credential_digest = ?1",
-                [credential_digest],
-                row_to_bootstrap,
+            storage::consume_bootstrap_credential_for_scopes(
+                tx,
+                credential_digest,
+                consumed_at,
+                allowed_scopes,
             )
-            .map(Some)
-            .context("reading consumed bootstrap credential")
         })
     }
 
     pub fn insert_login_transaction(&self, login: &LoginTransactionRecord) -> Result<()> {
-        self.db.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO auth_login_transactions (
-                    transaction_digest, state_digest, nonce_digest,
-                    code_verifier, native_redirect_uri,
-                    created_at, expires_at, consumed_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    login.transaction_digest,
-                    login.state_digest,
-                    login.nonce_digest,
-                    login.code_verifier,
-                    login.native_redirect_uri,
-                    timestamp(login.created_at),
-                    timestamp(login.expires_at),
-                    login.consumed_at.map(timestamp),
-                ],
-            )?;
-            Ok(())
-        })
+        self.db
+            .transaction(|tx| storage::insert_login_transaction(tx, login))
     }
 
     pub fn consume_login_transaction(
@@ -281,166 +104,15 @@ impl AuthenticationRepository<'_> {
         state_digest: &str,
         consumed_at: DateTime<Utc>,
     ) -> Result<Option<LoginTransactionRecord>> {
-        self.db.transaction(|tx| {
-            let updated = tx.execute(
-                "UPDATE auth_login_transactions
-                 SET consumed_at = ?2
-                 WHERE state_digest = ?1
-                   AND consumed_at IS NULL
-                   AND expires_at > ?2",
-                params![state_digest, timestamp(consumed_at)],
-            )?;
-            if updated == 0 {
-                return Ok(None);
-            }
-            tx.query_row(
-                "SELECT transaction_digest, state_digest, nonce_digest,
-                        code_verifier, native_redirect_uri,
-                        created_at, expires_at, consumed_at
-                 FROM auth_login_transactions
-                 WHERE state_digest = ?1",
-                [state_digest],
-                |row| {
-                    Ok(LoginTransactionRecord {
-                        transaction_digest: row.get(0)?,
-                        state_digest: row.get(1)?,
-                        nonce_digest: row.get(2)?,
-                        code_verifier: row.get(3)?,
-                        native_redirect_uri: row.get(4)?,
-                        created_at: parse_timestamp(row.get(5)?)?,
-                        expires_at: parse_timestamp(row.get(6)?)?,
-                        consumed_at: row
-                            .get::<_, Option<String>>(7)?
-                            .map(parse_timestamp)
-                            .transpose()?,
-                    })
-                },
-            )
-            .map(Some)
-            .context("reading consumed login transaction")
-        })
+        self.db
+            .transaction(|tx| storage::consume_login_transaction(tx, state_digest, consumed_at))
     }
-}
-
-fn timestamp(value: DateTime<Utc>) -> String {
-    value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
-
-fn parse_timestamp(value: String) -> rusqlite::Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(&value)
-        .map(|value| value.with_timezone(&Utc))
-        .map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                value.len(),
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })
-}
-
-fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthUserRecord> {
-    Ok(AuthUserRecord {
-        user_id: row.get(0)?,
-        issuer: row.get(1)?,
-        subject: row.get(2)?,
-        display_name: row.get(3)?,
-        email: row.get(4)?,
-        created_at: parse_timestamp(row.get(5)?)?,
-        updated_at: parse_timestamp(row.get(6)?)?,
-        disabled_at: row
-            .get::<_, Option<String>>(7)?
-            .map(parse_timestamp)
-            .transpose()?,
-    })
-}
-
-fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthSessionRecord> {
-    Ok(AuthSessionRecord {
-        session_digest: row.get(0)?,
-        user_id: row.get(1)?,
-        auth_method: row.get(2)?,
-        created_at: parse_timestamp(row.get(3)?)?,
-        expires_at: row
-            .get::<_, Option<String>>(4)?
-            .map(parse_timestamp)
-            .transpose()?,
-        last_seen_at: parse_timestamp(row.get(5)?)?,
-        revoked_at: row
-            .get::<_, Option<String>>(6)?
-            .map(parse_timestamp)
-            .transpose()?,
-    })
-}
-
-fn row_to_bootstrap(row: &rusqlite::Row<'_>) -> rusqlite::Result<BootstrapCredentialRecord> {
-    Ok(BootstrapCredentialRecord {
-        credential_digest: row.get(0)?,
-        user_id: row.get(1)?,
-        scope: row.get(2)?,
-        created_at: parse_timestamp(row.get(3)?)?,
-        expires_at: parse_timestamp(row.get(4)?)?,
-        consumed_at: row
-            .get::<_, Option<String>>(5)?
-            .map(parse_timestamp)
-            .transpose()?,
-        revoked_at: row
-            .get::<_, Option<String>>(6)?
-            .map(parse_timestamp)
-            .transpose()?,
-    })
 }
 
 #[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime_db::RuntimeDb;
-
-    #[test]
-    fn native_bootstrap_proof_is_checked_before_single_use_consumption() -> Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let db = RuntimeDb::open_and_migrate(
-            temp_dir.path().join("runtime.sqlite"),
-            temp_dir.path().join("runtime.lock"),
-        )?;
-        let now = Utc::now();
-        db.authentication()
-            .insert_bootstrap_credential(&BootstrapCredentialRecord {
-                credential_digest: "native-ticket".into(),
-                user_id: None,
-                scope: "native-session:correct-challenge".into(),
-                created_at: now,
-                expires_at: now + chrono::Duration::minutes(2),
-                consumed_at: None,
-                revoked_at: None,
-            })?;
-        for scopes in [
-            &["session", "recovery"][..],
-            &["native-session:wrong-challenge"][..],
-        ] {
-            assert!(db
-                .authentication()
-                .consume_bootstrap_credential_for_scopes("native-ticket", now, Some(scopes))?
-                .is_none());
-        }
-        assert!(db
-            .authentication()
-            .consume_bootstrap_credential_for_scopes(
-                "native-ticket",
-                now,
-                Some(&["native-session:correct-challenge"])
-            )?
-            .is_some());
-        assert!(db
-            .authentication()
-            .consume_bootstrap_credential_for_scopes(
-                "native-ticket",
-                now,
-                Some(&["native-session:correct-challenge"])
-            )?
-            .is_none());
-        Ok(())
-    }
 
     #[test]
     fn native_bootstrap_concurrent_redemption_has_one_winner() -> Result<()> {
@@ -477,106 +149,6 @@ mod tests {
             Ok::<_, anyhow::Error>(first.join().unwrap()? + second.join().unwrap()?)
         })?;
         assert_eq!(winners, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn bootstrap_credential_is_consumed_once() -> Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let db = RuntimeDb::open_and_migrate(
-            temp_dir.path().join("runtime.sqlite"),
-            temp_dir.path().join("runtime.lock"),
-        )?;
-        let now = Utc::now();
-        db.authentication()
-            .insert_bootstrap_credential(&BootstrapCredentialRecord {
-                credential_digest: "digest".into(),
-                user_id: None,
-                scope: "session_exchange".into(),
-                created_at: now,
-                expires_at: now + chrono::Duration::hours(1),
-                consumed_at: None,
-                revoked_at: None,
-            })?;
-
-        assert!(db
-            .authentication()
-            .consume_bootstrap_credential("digest", now)?
-            .is_some());
-        assert!(db
-            .authentication()
-            .consume_bootstrap_credential("digest", now)?
-            .is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn touching_session_does_not_move_last_seen_backwards() -> Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let db = RuntimeDb::open_and_migrate(
-            temp_dir.path().join("runtime.sqlite"),
-            temp_dir.path().join("runtime.lock"),
-        )?;
-        let now = chrono::DateTime::from_timestamp_millis(Utc::now().timestamp_millis())
-            .expect("valid timestamp");
-        db.authentication().upsert_user(&AuthUserRecord {
-            user_id: "user".into(),
-            issuer: "local".into(),
-            subject: "user".into(),
-            display_name: None,
-            email: None,
-            created_at: now,
-            updated_at: now,
-            disabled_at: None,
-        })?;
-        db.authentication().create_session(&AuthSessionRecord {
-            session_digest: "session".into(),
-            user_id: "user".into(),
-            auth_method: "local".into(),
-            created_at: now,
-            expires_at: Some(now + chrono::Duration::hours(1)),
-            last_seen_at: now + chrono::Duration::minutes(5),
-            revoked_at: None,
-        })?;
-
-        assert!(!db.authentication().touch_session("session", now)?);
-        assert_eq!(
-            db.authentication()
-                .find_session("session")?
-                .expect("session exists")
-                .last_seen_at,
-            chrono::DateTime::from_timestamp_millis(
-                (now + chrono::Duration::minutes(5)).timestamp_millis()
-            )
-            .expect("valid timestamp")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn user_identity_cannot_be_rebound_to_another_external_identity() -> Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let db = RuntimeDb::open_and_migrate(
-            temp_dir.path().join("runtime.sqlite"),
-            temp_dir.path().join("runtime.lock"),
-        )?;
-        let now = Utc::now();
-        let user = AuthUserRecord {
-            user_id: "user".into(),
-            issuer: "https://issuer.example".into(),
-            subject: "subject-a".into(),
-            display_name: None,
-            email: None,
-            created_at: now,
-            updated_at: now,
-            disabled_at: None,
-        };
-        db.authentication().upsert_user(&user)?;
-
-        let mut rebound = user;
-        rebound.subject = "subject-b".into();
-        let error = db.authentication().upsert_user(&rebound).unwrap_err();
-        assert!(error.to_string().contains("already bound"));
         Ok(())
     }
 }
