@@ -715,3 +715,39 @@ async fn automatic_memory_runtime_missing_started_seed_cannot_bypass_as_claim_on
         Ok(())
     }).await
 }
+
+#[tokio::test]
+async fn startup_quarantine_claim_requires_the_matching_unique_active_scope() -> Result<()> {
+    let f = Fixture::new()?;
+    let incarnation = f.scope().identity_incarnation;
+    let claim = f
+        .runtime
+        .startup_quarantine_claim(&anyhow::Error::new(
+            crate::runtime::AgentLocalMissingStart {
+                agent_id: "default".into(),
+                incarnation,
+            },
+        ))
+        .await
+        .context("matching local evidence must isolate the activation target")?;
+    assert_eq!(claim.agent_id, "default");
+    assert_eq!(claim.incarnation, incarnation);
+
+    // Evidence from another scope, an unclassified error, or an unknown agent
+    // must never authorize isolation of this activation target.
+    let foreign = [
+        anyhow::Error::new(crate::runtime::AgentLocalMissingStart {
+            agent_id: "default".into(),
+            incarnation: incarnation + 1,
+        }),
+        anyhow::Error::new(crate::runtime::AgentLocalMissingStart {
+            agent_id: "someone-else".into(),
+            incarnation,
+        }),
+        anyhow::anyhow!("unclassified bootstrap failure"),
+    ];
+    for error in foreign {
+        assert!(f.runtime.startup_quarantine_claim(&error).await.is_none());
+    }
+    Ok(())
+}

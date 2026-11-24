@@ -218,7 +218,7 @@ async fn assert_exact_recovery_restart_before_admission(
             .await
             .unwrap_err();
         assert!(
-            error.to_string().contains("original memory start"),
+            format!("{error:#}").contains("original memory start"),
             "{error:#}"
         );
         harness.assert_unchanged(&before);

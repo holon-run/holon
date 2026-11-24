@@ -2437,6 +2437,26 @@ pub(crate) struct AgentConstructorQuarantine {
     pub incarnation: u64,
 }
 
+/// A pre-commit dispatch-memory resolution observed exactly one local scope
+/// whose original start is missing. This is failure-source evidence only: the
+/// bootstrap boundary must still match the activation target and confirm that
+/// no durable write was attempted before it may isolate the agent.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("agent-local dispatch memory has no original start")]
+pub(crate) struct AgentLocalMissingStart {
+    pub agent_id: String,
+    pub incarnation: u64,
+}
+
+/// Certified per-agent bootstrap isolation. Only this claim converts a late
+/// bootstrap failure into an agent quarantine; every other error stays fatal.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("agent-local startup recovery is quarantined this boot")]
+pub(crate) struct AgentStartupQuarantine {
+    pub agent_id: String,
+    pub incarnation: u64,
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 struct ScopedInputPreparationRejected {

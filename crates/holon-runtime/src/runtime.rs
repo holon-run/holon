@@ -224,8 +224,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use bootstrap::ConfigSnapshot;
 pub(crate) use bootstrap::{
-    append_unloaded_audit_event, AgentConstructorQuarantine, ViewImageCandidateFailureStatus,
-    VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD,
+    append_unloaded_audit_event, AgentConstructorQuarantine, AgentLocalMissingStart,
+    AgentStartupQuarantine, ViewImageCandidateFailureStatus, VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -791,6 +791,14 @@ pub(crate) fn lightweight_agent_list_waiting_reason(agent: &AgentState) -> Optio
     }
 }
 
+/// Cloneable bootstrap outcome. The message stays the original displayed
+/// failure; only a certified local claim survives to `wait_for_bootstrap`.
+#[derive(Clone, Debug)]
+struct BootstrapFailure {
+    message: String,
+    quarantine: Option<AgentStartupQuarantine>,
+}
+
 #[derive(Clone)]
 pub struct RuntimeHandle {
     inner: Arc<RuntimeInner>,
@@ -851,7 +859,7 @@ struct RuntimeInner {
     current_queries: current_queries::CurrentQueryRegistry,
     recovered_tasks: Mutex<Option<bootstrap::BootstrapTaskRecovery>>,
     recovered_timers: Mutex<Option<resident_scheduling::CapturedScheduling>>,
-    bootstrap_result: StdMutex<Option<std::result::Result<(), String>>>,
+    bootstrap_result: StdMutex<Option<std::result::Result<(), BootstrapFailure>>>,
     bootstrap_notify: Notify,
     autonomous_continuation_hook: Arc<dyn scheduler::SemanticCandidateSelectionHook>,
     autonomous_continuation_decision_hook:
@@ -8438,8 +8446,50 @@ impl RuntimeHandle {
                 Ok(())
             })
             .await;
-            self.complete_bootstrap(&bootstrap);
+            let quarantine = match &bootstrap {
+                Ok(()) => None,
+                Err(error) => self.startup_quarantine_claim(error).await,
+            };
+            self.complete_bootstrap(&bootstrap, quarantine);
             bootstrap
+        })
+    }
+
+    /// Certify a late bootstrap failure as a single local agent's startup
+    /// recovery failure. The failure source must have named exactly one scope,
+    /// that scope must be this activation target, the durable identity must be
+    /// the active unique record, and no persistence certainty may claim a
+    /// commit. Anything else returns `None` and stays fatal.
+    async fn startup_quarantine_claim(
+        &self,
+        error: &anyhow::Error,
+    ) -> Option<AgentStartupQuarantine> {
+        let local = error.downcast_ref::<AgentLocalMissingStart>()?;
+        let agent_id = self.inner.agent.lock().await.state.id.clone();
+        let incarnation = self.inner.identity_incarnation;
+        if local.agent_id != agent_id || local.incarnation != incarnation {
+            return None;
+        }
+        let identity = self
+            .inner
+            .runtime_db
+            .agent_identities()
+            .latest(&agent_id)
+            .ok()??;
+        if identity.status != crate::types::AgentRegistryStatus::Active
+            || identity.incarnation != incarnation
+        {
+            return None;
+        }
+        if matches!(
+            crate::runtime_db::persistence_certainty(error),
+            Some(certainty) if certainty != crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted
+        ) {
+            return None;
+        }
+        Some(AgentStartupQuarantine {
+            agent_id,
+            incarnation,
         })
     }
 
@@ -8498,9 +8548,15 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    fn complete_bootstrap(&self, result: &Result<()>) {
-        *self.inner.bootstrap_result.lock().unwrap() =
-            Some(result.as_ref().map(|_| ()).map_err(ToString::to_string));
+    fn complete_bootstrap(&self, result: &Result<()>, quarantine: Option<AgentStartupQuarantine>) {
+        let result = match result {
+            Ok(()) => Ok(()),
+            Err(error) => Err(BootstrapFailure {
+                message: error.to_string(),
+                quarantine,
+            }),
+        };
+        *self.inner.bootstrap_result.lock().unwrap() = Some(result);
         self.inner.bootstrap_notify.notify_waiters();
     }
 
@@ -8510,7 +8566,10 @@ impl RuntimeHandle {
             tokio::pin!(notified);
             notified.as_mut().enable();
             if let Some(result) = self.inner.bootstrap_result.lock().unwrap().clone() {
-                return result.map_err(|error| anyhow!("runtime bootstrap failed: {error}"));
+                return result.map_err(|failure| match failure.quarantine {
+                    Some(claim) => anyhow::Error::new(claim),
+                    None => anyhow!("runtime bootstrap failed: {}", failure.message),
+                });
             }
             notified.await;
         }

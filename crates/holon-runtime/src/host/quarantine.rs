@@ -15,10 +15,12 @@ use super::{RuntimeActivationReason, RuntimeHost};
 const COOLDOWN: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
-#[error("agent {agent_id} is quarantined this boot: storage constructor rejected agent-local input preparation")]
+#[error("agent {agent_id} is quarantined this boot: {stage:?} / {reason:?}")]
 pub struct AgentQuarantined {
     pub agent_id: String,
     pub incarnation: u64,
+    pub stage: QuarantineStage,
+    pub reason: QuarantineReason,
 }
 
 #[derive(Default)]
@@ -52,11 +54,26 @@ impl AgentQuarantines {
             .is_some_and(|(_, entry)| entry.incarnation == incarnation)
     }
 
+    /// Stage/reason of the live entry for this incarnation, if any. This is
+    /// diagnostic metadata; admission decisions stay in `blocks_activation`.
+    pub(super) fn entry(
+        &self,
+        agent_id: &str,
+        incarnation: u64,
+    ) -> Option<(QuarantineStage, QuarantineReason)> {
+        self.entries
+            .get(agent_id)
+            .filter(|(_, entry)| entry.incarnation == incarnation)
+            .map(|(_, entry)| (entry.stage, entry.reason))
+    }
+
     pub(super) fn record(
         &mut self,
         agent_id: &str,
         incarnation: u64,
         generation: u64,
+        stage: QuarantineStage,
+        reason: QuarantineReason,
         now: Instant,
     ) -> AgentQuarantined {
         self.entries.insert(
@@ -67,8 +84,8 @@ impl AgentQuarantines {
                     agent_id: agent_id.to_owned(),
                     incarnation,
                     generation,
-                    stage: QuarantineStage::StorageConstructor,
-                    reason: QuarantineReason::ProjectionChanged,
+                    stage,
+                    reason,
                     failed_at: chrono::Utc::now(),
                 },
             ),
@@ -76,11 +93,33 @@ impl AgentQuarantines {
         AgentQuarantined {
             agent_id: agent_id.to_owned(),
             incarnation,
+            stage,
+            reason,
         }
     }
 
+    /// Constructor isolation is consumed by a successful install. Startup
+    /// recovery isolation survives installation until bootstrap succeeds.
     pub(super) fn clear_on_install(&mut self, agent_id: &str) -> bool {
-        self.entries.remove(agent_id).is_some()
+        if self
+            .entries
+            .get(agent_id)
+            .is_some_and(|(_, entry)| entry.stage == QuarantineStage::StorageConstructor)
+        {
+            self.entries.remove(agent_id).is_some()
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn clear_after_bootstrap(&mut self, agent_id: &str, incarnation: u64) -> bool {
+        if self.entries.get(agent_id).is_some_and(|(_, entry)| {
+            entry.stage == QuarantineStage::StartupRecovery && entry.incarnation == incarnation
+        }) {
+            self.entries.remove(agent_id).is_some()
+        } else {
+            false
+        }
     }
 
     pub(super) async fn persist(&self, host: &RuntimeHost) {
@@ -143,6 +182,9 @@ impl RuntimeHost {
         &self,
         observation: &StartupObservation,
     ) -> Result<()> {
+        let Some(agent_id) = self.configured_default_agent_id()? else {
+            return Ok(());
+        };
         let runtime = match self
             .default_runtime_observed(Some(observation.clone()))
             .await
@@ -151,8 +193,73 @@ impl RuntimeHost {
             Err(error) if error.downcast_ref::<AgentQuarantined>().is_some() => return Ok(()),
             Err(error) => return Err(error),
         };
-        // Late bootstrap failures do not carry constructor isolation proof.
-        runtime.wait_for_bootstrap().await
+        // Only a certified local startup-recovery failure isolates the default
+        // agent; every other late bootstrap failure still aborts binding.
+        match self
+            .await_bootstrap_isolating_local_failure(
+                &runtime,
+                &agent_id,
+                runtime.instance_incarnation(),
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) if error.downcast_ref::<AgentQuarantined>().is_some() => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Await one activation target's bootstrap. A certified local startup
+    /// failure is recorded as an agent quarantine and returned as
+    /// `AgentQuarantined`; every other error is returned unchanged so global or
+    /// ambiguous failures still abort daemon startup.
+    pub(crate) async fn await_bootstrap_isolating_local_failure(
+        &self,
+        runtime: &crate::runtime::RuntimeHandle,
+        agent_id: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        match runtime.wait_for_bootstrap().await {
+            Ok(()) => {
+                let mut registry = self.inner.runtimes.write().await;
+                if registry
+                    .quarantines
+                    .clear_after_bootstrap(agent_id, incarnation)
+                {
+                    registry.quarantines.persist(self).await;
+                }
+                Ok(())
+            }
+            Err(error) => {
+                let Some(claim) = error.downcast_ref::<crate::runtime::AgentStartupQuarantine>()
+                else {
+                    return Err(error);
+                };
+                if claim.agent_id != agent_id || claim.incarnation != incarnation {
+                    return Err(error);
+                }
+                let failure = {
+                    let mut registry = self.inner.runtimes.write().await;
+                    let generation = registry.next_generation.saturating_sub(1);
+                    let failure = registry.quarantines.record(
+                        agent_id,
+                        incarnation,
+                        generation,
+                        QuarantineStage::StartupRecovery,
+                        QuarantineReason::DispatchMemoryMissingStart,
+                        tokio::time::Instant::now(),
+                    );
+                    registry.quarantines.persist(self).await;
+                    failure
+                };
+                tracing::warn!(
+                    agent_id,
+                    incarnation,
+                    "isolated agent during startup recovery"
+                );
+                Err(failure.into())
+            }
+        }
     }
 
     pub(crate) async fn agent_is_quarantined(&self, agent_id: &str, incarnation: u64) -> bool {
@@ -191,7 +298,14 @@ mod tests {
         let demand = RuntimeActivationReason::OperatorControl;
         let mut state = AgentQuarantines::default();
         let start = Instant::now();
-        state.record("operator", 1, 4, start);
+        state.record(
+            "operator",
+            1,
+            4,
+            QuarantineStage::StorageConstructor,
+            QuarantineReason::ProjectionChanged,
+            start,
+        );
         assert!(state.blocks_activation(
             "operator",
             1,
@@ -211,10 +325,40 @@ mod tests {
         }
         assert!(state.contains("operator", 1));
         let retry = start + COOLDOWN;
-        state.record("operator", 1, 5, retry);
+        state.record(
+            "operator",
+            1,
+            5,
+            QuarantineStage::StorageConstructor,
+            QuarantineReason::ProjectionChanged,
+            retry,
+        );
         assert!(state.blocks_activation("operator", 1, demand, retry));
         assert!(!state.blocks_activation("operator", 1, demand, retry + COOLDOWN));
         assert!(state.clear_on_install("operator"));
         assert!(!state.contains("operator", 1));
+    }
+
+    #[test]
+    fn startup_recovery_isolation_survives_install_until_bootstrap() {
+        let mut state = AgentQuarantines::default();
+        let start = Instant::now();
+        state.record(
+            "recovery",
+            7,
+            3,
+            QuarantineStage::StartupRecovery,
+            QuarantineReason::DispatchMemoryMissingStart,
+            start,
+        );
+        // A retry install must not release admission before bootstrap succeeds.
+        assert!(!state.clear_on_install("recovery"));
+        assert!(state.contains("recovery", 7));
+        // A different incarnation never inherits the old isolation.
+        assert!(!state.contains("recovery", 8));
+        assert!(!state.clear_after_bootstrap("recovery", 8));
+        assert!(state.contains("recovery", 7));
+        assert!(state.clear_after_bootstrap("recovery", 7));
+        assert!(!state.contains("recovery", 7));
     }
 }
