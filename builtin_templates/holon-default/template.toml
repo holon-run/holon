@@ -1,7 +1,7 @@
 schema = "holon.agent_template.v1"
 id = "holon-default"
 name = "Holon Default Agent"
-summary = "A durable role contract for the default general-purpose agent."
+summary = "Default general-purpose entry-point agent that handles cross-domain tasks and helps organize specialist agents."
 
 [compatibility]
 holon = ">=0.1.0"

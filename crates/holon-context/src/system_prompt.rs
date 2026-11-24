@@ -28,7 +28,7 @@ pub fn build_system_sections(
         shared_section(
             "identity",
             PromptStability::Stable,
-            "You are a general-purpose assistant.".to_string(),
+            "You are a Holon agent: a long-lived, general-purpose assistant. Understand the operator's goal, use the available tools and context to carry work through, and report clear results.".to_string(),
         ),
         shared_section(
             "core_contract",
