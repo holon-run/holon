@@ -584,7 +584,7 @@ impl BuiltInModelCatalog {
         &self,
         route_ref: &ModelRouteRef,
         overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
-        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
+        discovered_models: &HashMap<ModelRouteRef, BuiltInModelMetadata>,
         unknown_fallback: Option<&ModelRuntimeOverride>,
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
@@ -608,7 +608,7 @@ impl BuiltInModelCatalog {
         &self,
         route_ref: &ModelRouteRef,
         overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
-        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
+        discovered_models: &HashMap<ModelRouteRef, BuiltInModelMetadata>,
         unknown_fallback: Option<&ModelRuntimeOverride>,
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
@@ -638,7 +638,7 @@ impl BuiltInModelCatalog {
         &self,
         model_ref: &ModelRef,
         overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
-        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
+        discovered_models: &HashMap<ModelRouteRef, BuiltInModelMetadata>,
         unknown_fallback: Option<&ModelRuntimeOverride>,
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
@@ -661,7 +661,7 @@ impl BuiltInModelCatalog {
         &self,
         model_ref: &ModelRef,
         overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
-        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
+        discovered_models: &HashMap<ModelRouteRef, BuiltInModelMetadata>,
         unknown_fallback: Option<&ModelRuntimeOverride>,
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
@@ -687,7 +687,7 @@ impl BuiltInModelCatalog {
         route_builtin: Option<&'a BuiltInModelRoutePolicy>,
         model_builtin: Option<&'a BuiltInModelMetadata>,
         overrides: &'a HashMap<ModelRef, ModelRuntimeOverride>,
-        discovered_models: &'a HashMap<ModelRef, BuiltInModelMetadata>,
+        discovered_models: &'a HashMap<ModelRouteRef, BuiltInModelMetadata>,
         unknown_fallback: Option<&'a ModelRuntimeOverride>,
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
@@ -706,19 +706,10 @@ impl BuiltInModelCatalog {
                     .zip(endpoint)
                     .is_some_and(|(reviewed, requested)| reviewed != requested.as_str())
         });
-        // Go discovery is model-scoped, but describes only its native endpoint.
-        let discovered = discovered_models
-            .get(model_ref)
-            .filter(|entry| match endpoint {
-                Some(endpoint) if model_ref.provider.as_str() == "opencode-go" => {
-                    entry
-                        .endpoint
-                        .as_ref()
-                        .unwrap_or(&ProviderEndpointId::default_endpoint())
-                        == endpoint
-                }
-                _ => true,
-            });
+        // Discovery is endpoint-scoped: the same model id advertised by two
+        // endpoints of one provider is two distinct entries, so selection is by
+        // the full route identity rather than by provider and model alone.
+        let discovered = select_discovered_metadata(discovered_models, model_ref, endpoint);
         let override_config = overrides.get(model_ref);
         let has_metadata =
             route_builtin.is_some() || model_builtin.is_some() || discovered.is_some();
@@ -1427,7 +1418,7 @@ impl BuiltInModelCatalog {
         &self,
         model_ref: &ModelRef,
         overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
-        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
+        discovered_models: &HashMap<ModelRouteRef, BuiltInModelMetadata>,
         unknown_fallback: Option<&ModelRuntimeOverride>,
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
@@ -1778,3 +1769,62 @@ fn default_verbosity_for_model(model_ref: &ModelRef) -> Option<ModelVerbosity> {
 
 #[cfg(test)]
 mod tests;
+
+/// Select discovered metadata for one route identity.
+///
+/// Route-scoped lookup keeps sibling endpoints of the same provider separate.
+/// When no endpoint is requested, the default endpoint wins over any sibling,
+/// then the lowest endpoint id, so resolution stays deterministic.
+fn select_discovered_metadata<'a>(
+    discovered_models: &'a HashMap<ModelRouteRef, BuiltInModelMetadata>,
+    model_ref: &ModelRef,
+    endpoint: Option<&ProviderEndpointId>,
+) -> Option<&'a BuiltInModelMetadata> {
+    match endpoint {
+        Some(endpoint) => discovered_models.get(&ModelRouteRef::new(
+            model_ref.provider.clone(),
+            endpoint.clone(),
+            model_ref.model.clone(),
+        )),
+        None => discovered_models
+            .iter()
+            .filter(|(route, _)| {
+                route.provider == model_ref.provider && route.model == model_ref.model
+            })
+            .min_by(|(left, _), (right, _)| {
+                let left_default = left.endpoint.as_str() == ProviderEndpointId::DEFAULT;
+                let right_default = right.endpoint.as_str() == ProviderEndpointId::DEFAULT;
+                right_default
+                    .cmp(&left_default)
+                    .then_with(|| left.endpoint.cmp(&right.endpoint))
+            })
+            .map(|(_, metadata)| metadata),
+    }
+}
+
+/// Build a route-keyed discovered-model map from `(model_ref, metadata)` pairs.
+///
+/// Endpoint attribution comes from the metadata when present, otherwise the
+/// provider default endpoint.
+#[cfg(any(test, feature = "test-support"))]
+pub fn discovered_by_route(
+    entries: impl IntoIterator<Item = (ModelRef, BuiltInModelMetadata)>,
+) -> HashMap<ModelRouteRef, BuiltInModelMetadata> {
+    entries
+        .into_iter()
+        .map(|(model_ref, metadata)| {
+            let endpoint = metadata
+                .endpoint
+                .clone()
+                .unwrap_or_else(ProviderEndpointId::default_endpoint);
+            (
+                ModelRouteRef::new(
+                    model_ref.provider.clone(),
+                    endpoint,
+                    model_ref.model.clone(),
+                ),
+                metadata,
+            )
+        })
+        .collect()
+}

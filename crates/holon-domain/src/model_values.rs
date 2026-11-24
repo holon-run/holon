@@ -815,6 +815,157 @@ impl ProviderTransportKind {
     }
 }
 
+/// Explicit model-discovery configuration declared for a provider or for a
+/// single endpoint.
+///
+/// Discovery is decoupled from the inference `transport`: the transport still
+/// describes how Holon calls the endpoint, while `discovery` describes where the
+/// model list lives. The declared `path` is always relative to the effective
+/// endpoint `base_url`; absolute URLs, cross-host targets, request bodies and
+/// query/header templates are outside the first-version contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderDiscoveryConfig {
+    pub kind: ProviderDiscoveryKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDiscoveryKind {
+    /// OpenAI-compatible `{ "data": [ { "id": "..." } ] }` model list.
+    #[serde(rename = "openai_models")]
+    OpenAiModels,
+    /// Explicitly disable discovery, including the transport default fallback.
+    Disabled,
+}
+
+impl ProviderDiscoveryConfig {
+    pub fn openai_models(path: impl Into<String>) -> Self {
+        Self {
+            kind: ProviderDiscoveryKind::OpenAiModels,
+            path: Some(path.into()),
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            kind: ProviderDiscoveryKind::Disabled,
+            path: None,
+        }
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.kind == ProviderDiscoveryKind::Disabled
+    }
+
+    /// Validate the declared shape. `key` is the configuration path used in the
+    /// error message, for example `providers.gateway.discovery`.
+    pub fn validate(&self, key: &str) -> Result<()> {
+        match self.kind {
+            ProviderDiscoveryKind::Disabled => {
+                if self.path.is_some() {
+                    return Err(anyhow!(
+                        "{key}.path must not be set when discovery kind is disabled"
+                    ));
+                }
+            }
+            ProviderDiscoveryKind::OpenAiModels => {
+                let path = self.path.as_deref().ok_or_else(|| {
+                    anyhow!("{key}.path is required when discovery kind is openai_models")
+                })?;
+                validate_discovery_path(key, path)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Validated relative path for the model list request.
+    pub fn models_path(&self) -> Result<&str> {
+        if self.is_disabled() {
+            return Err(anyhow!("discovery is disabled"));
+        }
+        self.path
+            .as_deref()
+            .ok_or_else(|| anyhow!("discovery path is not configured"))
+    }
+}
+
+#[allow(dead_code)]
+impl ProviderDiscoveryKind {
+    pub const ALL: [Self; 2] = [Self::OpenAiModels, Self::Disabled];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiModels => "openai_models",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == normalized)
+            .ok_or_else(|| {
+                anyhow!(
+                    "invalid provider discovery kind {normalized}; expected {}",
+                    Self::ALL
+                        .into_iter()
+                        .map(Self::as_str)
+                        .collect::<Vec<_>>()
+                        .join("|")
+                )
+            })
+    }
+}
+
+fn validate_discovery_path(key: &str, path: &str) -> Result<()> {
+    if !path.starts_with('/') {
+        return Err(anyhow!(
+            "{key}.path {path:?} must be a path beginning with '/' relative to the endpoint base_url"
+        ));
+    }
+    if path.starts_with("//") {
+        return Err(anyhow!(
+            "{key}.path {path:?} must not be a protocol-relative URL"
+        ));
+    }
+    if path.contains("://") {
+        return Err(anyhow!(
+            "{key}.path {path:?} must be relative to the endpoint base_url, not an absolute URL"
+        ));
+    }
+    if path.contains('?') || path.contains('#') {
+        return Err(anyhow!(
+            "{key}.path {path:?} must not contain a query or fragment; query templates are not supported"
+        ));
+    }
+    if path.contains('%') {
+        return Err(anyhow!(
+            "{key}.path {path:?} must not contain percent escapes"
+        ));
+    }
+    if path.contains('\\') {
+        return Err(anyhow!("{key}.path {path:?} must not contain '\\'"));
+    }
+    if path.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+        return Err(anyhow!(
+            "{key}.path {path:?} must not contain whitespace or control characters"
+        ));
+    }
+    if path
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
+        return Err(anyhow!(
+            "{key}.path {path:?} must not contain '.' or '..' segments"
+        ));
+    }
+    Ok(())
+}
+
 pub const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
 pub const DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS: usize = 2_500;
 

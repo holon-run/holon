@@ -17,7 +17,8 @@ use crate::provider::{transports::build_oauth_http_client, OpenAiBearerAuth};
 use holon_domain::model_values::{
     provider_definition, tencent_tokenhub::is_tencent_tokenhub_model_id, BuiltInModelMetadata,
     ModelCapabilityFlags, ModelDiscoveryAuth, ModelDiscoveryDecoder, ModelDiscoveryDefinition,
-    ModelDiscoveryRoute, ModelMetadataSource, ModelRef, ProviderCatalogPolicy,
+    ModelDiscoveryRoute, ModelMetadataSource, ModelRef, ModelRouteRef, ProviderCatalogPolicy,
+    ProviderDiscoveryConfig, ProviderDiscoveryKind,
 };
 
 const OPENAI_COMPATIBLE_MODELS_PATH: &str = "/models";
@@ -43,18 +44,118 @@ const OPENAI_COMPATIBLE_DEFAULT_DISCOVERY: ModelDiscoveryDefinition = ModelDisco
     decoder: ModelDiscoveryDecoder::OpenAiCompatible,
 };
 
+/// Cache identity for one provider endpoint.
+///
+/// Discovery results are owned by `provider + endpoint`, not by the legacy
+/// runtime registry key alone, so sibling endpoints of the same gateway cannot
+/// overwrite each other's model lists. The serialized form is
+/// `provider@endpoint`, with the default endpoint kept as the bare provider id
+/// so cache files written before endpoint-scoped discovery still load.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ModelDiscoveryCacheKey {
+    provider: ProviderId,
+    endpoint: ProviderEndpointId,
+}
+
+impl ModelDiscoveryCacheKey {
+    pub fn new(provider: ProviderId, endpoint: ProviderEndpointId) -> Self {
+        Self { provider, endpoint }
+    }
+
+    /// Attribution identity for one resolved endpoint runtime: the canonical
+    /// provider and the endpoint it serves.
+    pub fn for_provider(provider: &ProviderRuntimeConfig) -> Self {
+        Self {
+            provider: provider.route_provider.clone(),
+            endpoint: provider.route_endpoint.clone(),
+        }
+    }
+
+    pub fn provider(&self) -> &ProviderId {
+        &self.provider
+    }
+
+    pub fn endpoint(&self) -> &ProviderEndpointId {
+        &self.endpoint
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.split_once('@') {
+            Some((provider, endpoint)) => Some(Self {
+                provider: ProviderId::parse(provider).ok()?,
+                endpoint: ProviderEndpointId::parse(endpoint).ok()?,
+            }),
+            None => Some(Self {
+                provider: ProviderId::parse(raw).ok()?,
+                endpoint: ProviderEndpointId::default_endpoint(),
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for ModelDiscoveryCacheKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.endpoint.as_str() == ProviderEndpointId::DEFAULT {
+            formatter.write_str(self.provider.as_str())
+        } else {
+            write!(
+                formatter,
+                "{}@{}",
+                self.provider.as_str(),
+                self.endpoint.as_str()
+            )
+        }
+    }
+}
+
+impl Serialize for ModelDiscoveryCacheKey {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelDiscoveryCacheKey {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).ok_or_else(|| {
+            serde::de::Error::custom(format!("invalid model discovery cache key {raw:?}"))
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelDiscoveryCacheFile {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub providers: BTreeMap<ProviderId, ProviderModelDiscoveryCache>,
+    pub providers: BTreeMap<ModelDiscoveryCacheKey, ProviderModelDiscoveryCache>,
 }
 
 impl ModelDiscoveryCacheFile {
-    pub fn models(&self) -> HashMap<ModelRef, BuiltInModelMetadata> {
+    /// Discovered models keyed by their full route identity. A model that two
+    /// endpoints of the same provider both expose keeps two distinct entries.
+    pub fn models(&self) -> HashMap<ModelRouteRef, BuiltInModelMetadata> {
         self.providers
-            .values()
-            .flat_map(|provider| provider.models.iter().cloned())
-            .map(|model| (model.model_ref.clone(), model))
+            .iter()
+            .flat_map(|(key, entry)| {
+                entry.models.iter().map(move |model| {
+                    let endpoint = model
+                        .endpoint
+                        .clone()
+                        .unwrap_or_else(|| key.endpoint().clone());
+                    (
+                        ModelRouteRef::new(
+                            model.model_ref.provider.clone(),
+                            endpoint,
+                            model.model_ref.model.clone(),
+                        ),
+                        model.clone(),
+                    )
+                })
+            })
             .collect()
     }
 }
@@ -74,6 +175,7 @@ pub struct ProviderModelDiscoveryCache {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelDiscoveryRefreshReport {
     pub provider: ProviderId,
+    pub endpoint: ProviderEndpointId,
     pub fetched_at: DateTime<Utc>,
     pub model_count: usize,
     pub cache_path: PathBuf,
@@ -92,6 +194,8 @@ pub enum ModelDiscoveryCacheState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelDiscoveryCacheStatus {
     pub provider: ProviderId,
+    /// Endpoint the cached model list is owned by.
+    pub endpoint: ProviderEndpointId,
     pub state: ModelDiscoveryCacheState,
     pub supports_auto_refresh: bool,
     pub credential_configured: bool,
@@ -108,18 +212,82 @@ pub fn discovery_cache_path(home_dir: &Path) -> PathBuf {
     home_dir.join("model-discovery-cache.json")
 }
 
-pub fn provider_supports_model_discovery(provider: &ProviderRuntimeConfig) -> bool {
-    provider_discovery_definition(provider).is_some()
+pub fn provider_supports_model_discovery(
+    provider: &ProviderRuntimeConfig,
+    configured: Option<&ProviderDiscoveryConfig>,
+) -> bool {
+    effective_discovery(provider, configured).is_some()
 }
 
-pub fn provider_discovers_model_capabilities(provider: &ProviderRuntimeConfig) -> bool {
-    provider_discovery_definition(provider)
-        .is_some_and(|definition| definition.decoder == ModelDiscoveryDecoder::Ollama)
+pub fn provider_discovers_model_capabilities(
+    provider: &ProviderRuntimeConfig,
+    configured: Option<&ProviderDiscoveryConfig>,
+) -> bool {
+    effective_discovery(provider, configured)
+        .is_some_and(|discovery| discovery.decoder == ModelDiscoveryDecoder::Ollama)
 }
 
-fn provider_model_discovery_requires_credential(provider: &ProviderRuntimeConfig) -> bool {
-    provider_discovery_definition(provider)
-        .is_some_and(|definition| definition.auth == ModelDiscoveryAuth::Required)
+fn provider_model_discovery_requires_credential(
+    provider: &ProviderRuntimeConfig,
+    configured: Option<&ProviderDiscoveryConfig>,
+) -> bool {
+    effective_discovery(provider, configured)
+        .is_some_and(|discovery| discovery.auth == ModelDiscoveryAuth::Required)
+}
+
+/// Effective discovery plan for one endpoint runtime.
+///
+/// Resolution order is fixed: explicit endpoint configuration, then the
+/// provider-level default carried into `configured`, then the built-in or
+/// transport default. `disabled` configuration resolves to no plan at all so an
+/// operator can opt out of the transport fallback explicitly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EffectiveDiscovery {
+    auth: ModelDiscoveryAuth,
+    decoder: ModelDiscoveryDecoder,
+    route: EffectiveDiscoveryRoute,
+}
+
+impl EffectiveDiscovery {
+    /// Built-in/transport discovery plan for a static definition.
+    #[cfg(test)]
+    fn builtin(definition: &ModelDiscoveryDefinition) -> Self {
+        Self {
+            auth: definition.auth,
+            decoder: definition.decoder,
+            route: EffectiveDiscoveryRoute::BuiltIn(definition.route),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EffectiveDiscoveryRoute {
+    BuiltIn(ModelDiscoveryRoute),
+    /// Configured path relative to the effective endpoint base URL.
+    EndpointPath(String),
+}
+
+fn effective_discovery(
+    provider: &ProviderRuntimeConfig,
+    configured: Option<&ProviderDiscoveryConfig>,
+) -> Option<EffectiveDiscovery> {
+    if let Some(config) = configured {
+        return match config.kind {
+            ProviderDiscoveryKind::Disabled => None,
+            ProviderDiscoveryKind::OpenAiModels => Some(EffectiveDiscovery {
+                auth: ModelDiscoveryAuth::Optional,
+                decoder: ModelDiscoveryDecoder::OpenAiCompatible,
+                route: EffectiveDiscoveryRoute::EndpointPath(
+                    config.models_path().ok()?.to_string(),
+                ),
+            }),
+        };
+    }
+    provider_discovery_definition(provider).map(|definition| EffectiveDiscovery {
+        auth: definition.auth,
+        decoder: definition.decoder,
+        route: EffectiveDiscoveryRoute::BuiltIn(definition.route),
+    })
 }
 
 fn provider_discovery_definition(
@@ -149,13 +317,16 @@ fn provider_discovery_definition(
 
 pub fn discovery_cache_status_for_provider(
     provider: &ProviderRuntimeConfig,
+    configured: Option<&ProviderDiscoveryConfig>,
     cache: &ModelDiscoveryCacheFile,
     ttl: Duration,
     refresh_in_flight: bool,
 ) -> ModelDiscoveryCacheStatus {
-    let supports_auto_refresh = provider_supports_model_discovery(provider);
+    let discovery = effective_discovery(provider, configured);
+    let supports_auto_refresh = discovery.is_some();
     let credential_configured = provider.has_configured_credential();
-    let entry = cache.providers.get(&provider.id);
+    let key = ModelDiscoveryCacheKey::for_provider(provider);
+    let entry = cache.providers.get(&key);
     let age = entry.and_then(|entry| {
         Utc::now()
             .signed_duration_since(entry.fetched_at)
@@ -163,19 +334,23 @@ pub fn discovery_cache_status_for_provider(
             .ok()
     });
     // A cached list is only valid for the endpoint it was fetched from. When the
-    // provider's base_url (and therefore the derived discovery URL) changes, the
-    // cached models no longer describe the current gateway, so force a refresh
-    // instead of trusting a list that is still within the TTL. Legacy entries
-    // without a recorded source URL are treated the same way so they are
-    // re-validated once against the current endpoint.
+    // endpoint base_url or the resolved discovery URL changes, the cached models
+    // no longer describe the current gateway, so force a refresh instead of
+    // trusting a list that is still within the TTL. Legacy entries without a
+    // recorded source URL are treated the same way so they are re-validated once
+    // against the current endpoint.
     let source_url_changed = entry.is_some_and(|entry| {
-        provider_models_url(provider)
+        discovery
+            .as_ref()
+            .and_then(|discovery| discovery_models_url(provider, discovery).ok())
             .map(|current| entry.source_url.as_deref() != Some(current.as_str()))
             .unwrap_or(false)
     });
     let state = if !supports_auto_refresh {
         ModelDiscoveryCacheState::Unsupported
-    } else if provider_model_discovery_requires_credential(provider) && !credential_configured {
+    } else if provider_model_discovery_requires_credential(provider, configured)
+        && !credential_configured
+    {
         ModelDiscoveryCacheState::Unauthenticated
     } else if source_url_changed {
         ModelDiscoveryCacheState::Stale
@@ -190,7 +365,8 @@ pub fn discovery_cache_status_for_provider(
     };
 
     ModelDiscoveryCacheStatus {
-        provider: provider.id.clone(),
+        provider: provider.route_provider.clone(),
+        endpoint: provider.route_endpoint.clone(),
         state,
         supports_auto_refresh,
         credential_configured,
@@ -204,11 +380,12 @@ pub fn discovery_cache_status_for_provider(
 
 pub fn discovery_cache_needs_refresh(
     provider: &ProviderRuntimeConfig,
+    configured: Option<&ProviderDiscoveryConfig>,
     cache: &ModelDiscoveryCacheFile,
     ttl: Duration,
 ) -> bool {
     matches!(
-        discovery_cache_status_for_provider(provider, cache, ttl, false).state,
+        discovery_cache_status_for_provider(provider, configured, cache, ttl, false).state,
         ModelDiscoveryCacheState::Missing | ModelDiscoveryCacheState::Stale
     )
 }
@@ -222,7 +399,9 @@ pub fn load_discovery_cache_at(path: &Path) -> Result<ModelDiscoveryCacheFile> {
     let mut cache: ModelDiscoveryCacheFile = serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse model discovery cache {}", path.display()))?;
     let copilot = ProviderId::parse(GITHUB_COPILOT_PROVIDER_ID)?;
-    if let Some(entry) = cache.providers.get_mut(&copilot) {
+    let copilot_default =
+        ModelDiscoveryCacheKey::new(copilot.clone(), ProviderEndpointId::default_endpoint());
+    if let Some(entry) = cache.providers.get_mut(&copilot_default) {
         for model in &mut entry.models {
             // Old Copilot caches used an absent endpoint for Chat and
             // "responses" for Responses. New entries record both explicitly.
@@ -253,20 +432,21 @@ pub fn save_discovery_cache_at(path: &Path, cache: &ModelDiscoveryCacheFile) -> 
 
 pub async fn refresh_provider_models(
     provider: &ProviderRuntimeConfig,
+    configured: Option<&ProviderDiscoveryConfig>,
     cache_path: &Path,
 ) -> Result<ModelDiscoveryRefreshReport> {
-    let discovery = provider_discovery_definition(provider).ok_or_else(|| {
+    let discovery = effective_discovery(provider, configured).ok_or_else(|| {
         anyhow!(
             "provider {} does not support model discovery yet",
             provider.id.as_str()
         )
     })?;
 
-    let source_url = provider_models_url(provider)?;
+    let source_url = discovery_models_url(provider, &discovery)?;
     if discovery.decoder == ModelDiscoveryDecoder::Ollama {
         return refresh_ollama_models(provider, cache_path, source_url).await;
     }
-    let mut response = provider_models_request(provider, discovery, &source_url)
+    let mut response = provider_models_request(provider, &discovery, &source_url)
         .await?
         .send()
         .await
@@ -283,18 +463,21 @@ pub async fn refresh_provider_models(
                 provider,
                 &source_url,
                 Some(authorization),
+                restrict_redirects_to_endpoint(&discovery),
             )?
             .send()
             .await
             .with_context(|| format!("{} model discovery request failed", provider.id.as_str()))?;
         }
     }
-    let response = response.error_for_status().with_context(|| {
-        format!(
-            "{} model discovery returned an error status",
-            provider.id.as_str()
-        )
-    })?;
+    let response = ensure_discovery_response(response)?
+        .error_for_status()
+        .with_context(|| {
+            format!(
+                "{} model discovery returned an error status",
+                provider.id.as_str()
+            )
+        })?;
     let raw = response.bytes().await.with_context(|| {
         format!(
             "failed to read {} model discovery response",
@@ -351,12 +534,13 @@ pub async fn refresh_provider_models(
                 .into_model_metadata(&provider.id)
         }
     };
+    let models = attribute_discovered_models(models, provider);
 
     let mut cache = load_discovery_cache_at(cache_path)?;
     cache.providers.insert(
-        provider.id.clone(),
+        ModelDiscoveryCacheKey::for_provider(provider),
         ProviderModelDiscoveryCache {
-            provider: provider.id.clone(),
+            provider: provider.route_provider.clone(),
             fetched_at,
             source_url: Some(source_url),
             response_hash: Some(response_hash),
@@ -366,7 +550,8 @@ pub async fn refresh_provider_models(
     save_discovery_cache_at(cache_path, &cache)?;
 
     Ok(ModelDiscoveryRefreshReport {
-        provider: provider.id.clone(),
+        provider: provider.route_provider.clone(),
+        endpoint: provider.route_endpoint.clone(),
         fetched_at,
         model_count: models.len(),
         cache_path: cache_path.to_path_buf(),
@@ -375,7 +560,7 @@ pub async fn refresh_provider_models(
 
 async fn provider_models_request(
     provider: &ProviderRuntimeConfig,
-    discovery: &ModelDiscoveryDefinition,
+    discovery: &EffectiveDiscovery,
     source_url: &str,
 ) -> Result<reqwest::RequestBuilder> {
     let authorization = match discovery.auth {
@@ -391,16 +576,34 @@ async fn provider_models_request(
             }
         }
     };
-    provider_models_request_with_authorization(provider, source_url, authorization)
+    provider_models_request_with_authorization(
+        provider,
+        source_url,
+        authorization,
+        restrict_redirects_to_endpoint(discovery),
+    )
 }
 
 fn provider_models_request_with_authorization(
     provider: &ProviderRuntimeConfig,
     source_url: &str,
     authorization: Option<String>,
+    same_origin_redirects_only: bool,
 ) -> Result<reqwest::RequestBuilder> {
-    let mut request = reqwest::Client::builder()
-        .user_agent("holon-model-discovery")
+    let mut client = reqwest::Client::builder().user_agent("holon-model-discovery");
+    if same_origin_redirects_only {
+        // A configured discovery request must never follow a redirect onto a
+        // different host: the endpoint base URL owns the request target.
+        let endpoint_origin = reqwest::Url::parse(source_url).ok().map(|url| url.origin());
+        client =
+            client.redirect(reqwest::redirect::Policy::custom(
+                move |attempt| match endpoint_origin.as_ref() {
+                    Some(origin) if &attempt.url().origin() == origin => attempt.follow(),
+                    _ => attempt.stop(),
+                },
+            ));
+    }
+    let mut request = client
         .build()
         .context("failed to build model discovery HTTP client")?
         .get(source_url);
@@ -414,6 +617,20 @@ fn provider_models_request_with_authorization(
         request = request.header(reqwest::header::AUTHORIZATION, authorization);
     }
     Ok(request)
+}
+
+fn restrict_redirects_to_endpoint(discovery: &EffectiveDiscovery) -> bool {
+    matches!(discovery.route, EffectiveDiscoveryRoute::EndpointPath(_))
+}
+
+/// A stopped redirect must surface as a discovery failure instead of a 3xx body.
+fn ensure_discovery_response(response: reqwest::Response) -> Result<reqwest::Response> {
+    if response.status().is_redirection() {
+        return Err(anyhow!(
+            "model discovery redirect was not followed; cross-origin redirects are not allowed"
+        ));
+    }
+    Ok(response)
 }
 
 /// Discovery shares chat's refresh-and-persist lifecycle for managed OAuth
@@ -442,21 +659,80 @@ fn discovery_oauth_auth(provider: &ProviderRuntimeConfig) -> Result<Option<OpenA
 }
 
 #[doc(hidden)]
-pub fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
-    let discovery = provider_discovery_definition(provider).ok_or_else(|| {
+pub fn provider_models_url(
+    provider: &ProviderRuntimeConfig,
+    configured: Option<&ProviderDiscoveryConfig>,
+) -> Result<String> {
+    let discovery = effective_discovery(provider, configured).ok_or_else(|| {
         anyhow!(
             "provider {} does not support model discovery yet",
             provider.id.as_str()
         )
     })?;
-    match discovery.route {
-        ModelDiscoveryRoute::Fixed(url) => Ok(url.to_string()),
-        ModelDiscoveryRoute::OpenAiCompatible => openai_compatible_models_url(&provider.base_url),
-        ModelDiscoveryRoute::Ollama => ollama_tags_url(&provider.base_url),
-        ModelDiscoveryRoute::OpenAiV1 => openai_v1_models_url(&provider.base_url),
-        ModelDiscoveryRoute::Venice => venice_models_url(&provider.base_url),
-        ModelDiscoveryRoute::VercelAiGateway => vercel_models_url(&provider.base_url),
+    discovery_models_url(provider, &discovery)
+}
+
+fn discovery_models_url(
+    provider: &ProviderRuntimeConfig,
+    discovery: &EffectiveDiscovery,
+) -> Result<String> {
+    match &discovery.route {
+        EffectiveDiscoveryRoute::BuiltIn(route) => match route {
+            ModelDiscoveryRoute::Fixed(url) => Ok((*url).to_string()),
+            ModelDiscoveryRoute::OpenAiCompatible => {
+                openai_compatible_models_url(&provider.base_url)
+            }
+            ModelDiscoveryRoute::Ollama => ollama_tags_url(&provider.base_url),
+            ModelDiscoveryRoute::OpenAiV1 => openai_v1_models_url(&provider.base_url),
+            ModelDiscoveryRoute::Venice => venice_models_url(&provider.base_url),
+            ModelDiscoveryRoute::VercelAiGateway => vercel_models_url(&provider.base_url),
+        },
+        EffectiveDiscoveryRoute::EndpointPath(path) => {
+            endpoint_relative_models_url(&provider.base_url, path)
+        }
     }
+}
+
+/// Join a validated endpoint-relative discovery path onto the endpoint base URL.
+///
+/// The path is appended to the base path, so `https://gw/v1` plus `/models`
+/// resolves to `https://gw/v1/models`. Scheme and host always come from the
+/// endpoint base URL, which is what keeps a declared path from escaping the
+/// endpoint.
+fn endpoint_relative_models_url(base_url: &str, path: &str) -> Result<String> {
+    let mut url = reqwest::Url::parse(base_url)
+        .with_context(|| format!("invalid provider base_url {base_url:?}"))?;
+    let origin = url.origin();
+    let base_path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&format!("{base_path}{path}"));
+    url.set_query(None);
+    url.set_fragment(None);
+    if url.origin() != origin {
+        return Err(anyhow!(
+            "discovery path {path:?} escapes the endpoint base URL {base_url:?}"
+        ));
+    }
+    Ok(url.to_string())
+}
+
+/// Attribute decoded models to this endpoint's canonical provider and endpoint.
+///
+/// Endpoint identity is part of a model's internal ownership, so two endpoints
+/// of the same gateway that expose the same model id keep separate entries
+/// instead of overwriting each other.
+fn attribute_discovered_models(
+    mut models: Vec<BuiltInModelMetadata>,
+    provider: &ProviderRuntimeConfig,
+) -> Vec<BuiltInModelMetadata> {
+    for model in &mut models {
+        model.model_ref.provider = provider.route_provider.clone();
+        if model.endpoint.is_none()
+            && provider.route_endpoint.as_str() != ProviderEndpointId::DEFAULT
+        {
+            model.endpoint = Some(provider.route_endpoint.clone());
+        }
+    }
+    models
 }
 
 fn ollama_tags_url(base_url: &str) -> Result<String> {
@@ -545,6 +821,7 @@ async fn refresh_ollama_models(
         ));
     }
     models.sort_by(|left, right| left.model_ref.model.cmp(&right.model_ref.model));
+    let models = attribute_discovered_models(models, provider);
 
     let response_hash = format!(
         "sha256:{}",
@@ -556,9 +833,9 @@ async fn refresh_ollama_models(
     let fetched_at = Utc::now();
     let mut cache = load_discovery_cache_at(cache_path)?;
     cache.providers.insert(
-        provider.id.clone(),
+        ModelDiscoveryCacheKey::for_provider(provider),
         ProviderModelDiscoveryCache {
-            provider: provider.id.clone(),
+            provider: provider.route_provider.clone(),
             fetched_at,
             source_url: Some(source_url),
             response_hash: Some(response_hash),
@@ -568,7 +845,8 @@ async fn refresh_ollama_models(
     save_discovery_cache_at(cache_path, &cache)?;
 
     Ok(ModelDiscoveryRefreshReport {
-        provider: provider.id.clone(),
+        provider: provider.route_provider.clone(),
+        endpoint: provider.route_endpoint.clone(),
         fetched_at,
         model_count: models.len(),
         cache_path: cache_path.to_path_buf(),

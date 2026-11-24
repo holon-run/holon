@@ -523,6 +523,7 @@ fn provider_config_file_from_runtime(provider: &ProviderRuntimeConfig) -> Provid
         reasoning_effort: provider.reasoning_effort.clone(),
         builtin_web_search: provider.builtin_web_search.clone(),
         cache_capabilities: None,
+        discovery: None,
         endpoints: BTreeMap::new(),
         plans: BTreeMap::new(),
     }
@@ -1298,6 +1299,7 @@ mod tests {
         config.stored_config.providers.insert(
             ProviderId::openai(),
             ProviderConfigFile {
+                discovery: None,
                 headers: Default::default(),
                 cache_capabilities: None,
                 transport: ProviderTransportKind::OpenAiResponses,
@@ -1395,6 +1397,7 @@ mod tests {
         config.stored_config.providers.insert(
             custom_provider.clone(),
             ProviderConfigFile {
+                discovery: None,
                 headers: Default::default(),
                 cache_capabilities: None,
                 transport: custom_provider_config.transport,

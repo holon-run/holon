@@ -389,6 +389,11 @@ pub struct ProviderConfigFile {
     /// `cache_control = true`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_capabilities: Option<AnthropicCacheCapabilities>,
+    /// Provider-level model discovery default for every endpoint of this
+    /// provider. Endpoint entries override it; an explicit `disabled` kind
+    /// opts out of the transport default fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<ProviderDiscoveryConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub endpoints: BTreeMap<ProviderEndpointId, ProviderEndpointConfigFile>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -405,6 +410,9 @@ pub struct ProviderEndpointConfigFile {
     pub auth: Option<ProviderAuthConfig>,
     #[serde(default, skip_serializing_if = "ProviderHeaders::is_empty")]
     pub headers: ProviderHeaders,
+    /// Endpoint-level discovery override. Wins over the provider-level default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<ProviderDiscoveryConfig>,
 }
 
 impl ProviderEndpointConfigFile {
@@ -418,6 +426,7 @@ impl ProviderEndpointConfigFile {
                 .as_ref()
                 .is_none_or(ProviderAuthConfig::is_effectively_empty)
             && self.headers.is_empty()
+            && self.discovery.is_none()
     }
 }
 
