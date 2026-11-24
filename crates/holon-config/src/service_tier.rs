@@ -60,7 +60,15 @@ pub fn service_tier_supported(route: &ModelRouteRef, endpoint: &ProviderRuntimeC
     official_endpoint
         && matches!(
             route.model.as_str(),
-            "gpt-6.1-sol" | "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna" | "gpt-5.6-sol" | "gpt-5.5"
+            "gpt-6.2-sol"
+                | "gpt-6.2-astra"
+                | "gpt-6.1-sol"
+                | "gpt-6.1-terra"
+                | "gpt-6-astra"
+                | "gpt-6-sol"
+                | "gpt-6-luna"
+                | "gpt-5.6-sol"
+                | "gpt-5.5"
         )
 }
 
@@ -84,4 +92,95 @@ pub fn validate_model_route_options(catalog: &RuntimeModelCatalog) -> Result<()>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runtime_config(transport: ProviderTransportKind, base_url: &str) -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            headers: Default::default(),
+            id: ProviderId::openai_codex(),
+            route_provider: ProviderId::openai_codex(),
+            route_endpoint: crate::ProviderEndpointId::default_endpoint(),
+            transport,
+            base_url: base_url.into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::None,
+                kind: CredentialKind::None,
+                env: None,
+                profile: None,
+                external: None,
+                client_id: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
+    fn route(value: &str) -> ModelRouteRef {
+        ModelRouteRef::parse_compatible(value).unwrap()
+    }
+
+    #[test]
+    fn codex_fast_mode_is_limited_to_supported_models_on_the_official_endpoint() {
+        let official = runtime_config(
+            ProviderTransportKind::OpenAiCodexResponses,
+            "https://chatgpt.com/backend-api/codex",
+        );
+        // Fast availability is per model, not per provider: newer generations
+        // keep arriving after the original list.
+        for model in [
+            "gpt-6.2-sol",
+            "gpt-6.2-astra",
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+        ] {
+            let route = route(&format!("openai-codex@default/{model}"));
+            assert!(
+                service_tier_supported(&route, &official),
+                "{model} should declare Fast"
+            );
+        }
+        assert!(!service_tier_supported(
+            &route("openai-codex@default/gpt-9-unknown"),
+            &official
+        ));
+
+        let proxy = runtime_config(
+            ProviderTransportKind::OpenAiCodexResponses,
+            "https://gateway.example/v1",
+        );
+        assert!(!service_tier_supported(
+            &route("openai-codex@default/gpt-6.2-sol"),
+            &proxy
+        ));
+    }
+
+    #[test]
+    fn openai_api_fast_mode_covers_gpt_6_2_on_the_official_endpoint() {
+        let route = route("openai@default/gpt-6.2-sol");
+        for transport in [
+            ProviderTransportKind::OpenAiResponses,
+            ProviderTransportKind::OpenAiChatCompletions,
+        ] {
+            let official = runtime_config(transport, "https://api.openai.com/v1");
+            assert!(service_tier_supported(&route, &official));
+        }
+        let proxy = runtime_config(
+            ProviderTransportKind::OpenAiResponses,
+            "https://api.openai.com.evil.example/v1",
+        );
+        assert!(!service_tier_supported(&route, &proxy));
+    }
 }
