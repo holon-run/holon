@@ -5666,11 +5666,7 @@ impl RuntimeHost {
             .await
             .map_err(Self::public_activation_error)?;
         let instance_incarnation = runtime.instance_incarnation();
-        self.await_bootstrap_isolating_local_failure(
-            &runtime,
-            agent_id,
-            instance_incarnation,
-        )
+        self.await_bootstrap_isolating_local_failure(&runtime, agent_id, instance_incarnation)
             .await
             .map_err(PublicAgentError::Runtime)?;
         Ok(runtime)

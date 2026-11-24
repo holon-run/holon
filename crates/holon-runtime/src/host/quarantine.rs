@@ -231,8 +231,7 @@ impl RuntimeHost {
                 Ok(())
             }
             Err(error) => {
-                let Some(claim) =
-                    error.downcast_ref::<crate::runtime::AgentStartupQuarantine>()
+                let Some(claim) = error.downcast_ref::<crate::runtime::AgentStartupQuarantine>()
                 else {
                     return Err(error);
                 };

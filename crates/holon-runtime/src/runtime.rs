@@ -8548,11 +8548,7 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    fn complete_bootstrap(
-        &self,
-        result: &Result<()>,
-        quarantine: Option<AgentStartupQuarantine>,
-    ) {
+    fn complete_bootstrap(&self, result: &Result<()>, quarantine: Option<AgentStartupQuarantine>) {
         let result = match result {
             Ok(()) => Ok(()),
             Err(error) => Err(BootstrapFailure {

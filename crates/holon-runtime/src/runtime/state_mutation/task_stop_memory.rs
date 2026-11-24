@@ -2,7 +2,8 @@
 use super::*;
 use crate::runtime_db::{
     dispatch_memory::{
-        DispatchMemoryBinding, DispatchMemoryCommandPolicy, DispatchMemoryError, DispatchMemoryIntent,
+        DispatchMemoryBinding, DispatchMemoryCommandPolicy, DispatchMemoryError,
+        DispatchMemoryIntent,
     },
     transitions::PreparedInputTransition,
 };
