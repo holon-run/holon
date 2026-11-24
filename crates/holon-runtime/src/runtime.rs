@@ -503,21 +503,20 @@ pub fn agent_model_state_for_catalog(
 ) -> AgentModelState {
     let override_unresolved =
         model_catalog.model_override_unresolved(base_context_config, state.model_override.as_ref());
-    let summary = agent_model_list_summary_for_catalog(model_catalog, state);
-    let mut model_state = model_state_from_summary(
+    let policy_route = if override_unresolved {
+        None
+    } else {
+        state.model_override.as_ref()
+    };
+    let summary = AgentModelSummarySelection::new(model_catalog.into(), state.into())
+        .with_unresolved_override_downgraded(override_unresolved)
+        .into_summary();
+    model_state_from_summary(
         summary,
-        model_catalog.resolved_model_policy(
-            base_context_config,
-            if override_unresolved {
-                None
-            } else {
-                state.model_override.as_ref()
-            },
-        ),
+        model_catalog.resolved_model_policy(base_context_config, policy_route),
         override_unresolved,
-    );
-    apply_override_unresolved_downgrade(&mut model_state, override_unresolved);
-    model_state
+        state.model_override.as_ref(),
+    )
 }
 
 pub(crate) fn try_agent_model_state_for_catalog(
@@ -535,14 +534,15 @@ pub(crate) fn try_agent_model_state_for_turn_catalog(
     fallback_model: Option<&ModelRouteRef>,
 ) -> Result<AgentModelState> {
     let catalog = model_catalog.into();
-    let selection = AgentModelSummarySelection::for_turn(catalog, state, fallback_model);
+    let override_unresolved =
+        model_catalog.model_override_unresolved(base_context_config, state.model_override.as_ref());
+    let selection = AgentModelSummarySelection::for_turn(catalog, state, fallback_model)
+        .with_unresolved_override_downgraded(override_unresolved);
     selection.admit_owned_fields()?;
     let effective_service_tier = match selection.service_tier_lookup_route() {
         Some(route) => catalog.try_route_service_tier(route)?,
         None => state.model_override_service_tier,
     };
-    let override_unresolved =
-        model_catalog.model_override_unresolved(base_context_config, state.model_override.as_ref());
     let policy_route = if override_unresolved {
         fallback_model
     } else {
@@ -552,23 +552,30 @@ pub(crate) fn try_agent_model_state_for_turn_catalog(
     // turn fallback changes the policy's route.
     let policy = model_catalog.try_resolved_model_policy(base_context_config, policy_route)?;
     let summary = selection.into_summary_with_tier(effective_service_tier);
-    let mut model_state = model_state_from_summary(summary, policy, override_unresolved);
-    if fallback_model.is_none() {
-        apply_override_unresolved_downgrade(&mut model_state, override_unresolved);
-    }
-    Ok(model_state)
+    Ok(model_state_from_summary(
+        summary,
+        policy,
+        override_unresolved,
+        state.model_override.as_ref(),
+    ))
 }
 
 fn model_state_from_summary(
     summary: AgentListModelSummary,
     policy: crate::model_catalog::ResolvedRuntimeModelPolicy,
     override_unresolved: bool,
+    requested_override: Option<&ModelRouteRef>,
 ) -> AgentModelState {
+    let requested_model = if override_unresolved {
+        requested_override.cloned().or(summary.requested_model)
+    } else {
+        summary.requested_model
+    };
     AgentModelState {
         source: summary.source,
         runtime_default_model: summary.runtime_default_model,
         effective_model: summary.effective_model,
-        requested_model: summary.requested_model,
+        requested_model,
         active_model: summary.active_model,
         fallback_active: summary.fallback_active,
         effective_fallback_models: summary.effective_fallback_models,
@@ -579,21 +586,6 @@ fn model_state_from_summary(
         override_unresolved,
         resolved_policy: policy,
     }
-}
-
-/// Reflect a persisted-but-unresolved override the way execution behaves:
-/// run on the default model while keeping the requested override visible.
-fn apply_override_unresolved_downgrade(
-    model_state: &mut AgentModelState,
-    override_unresolved: bool,
-) {
-    if !override_unresolved {
-        return;
-    }
-    model_state.effective_model = model_state.runtime_default_model.clone();
-    model_state.active_model = Some(model_state.runtime_default_model.clone());
-    model_state.fallback_active = false;
-    model_state.requested_model = model_state.override_model.clone();
 }
 
 #[derive(Debug)]
@@ -720,6 +712,23 @@ impl<'a> AgentModelSummarySelection<'a> {
         }
         selection.turn_fallback = fallback;
         selection
+    }
+
+    /// A persisted override that no longer resolves must execute as the default
+    /// route instead of the unresolvable one, without hiding what was requested.
+    ///
+    /// Last-active stays as observed when a turn fallback is present; without
+    /// one the agent is simply back on the default route.
+    fn with_unresolved_override_downgraded(mut self, override_unresolved: bool) -> Self {
+        if !override_unresolved {
+            return self;
+        }
+        let default_model = self.catalog.default_model;
+        self.effective_model = default_model;
+        if self.turn_fallback.is_none() {
+            self.active_model = default_model;
+        }
+        self
     }
 
     fn admit_owned_fields(&self) -> Result<()> {
