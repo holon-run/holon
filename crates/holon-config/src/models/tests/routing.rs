@@ -441,9 +441,12 @@ fn runtime_model_catalog_opencode_go_standard_route_does_not_follow_discovery_pr
         let mut metadata = template.clone();
         metadata.model_ref = model_ref.clone();
         metadata.endpoint = Some(ProviderEndpointId::parse(endpoint).unwrap());
-        catalog
-            .discovered_models
-            .insert(model_ref.clone(), metadata);
+        let route = ModelRouteRef::new(
+            model_ref.provider.clone(),
+            metadata.endpoint.clone().unwrap(),
+            model_ref.model.clone(),
+        );
+        catalog.discovered_models.insert(route, metadata);
         let expected_route = route_ref(&format!("opencode-go@messages/{model}"));
         let routes = catalog.available_model_routes();
         assert!(routes.contains(&expected_route));
@@ -478,9 +481,17 @@ fn runtime_model_catalog_opencode_go_standard_route_does_not_follow_discovery_pr
     // Discovery must not replace an explicitly reviewed built-in route.
     let mut conflicting = template.clone();
     conflicting.endpoint = Some(ProviderEndpointId::parse("messages").unwrap());
+    let conflicting_route = ModelRouteRef::new(
+        template.model_ref.provider.clone(),
+        conflicting
+            .endpoint
+            .clone()
+            .unwrap_or_else(ProviderEndpointId::default_endpoint),
+        template.model_ref.model.clone(),
+    );
     catalog
         .discovered_models
-        .insert(template.model_ref.clone(), conflicting);
+        .insert(conflicting_route, conflicting);
     let resolved = catalog
         .resolve_model_route(
             &ContextConfig::default(),
@@ -592,7 +603,10 @@ fn runtime_model_catalog_uses_discovery_cache_between_overrides_and_builtins() {
     );
     let remote_model_ref = ModelRef::parse("openrouter/anthropic/claude-3.5-sonnet").unwrap();
     fixture.model_discovery_cache.providers.insert(
-        openrouter.clone(),
+        holon_provider::model_discovery::ModelDiscoveryCacheKey::new(
+            openrouter.clone(),
+            ProviderEndpointId::default_endpoint(),
+        ),
         ProviderModelDiscoveryCache {
             provider: openrouter,
             fetched_at: "2026-01-01T00:00:00Z".parse().unwrap(),
@@ -695,5 +709,140 @@ fn runtime_model_catalog_resolves_codex_sol_to_builtin_budget() {
     assert_eq!(
         resolved.source,
         holon_model_catalog::ModelMetadataSource::BuiltInCatalog
+    );
+}
+
+#[test]
+fn discovery_cache_keeps_sibling_endpoint_models_separate() {
+    let mut fixture = catalog_fixture("opencode-go/kimi-k3.1-pro", &[]);
+    let opencode = ProviderId::parse("opencode-go").unwrap();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture
+        .providers
+        .insert(opencode.clone(), built_ins.get(&opencode).unwrap().clone());
+    let model_ref = ModelRef::parse("opencode-go/kimi-k3.1-pro").unwrap();
+    for (index, endpoint) in ["default", "messages"].iter().enumerate() {
+        let endpoint_id = ProviderEndpointId::parse(endpoint).unwrap();
+        fixture.model_discovery_cache.providers.insert(
+            holon_provider::model_discovery::ModelDiscoveryCacheKey::new(
+                opencode.clone(),
+                endpoint_id.clone(),
+            ),
+            ProviderModelDiscoveryCache {
+                provider: opencode.clone(),
+                fetched_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+                source_url: Some(format!("https://opencode.example/{endpoint}/models")),
+                response_hash: Some("sha256:test".into()),
+                models: vec![BuiltInModelMetadata {
+                    model_ref: model_ref.clone(),
+                    display_name: format!("Remote {endpoint}"),
+                    description: "Remote discovered model.".into(),
+                    context_window_tokens: Some(100_000 + index),
+                    effective_context_window_percent: 95,
+                    auto_compact_token_limit: None,
+                    default_max_output_tokens: None,
+                    max_output_tokens_upper_limit: None,
+                    default_verbosity: None,
+                    tool_output_truncation_estimated_tokens: None,
+                    capabilities: Default::default(),
+                    reasoning_effort_options: Vec::new(),
+                    source: ModelMetadataSource::RemoteDiscovered,
+                    endpoint: (endpoint_id.as_str() != ProviderEndpointId::DEFAULT)
+                        .then(|| endpoint_id.clone()),
+                }],
+            },
+        );
+    }
+
+    let catalog = RuntimeModelCatalog::from_config(&fixture);
+    let context = test_context();
+    let default_policy = catalog
+        .resolved_model_policy_for_route(&context, &route_ref("opencode-go@default/kimi-k3.1-pro"));
+    assert_eq!(default_policy.context_window_tokens, Some(100_000));
+    let messages_policy = catalog.resolved_model_policy_for_route(
+        &context,
+        &route_ref("opencode-go@messages/kimi-k3.1-pro"),
+    );
+    assert_eq!(
+        messages_policy.context_window_tokens,
+        Some(100_001),
+        "each endpoint keeps the metadata discovered from its own model list"
+    );
+    assert_ne!(
+        default_policy.context_window_tokens,
+        messages_policy.context_window_tokens
+    );
+}
+
+#[test]
+fn disabled_discovery_drops_cached_endpoint_models() {
+    let mut fixture = catalog_fixture("opencode-go/kimi-k3.1-pro", &[]);
+    let opencode = ProviderId::parse("opencode-go").unwrap();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture
+        .providers
+        .insert(opencode.clone(), built_ins.get(&opencode).unwrap().clone());
+    let model_ref = ModelRef::parse("opencode-go/kimi-k3.1-pro").unwrap();
+    fixture.model_discovery_cache.providers.insert(
+        holon_provider::model_discovery::ModelDiscoveryCacheKey::new(
+            opencode.clone(),
+            ProviderEndpointId::default_endpoint(),
+        ),
+        ProviderModelDiscoveryCache {
+            provider: opencode.clone(),
+            fetched_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            source_url: Some("https://opencode.example/v1/models".into()),
+            response_hash: Some("sha256:test".into()),
+            models: vec![BuiltInModelMetadata {
+                model_ref,
+                display_name: "Remote".into(),
+                description: "Remote discovered model.".into(),
+                context_window_tokens: Some(424_242),
+                effective_context_window_percent: 95,
+                auto_compact_token_limit: None,
+                default_max_output_tokens: None,
+                max_output_tokens_upper_limit: None,
+                default_verbosity: None,
+                tool_output_truncation_estimated_tokens: None,
+                capabilities: Default::default(),
+                reasoning_effort_options: Vec::new(),
+                source: ModelMetadataSource::RemoteDiscovered,
+                endpoint: None,
+            }],
+        },
+    );
+    let context = test_context();
+    let route = route_ref("opencode-go@default/kimi-k3.1-pro");
+    let enabled = RuntimeModelCatalog::from_config(&fixture);
+    assert_eq!(
+        enabled
+            .resolved_model_policy_for_route(&context, &route)
+            .context_window_tokens,
+        Some(424_242),
+        "an enabled endpoint serves its cached discovery metadata"
+    );
+
+    fixture.stored_config.providers.insert(
+        opencode,
+        ProviderConfigFile {
+            endpoints: [(
+                ProviderEndpointId::default_endpoint(),
+                ProviderEndpointConfigFile {
+                    discovery: Some(ProviderDiscoveryConfig::disabled()),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        },
+    );
+    let disabled = RuntimeModelCatalog::from_config(&fixture);
+    assert_ne!(
+        disabled
+            .resolved_model_policy_for_route(&context, &route)
+            .context_window_tokens,
+        Some(424_242),
+        "`disabled` must hide models cached before the opt-out"
     );
 }

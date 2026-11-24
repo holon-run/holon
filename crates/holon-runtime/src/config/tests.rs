@@ -467,6 +467,7 @@ fn app_config_applies_provider_overrides_before_materializing_openai_codex_profi
             providers: BTreeMap::from([(
                 ProviderId::openai_codex(),
                 ProviderConfigFile {
+                    discovery: None,
                     headers: Default::default(),
                     cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiCodexResponses,
@@ -610,6 +611,7 @@ fn app_config_rejects_bad_credential_store_permissions_when_store_exists() {
     config.providers.insert(
         ProviderId::parse("openrouter").unwrap(),
         ProviderConfigFile {
+            discovery: None,
             headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiResponses,
@@ -699,6 +701,7 @@ fn config_inspection_loads_provider_state_without_resolved_model() {
             providers: BTreeMap::from([(
                 provider_id.clone(),
                 ProviderConfigFile {
+                    discovery: None,
                     headers: Default::default(),
                     cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiChatCompletions,
@@ -1131,6 +1134,7 @@ fn load_persisted_config_uses_default_endpoint_override_for_runtime_provider() {
             providers: BTreeMap::from([(
                 provider_id.clone(),
                 ProviderConfigFile {
+                    discovery: None,
                     headers: Default::default(),
                     cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiResponses,
@@ -1141,6 +1145,7 @@ fn load_persisted_config_uses_default_endpoint_override_for_runtime_provider() {
                     endpoints: BTreeMap::from([(
                         ProviderEndpointId::default_endpoint(),
                         ProviderEndpointConfigFile {
+                            discovery: None,
                             headers: Default::default(),
                             transport: Some(ProviderTransportKind::OpenAiChatCompletions),
                             base_url: Some("https://endpoint.example/v1".into()),
@@ -1186,6 +1191,7 @@ fn load_persisted_config_materializes_plan_endpoint_alias() {
             providers: BTreeMap::from([(
                 provider_id.clone(),
                 ProviderConfigFile {
+                    discovery: None,
                     headers: Default::default(),
                     cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiResponses,
@@ -1196,6 +1202,7 @@ fn load_persisted_config_materializes_plan_endpoint_alias() {
                     endpoints: BTreeMap::from([(
                         endpoint_id.clone(),
                         ProviderEndpointConfigFile {
+                            discovery: None,
                             headers: Default::default(),
                             transport: Some(ProviderTransportKind::OpenAiChatCompletions),
                             base_url: Some("https://coding.example/v1".into()),
@@ -1360,12 +1367,14 @@ fn runtime_model_catalog_deepseek_responses_search_respects_private_endpoint_ove
     stored_config.providers.insert(
         deepseek.clone(),
         ProviderConfigFile {
+            discovery: None,
             transport: runtime.transport,
             base_url: runtime.base_url.clone(),
             auth: runtime.auth.clone(),
             endpoints: BTreeMap::from([(
                 responses.clone(),
                 ProviderEndpointConfigFile {
+                    discovery: None,
                     transport: Some(ProviderTransportKind::OpenAiResponses),
                     base_url: Some("https://private.example/deepseek/v1".into()),
                     ..Default::default()

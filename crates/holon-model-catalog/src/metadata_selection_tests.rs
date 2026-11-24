@@ -20,7 +20,7 @@ fn metadata_selection_borrows_only_winners_before_any_owning_material() -> anyho
     let model_ref = ModelRef::new(ProviderId::openai(), "gpt-5.4");
     let mut discovered = catalog.get(&model_ref).unwrap().clone();
     discovered.description = "selected remote description".into();
-    let discovered_models = HashMap::from([(model_ref.clone(), discovered)]);
+    let discovered_models = discovered_by_route([(model_ref.clone(), discovered)]);
     let overrides = HashMap::from([(
         model_ref.clone(),
         ModelRuntimeOverride {
@@ -70,7 +70,7 @@ fn metadata_selection_borrows_only_winners_before_any_owning_material() -> anyho
     assert!(std::ptr::eq(
         selected.description,
         discovered_models
-            .get(&model_ref)
+            .get(&ModelRouteRef::from_legacy_model_ref(&model_ref))
             .unwrap()
             .description
             .as_str(),

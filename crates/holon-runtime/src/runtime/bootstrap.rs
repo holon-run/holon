@@ -1456,8 +1456,9 @@ impl RuntimeHandle {
         let providers = config
             .providers
             .values()
-            .filter(|provider| {
-                provider_discovers_model_capabilities(provider)
+            .filter_map(|provider| {
+                let discovery = config.provider_discovery(provider);
+                (provider_discovers_model_capabilities(provider, discovery.as_ref())
                     && (candidate_providers.contains(&provider.id)
                         || crate::provider::provider_definition(provider.id.as_str()).is_some_and(
                             |definition| {
@@ -1467,14 +1468,19 @@ impl RuntimeHandle {
                         ))
                     && (provider.auth.kind == crate::config::CredentialKind::None
                         || provider.has_configured_credential())
-                    && discovery_cache_needs_refresh(provider, &cache, DEFAULT_DISCOVERY_CACHE_TTL)
+                    && discovery_cache_needs_refresh(
+                        provider,
+                        discovery.as_ref(),
+                        &cache,
+                        DEFAULT_DISCOVERY_CACHE_TTL,
+                    ))
+                .then(|| (provider.clone(), discovery))
             })
-            .cloned()
             .collect::<Vec<_>>();
         let mut failures = Vec::new();
-        for provider in providers {
+        for (provider, discovery) in providers {
             if let Err(error) = self
-                .refresh_model_discovery_provider(provider.clone(), &cache_path)
+                .refresh_model_discovery_provider(provider.clone(), discovery.as_ref(), &cache_path)
                 .await
             {
                 tracing::warn!(
@@ -1492,6 +1498,7 @@ impl RuntimeHandle {
     async fn refresh_model_discovery_provider(
         &self,
         provider: crate::config::ProviderRuntimeConfig,
+        discovery: Option<&crate::config::ProviderDiscoveryConfig>,
         cache_path: &std::path::Path,
     ) -> Result<()> {
         loop {
@@ -1508,7 +1515,7 @@ impl RuntimeHandle {
             if should_refresh {
                 let refresh_guard =
                     ModelDiscoveryRefreshGuard::new(self.clone(), provider.id.clone());
-                let result = refresh_provider_models(&provider, cache_path).await;
+                let result = refresh_provider_models(&provider, discovery, cache_path).await;
                 refresh_guard.release().await;
                 result?;
                 return Ok(());
@@ -1526,7 +1533,12 @@ impl RuntimeHandle {
             let cache_path = cache_path.to_path_buf();
             let cache =
                 tokio::task::spawn_blocking(move || load_discovery_cache_at(&cache_path)).await??;
-            if !discovery_cache_needs_refresh(&provider, &cache, DEFAULT_DISCOVERY_CACHE_TTL) {
+            if !discovery_cache_needs_refresh(
+                &provider,
+                discovery,
+                &cache,
+                DEFAULT_DISCOVERY_CACHE_TTL,
+            ) {
                 return Ok(());
             }
             return Err(anyhow!(
@@ -1900,12 +1912,18 @@ impl RuntimeHandle {
         let providers = config
             .providers
             .values()
-            .filter(|provider| {
-                discovery_cache_needs_refresh(provider, cache, DEFAULT_DISCOVERY_CACHE_TTL)
+            .filter_map(|provider| {
+                let discovery = config.provider_discovery(provider);
+                discovery_cache_needs_refresh(
+                    provider,
+                    discovery.as_ref(),
+                    cache,
+                    DEFAULT_DISCOVERY_CACHE_TTL,
+                )
+                .then(|| (provider.clone(), discovery))
             })
-            .cloned()
             .collect::<Vec<_>>();
-        for provider in providers {
+        for (provider, discovery) in providers {
             let provider_id = provider.id.clone();
             {
                 let mut in_flight = self.inner.model_discovery_refreshes.lock().await;
@@ -1919,7 +1937,8 @@ impl RuntimeHandle {
             let refresh_guard =
                 ModelDiscoveryRefreshGuard::new(runtime.clone(), provider_id.clone());
             let handle = tokio::spawn(async move {
-                let result = refresh_provider_models(&provider, &cache_path).await;
+                let result =
+                    refresh_provider_models(&provider, discovery.as_ref(), &cache_path).await;
                 match result {
                     Ok(report) => {
                         tracing::info!(
@@ -1981,6 +2000,7 @@ impl RuntimeHandle {
             .map(|provider| {
                 discovery_cache_status_for_provider(
                     provider,
+                    config.provider_discovery(provider).as_ref(),
                     &cache,
                     DEFAULT_DISCOVERY_CACHE_TTL,
                     in_flight.contains(&provider.id),
@@ -2012,6 +2032,7 @@ impl RuntimeHandle {
         let in_flight = self.inner.model_discovery_refreshes.lock().await.clone();
         Ok(Some(discovery_cache_status_for_provider(
             provider,
+            config.provider_discovery(provider).as_ref(),
             &cache,
             DEFAULT_DISCOVERY_CACHE_TTL,
             in_flight.contains(&provider.id),

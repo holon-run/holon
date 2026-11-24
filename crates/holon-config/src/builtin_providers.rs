@@ -10,6 +10,7 @@ pub fn validate_provider_config(
     provider_config: &ProviderConfigFile,
 ) -> Result<()> {
     validate_provider_headers(provider_id, provider_config)?;
+    validate_provider_discovery(provider_id, provider_config)?;
     let effective = provider_config_for_default_endpoint(provider_config);
     parse_url_value("providers.<id>.base_url", &effective.base_url)?;
     validate_provider_auth(provider_id, &effective.auth)?;
@@ -157,6 +158,27 @@ pub(crate) fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Re
             .map(|transport| Value::String(transport.as_str().to_string()))
             .unwrap_or(Value::Null));
     }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".discovery.kind") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.endpoints.get(&endpoint))
+            .and_then(|endpoint| endpoint.discovery.as_ref())
+            .map(|discovery| Value::String(discovery.kind.as_str().to_string()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".discovery.path") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.endpoints.get(&endpoint))
+            .and_then(|endpoint| endpoint.discovery.as_ref())
+            .and_then(|discovery| discovery.path.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
     if let Some((id, endpoint)) = provider_endpoint_key(rest, ".base_url") {
         let endpoint = ProviderEndpointId::parse(endpoint)?;
         return Ok(config
@@ -301,6 +323,23 @@ pub(crate) fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Re
             .map(|capabilities| Value::Bool(capabilities.cache_control))
             .unwrap_or(Value::Null));
     }
+    if let Some(id) = rest.strip_suffix(".discovery.kind") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.discovery.as_ref())
+            .map(|discovery| Value::String(discovery.kind.as_str().to_string()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some(id) = rest.strip_suffix(".discovery.path") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.discovery.as_ref())
+            .and_then(|discovery| discovery.path.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
     if rest.contains('.') {
         return Err(unknown_config_key(key));
     }
@@ -321,6 +360,45 @@ pub(crate) fn set_provider_config_key(
         return Ok(());
     }
     if set_provider_plan_config_key(config, key, raw_value)? {
+        return Ok(());
+    }
+    if key.ends_with(".discovery.kind") {
+        let kind = ProviderDiscoveryKind::parse(raw_value)?;
+        let provider = persisted_provider_config_mut(config, key, ".discovery.kind")?;
+        let discovery = provider
+            .discovery
+            .get_or_insert_with(|| ProviderDiscoveryConfig { kind, path: None });
+        discovery.kind = kind;
+        // `disabled` never carries a path; switching kind must not leave the
+        // rejected `disabled` + `path` pair behind in the stored config.
+        if kind == ProviderDiscoveryKind::Disabled {
+            discovery.path = None;
+        }
+        return Ok(());
+    }
+    if key.ends_with(".discovery.path") {
+        let value = raw_value.trim().to_string();
+        let provider = persisted_provider_config_mut(config, key, ".discovery.path")?;
+        if value.is_empty() {
+            // An empty path cannot describe `openai_models`, so this drops the
+            // block exactly like `unset` instead of persisting an invalid pair.
+            provider.discovery = None;
+            return Ok(());
+        }
+        let discovery = provider
+            .discovery
+            .get_or_insert_with(|| ProviderDiscoveryConfig::openai_models("/models"));
+        if discovery.kind == ProviderDiscoveryKind::Disabled {
+            return Err(anyhow!(
+                "{key} cannot be set while discovery kind is disabled; unset discovery or set the kind first"
+            ));
+        }
+        let discovery = ProviderDiscoveryConfig {
+            kind: discovery.kind,
+            path: Some(value),
+        };
+        discovery.validate(key.strip_suffix(".path").unwrap_or(key))?;
+        provider.discovery = Some(discovery);
         return Ok(());
     }
     if key.ends_with(".transport") {
@@ -393,6 +471,14 @@ pub(crate) fn unset_provider_config_key(config: &mut HolonConfigFile, key: &str)
     if unset_provider_plan_config_key(config, key)? {
         return Ok(());
     }
+    if key.ends_with(".discovery.kind") {
+        persisted_provider_config_mut(config, key, ".discovery.kind")?.discovery = None;
+        return Ok(());
+    }
+    if key.ends_with(".discovery.path") {
+        persisted_provider_config_mut(config, key, ".discovery.path")?.discovery = None;
+        return Ok(());
+    }
     if key.ends_with(".auth.env") {
         persisted_provider_config_mut(config, key, ".auth.env")?
             .auth
@@ -440,6 +526,49 @@ fn set_provider_endpoint_config_key(
     let rest = key
         .strip_prefix("providers.")
         .ok_or_else(|| unknown_config_key(key))?;
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".discovery.kind") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let kind = ProviderDiscoveryKind::parse(raw_value)?;
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        let endpoint = provider.endpoints.entry(endpoint_id).or_default();
+        let discovery = endpoint
+            .discovery
+            .get_or_insert_with(|| ProviderDiscoveryConfig { kind, path: None });
+        discovery.kind = kind;
+        // `disabled` never carries a path; switching kind must not leave the
+        // rejected `disabled` + `path` pair behind in the stored config.
+        if kind == ProviderDiscoveryKind::Disabled {
+            discovery.path = None;
+        }
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".discovery.path") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let value = raw_value.trim();
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        let endpoint = provider.endpoints.entry(endpoint_id).or_default();
+        if value.is_empty() {
+            // An empty path cannot describe `openai_models`, so this drops the
+            // block exactly like `unset` instead of persisting an invalid pair.
+            endpoint.discovery = None;
+            return Ok(true);
+        }
+        let discovery = endpoint
+            .discovery
+            .get_or_insert_with(|| ProviderDiscoveryConfig::openai_models("/models"));
+        if discovery.kind == ProviderDiscoveryKind::Disabled {
+            return Err(anyhow!(
+                "{key} cannot be set while discovery kind is disabled; unset discovery or set the kind first"
+            ));
+        }
+        let discovery = ProviderDiscoveryConfig {
+            kind: discovery.kind,
+            path: Some(value.to_string()),
+        };
+        discovery.validate(key.strip_suffix(".path").unwrap_or(key))?;
+        endpoint.discovery = Some(discovery);
+        return Ok(true);
+    }
     if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".transport") {
         let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
         let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
@@ -564,6 +693,16 @@ fn unset_provider_endpoint_config_key(config: &mut HolonConfigFile, key: &str) -
     let rest = key
         .strip_prefix("providers.")
         .ok_or_else(|| unknown_config_key(key))?;
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".discovery.kind")
+        .or_else(|| provider_endpoint_key(rest, ".discovery.path"))
+    {
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        if let Some(endpoint) = provider.endpoints.get_mut(&endpoint_id) {
+            endpoint.discovery = None;
+        }
+        return Ok(true);
+    }
     if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".transport") {
         let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
         let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
@@ -685,6 +824,7 @@ pub fn built_in_provider_default_config_with_settings(
             reasoning_effort: None,
             builtin_web_search: None,
             cache_capabilities: None,
+            discovery: None,
             endpoints: BTreeMap::new(),
             plans: BTreeMap::new(),
         }))
@@ -1456,6 +1596,10 @@ pub fn materialize_provider_config(
     built_in: Option<ProviderRuntimeConfig>,
 ) -> Result<ProviderRuntimeConfig> {
     validate_provider_headers(&id, &provider_config)?;
+    // Discovery declares a load-time contract too: an `openai_models` entry
+    // without a valid relative path must fail loudly instead of silently
+    // degrading to "no discovery" at request time.
+    validate_provider_discovery(&id, &provider_config)?;
     let effective_provider_config = provider_config_for_default_endpoint(&provider_config);
     validate_provider_auth(&id, &effective_provider_config.auth)?;
     let credential = resolve_provider_credential(

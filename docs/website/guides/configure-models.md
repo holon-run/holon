@@ -199,7 +199,7 @@ Self-hosted gateways that expose the OpenAI-compatible `GET /v1/models` endpoint
    ```
    `--base-url` may be either the gateway root (`http://gateway.internal:8080`) or an explicit `/v1` URL (`http://gateway.internal:8080/v1`). Both resolve to `GET /v1/models`; an explicit path prefix such as `http://gateway.internal:8080/gw` resolves to `GET /gw/v1/models`. Setting a credential is optional for gateways that accept unauthenticated discovery.
 
-   > Custom (non-built-in) `openai_chat_completions` providers derive their discovery URL from `base_url`: `{base_url}` or `{base_url}/v1` resolves to `{base_url}/v1/models`, while a path prefix `{base_url}/<prefix>` resolves to `{base_url}/<prefix>/v1/models`. A gateway that only serves `GET /models` at its root (no `/v1`) is not auto-discovered; register its models under `models.catalog` instead. Built-in providers (Copilot, Kilo Code, LiteLLM, vLLM, Ollama, and so on) carry explicit discovery definitions and are unaffected.
+   > Custom (non-built-in) `openai_chat_completions` providers derive their discovery URL from `base_url`: `{base_url}` or `{base_url}/v1` resolves to `{base_url}/v1/models`, while a path prefix `{base_url}/<prefix>` resolves to `{base_url}/<prefix>/v1/models`. A gateway that serves its model list at another path declares it explicitly with `discovery` (see [Multi-protocol gateways](#multi-protocol-gateways)). Built-in providers (Copilot, Kilo Code, LiteLLM, vLLM, Ollama, and so on) carry explicit discovery definitions and are unaffected.
 2. **Trigger discovery** (discovery is never probed at startup or during a turn, so a broken gateway cannot block agents):
    ```bash
    holon config models refresh --provider my-gateway
@@ -222,6 +222,62 @@ holon config set models.catalog '{"my-gateway@default/my-model":{"context_window
 ```
 
 > Automatic discovery currently covers only the OpenAI-compatible `GET /v1/models` shape, which standard responses expose as model IDs. Vendor extensions in the response body are not parsed yet; use `models.catalog` overrides when you need explicit budgets or capabilities.
+
+<a id="multi-protocol-gateways"></a>
+
+#### Multi-protocol gateways
+
+Gateways such as Magpie or LiteLLM serve one model list but several protocol
+endpoints, and the OpenAI-compatible base often differs from the base of the
+Anthropic or Gemini endpoint. `discovery` is therefore configurable per
+provider and per endpoint:
+
+```bash
+# Provider-level default: applies to every endpoint of this provider.
+holon config set providers.magpie.discovery.kind openai_models
+holon config set providers.magpie.discovery.path /models
+
+# OpenAI client base (ends with /v1) — resolves to GET /v1/models.
+holon config set providers.magpie.transport openai_chat_completions
+holon config set providers.magpie.base_url http://gateway.internal:3425/v1
+
+# Anthropic client base (no /v1 prefix) with its own discovery path.
+holon config set providers.magpie.endpoints.anthropic.transport anthropic_messages
+holon config set providers.magpie.endpoints.anthropic.base_url http://gateway.internal:3425
+holon config set providers.magpie.endpoints.anthropic.discovery.path /v1/models
+holon config set providers.magpie.plans.anthropic.endpoint anthropic
+```
+
+The same declared block in `config.json`:
+
+```json
+{
+  "providers": {
+    "magpie": {
+      "transport": "openai_chat_completions",
+      "base_url": "http://gateway.internal:3425/v1",
+      "discovery": { "kind": "openai_models", "path": "/models" },
+      "endpoints": {
+        "anthropic": {
+          "transport": "anthropic_messages",
+          "base_url": "http://gateway.internal:3425",
+          "discovery": { "kind": "openai_models", "path": "/v1/models" }
+        }
+      },
+      "plans": { "anthropic": { "endpoint": "anthropic" } }
+    }
+  }
+}
+```
+
+Rules:
+
+- Resolution order is fixed: endpoint `discovery` > provider `discovery` > transport/built-in default.
+- `kind` is `openai_models` (OpenAI `{ "data": [ { "id": ... } ] }`) or `disabled`, which turns discovery off even for `openai_chat_completions`.
+- `path` is relative to the **effective endpoint** `base_url`: `https://gw/v1` plus `/models` is `https://gw/v1/models`. Absolute URLs, `..` segments, query strings and percent-escapes are rejected when the config loads.
+- Discovery requests use the endpoint's own base URL, credential and headers, not the provider-level defaults.
+- The cache is scoped to `provider@endpoint`, so sibling endpoints of one gateway keep separate model lists. Changing an endpoint's base URL or discovery path invalidates only that endpoint's cached list.
+- Discovery is transport-independent: an `anthropic_messages` endpoint can read an OpenAI-shaped model list. Discovery stays optional and failing; it never blocks startup or a turn.
 
 ## Troubleshooting
 

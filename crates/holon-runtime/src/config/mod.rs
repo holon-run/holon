@@ -530,6 +530,17 @@ impl AppConfig {
         self.disable_provider_fallback
     }
 
+    /// Effective discovery configuration declared for this endpoint runtime.
+    ///
+    /// Endpoint-level entries win over the provider-level default; `None` keeps
+    /// the transport/built-in default behavior.
+    pub fn provider_discovery(
+        &self,
+        provider: &ProviderRuntimeConfig,
+    ) -> Option<ProviderDiscoveryConfig> {
+        resolved_provider_discovery(&self.stored_config, provider)
+    }
+
     pub fn tcp_listener_is_local(&self) -> bool {
         let trimmed = self.http_addr.trim().to_ascii_lowercase();
         if trimmed == "localhost" || trimmed.starts_with("localhost:") {

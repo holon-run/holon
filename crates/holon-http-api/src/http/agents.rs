@@ -104,8 +104,10 @@ pub async fn refresh_models_handler(
     let mut config = (*source).clone();
     load_model_discovery_cache(&mut config).await?;
     let cache_path = discovery_cache_path(&config.home_dir);
-    for provider in model_discovery_refresh_candidates(&config) {
-        if let Err(error) = refresh_provider_models(&provider, &cache_path).await {
+    for (provider, discovery) in model_discovery_refresh_candidates(&config) {
+        if let Err(error) =
+            refresh_provider_models(&provider, discovery.as_ref(), &cache_path).await
+        {
             warn!(
                 provider = %provider.id.as_str(),
                 error = %error,
@@ -346,21 +348,26 @@ fn if_none_match_matches(headers: &HeaderMap, etag: &HeaderValue) -> bool {
 
 fn model_discovery_refresh_candidates(
     config: &crate::config::AppConfig,
-) -> Vec<crate::config::ProviderRuntimeConfig> {
+) -> Vec<(
+    crate::config::ProviderRuntimeConfig,
+    Option<crate::config::ProviderDiscoveryConfig>,
+)> {
     config
         .providers
         .values()
-        .filter(|provider| {
-            provider_supports_model_discovery(provider)
+        .filter_map(|provider| {
+            let discovery = config.provider_discovery(provider);
+            (provider_supports_model_discovery(provider, discovery.as_ref())
                 && (provider.auth.kind == CredentialKind::None
                     || provider.has_configured_credential())
                 && discovery_cache_needs_refresh(
                     provider,
+                    discovery.as_ref(),
                     &config.model_discovery_cache,
                     DEFAULT_DISCOVERY_CACHE_TTL,
-                )
+                ))
+            .then(|| (provider.clone(), discovery))
         })
-        .cloned()
         .collect()
 }
 

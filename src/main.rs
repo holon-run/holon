@@ -17,11 +17,11 @@ use holon::{
         built_in_provider_default_config, config_schema, credential_store_path, default_holon_home,
         get_config_key, list_credential_profiles_at, load_credential_store_at,
         load_persisted_config_at, persisted_config_path, provider_config_view,
-        provider_config_views, remove_credential_profile_at, set_config_key,
-        set_credential_profile_at, set_provider_headers, unset_config_key, unset_provider_headers,
-        validate_provider_config, AppConfig, ControlAuthMode, CredentialKind, CredentialSource,
-        PersistedConfigTransaction, ProviderAuthConfig, ProviderConfigFile, ProviderEndpointId,
-        ProviderId, ProviderTransportKind,
+        provider_config_views, remove_credential_profile_at, resolved_provider_discovery,
+        set_config_key, set_credential_profile_at, set_provider_headers, unset_config_key,
+        unset_provider_headers, validate_provider_config, AppConfig, ControlAuthMode,
+        CredentialKind, CredentialSource, PersistedConfigTransaction, ProviderAuthConfig,
+        ProviderConfigFile, ProviderEndpointId, ProviderId, ProviderTransportKind,
     },
     config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
     daemon::{
@@ -8083,8 +8083,13 @@ async fn handle_config_models_command(command: ConfigModelCommands) -> Result<()
                     provider_id.as_str()
                 )
             })?;
-            let report =
-                refresh_provider_models(provider, &discovery_cache_path(&config.home_dir)).await?;
+            let discovery = resolved_provider_discovery(&config.stored_config, provider);
+            let report = refresh_provider_models(
+                provider,
+                discovery.as_ref(),
+                &discovery_cache_path(&config.home_dir),
+            )
+            .await?;
             print_json(&serde_json::to_value(report)?)
         }
     }
@@ -8192,6 +8197,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
                 },
                 reasoning_effort: None,
                 builtin_web_search: None,
+                discovery: None,
                 endpoints: BTreeMap::new(),
                 plans: BTreeMap::new(),
             };
@@ -8209,6 +8215,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
             })?;
             let discovery = discovery_cache_status_for_provider(
                 provider,
+                resolved_provider_discovery(&effective.stored_config, provider).as_ref(),
                 &effective.model_discovery_cache,
                 DEFAULT_DISCOVERY_CACHE_TTL,
                 false,

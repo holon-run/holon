@@ -18,6 +18,7 @@ fn headers(pairs: &[(&str, &str)]) -> ProviderHeaders {
 fn custom_config() -> (HolonConfigFile, ProviderId) {
     let id = ProviderId::parse("custom-headers").unwrap();
     let config = ProviderConfigFile {
+        discovery: None,
         transport: ProviderTransportKind::OpenAiChatCompletions,
         base_url: "https://example.invalid/v1".into(),
         headers: headers(&[("X-Base", "base"), ("X-Shared", "provider")]),
@@ -25,6 +26,7 @@ fn custom_config() -> (HolonConfigFile, ProviderId) {
             (
                 ProviderEndpointId::parse("coding").unwrap(),
                 ProviderEndpointConfigFile {
+                    discovery: None,
                     headers: headers(&[("x-shared", "endpoint")]),
                     ..Default::default()
                 },

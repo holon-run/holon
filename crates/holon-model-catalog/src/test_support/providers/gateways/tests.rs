@@ -150,7 +150,7 @@ fn opencode_go_longcat_25_is_native_chat_only() {
         assert!(chat.capabilities.image_input);
         assert!(chat.capabilities.supports_reasoning);
 
-        let discovered = HashMap::from([(route.model_ref(), metadata.clone())]);
+        let discovered = discovered_by_route([(route.model_ref(), metadata.clone())]);
         for endpoint in ["messages", "responses"] {
             let route =
                 ModelRouteRef::parse(&format!("opencode-go@{endpoint}/longcat-2.5")).unwrap();

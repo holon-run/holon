@@ -329,7 +329,10 @@ pub struct RuntimeModelCatalog {
     pub disable_provider_fallback: bool,
     pub provider_endpoints: Vec<ResolvedProviderEndpointConfig>,
     pub built_in_catalog: BuiltInModelCatalog,
-    pub discovered_models: HashMap<ModelRef, BuiltInModelMetadata>,
+    /// Discovered models keyed by their full route identity. Endpoint is part
+    /// of the key so sibling endpoints of one provider cannot overwrite each
+    /// other's model lists.
+    pub discovered_models: HashMap<ModelRouteRef, BuiltInModelMetadata>,
     pub model_overrides: HashMap<ModelRef, ModelRuntimeOverride>,
     pub model_route_overrides: HashMap<ModelRouteRef, ModelRouteRuntimeOverride>,
     pub provider_cache_overrides: HashMap<ProviderId, bool>,
@@ -510,6 +513,22 @@ impl RuntimeModelCatalog {
                 runtime_config,
             });
         }
+        // `discovery: disabled` stops future refreshes, and a cache written
+        // while discovery was enabled must not keep supplying models either:
+        // otherwise the catalog would serve metadata that the current config
+        // explicitly opted out of.
+        let discovery_disabled_endpoints = provider_endpoints
+            .iter()
+            .filter(|endpoint| {
+                let configured =
+                    resolved_provider_discovery(config.stored_config, &endpoint.runtime_config);
+                !holon_provider::model_discovery::provider_supports_model_discovery(
+                    &endpoint.runtime_config,
+                    configured.as_ref(),
+                )
+            })
+            .map(|endpoint| (endpoint.provider.clone(), endpoint.endpoint.clone()))
+            .collect::<HashSet<_>>();
         Self {
             route_options: config.stored_config.model.route_options.clone(),
             default_model: config.default_model.clone(),
@@ -524,6 +543,10 @@ impl RuntimeModelCatalog {
                 .model_discovery_cache
                 .models()
                 .into_iter()
+                .filter(|(route, _)| {
+                    !discovery_disabled_endpoints
+                        .contains(&(route.provider.clone(), route.endpoint.clone()))
+                })
                 .collect::<HashMap<_, _>>(),
             model_overrides: config.validated_model_overrides.clone(),
             model_route_overrides: resolve_model_route_overrides(config.stored_config)
@@ -797,12 +820,30 @@ impl RuntimeModelCatalog {
             .preferred_route_for_model(&model_ref)
             .unwrap_or_else(|| {
                 let endpoint = self
-                    .discovered_models
-                    .get(&model_ref)
-                    .and_then(|metadata| metadata.endpoint.clone())
+                    .discovered_route_for_model(&model_ref)
+                    .map(|route| route.endpoint)
                     .unwrap_or_else(ProviderEndpointId::default_endpoint);
                 ModelRouteRef::new(model_ref.provider, endpoint, model_ref.model)
             })
+    }
+
+    /// Deterministic discovered route for a model id.
+    ///
+    /// The same model id may be advertised by several endpoints of one
+    /// provider. The default endpoint wins; otherwise the lowest endpoint id is
+    /// used so the choice is stable and testable.
+    fn discovered_route_for_model(&self, model_ref: &ModelRef) -> Option<ModelRouteRef> {
+        self.discovered_models
+            .keys()
+            .filter(|route| route.provider == model_ref.provider && route.model == model_ref.model)
+            .min_by(|left, right| {
+                let left_default = left.endpoint.as_str() == ProviderEndpointId::DEFAULT;
+                let right_default = right.endpoint.as_str() == ProviderEndpointId::DEFAULT;
+                right_default
+                    .cmp(&left_default)
+                    .then_with(|| left.endpoint.cmp(&right.endpoint))
+            })
+            .cloned()
     }
 
     pub fn provider_chain(&self, model_override: Option<&ModelRouteRef>) -> Vec<ModelRouteRef> {
@@ -987,7 +1028,7 @@ impl RuntimeModelCatalog {
             .into_iter()
             .map(|model| model.model_ref)
             .collect::<HashSet<_>>();
-        model_refs.extend(self.discovered_models.keys().cloned());
+        model_refs.extend(self.discovered_models.keys().map(|route| route.model_ref()));
         model_refs.extend(self.model_overrides.keys().cloned());
         let base_context_config = ContextConfig::default();
         let mut models = model_refs
@@ -1082,11 +1123,7 @@ impl RuntimeModelCatalog {
                 candidates.push(model_ref);
             }
         }
-        let mut discovered = self
-            .discovered_models
-            .keys()
-            .map(|model_ref| self.preferred_model_route(model_ref))
-            .collect::<Vec<_>>();
+        let mut discovered = self.discovered_models.keys().cloned().collect::<Vec<_>>();
         discovered.sort_by_key(ModelRouteRef::as_string);
         for model_ref in discovered {
             if !candidates.iter().any(|existing| existing == &model_ref) {

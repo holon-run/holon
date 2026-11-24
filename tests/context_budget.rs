@@ -167,7 +167,10 @@ async fn exercise_budget_lifecycle() -> Result<()> {
     };
     let provider_id = ProviderId::parse("opencode-go")?;
     config.model_discovery_cache.providers.insert(
-        provider_id.clone(),
+        holon::model_discovery::ModelDiscoveryCacheKey::new(
+            provider_id.clone(),
+            holon::config::ProviderEndpointId::default_endpoint(),
+        ),
         ProviderModelDiscoveryCache {
             provider: provider_id,
             fetched_at: chrono::Utc::now(),
