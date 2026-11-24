@@ -7,7 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::{
-    fs::{self, OpenOptions},
+    fs,
     io::AsyncWriteExt,
     process::{Child, Command},
     sync::{mpsc, Notify},
@@ -111,18 +111,18 @@ impl LocalSystem {
     }
 
     pub async fn open_output_file(&self, path: &Path) -> Result<tokio::fs::File> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(path)
-            .await
-            .with_context(|| format!("failed to open {}", path.display()))
+        let display = path.display().to_string();
+        let open_path = path.to_path_buf();
+        let file = tokio::task::spawn_blocking(move || {
+            holon_domain::private_fs::open_private_file(
+                &open_path,
+                holon_domain::private_fs::PrivateOpenMode::Truncate,
+            )
+        })
+        .await
+        .with_context(|| format!("failed to open {display}"))?
+        .with_context(|| format!("failed to open {display}"))?;
+        Ok(tokio::fs::File::from_std(file))
     }
 
     pub fn filesystem_space(&self, path: &Path) -> Result<(u64, u64)> {

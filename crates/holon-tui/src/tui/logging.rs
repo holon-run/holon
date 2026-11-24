@@ -1,8 +1,7 @@
 #[cfg(test)]
 use std::sync::Arc;
 use std::{
-    env,
-    fs::{self, OpenOptions},
+    env, fs,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
 };
@@ -34,7 +33,7 @@ pub(crate) struct TuiLogWriter {
 impl TuiLogWriter {
     pub(crate) fn new(log_root: impl Into<PathBuf>) -> Result<Self> {
         let root = log_root.into().join("tui");
-        fs::create_dir_all(&root)
+        holon_domain::private_fs::create_private_dir_all(&root)
             .with_context(|| format!("failed to create {}", root.display()))?;
         Ok(Self {
             root,
@@ -49,7 +48,7 @@ impl TuiLogWriter {
     pub(crate) fn new_temp() -> Result<Self> {
         let tempdir = Arc::new(tempfile::tempdir()?);
         let root = tempdir.path().join("logs").join("tui");
-        fs::create_dir_all(&root)
+        holon_domain::private_fs::create_private_dir_all(&root)
             .with_context(|| format!("failed to create {}", root.display()))?;
         Ok(Self {
             root,
@@ -319,11 +318,11 @@ fn presentation_log_max_bytes_from_env() -> u64 {
 }
 
 fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    let mut file = holon_domain::private_fs::open_private_file(
+        path,
+        holon_domain::private_fs::PrivateOpenMode::Append,
+    )
+    .with_context(|| format!("failed to open {}", path.display()))?;
     let line = serde_json::to_string(value)?;
     writeln!(file, "{line}")?;
     Ok(())
@@ -347,11 +346,11 @@ fn append_bounded_jsonl_lines(path: &Path, lines: &[String], max_bytes: u64) -> 
         }
         if writer.is_none() {
             writer = Some(BufWriter::new(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .with_context(|| format!("failed to open {}", path.display()))?,
+                holon_domain::private_fs::open_private_file(
+                    path,
+                    holon_domain::private_fs::PrivateOpenMode::Append,
+                )
+                .with_context(|| format!("failed to open {}", path.display()))?,
             ));
         }
         if let Some(open_writer) = writer.as_mut() {

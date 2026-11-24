@@ -144,7 +144,7 @@ impl DiagnosticsWriter {
         let config = config.validate()?;
         let path = path.into();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
+            holon_domain::private_fs::create_private_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         let (sender, receiver) = mpsc::sync_channel(config.queue_capacity);
@@ -344,6 +344,13 @@ fn open_connection(path: &Path) -> Result<Connection> {
          CREATE INDEX IF NOT EXISTS traces_completed_at_idx
              ON traces(completed_at DESC);",
     )?;
+    if let Err(error) = holon_domain::private_fs::restrict_sqlite_database(path) {
+        tracing::warn!(
+            db = %path.display(),
+            %error,
+            "failed to restrict diagnostics database permissions"
+        );
+    }
     Ok(connection)
 }
 

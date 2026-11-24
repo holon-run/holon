@@ -115,7 +115,7 @@ pub fn open_connection(path: &Path, diagnostics: &StorageDiagnostics) -> Result<
     let _attempt = diagnostics.start(StorageStage::Connection);
     let started_at = Instant::now();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
+        holon_domain::private_fs::create_private_dir_all(parent)
             .with_context(|| format!("creating runtime db directory {}", parent.display()))?;
     }
     ensure_runtime_db_sidecars_are_consistent(path, diagnostics)?;
@@ -128,6 +128,13 @@ pub fn open_connection(path: &Path, diagnostics: &StorageDiagnostics) -> Result<
     enable_persistent_wal(&connection, path)?;
     configure_connection(&connection)?;
     drop(configure);
+    if let Err(error) = holon_domain::private_fs::restrict_sqlite_database(path) {
+        tracing::warn!(
+            db = %path.display(),
+            %error,
+            "failed to restrict runtime database permissions"
+        );
+    }
     ensure_runtime_db_sidecars_are_consistent(path, diagnostics)?;
     (diagnostics.record_open_duration)(started_at.elapsed());
     Ok(connection)
@@ -948,7 +955,7 @@ impl RuntimeDbLock {
 
     fn open(path: PathBuf, mode: LockMode) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
+            holon_domain::private_fs::create_private_dir_all(parent)
                 .with_context(|| format!("creating runtime lock directory {}", parent.display()))?;
         }
         let file = OpenOptions::new()
@@ -957,6 +964,13 @@ impl RuntimeDbLock {
             .write(true)
             .open(&path)
             .with_context(|| format!("opening runtime db lock {}", path.display()))?;
+        if let Err(error) = holon_domain::private_fs::set_private_file_mode(&path) {
+            tracing::warn!(
+                lock = %path.display(),
+                %error,
+                "failed to restrict runtime db lock permissions"
+            );
+        }
         flock(&file, mode).with_context(|| format!("locking runtime db {}", path.display()))?;
         Ok(Self { file, path })
     }

@@ -13,6 +13,7 @@ pub mod execution_protocol;
 pub mod execution_types;
 pub mod ids;
 pub mod model_values;
+pub mod private_fs;
 pub mod runtime_event;
 pub mod scheduler;
 pub mod timezone;

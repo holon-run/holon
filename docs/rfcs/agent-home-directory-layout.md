@@ -298,6 +298,60 @@ Cache content may speed up execution, provider calls, discovery, or search,
 but Holon should be able to delete and rebuild it without losing durable
 memory or evidence.
 
+## Permission Policy
+
+Directory layout alone does not protect the contents. Ownership decides the
+permission mode, not the path position, because the same runtime may place a
+private directory inside a shared workspace.
+
+Three classes:
+
+- **A. Runtime-private.** `tool-artifacts/`, `task-output/`, `.holon/state/`,
+  `.holon/ledger/`, `.holon/indexes/`, `.holon/cache/`, `diagnostics.sqlite*`,
+  `indexes/memory.v2.sqlite3*`, `state/runtime.sqlite*`, `logs/`, and `daemon/`
+  hold tool transcripts, diagnostics spans, and runtime state. Directories are
+  `0700` and files are `0600`.
+- **B. Agent-private.** The agent home root, `memory/`, `notes/`, `work/`,
+  `work-items/`, `skills/`, and `tmp/` belong to one agent. Directories are
+  `0700` and files are `0600`.
+- **C. Explicitly shared.** The agent's project workspaces and artifacts that
+  are deliberately served to other users or processes, such as static assets
+  behind a separate web server, stay under the process umask. Helpers must not
+  rewrite them.
+
+Classes A and B resolve to the same numeric modes. The classification records
+ownership, not a second permission scheme.
+
+Implementation rules:
+
+- New paths use the shared primitives in `holon_domain::private_fs`:
+  `create_private_dir_all` for `0700` directories, `write_private_file` for
+  `0600` files written atomically, `open_private_file` for streaming writers,
+  and `restrict_sqlite_database` for a database plus its existing `-wal` /
+  `-shm` sidecars.
+- `create_private_dir_all` corrects only the leaf directory when it already
+  exists. It never rewrites parents, so a private directory created inside a
+  class C workspace leaves that workspace's mode unchanged.
+- The runtime does not set a global `umask(0077)`. A process-wide umask is
+  inherited by child processes and would also narrow project workspaces,
+  generated assets, and Git metadata.
+- SQLite sidecars that appear after the database is opened are covered by the
+  private parent directory: without traversal permission other users cannot
+  reach them even if SQLite creates them with the process umask.
+
+Platform behavior: the policy is implemented for Unix targets. Other platforms
+keep umask-derived modes; Holon documents that capability gap instead of
+simulating Unix permission bits.
+
+Scope corrections for the environment report that motivated this policy:
+
+- `state/runtime.sqlite` being `0600` on that host came from the deployment
+  environment, not from the code. No runtime database open path set a mode
+  before this policy, so that observation is not an existing contract to match.
+- Existing files and directories are not bulk-rewritten. Holon does not add a
+  repair command or a startup sweep, because narrowing another agent's
+  `agent_home` is an operator decision.
+
 ## Creation Rules
 
 Agent creation should ensure that `agent_home` exists and may seed:

@@ -2715,7 +2715,7 @@ async fn materialize_template(
 }
 
 pub fn ensure_agent_home_layout(agent_home: &Path) -> Result<()> {
-    fs::create_dir_all(agent_home)
+    holon_domain::private_fs::create_private_dir_all(agent_home)
         .with_context(|| format!("failed to create {}", agent_home.display()))?;
     for dir in [
         agent_home.join("memory"),
@@ -2729,7 +2729,8 @@ pub fn ensure_agent_home_layout(agent_home: &Path) -> Result<()> {
         agent_home.join(".holon/indexes"),
         agent_home.join(".holon/cache"),
     ] {
-        fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        holon_domain::private_fs::create_private_dir_all(&dir)
+            .with_context(|| format!("failed to create {}", dir.display()))?;
     }
     create_file_if_missing(
         &agent_memory_self_path(agent_home),
@@ -2744,9 +2745,12 @@ pub fn ensure_agent_home_layout(agent_home: &Path) -> Result<()> {
 
 fn create_file_if_missing(path: &Path, content: &[u8]) -> Result<()> {
     if path.exists() {
-        return Ok(());
+        // Never overwrite seeded memory, but keep an existing file private.
+        return holon_domain::private_fs::set_private_file_mode(path)
+            .with_context(|| format!("failed to restrict {}", path.display()));
     }
-    write_file_atomically(path, content)
+    holon_domain::private_fs::write_private_file(path, content)
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn render_agent_home_agents_md(template_guidance: &str, profile_seed: Option<&str>) -> String {

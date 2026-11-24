@@ -1,5 +1,4 @@
 use std::{
-    fs,
     path::{Path, PathBuf},
     sync::Arc,
     thread,
@@ -760,7 +759,7 @@ pub struct IndexStore {
 
 impl IndexStore {
     pub fn open_in(shared_indexes_dir: &Path, writer_metrics: WriterMetrics) -> Result<Self> {
-        fs::create_dir_all(shared_indexes_dir)
+        holon_domain::private_fs::create_private_dir_all(shared_indexes_dir)
             .with_context(|| format!("failed to create {}", shared_indexes_dir.display()))?;
         let index_path = shared_indexes_dir.join(INDEX_FILENAME);
         let write_coordinator = memory_index_write_coordinator(&index_path)?;
@@ -773,6 +772,13 @@ impl IndexStore {
         )?;
         let result = (|| {
             let connection = Connection::open(&index_path)?;
+            if let Err(error) = holon_domain::private_fs::restrict_sqlite_database(&index_path) {
+                tracing::warn!(
+                    index = %index_path.display(),
+                    %error,
+                    "failed to restrict memory index permissions"
+                );
+            }
             let index = Self {
                 connection,
                 access: MemoryIndexAccess::Writer,
@@ -827,6 +833,13 @@ impl IndexStore {
         let write_coordinator = memory_index_write_coordinator(&index_path)?;
         let connection =
             Connection::open_with_flags(&index_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        if let Err(error) = holon_domain::private_fs::restrict_sqlite_database(&index_path) {
+            tracing::warn!(
+                index = %index_path.display(),
+                %error,
+                "failed to restrict memory index permissions"
+            );
+        }
         connection.execute_batch(
             r#"
             PRAGMA query_only = ON;
