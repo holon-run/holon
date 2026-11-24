@@ -724,6 +724,11 @@ fn endpoint_relative_models_url(base_url: &str, path: &str) -> Result<String> {
     let origin = url.origin();
     let base_path = url.path().trim_end_matches('/').to_string();
     url.set_path(&format!("{base_path}{path}"));
+    // The declared path owns the whole model-list request target. A base URL
+    // query belongs to inference requests (for example `?api-version=`), so it
+    // is not carried into the metadata GET; gateways that need extra query
+    // parameters there must rely on the transport default or a declared
+    // catalog instead.
     url.set_query(None);
     url.set_fragment(None);
     if url.origin() != origin {

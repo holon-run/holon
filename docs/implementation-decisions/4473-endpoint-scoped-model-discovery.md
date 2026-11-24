@@ -24,6 +24,10 @@ route-keyed cache keeps sibling endpoints from overwriting each other.
 - The declared path is appended to the endpoint base path, so the joined URL
   cannot change scheme, host or port; `..`, absolute URLs, query strings and
   percent-escapes are rejected at config load.
+- A declared path owns the whole model-list request target, so an endpoint
+  `base_url` query (for example `?api-version=...`) is not carried into the
+  discovery GET. Gateways that require extra query parameters on `/models`
+  must use the transport-default discovery or a declared catalog instead.
 - Transport, credential and header selection still come from configuration;
   responses only produce model ids and metadata.
 - Selecting a non-default endpoint still uses the existing plan/route mechanism
