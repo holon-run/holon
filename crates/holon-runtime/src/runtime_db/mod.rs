@@ -178,7 +178,7 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 pub use holon_storage::connection::RuntimeDbLock;
 pub use holon_storage::read_block;
-use holon_storage::{blocking, reader_pool};
+use holon_storage::{blocking, reader_pool, write_callback_phases::WriteCallbackPhases};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -1029,6 +1029,17 @@ impl RuntimeDb {
     }
 
     #[track_caller]
+    pub(crate) fn transaction_with_callback_phases<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        phases: &WriteCallbackPhases,
+        f: impl FnMut(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer
+            .append_wait_with_callback_phases(context, Some(phases), f)
+    }
+
+    #[track_caller]
     pub(crate) fn transaction_once<T>(
         &self,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
@@ -1046,13 +1057,24 @@ impl RuntimeDb {
     }
 
     #[track_caller]
+    #[cfg(test)]
     pub(crate) fn recovery_transaction_once<T>(
         &self,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.writer.append_wait_once_with_context(
+        self.recovery_transaction_once_with_phases(|tx, _| f(tx))
+    }
+
+    #[track_caller]
+    pub(crate) fn recovery_transaction_once_with_phases<T>(
+        &self,
+        f: impl FnOnce(&Transaction<'_>, &WriteCallbackPhases) -> Result<T>,
+    ) -> Result<T> {
+        let phases = WriteCallbackPhases::default();
+        self.writer.append_wait_once_with_callback_phases(
             RuntimeDbWriteContext::sync("runtime_db.input_recovery", "input_mutation_receipts"),
-            f,
+            Some(&phases),
+            |tx| f(tx, &phases),
         )
     }
 

@@ -662,19 +662,24 @@ use tracing_subscriber::prelude::*;
 
 #[derive(Default, Clone)]
 struct WriteOutcomeRecorder {
-    events: std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String, bool)>>>,
+    events: std::sync::Arc<std::sync::Mutex<Vec<RecordedOutcome>>>,
 }
 
-#[derive(Default)]
+type RecordedOutcome = (tracing::Level, RecordedOutcomeFields);
+
+#[derive(Clone, Default)]
 struct RecordedOutcomeFields {
     message: String,
     reader_reprepare: bool,
+    callback_phases_us: Option<String>,
 }
 
 impl tracing::field::Visit for RecordedOutcomeFields {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.message = format!("{value:?}");
+        match field.name() {
+            "message" => self.message = format!("{value:?}"),
+            "callback_phases_us" => self.callback_phases_us = Some(format!("{value:?}")),
+            _ => {}
         }
     }
 
@@ -699,15 +704,14 @@ where
         }
         let mut fields = RecordedOutcomeFields::default();
         event.record(&mut fields);
-        self.events.lock().unwrap().push((
-            event.metadata().level().clone(),
-            fields.message,
-            fields.reader_reprepare,
-        ));
+        self.events
+            .lock()
+            .unwrap()
+            .push((*event.metadata().level(), fields));
     }
 }
 
-fn captured_write_outcomes(failure: anyhow::Error) -> Vec<(tracing::Level, String, bool)> {
+fn captured_write_outcomes(failure: anyhow::Error) -> Vec<RecordedOutcome> {
     let recorder = WriteOutcomeRecorder::default();
     let dir = tempdir().expect("tempdir");
     let db_path = dir.path().join("write-outcome-probe.db");
@@ -721,6 +725,7 @@ fn captured_write_outcomes(failure: anyhow::Error) -> Vec<(tracing::Level, Strin
                 RuntimeDbWriteContext::sync("probe.write", "probe"),
                 Duration::ZERO,
                 Duration::ZERO,
+                None,
                 |_transaction| Err(failure),
             )
         },
@@ -730,11 +735,12 @@ fn captured_write_outcomes(failure: anyhow::Error) -> Vec<(tracing::Level, Strin
     events
 }
 
-fn warn_failures(events: &[(tracing::Level, String, bool)]) -> usize {
+fn warn_failures(events: &[RecordedOutcome]) -> usize {
     events
         .iter()
-        .filter(|(level, message, _)| {
-            matches!(*level, tracing::Level::WARN) && message.contains("write callback failed")
+        .filter(|(level, fields)| {
+            matches!(*level, tracing::Level::WARN)
+                && fields.message.contains("write callback failed")
         })
         .count()
 }
@@ -742,10 +748,10 @@ fn warn_failures(events: &[(tracing::Level, String, bool)]) -> usize {
 #[test]
 fn reader_reprepare_marker_is_quiet_not_a_write_failure() {
     let events = captured_write_outcomes(anyhow::Error::new(ReaderReprepareRequested::new("task")));
-    assert!(events.iter().any(|(level, message, reader_reprepare)| {
+    assert!(events.iter().any(|(level, fields)| {
         matches!(*level, tracing::Level::DEBUG)
-            && *reader_reprepare
-            && message.contains("deferred to reader reprepare")
+            && fields.reader_reprepare
+            && fields.message.contains("deferred to reader reprepare")
     }));
     assert_eq!(warn_failures(&events), 0);
 }
@@ -755,8 +761,8 @@ fn retryable_conflict_rollback_keeps_rolled_back_debug() {
     let events = captured_write_outcomes(anyhow::Error::new(
         RuntimeStateTransitionConflict::concurrent_mutation("task", "task:probe"),
     ));
-    assert!(events.iter().any(|(level, message, _)| {
-        matches!(*level, tracing::Level::DEBUG) && message.contains("write rolled back")
+    assert!(events.iter().any(|(level, fields)| {
+        matches!(*level, tracing::Level::DEBUG) && fields.message.contains("write rolled back")
     }));
     assert_eq!(warn_failures(&events), 0);
 }
@@ -765,9 +771,82 @@ fn retryable_conflict_rollback_keeps_rolled_back_debug() {
 fn unmarked_rolled_back_error_keeps_failure_warn() {
     let events = captured_write_outcomes(anyhow!("probe business failure"));
     assert_eq!(warn_failures(&events), 1);
-    assert!(!events.iter().any(|(_, message, reader_reprepare)| {
-        *reader_reprepare && message.contains("deferred to reader reprepare")
+    assert!(!events.iter().any(|(_, fields)| {
+        fields.reader_reprepare && fields.message.contains("deferred to reader reprepare")
     }));
+}
+
+#[test]
+fn write_callback_phases_follow_transaction_outcomes() -> Result<()> {
+    use crate::write_callback_phases::WriteCallbackPhase;
+
+    let recorder = WriteOutcomeRecorder::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(recorder.clone()));
+    let dir = tempdir()?;
+    let path = dir.path().join("callback-phases.db");
+    let connection = open_connection(&path)?;
+    let context = RuntimeDbWriteContext::sync("probe.write", "probe");
+    let phases = WriteCallbackPhases::default();
+    let attempt = |wait, phases, f: fn(Option<&WriteCallbackPhases>) -> Result<()>| {
+        run_transaction_on_connection(
+            &connection,
+            &path,
+            context,
+            wait,
+            Duration::ZERO,
+            phases,
+            |_| f(phases),
+        )
+    };
+    assert!(attempt(Duration::ZERO, Some(&phases), |phases| {
+        let _phase = WriteCallbackPhase::QueueBusiness.start(phases);
+        Err(anyhow!("probe callback rollback"))
+    })
+    .is_err());
+    // Use a synthetic queue wait for the existing slow-write threshold, with
+    // no sleep inside the callback. A new attempt clears the failed stage.
+    attempt(Duration::from_secs(1), Some(&phases), |phases| {
+        let _phase = WriteCallbackPhase::QueuePreflight.start(phases);
+        Ok(())
+    })?;
+    attempt(Duration::from_secs(1), None, |_| Ok(()))?;
+    attempt(Duration::ZERO, Some(&phases), |phases| {
+        let _phase = WriteCallbackPhase::QueueFinalize.start(phases);
+        Ok(())
+    })?;
+
+    let events = recorder.events.lock().unwrap();
+    let attributed = events
+        .iter()
+        .filter_map(|(level, fields)| {
+            fields
+                .callback_phases_us
+                .as_deref()
+                .map(|phases| (*level, fields.message.as_str(), phases))
+        })
+        .collect::<Vec<_>>();
+    let [(rolled_back, error, business), (committed, slow, preflight)] = attributed.as_slice()
+    else {
+        panic!("expected timings on one rollback and one slow commit: {attributed:?}");
+    };
+    assert_eq!(
+        (*rolled_back, *committed),
+        (tracing::Level::WARN, tracing::Level::WARN)
+    );
+    assert!(error.contains("write callback failed"));
+    assert_eq!(*slow, "slow runtime db write");
+    assert!(business
+        .strip_prefix("queue_business:")
+        .unwrap()
+        .parse::<u128>()
+        .is_ok());
+    assert!(preflight
+        .strip_prefix("queue_preflight:")
+        .unwrap()
+        .parse::<u128>()
+        .is_ok());
+    Ok(())
 }
 
 #[test]

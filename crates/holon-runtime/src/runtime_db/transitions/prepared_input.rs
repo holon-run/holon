@@ -28,6 +28,7 @@ use crate::types::MessageOrigin;
 pub(in crate::runtime_db) use child_binding::ExistingOriginalChildBindingWriteProof;
 pub(in crate::runtime_db) use child_running::ExistingOriginalChildRunningWriteProof;
 pub(crate) use child_terminal::OriginalChildStatusSelection;
+use holon_storage::write_callback_phases::{WriteCallbackPhase, WriteCallbackPhases};
 #[path = "prepared_timer.rs"]
 mod timer_writes;
 #[path = "prepared_external_trigger.rs"]
@@ -3332,6 +3333,12 @@ impl RuntimeTransitionRepository<'_> {
         );
         let measure_defer = prepared.is_task_result_defer();
         let write_context = prepared.command.write_context();
+        let settle_phases = matches!(
+            prepared.command.as_ref(),
+            InputTransitionCommand::Queue(queue) if queue.command.operation == QueueOperation::Settle
+        )
+        .then(WriteCallbackPhases::default);
+        let phases = settle_phases.as_ref();
         let queue = match prepared.command.as_ref() {
             InputTransitionCommand::Queue(queue)
                 if matches!(
@@ -3439,6 +3446,7 @@ impl RuntimeTransitionRepository<'_> {
             let defer_preflight =
                 measure_defer.then(|| attribution::TASK_RESULT_DEFER_PREFLIGHT.start());
             let queue_preflight = measure_queue.then(|| attribution::QUEUE_INPUT_PREFLIGHT.start());
+            let settle_preflight = WriteCallbackPhase::QueuePreflight.start(phases);
             let preflight = Self::prepare_transition_preflight_tx(
                 tx,
                 prepared,
@@ -3451,7 +3459,7 @@ impl RuntimeTransitionRepository<'_> {
                 current_query_source,
                 task_bases,
             );
-            drop((defer_preflight, queue_preflight));
+            drop((settle_preflight, defer_preflight, queue_preflight));
             let mut preflight = match preflight? {
                 PreparedTransitionPreflight::Ready(context) => context,
                 PreparedTransitionPreflight::Replayed {
@@ -3491,6 +3499,7 @@ impl RuntimeTransitionRepository<'_> {
                 input_scope: Some(scope.clone()),
                 cleanup_input: preflight.cleanup.as_ref(),
             };
+            let settle_business = WriteCallbackPhase::QueueBusiness.start(phases);
             let (mut value, mut result) = match prepared.command.as_ref() {
                 InputTransitionCommand::Audit {
                     agent_id,
@@ -3921,6 +3930,8 @@ impl RuntimeTransitionRepository<'_> {
                     }
                 }
             };
+            drop(settle_business);
+            let _settle_finalization = WriteCallbackPhase::QueueFinalize.start(phases);
             let _queue_finalization =
                 measure_queue.then(|| attribution::QUEUE_INPUT_FINALIZATION.start());
             // A State candidate owns control changes. Project pending from the
@@ -4393,6 +4404,7 @@ impl RuntimeTransitionRepository<'_> {
             let receipt = {
                 let _defer_receipt =
                     measure_defer.then(|| attribution::TASK_RESULT_DEFER_RECEIPT.start());
+                let _settle_receipt = WriteCallbackPhase::QueueReceiptPersist.start(phases);
                 insert_input_mutation_receipt_tx(tx, &prepared.descriptor, &outcome, Utc::now())?
             };
             // A successful no-op still wrote its receipt in this transaction.
@@ -4434,6 +4446,9 @@ impl RuntimeTransitionRepository<'_> {
             // The original producer owns the bounded OCC retry policy. Do not
             // invisibly consume extra attempts inside the generic write queue.
             self.db.transaction_once_with_context(write_context, commit)
+        } else if let Some(phases) = phases {
+            self.db
+                .transaction_with_callback_phases(write_context, phases, commit)
         } else {
             self.db.transaction_with_context(write_context, commit)
         }
