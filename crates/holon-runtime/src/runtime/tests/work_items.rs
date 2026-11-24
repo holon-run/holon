@@ -7313,7 +7313,137 @@ async fn turn_end_work_item_commit_preserves_explicit_queued_claim() {
 
     assert_eq!(committed.id, work_item_id);
     assert_eq!(committed.state, WorkItemState::Open);
-    assert!(committed.blocked_by.is_none());
+    assert_eq!(
+        committed.blocked_by.as_deref(),
+        Some("requeue after this turn"),
+        "turn-end must preserve the blocker annotation written by the agent"
+    );
+}
+
+#[tokio::test]
+async fn turn_end_work_item_commit_preserves_operator_blocker_annotation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    // The operator writes the blocker through the explicit update path, then the
+    // work item finishes an ordinary turn without any waiting reason.
+    let work_item_id = seed_bound_work_item(
+        &runtime,
+        WorkItemState::Open,
+        None,
+        Some("waiting for the reviewer verdict"),
+    )
+    .await;
+    let before = runtime
+        .latest_work_item(&work_item_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let committed = runtime
+        .maybe_commit_turn_end_work_item_transition()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(committed.id, work_item_id);
+    assert_eq!(committed.state, WorkItemState::Open);
+    assert_eq!(
+        committed.blocked_by.as_deref(),
+        Some("waiting for the reviewer verdict"),
+        "turn-end must not clear an operator-authored blocker annotation"
+    );
+    assert_eq!(
+        committed.revision, before.revision,
+        "turn-end must not write a snapshot when the plan artifact is unchanged"
+    );
+}
+
+#[tokio::test]
+async fn turn_end_work_item_commit_does_not_overwrite_blocker_while_waiting() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("wait for CI".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#4467".into()),
+            "CI run completed".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("waiting for the CI verdict".into())),
+        )
+        .await
+        .unwrap();
+    bind_turn_to_work_item(&runtime, &work.id).await;
+    let before = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+
+    let committed = runtime
+        .maybe_commit_turn_end_work_item_transition()
+        .await
+        .unwrap()
+        .unwrap();
+
+    let events = runtime.storage().read_recent_events(50).unwrap();
+    let turn_end = events
+        .iter()
+        .find(|event| event.kind == "work_item_turn_end_committed")
+        .expect("turn-end commit should record its closure decision");
+    assert_eq!(
+        turn_end.data["closure"]["waiting_reason"], "awaiting_external_change",
+        "the turn must end on a waiting reason for this regression to be meaningful"
+    );
+    assert_eq!(
+        committed.blocked_by.as_deref(),
+        Some("waiting for the CI verdict"),
+        "turn-end must not replace the blocker with canned waiting text"
+    );
+    assert_eq!(
+        committed.revision, before.revision,
+        "turn-end must not write a snapshot when the plan artifact is unchanged"
+    );
+    assert!(
+        !events.iter().any(|event| {
+            event.kind == "work_item_written" && event.data["action"] == "turn_end_committed"
+        }),
+        "an unchanged plan artifact must not produce a turn_end_committed snapshot"
+    );
 }
 
 #[tokio::test]

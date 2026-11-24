@@ -48,7 +48,7 @@ fn task_result_reentry_requires_exact_resolved_wait_not_blocker_clearance() {
         &wait
     ));
 
-    work_item.blocked_by = Some(TASK_RESULT_WAIT_BLOCKER.into());
+    work_item.blocked_by = Some("Waiting on a task result.".into());
     work_item.blocked_by_wait_id = Some(wait.id.clone());
     assert!(task_result_reentry_is_allowed(
         &work_item,

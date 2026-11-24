@@ -40,7 +40,7 @@ catalog; read/decoding failures must not overwrite the old catalog.
 | `runtime_db/mod.rs` | `RuntimeDb` | `provider_quota_incident`, `storage_domain`, `storage_domains`, `storage_domain_is_complete`, `event_log_epoch`, `runtime_id`, `visibility_policy_generation` |
 | `runtime_db/observer_sync.rs` | `crate::runtime_db::RuntimeDb` | `observer_sync_foundations`, `agent_roster_snapshot_rows`, `agent_projection_snapshot_rows`, `agent_event_recovery_window` |
 | `runtime_db/reclamation_reminders.rs` | `RuntimeDb` | `pending_subagent_reminders`, `subagent_cleanup_candidates` |
-| `runtime_db/repositories.rs` | `WorkItemRepository<'_>` | `latest`, `latest_for_agent`, `open_for_agent`, `latest_non_open_for_agent`, `latest_many`, `latest_all`, `due_blocked_rechecks`, `next_recheck_at` |
+| `runtime_db/repositories.rs` | `WorkItemRepository<'_>` | `latest`, `latest_for_agent`, `open_for_agent`, `latest_non_open_for_agent`, `latest_many`, `latest_all` |
 | `runtime_db/repositories.rs` | `AgentStateRepository<'_>` | `latest`, `latest_all` |
 | `runtime_db/repositories.rs` | `WorkspaceEntryRepository<'_>` | `latest_all` |
 | `runtime_db/repositories.rs` | `WorkspaceOccupancyRepository<'_>` | `latest_all` |

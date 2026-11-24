@@ -428,52 +428,6 @@ impl WorkItemRepository<'_> {
             Ok(records)
         })
     }
-
-    pub fn due_blocked_rechecks(
-        &self,
-        agent_id: &str,
-        now: DateTime<Utc>,
-    ) -> Result<Vec<WorkItemRecord>> {
-        let now_str = timestamp(now);
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM work_items
-             WHERE agent_id = ?1
-               AND state = 'open'
-               AND blocked_by IS NOT NULL
-               AND recheck_at IS NOT NULL
-               AND recheck_at <= ?2
-               AND (recheck_consumed_at IS NULL OR recheck_consumed_at < recheck_at)
-             ORDER BY recheck_at ASC",
-            )?;
-            let rows =
-                statement.query_map(params![agent_id, now_str], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_work_item_payload(&row?)).collect()
-        })
-    }
-
-    pub fn next_recheck_at(&self, agent_id: &str) -> Result<Option<DateTime<Utc>>> {
-        self.db.with_read(|connection| {
-            let result: Option<String> = connection
-                .query_row(
-                    "SELECT MIN(recheck_at)
-                 FROM work_items
-                 WHERE agent_id = ?1
-                   AND state = 'open'
-                   AND blocked_by IS NOT NULL
-                   AND recheck_at IS NOT NULL
-                   AND (recheck_consumed_at IS NULL OR recheck_consumed_at < recheck_at)",
-                    [agent_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .flatten();
-            result
-                .map(|s| parse_timestamp(&s).context("parsing recheck_at from work_items query"))
-                .transpose()
-        })
-    }
 }
 
 impl AgentStateRepository<'_> {
