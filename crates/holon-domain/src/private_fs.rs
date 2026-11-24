@@ -56,6 +56,10 @@ pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
 /// The bytes are written to a private temporary sibling and renamed into
 /// place, so a partially written file is never visible under `path` and an
 /// existing wider-mode file is replaced by a private one.
+///
+/// The temporary file is not fsynced: callers such as tool-transcript capture
+/// write on a hot path, and the previous implementation did not request
+/// durability either.
 pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
@@ -68,7 +72,6 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let result = (|| {
         let mut file = open_new_private_file(&temp_path)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
         drop(file);
         fs::rename(&temp_path, path)
     })();

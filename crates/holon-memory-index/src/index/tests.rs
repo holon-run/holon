@@ -1,5 +1,6 @@
 use super::test_support::maintenance_test_documents;
 use super::*;
+use std::fs;
 use std::sync::{mpsc, Barrier};
 use tempfile::tempdir;
 

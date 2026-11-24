@@ -332,6 +332,12 @@ Implementation rules:
 - `create_private_dir_all` corrects only the leaf directory when it already
   exists. It never rewrites parents, so a private directory created inside a
   class C workspace leaves that workspace's mode unchanged.
+- Permission correction is best-effort. If an existing private directory,
+  file, or database cannot be narrowed because it lives on a read-only mount
+  or is owned by another uid, the runtime keeps the existing mode and logs a
+  warning instead of failing startup. Creating a missing private path is still
+  an error, so an unwritable location is reported rather than silently
+  ignored.
 - The runtime does not set a global `umask(0077)`. A process-wide umask is
   inherited by child processes and would also narrow project workspaces,
   generated assets, and Git metadata.
