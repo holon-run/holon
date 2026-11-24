@@ -1,7 +1,16 @@
 use std::process::Command;
 
 fn main() {
-    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".into());
+    // Release builds may override the reported version with the full release
+    // tag (for example `0.62.0-beta.20261124`) without bumping Cargo.toml;
+    // daily beta trains rely on this, stable releases set it to the same
+    // version Cargo.toml already declares.
+    let tag_version = std::env::var("HOLON_PKG_VERSION_OVERRIDE")
+        .ok()
+        .map(|v| v.trim().trim_start_matches('v').to_string())
+        .filter(|v| !v.is_empty());
+    let version = tag_version
+        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".into()));
     configure_build(&version);
 }
 

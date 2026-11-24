@@ -1,0 +1,152 @@
+name: Beta Train
+
+on:
+  # No cron on purpose. The release gate owner (the holon-release agent timer)
+  # decides when the train runs, and only after the scheduled nightly E2E went
+  # green. A GitHub cron would race that E2E and hide who owns the trigger.
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this run was dispatched (recorded in the heartbeat).
+        required: false
+        default: holon-release daily timer
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: beta-train
+  cancel-in-progress: false
+
+jobs:
+  train:
+    name: Preflight, attest, and tag the daily beta
+    runs-on: ubuntu-latest
+    # The Release E2E attestation historically takes 1-3h; leave headroom
+    # inside the 6h job ceiling.
+    timeout-minutes: 330
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TRAIN_REASON: ${{ inputs.reason }}
+    outputs:
+      beta_tag: ${{ steps.tag.outputs.beta_tag }}
+      skipped: ${{ steps.preflight.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve next beta tag
+        id: tag
+        run: |
+          set -euo pipefail
+          date_stamp="$(TZ=Asia/Shanghai date +%Y%m%d)"
+          latest_stable="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-preleases --limit 1 --json tagName --jq '.[0].tagName' | sed 's/^v//')"
+          major="${latest_stable%%.*}"
+          rest="${latest_stable#*.}"
+          minor="${rest%%.*}"
+          echo "beta_tag=v${major}.$((minor + 1)).0-beta.${date_stamp}" >> "$GITHUB_OUTPUT"
+          echo "latest_stable=v${latest_stable}" >> "$GITHUB_OUTPUT"
+
+      - name: Preflight
+        id: preflight
+        run: |
+          set -euo pipefail
+          sha="$GITHUB_SHA"
+          beta_tag="${{ steps.tag.outputs.beta_tag }}"
+          since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          skip() {
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "reason=$1" >> "$GITHUB_OUTPUT"
+            echo "::notice::Beta train skipped: $1"
+          }
+
+          e2e_meta="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow e2e-scheduler-nightly.yml --event schedule --limit 1 --json conclusion,createdAt --jq '.[0] | "\(.conclusion // "none") \(.createdAt)"')"
+          e2e_conclusion="${e2e_meta%% *}"
+          e2e_created="${e2e_meta#* }"
+          if [ "$e2e_conclusion" != "success" ]; then
+            skip "latest scheduled E2E is ${e2e_conclusion}; the train only runs after the nightly E2E is green"
+            exit 0
+          fi
+          e2e_age=$(( $(date -u +%s) - $(date -u -d "$e2e_created" +%s) ))
+          if [ "$e2e_age" -gt 129600 ]; then
+            skip "latest scheduled E2E is $(( e2e_age / 3600 ))h old; the nightly schedule looks broken"
+            exit 0
+          fi
+
+          commits="$(gh api "repos/${GITHUB_REPOSITORY}/commits?sha=main&since=${since}&per_page=100" --jq 'length')"
+          if [ "$commits" -eq 0 ]; then
+            skip "no new commits on main in the last 24h"
+            exit 0
+          fi
+          if git ls-remote --tags origin "refs/tags/${beta_tag}" | grep -q .; then
+            skip "tag ${beta_tag} already exists"
+            exit 0
+          fi
+          ci="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --branch main --commit "$sha" --limit 1 --json conclusion --jq '.[0].conclusion // "none"')"
+          if [ "$ci" != "success" ]; then
+            skip "main CI on ${sha} is ${ci}"
+            exit 0
+          fi
+          queued="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow Release --status queued --json databaseId --jq 'length')"
+          running="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow Release --status in_progress --json databaseId --jq 'length')"
+          if [ "$queued" -gt 0 ] || [ "$running" -gt 0 ]; then
+            skip "a Release workflow is queued or running; the train yields the day (milestone releases keep the stable slot)"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Preflight passed: nightly E2E green ($(( e2e_age / 3600 ))h ago), ${commits} new commits, main CI ${ci}, tag ${beta_tag} free."
+
+      - name: Run Release E2E attestation for the candidate
+        if: steps.preflight.outputs.skip != 'true'
+        id: attest
+        run: |
+          set -euo pipefail
+          beta_tag="${{ steps.tag.outputs.beta_tag }}"
+          prev="${{ steps.tag.outputs.latest_stable }}"
+          gh workflow run release-e2e.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f candidate_ref="$GITHUB_SHA" \
+            -f release_tag="$beta_tag" \
+            -f previous_ref="$prev"
+          sleep 20
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-e2e.yml --event workflow_dispatch --created "$(date -u -d '-3 minutes' +%Y-%m-%dT%H:%M:%SZ)" --limit 1 --json databaseId --jq '.[0].databaseId')"
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          echo "Attestation run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status --interval 60
+
+      - name: Tag the daily beta
+        if: steps.preflight.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          beta_tag="${{ steps.tag.outputs.beta_tag }}"
+          git tag "$beta_tag" "$GITHUB_SHA"
+          git push origin "refs/tags/${beta_tag}"
+
+      - name: Heartbeat — train tagged beta
+        if: steps.preflight.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          issue="${{ vars.BETA_TRAIN_HEARTBEAT_ISSUE || '' }}"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" \
+              --body "beta-train: tagged \`${{ steps.tag.outputs.beta_tag }}\` from \`${GITHUB_SHA}\` (dispatch reason: ${TRAIN_REASON}); attestation run <https://github.com/${GITHUB_REPOSITORY}/actions/runs/${{ steps.attest.outputs.run_id }}> green. Next: holon-release upgrades the demo canary to this prerelease."
+          fi
+
+  notify:
+    name: Report train failure
+    needs: train
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Heartbeat — train failed
+        run: |
+          set -euo pipefail
+          issue="${{ vars.BETA_TRAIN_HEARTBEAT_ISSUE || '' }}"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" \
+              --body "beta-train: FAILED before tagging for \`${{ github.sha }}\` (dispatch reason: ${TRAIN_REASON}) — see <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>. No beta was published from this run; the stable channel is untouched."
+          fi
