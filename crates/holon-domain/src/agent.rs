@@ -660,6 +660,21 @@ impl AgentIdentityRecord {
             })
     }
 
+    /// Whether the operator agent-deletion surface covers this identity.
+    ///
+    /// Deletion admission and deletion-status reads must use this single
+    /// predicate: a job admitted here has to stay observable through the same
+    /// operator surface. It intentionally does not cover arbitrary private
+    /// agents, only public self-owned agents and private parent-supervised
+    /// child agents.
+    pub fn has_operator_delete_surface(&self) -> bool {
+        (self.visibility == AgentVisibility::Public
+            && self.ownership() == AgentOwnership::SelfOwned)
+            || (self.kind == AgentKind::Child
+                && self.visibility == AgentVisibility::Private
+                && self.ownership() == AgentOwnership::ParentSupervised)
+    }
+
     pub fn profile_preset(&self) -> AgentProfilePreset {
         self.profile_preset.unwrap_or_else(|| {
             match (self.kind, self.visibility, self.ownership()) {

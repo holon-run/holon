@@ -1183,3 +1183,86 @@ async fn daemon_coordinator_defers_failed_residue_scan_to_safety_sweep() {
     );
     host.shutdown_daemon_deletion_coordinator().await;
 }
+
+#[cfg(holon_lib_test_shard = "d")]
+#[tokio::test]
+async fn operator_delete_status_covers_admitted_parent_supervised_child() {
+    let (_home, host) = test_host();
+    let child = retained_cleanup_fixture(&host, "tmp_child_operator_delete_status");
+    let (_, admitted, _) = host
+        .begin_public_agent_deletion(&child.agent_id, false, "test")
+        .await
+        .expect("operator deletion must admit a private parent-supervised child");
+    let (identity, job) = host
+        .public_agent_deletion_status(&child.agent_id)
+        .expect("deletion status must read the same surface that admitted the job");
+    assert_eq!(identity.agent_id, child.agent_id);
+    assert_eq!(
+        job.expect("admitted job must be visible").deletion_id,
+        admitted.deletion_id
+    );
+}
+
+#[cfg(holon_lib_test_shard = "d")]
+#[tokio::test]
+async fn operator_delete_status_reads_deleted_parent_supervised_child_tombstone() {
+    let (_home, host) = test_host();
+    let child = retained_cleanup_fixture(&host, "tmp_child_operator_delete_tombstone");
+    let (_, job, _) = host
+        .begin_public_agent_deletion(&child.agent_id, false, "test")
+        .await
+        .unwrap();
+    host.execute_deletion_job(job).await.unwrap();
+    let (identity, job) = host
+        .public_agent_deletion_status(&child.agent_id)
+        .expect("deleted tombstone must remain observable on the operator delete surface");
+    assert_eq!(identity.status, AgentRegistryStatus::Deleted);
+    assert_eq!(identity.visibility, AgentVisibility::Private);
+    assert_eq!(job.unwrap().status, AgentDeletionStatus::Completed);
+}
+
+#[cfg(holon_lib_test_shard = "d")]
+#[tokio::test]
+async fn operator_delete_status_keeps_public_self_owned_surface() {
+    let (_home, host) = test_host();
+    let agent_id = "public-delete-status";
+    host.create_public_named_agent_with_name(
+        agent_id,
+        None,
+        None,
+        None,
+        None,
+        AgentBootstrapExecution::Inline,
+        false,
+    )
+    .await
+    .unwrap();
+    let (_, job, _) = host
+        .begin_public_agent_deletion(agent_id, false, "test")
+        .await
+        .unwrap();
+    let (_, status) = host
+        .public_agent_deletion_status(agent_id)
+        .expect("public self-owned deletion status must keep working");
+    assert_eq!(status.unwrap().deletion_id, job.deletion_id);
+}
+
+#[cfg(holon_lib_test_shard = "d")]
+#[tokio::test]
+async fn operator_delete_status_does_not_cover_unrelated_private_agent() {
+    let (_home, host) = test_host();
+    let identity = AgentIdentityRecord::new(
+        "private-standalone",
+        AgentKind::Named,
+        AgentVisibility::Private,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PrivateChild,
+        None,
+        None,
+    );
+    host.append_agent_identity(&identity).unwrap();
+    assert!(matches!(
+        host.public_agent_deletion_status("private-standalone"),
+        Err(PublicAgentError::Private { .. })
+    ));
+}
