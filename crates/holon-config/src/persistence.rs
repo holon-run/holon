@@ -6,12 +6,28 @@ pub fn persisted_config_path(home_dir: &Path) -> PathBuf {
 
 pub fn load_persisted_config_at(path: &Path) -> Result<HolonConfigFile> {
     match fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content)
-            .with_context(|| format!("failed to parse {}", path.display())),
+        Ok(content) => {
+            let mut config: HolonConfigFile = serde_json::from_str(&content)
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+            normalize_loaded_config(&mut config);
+            Ok(config)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(HolonConfigFile::default())
         }
         Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+/// Load-time normalization for tolerating historical leftovers.
+///
+/// An endpoint entry whose fields are all unset carries no configuration; drop
+/// it instead of surfacing a phantom endpoint or blocking startup.
+pub(crate) fn normalize_loaded_config(config: &mut HolonConfigFile) {
+    for provider in config.providers.values_mut() {
+        provider
+            .endpoints
+            .retain(|_, endpoint| !endpoint.is_empty());
     }
 }
 

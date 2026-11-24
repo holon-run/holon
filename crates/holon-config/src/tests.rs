@@ -2608,3 +2608,81 @@ fn state_memory_limits_have_explicit_defaults_and_positive_config_keys() {
     config.runtime.state_memory.pending_host_bytes = Some(0);
     assert!(config.runtime.state_memory.resolve().is_err());
 }
+
+#[test]
+fn provider_endpoint_whole_entry_unset_removes_full_subtree() {
+    let mut config: HolonConfigFile = toml::from_str("").unwrap();
+    for (key, value) in [
+        ("providers.openai.transport", "anthropic_messages"),
+        ("providers.openai.base_url", "https://openai.invalid"),
+        (
+            "providers.openai.endpoints.magpie.transport",
+            "anthropic_messages",
+        ),
+        (
+            "providers.openai.endpoints.magpie.base_url",
+            "http://127.0.0.1:3425",
+        ),
+        ("providers.openai.endpoints.magpie.auth.source", "none"),
+    ] {
+        set_config_key(&mut config, key, value).unwrap();
+    }
+    let provider_id = ProviderId::parse("openai").unwrap();
+    let endpoint_id = ProviderEndpointId::parse("magpie").unwrap();
+    assert!(config.providers[&provider_id]
+        .endpoints
+        .contains_key(&endpoint_id));
+
+    unset_config_key(&mut config, "providers.openai.endpoints.magpie").unwrap();
+    assert!(!config.providers[&provider_id]
+        .endpoints
+        .contains_key(&endpoint_id));
+
+    // Leaf-level unset keeps its existing field-clearing semantics.
+    set_config_key(
+        &mut config,
+        "providers.openai.endpoints.preview.base_url",
+        "https://preview.invalid",
+    )
+    .unwrap();
+    unset_config_key(&mut config, "providers.openai.endpoints.preview.base_url").unwrap();
+    let preview = config.providers[&provider_id]
+        .endpoints
+        .get(&ProviderEndpointId::parse("preview").unwrap())
+        .unwrap();
+    assert!(preview.base_url.is_none());
+}
+
+#[test]
+fn load_normalization_drops_empty_endpoint_entries_only() {
+    let mut config: HolonConfigFile = toml::from_str("").unwrap();
+    let mut endpoints = BTreeMap::new();
+    endpoints.insert(
+        ProviderEndpointId::parse("stub").unwrap(),
+        ProviderEndpointConfigFile {
+            transport: None,
+            base_url: None,
+            auth: Some(ProviderAuthConfig::default()),
+            headers: ProviderHeaders::default(),
+        },
+    );
+    endpoints.insert(
+        ProviderEndpointId::parse("real").unwrap(),
+        ProviderEndpointConfigFile {
+            base_url: Some("http://127.0.0.1:3425".into()),
+            ..Default::default()
+        },
+    );
+    config.providers.insert(
+        ProviderId::parse("acme").unwrap(),
+        ProviderConfigFile {
+            endpoints,
+            ..Default::default()
+        },
+    );
+
+    normalize_loaded_config(&mut config);
+    let endpoints = &config.providers[&ProviderId::parse("acme").unwrap()].endpoints;
+    assert!(!endpoints.contains_key(&ProviderEndpointId::parse("stub").unwrap()));
+    assert!(endpoints.contains_key(&ProviderEndpointId::parse("real").unwrap()));
+}

@@ -244,6 +244,7 @@ pub(super) fn sample_agent_summary(agent_id: &str) -> AgentSummary {
             effective_service_tier: None,
             source: AgentModelSource::RuntimeDefault,
             effective_fallback_models: Vec::new(),
+            override_unresolved: false,
             resolved_policy: holon_domain::model_values::ResolvedRuntimeModelPolicy {
                 model_ref: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
                 display_name: "Claude Sonnet 4.6".into(),

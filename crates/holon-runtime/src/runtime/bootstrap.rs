@@ -1163,22 +1163,30 @@ impl RuntimeHandle {
                 "agent model override is unavailable for runtimes without host-managed provider configuration"
             ));
         };
+        // A persisted override that no longer resolves is not fatal: treat it
+        // as absent so execution proceeds on the default model. The
+        // `override_unresolved` state field keeps the degradation visible.
+        let override_route = state.model_override.as_ref().filter(|route| {
+            snap.model_catalog
+                .try_resolve_explicit_model_metadata(&snap.base_context_config, route)
+                .is_ok()
+        });
         let chain = snap
             .model_catalog
-            .provider_chain_for_turn(state.model_override.as_ref(), fallback_model);
-        let resolved_context_config = snap.model_catalog.resolved_context_config(
-            &snap.base_context_config,
-            fallback_model.or(state.model_override.as_ref()),
-        );
+            .provider_chain_for_turn(override_route, fallback_model);
+        let resolved_context_config = snap
+            .model_catalog
+            .resolved_context_config(&snap.base_context_config, fallback_model.or(override_route));
         let mut provider_config = reconfig.config.clone();
         provider_config.runtime_max_output_tokens = snap
             .model_catalog
-            .resolved_model_policy(&snap.base_context_config, state.model_override.as_ref())
+            .resolved_model_policy(&snap.base_context_config, override_route)
             .runtime_max_output_tokens;
+        let parameter_override = override_route.and_then(|_| model_route_parameter_override(state));
         let provider = build_provider_from_model_chain_with_override(
             &provider_config,
             &chain,
-            model_route_parameter_override(state),
+            parameter_override,
         )?;
         *self.inner.provider.write().await = provider;
         *self.inner.context_config.write().await = resolved_context_config;

@@ -994,14 +994,15 @@ fn validate_runtime_config_candidate(
     let mut candidate_config = config.clone();
     candidate_config.stored_config = candidate.clone();
     candidate_config.validated_model_overrides = crate::config::resolve_model_catalog(candidate)?;
-    if !candidate.model.route_options.is_empty() {
-        candidate_config.providers = crate::config::resolve_provider_registry(
-            candidate,
-            &crate::config::load_settings_env()?,
-            &credentials,
-        )?;
-        candidate_config.validate_model_route_options()?;
-    }
+    // Rebuild the provider registry from the candidate so route validation
+    // sees newly added endpoints/plans, then verify model.route_options and
+    // models.routes reference resolvable endpoints.
+    candidate_config.providers = crate::config::resolve_provider_registry(
+        candidate,
+        &crate::config::load_settings_env()?,
+        &credentials,
+    )?;
+    candidate_config.validate_model_route_options()?;
     // Reject incomplete decision routes here: an invalid persisted route aborts
     // every later config reload and blocks runtime spawn on restart.
     crate::runtime::decision_openai::validate_shared_decision_config(
@@ -1692,6 +1693,10 @@ pub async fn set_agent_model(
         .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
+    runtime
+        .validate_model_override_route(&model)
+        .await
+        .map_err(|error| bad_request(error.to_string()))?;
     let model_state = runtime
         .set_model_override_with_service_tier(
             model.clone(),

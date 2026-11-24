@@ -163,6 +163,87 @@ pub struct ResolvedModelRouteMetadata {
     pub capabilities: ResolvedModelCapabilities,
 }
 
+/// Resolution failure for an explicit `provider@endpoint/model` route ref.
+///
+/// Separates "this route does not exist" from "the route exists but is not
+/// currently usable", so write-time and load-time callers can reject a bad
+/// reference instead of silently degrading to the default endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteResolutionError {
+    /// Canonicalized route ref that failed to resolve.
+    pub route_ref: ModelRouteRef,
+    pub provider: ProviderId,
+    pub endpoint: ProviderEndpointId,
+    /// Endpoints currently resolvable for `provider` (sorted, deduplicated).
+    pub available_endpoints: Vec<ProviderEndpointId>,
+    /// Set when `provider` is a plan alias (`<provider>-<plan>`): the base
+    /// provider and endpoint the caller should address instead.
+    pub plan_alias: Option<(ProviderId, ProviderEndpointId)>,
+    /// Set when the route resolves to an endpoint that cannot serve the
+    /// requested capability.
+    pub unsupported_capability: Option<ModelRouteCapability>,
+}
+
+impl std::fmt::Display for RouteResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(capability) = self.unsupported_capability {
+            return write!(
+                f,
+                "model route {} resolves to provider `{}` endpoint `{}` but does not support the requested {capability:?} capability",
+                self.route_ref.as_string(),
+                self.provider.as_str(),
+                self.endpoint.as_str(),
+            );
+        }
+        if let Some((base_provider, base_endpoint)) = &self.plan_alias {
+            return write!(
+                f,
+                "model route {} uses plan alias provider `{}`; \
+                 address the plan with `{}@{}/{}` (provider@endpoint/model) instead",
+                self.route_ref.as_string(),
+                self.provider.as_str(),
+                base_provider.as_str(),
+                base_endpoint.as_str(),
+                self.route_ref.model,
+            );
+        }
+        if self.available_endpoints.is_empty() {
+            return write!(
+                f,
+                "model route {} references provider `{}`, which has no configured endpoints; \
+                 configure `providers.{}.endpoints.<name>` plus a plan, \
+                 then use `{}@<endpoint>/{}`",
+                self.route_ref.as_string(),
+                self.provider.as_str(),
+                self.provider.as_str(),
+                self.provider.as_str(),
+                self.route_ref.model,
+            );
+        }
+        let available = self
+            .available_endpoints
+            .iter()
+            .map(|endpoint| endpoint.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(
+            f,
+            "model route {} references unknown endpoint `{}` for provider `{}`; \
+             available endpoints: {available}. \
+             Use `{}@<endpoint>/{}`, or add `providers.{}.plans.<plan>.endpoint={}`",
+            self.route_ref.as_string(),
+            self.endpoint.as_str(),
+            self.provider.as_str(),
+            self.provider.as_str(),
+            self.route_ref.model,
+            self.provider.as_str(),
+            self.endpoint.as_str(),
+        )
+    }
+}
+
+impl std::error::Error for RouteResolutionError {}
+
 impl ResolvedModelRoute {
     pub fn provider_config(&self) -> &ProviderRuntimeConfig {
         &self.endpoint.runtime_config
@@ -490,11 +571,33 @@ impl RuntimeModelCatalog {
         route_ref: &ModelRouteRef,
         requested_capability: ModelRouteCapability,
     ) -> Option<ResolvedModelRoute> {
-        let metadata = self.resolve_explicit_model_metadata(base_context_config, route_ref)?;
+        self.try_resolve_explicit_model_route(base_context_config, route_ref, requested_capability)
+            .ok()
+    }
+
+    /// Checked variant of [`Self::resolve_explicit_model_route`].
+    ///
+    /// Returns a [`RouteResolutionError`] when the provider/endpoint pair does
+    /// not resolve, so write-time and load-time callers can surface a
+    /// diagnosable error instead of degrading silently.
+    pub fn try_resolve_explicit_model_route(
+        &self,
+        base_context_config: &ContextConfig,
+        route_ref: &ModelRouteRef,
+        requested_capability: ModelRouteCapability,
+    ) -> std::result::Result<ResolvedModelRoute, RouteResolutionError> {
+        let metadata = self.try_resolve_explicit_model_metadata(base_context_config, route_ref)?;
         if !metadata.capabilities.supports(requested_capability) {
-            return None;
+            return Err(RouteResolutionError {
+                route_ref: metadata.route_ref.clone(),
+                provider: metadata.route_ref.provider.clone(),
+                endpoint: metadata.route_ref.endpoint.clone(),
+                available_endpoints: vec![metadata.route_ref.endpoint.clone()],
+                plan_alias: None,
+                unsupported_capability: Some(requested_capability),
+            });
         }
-        Some(ResolvedModelRoute {
+        Ok(ResolvedModelRoute {
             service_tier: self.route_service_tier(&metadata.route_ref),
             route_ref: metadata.route_ref,
             model_ref: metadata.model_ref,
@@ -511,12 +614,27 @@ impl RuntimeModelCatalog {
         base_context_config: &ContextConfig,
         route_ref: &ModelRouteRef,
     ) -> Option<ResolvedModelRouteMetadata> {
+        self.try_resolve_explicit_model_metadata(base_context_config, route_ref)
+            .ok()
+    }
+
+    /// Checked variant of [`Self::resolve_explicit_model_metadata`].
+    #[doc(hidden)]
+    pub fn try_resolve_explicit_model_metadata(
+        &self,
+        base_context_config: &ContextConfig,
+        route_ref: &ModelRouteRef,
+    ) -> std::result::Result<ResolvedModelRouteMetadata, RouteResolutionError> {
         let canonical_route_ref = self.canonicalize_model_route_ref(route_ref);
         let canonical_model_ref = canonical_route_ref.model_ref();
-        let endpoint = self.provider_endpoints.iter().find(|endpoint| {
-            endpoint.provider == canonical_route_ref.provider
-                && endpoint.endpoint == canonical_route_ref.endpoint
-        })?;
+        let endpoint = self
+            .provider_endpoints
+            .iter()
+            .find(|endpoint| {
+                endpoint.provider == canonical_route_ref.provider
+                    && endpoint.endpoint == canonical_route_ref.endpoint
+            })
+            .ok_or_else(|| self.route_resolution_error(&canonical_route_ref))?;
         let mut policy =
             self.resolved_model_policy_for_route(base_context_config, &canonical_route_ref);
         let mut capabilities =
@@ -556,12 +674,63 @@ impl RuntimeModelCatalog {
                     None
                 };
         }
-        Some(ResolvedModelRouteMetadata {
+        Ok(ResolvedModelRouteMetadata {
             route_ref: canonical_route_ref,
             model_ref: canonical_model_ref,
             endpoint,
             policy,
             capabilities,
+        })
+    }
+
+    /// Build a diagnosable error for a route that did not match any resolved
+    /// provider endpoint.
+    fn route_resolution_error(&self, canonical_route_ref: &ModelRouteRef) -> RouteResolutionError {
+        // A plan alias (`<provider>-<plan>`) appears in the registry with an
+        // `id` distinct from its `route_provider`. Detect that case so we can
+        // point the caller at the addressable `provider@endpoint/model` form.
+        let plan_alias = self
+            .provider_endpoints
+            .iter()
+            .find(|endpoint| {
+                endpoint.runtime_config.id == canonical_route_ref.provider
+                    && endpoint.runtime_config.id != endpoint.runtime_config.route_provider
+            })
+            .map(|endpoint| {
+                (
+                    endpoint.runtime_config.route_provider.clone(),
+                    endpoint.runtime_config.route_endpoint.clone(),
+                )
+            });
+        let mut available_endpoints = self
+            .provider_endpoints
+            .iter()
+            .filter(|endpoint| endpoint.provider == canonical_route_ref.provider)
+            .map(|endpoint| endpoint.endpoint.clone())
+            .collect::<Vec<_>>();
+        available_endpoints.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        available_endpoints.dedup();
+        RouteResolutionError {
+            route_ref: canonical_route_ref.clone(),
+            provider: canonical_route_ref.provider.clone(),
+            endpoint: canonical_route_ref.endpoint.clone(),
+            available_endpoints,
+            plan_alias,
+            unsupported_capability: None,
+        }
+    }
+
+    /// True when an explicit override names a `provider@endpoint` pair that no
+    /// longer resolves. Execution degrades to the default model instead of
+    /// failing; callers surface this flag so the degradation stays visible.
+    pub fn model_override_unresolved(
+        &self,
+        base_context_config: &ContextConfig,
+        model_override: Option<&ModelRouteRef>,
+    ) -> bool {
+        model_override.is_some_and(|route| {
+            self.try_resolve_explicit_model_metadata(base_context_config, route)
+                .is_err()
         })
     }
 

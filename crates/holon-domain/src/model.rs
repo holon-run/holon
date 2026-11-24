@@ -69,6 +69,11 @@ pub struct AgentModelState {
     pub override_service_tier: Option<crate::model_values::ServiceTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_service_tier: Option<crate::model_values::ServiceTier>,
+    /// Set when an explicit override was persisted but no longer resolves to a
+    /// configured provider endpoint. Execution degrades to the default model
+    /// rather than failing; the flag keeps that degradation visible.
+    #[serde(default, skip_serializing_if = "crate::serde_helpers::is_false")]
+    pub override_unresolved: bool,
     #[serde(default)]
     pub resolved_policy: ResolvedRuntimeModelPolicy,
 }

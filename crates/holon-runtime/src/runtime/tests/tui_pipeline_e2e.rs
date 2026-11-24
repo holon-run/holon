@@ -58,6 +58,7 @@ fn minimal_agent_summary(agent_id: &str) -> AgentSummary {
             effective_service_tier: None,
             source: AgentModelSource::RuntimeDefault,
             effective_fallback_models: Vec::new(),
+            override_unresolved: false,
             resolved_policy: ResolvedRuntimeModelPolicy::default(),
         },
         token_usage: AgentTokenUsageSummary {

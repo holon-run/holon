@@ -407,6 +407,20 @@ pub struct ProviderEndpointConfigFile {
     pub headers: ProviderHeaders,
 }
 
+impl ProviderEndpointConfigFile {
+    /// True when every field is unset: an empty leftover entry that should be
+    /// dropped on load rather than surfaced as a configured endpoint.
+    pub fn is_empty(&self) -> bool {
+        self.transport.is_none()
+            && self.base_url.is_none()
+            && self
+                .auth
+                .as_ref()
+                .is_none_or(ProviderAuthConfig::is_effectively_empty)
+            && self.headers.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderPlanConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]

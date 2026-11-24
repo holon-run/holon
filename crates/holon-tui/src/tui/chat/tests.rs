@@ -86,6 +86,7 @@ fn agent_summary(status: AgentStatus, posture: AgentSchedulingPosture) -> AgentS
             override_reasoning_effort: None,
             override_service_tier: None,
             effective_service_tier: None,
+            override_unresolved: false,
             resolved_policy: holon_domain::model_values::ResolvedRuntimeModelPolicy::default(),
         },
         token_usage: AgentTokenUsageSummary {

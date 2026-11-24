@@ -40,6 +40,7 @@ fn model(mask: u8, fallbacks: usize) -> AgentModelState {
         override_reasoning_effort: (mask & 8 != 0).then(|| text("high-汉字\0🦀")),
         override_service_tier: None,
         effective_service_tier: None,
+        override_unresolved: false,
         resolved_policy: policy,
     }
 }

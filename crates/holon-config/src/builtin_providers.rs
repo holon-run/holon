@@ -69,6 +69,15 @@ fn provider_endpoint_key<'a>(rest: &'a str, suffix: &str) -> Option<(&'a str, &'
     rest.split_once(".endpoints.")
 }
 
+/// Match `providers.<id>.endpoints.<name>` (the whole entry, no leaf field).
+fn provider_endpoint_entry_key(rest: &str) -> Option<(&str, &str)> {
+    let (id, endpoint) = rest.split_once(".endpoints.")?;
+    if id.is_empty() || endpoint.is_empty() || endpoint.contains('.') {
+        return None;
+    }
+    Some((id, endpoint))
+}
+
 fn provider_plan_key<'a>(rest: &'a str, suffix: &str) -> Option<(&'a str, &'a str)> {
     let rest = rest.strip_suffix(suffix)?;
     rest.split_once(".plans.")
@@ -619,6 +628,17 @@ fn unset_provider_endpoint_config_key(config: &mut HolonConfigFile, key: &str) -
             }
             return Ok(true);
         }
+    }
+    // Whole-entry removal: `config unset providers.<id>.endpoints.<name>` drops
+    // the endpoint subtree (transport/base_url/auth/headers) instead of only
+    // clearing one leaf, so a stale stub cannot linger with no supported path
+    // back to a clean state.
+    if let Some((id, endpoint_id)) = provider_endpoint_entry_key(rest) {
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        provider
+            .endpoints
+            .remove(&ProviderEndpointId::parse(endpoint_id)?);
+        return Ok(true);
     }
     Ok(false)
 }

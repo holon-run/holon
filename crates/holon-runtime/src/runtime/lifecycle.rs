@@ -1365,6 +1365,23 @@ impl RuntimeHandle {
             .await
     }
 
+    /// Validate that an explicit model override route resolves to a real
+    /// provider endpoint before it is persisted.
+    ///
+    /// Write-time callers (`agent model set`) use this to reject unknown
+    /// `provider@endpoint` pairs with a diagnosable error instead of accepting
+    /// them and degrading to the default endpoint at execution time.
+    pub async fn validate_model_override_route(
+        &self,
+        model_override: &crate::config::ModelRouteRef,
+    ) -> Result<()> {
+        let snap = self.inner.config_snapshot.load();
+        snap.model_catalog
+            .try_resolve_explicit_model_metadata(&snap.base_context_config, model_override)
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
+    }
+
     pub async fn set_model_override_with_service_tier(
         &self,
         model_override: crate::config::ModelRouteRef,

@@ -97,6 +97,18 @@ pub struct ProviderAuthConfig {
     pub client_id: Option<String>,
 }
 
+impl ProviderAuthConfig {
+    /// True when no credential source or per-source detail is configured.
+    pub fn is_effectively_empty(&self) -> bool {
+        matches!(self.source, CredentialSource::None)
+            && matches!(self.kind, CredentialKind::None)
+            && self.env.is_none()
+            && self.profile.is_none()
+            && self.external.is_none()
+            && self.client_id.is_none()
+    }
+}
+
 /// Per-endpoint prompt-cache capabilities for Anthropic-compatible
 /// providers.
 ///

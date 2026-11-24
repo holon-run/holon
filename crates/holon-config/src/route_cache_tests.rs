@@ -502,3 +502,114 @@ fn route_cache_builtin_policy_and_resolved_source_serde_are_sparse() {
     }))
     .is_err());
 }
+
+fn catalog_with_custom_endpoint() -> RuntimeModelCatalog {
+    let mut catalog = cache_catalog();
+    let mut custom = catalog
+        .provider_endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.provider.as_str() == "dashscope" && endpoint.endpoint.as_str() == "token-plan"
+        })
+        .unwrap()
+        .clone();
+    custom.provider = ProviderId::parse("acme").unwrap();
+    custom.endpoint = ProviderEndpointId::parse("magpie").unwrap();
+    custom.runtime_config.id = custom.provider.clone();
+    custom.runtime_config.route_provider = custom.provider.clone();
+    custom.runtime_config.route_endpoint = custom.endpoint.clone();
+    catalog.provider_endpoints.push(custom);
+    catalog
+}
+
+#[test]
+fn checked_route_resolution_reports_unknown_endpoint_with_available_list() {
+    let catalog = catalog_with_custom_endpoint();
+    let context = ContextConfig::default();
+    let valid = ModelRouteRef::parse("acme@magpie/qwen3.8-flash").unwrap();
+    assert!(catalog
+        .try_resolve_explicit_model_metadata(&context, &valid)
+        .is_ok());
+
+    let missing = ModelRouteRef::parse("acme@nope/qwen3.8-flash").unwrap();
+    let error = catalog
+        .try_resolve_explicit_model_metadata(&context, &missing)
+        .unwrap_err();
+    assert_eq!(error.provider.as_str(), "acme");
+    assert_eq!(error.endpoint.as_str(), "nope");
+    assert_eq!(
+        error.available_endpoints,
+        vec![ProviderEndpointId::parse("magpie").unwrap()]
+    );
+    let message = error.to_string();
+    assert!(message.contains("acme@nope/qwen3.8-flash"), "{message}");
+    assert!(message.contains("magpie"), "{message}");
+    // The checked Option entry stays a lossy probe for capability discovery.
+    assert!(catalog
+        .resolve_explicit_model_metadata(&context, &missing)
+        .is_none());
+}
+
+#[test]
+fn checked_route_resolution_flags_plan_alias_provider() {
+    let mut catalog = catalog_with_custom_endpoint();
+    let mut alias = catalog
+        .provider_endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.provider.as_str() == "acme" && endpoint.endpoint.as_str() == "magpie"
+        })
+        .unwrap()
+        .clone();
+    // A plan alias materializes under `<provider>-<plan>` while still routing
+    // through the base provider and endpoint.
+    alias.runtime_config.id = ProviderId::parse("acme-managed").unwrap();
+    catalog.provider_endpoints.push(alias);
+
+    let misused = ModelRouteRef::parse("acme-managed@default/qwen3.8-flash").unwrap();
+    let error = catalog
+        .try_resolve_explicit_model_metadata(&ContextConfig::default(), &misused)
+        .unwrap_err();
+    assert_eq!(
+        error.plan_alias,
+        Some((
+            ProviderId::parse("acme").unwrap(),
+            ProviderEndpointId::parse("magpie").unwrap()
+        ))
+    );
+    let message = error.to_string();
+    assert!(message.contains("plan alias"), "{message}");
+    assert!(message.contains("acme@magpie/qwen3.8-flash"), "{message}");
+}
+
+#[test]
+fn model_override_unresolved_only_flags_missing_endpoints() {
+    let catalog = catalog_with_custom_endpoint();
+    let context = ContextConfig::default();
+    assert!(!catalog.model_override_unresolved(&context, None));
+    let valid = ModelRouteRef::parse("acme@magpie/qwen3.8-flash").unwrap();
+    assert!(!catalog.model_override_unresolved(&context, Some(&valid)));
+    let missing = ModelRouteRef::parse("acme@nope/qwen3.8-flash").unwrap();
+    assert!(catalog.model_override_unresolved(&context, Some(&missing)));
+}
+
+#[test]
+fn validate_model_route_options_rejects_models_routes_with_unknown_endpoint() {
+    let mut catalog = catalog_with_custom_endpoint();
+    catalog.model_route_overrides.insert(
+        ModelRouteRef::parse("acme@nope/qwen3.8-flash").unwrap(),
+        cache_override(Some(false)),
+    );
+    let error = validate_model_route_options(&catalog)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("models.routes"), "{error}");
+    assert!(error.contains("acme@nope/qwen3.8-flash"), "{error}");
+
+    catalog.model_route_overrides.clear();
+    catalog.model_route_overrides.insert(
+        ModelRouteRef::parse("acme@magpie/qwen3.8-flash").unwrap(),
+        cache_override(Some(false)),
+    );
+    assert!(validate_model_route_options(&catalog).is_ok());
+}
