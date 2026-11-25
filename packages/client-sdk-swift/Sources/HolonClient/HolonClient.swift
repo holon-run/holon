@@ -228,11 +228,12 @@ public actor HolonClient {
 
     public func sendOperatorPrompt(agentID: String, request prompt: HolonPromptRequest)
         async throws -> HolonResponse<HolonPromptReceipt> {
-        try await sendOperatorPrompt(agentID: agentID, request: prompt, admit: nil)
+        try await sendOperatorPromptCheckingAdmission(agentID: agentID, request: prompt, admit: nil)
     }
 
-    public func sendOperatorPrompt(agentID: String, request prompt: HolonPromptRequest,
-                                   admit: (@Sendable () throws -> Void)?)
+    /// Submits only if the optional caller-supplied admission check succeeds.
+    public func sendOperatorPromptCheckingAdmission(agentID: String, request prompt: HolonPromptRequest,
+                                                    admit: (@Sendable () throws -> Void)?)
         async throws -> HolonResponse<HolonPromptReceipt> {
         let result = try await request(path: ["control", "agents", agentID, "prompt"],
                                        method: "POST", body: prompt.payload, admit: admit)
@@ -273,11 +274,12 @@ public actor HolonClient {
 
     public func setAgentModel(agentID: String, request model: HolonAgentModelRequest)
         async throws -> HolonResponse<HolonAgentModelState> {
-        try await setAgentModel(agentID: agentID, request: model, admit: nil)
+        try await setAgentModelCheckingAdmission(agentID: agentID, request: model, admit: nil)
     }
 
-    public func setAgentModel(agentID: String, request model: HolonAgentModelRequest,
-                              admit: (@Sendable () throws -> Void)?)
+    /// Updates only if the optional caller-supplied admission check succeeds.
+    public func setAgentModelCheckingAdmission(agentID: String, request model: HolonAgentModelRequest,
+                                               admit: (@Sendable () throws -> Void)?)
         async throws -> HolonResponse<HolonAgentModelState> {
         let result = try await request(path: ["control", "agents", agentID, "model"],
                                        method: "POST", body: model.payload, admit: admit)
@@ -290,10 +292,11 @@ public actor HolonClient {
     }
 
     public func clearAgentModel(agentID: String) async throws -> HolonResponse<HolonAgentModelState> {
-        try await clearAgentModel(agentID: agentID, admit: nil)
+        try await clearAgentModelCheckingAdmission(agentID: agentID, admit: nil)
     }
 
-    public func clearAgentModel(agentID: String, admit: (@Sendable () throws -> Void)?)
+    /// Clears only if the optional caller-supplied admission check succeeds.
+    public func clearAgentModelCheckingAdmission(agentID: String, admit: (@Sendable () throws -> Void)?)
         async throws -> HolonResponse<HolonAgentModelState> {
         let result = try await request(path: ["control", "agents", agentID, "model", "clear"],
                                        method: "POST", body: .object([

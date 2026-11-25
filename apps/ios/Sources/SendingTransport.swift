@@ -111,14 +111,14 @@ actor SendingClientTransport: SendingTransport {
             // Wait for the HTTP result so the coordinator does not unlock a stale model read.
             let write = Task { [admission] in
                 try await request(sharing: true) {
-                    try await $0.setAgentModel(agentID: agentID, request: selection, admit: admission.check)
+                    try await $0.setAgentModelCheckingAdmission(agentID: agentID, request: selection, admit: admission.check)
                 }
             }
             _ = try await write.value
         }
         try Task.checkCancellation()
         let receipt = try await request(sharing: true) { [admission] in
-            try await $0.sendOperatorPrompt(agentID: agentID, request: prompt, admit: admission.check)
+            try await $0.sendOperatorPromptCheckingAdmission(agentID: agentID, request: prompt, admit: admission.check)
         }
         guard receipt.isAccepted else { throw HolonClientError.malformedResponse }
         return receipt.messageID
@@ -175,12 +175,12 @@ actor SendingClientTransport: SendingTransport {
         switch selection {
         case .automatic:
             state = try await request(sharing: true) { [admission] in
-                try await $0.clearAgentModel(agentID: agentID, admit: admission.check)
+                try await $0.clearAgentModelCheckingAdmission(agentID: agentID, admit: admission.check)
             }
         case .manual(let model, let effort, let tier):
             let body = try HolonAgentModelRequest(model: model, reasoningEffort: effort, serviceTier: tier)
             state = try await request(sharing: true) { [admission] in
-                try await $0.setAgentModel(agentID: agentID, request: body, admit: admission.check)
+                try await $0.setAgentModelCheckingAdmission(agentID: agentID, request: body, admit: admission.check)
             }
         }
         return try Self.modelConfiguration(state)
