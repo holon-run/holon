@@ -45,6 +45,8 @@ mod serde_helpers;
 mod skills;
 mod state;
 mod task;
+pub mod task_generation;
+pub mod task_transition;
 mod templates;
 mod tool;
 mod tool_error;

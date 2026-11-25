@@ -12,6 +12,7 @@ use crate::types::{
 };
 use anyhow::bail;
 use chrono::{DateTime, Utc};
+pub(crate) use holon_domain::is_terminal_task_status;
 pub(super) use holon_domain::wake_matching::message_matches_wait_condition;
 use holon_domain::wake_matching::scheduler_wait_correlation;
 use std::collections::HashMap;
@@ -1430,16 +1431,6 @@ pub(crate) fn idle_boundary_decision(
             .evidence("work_item_runnable");
     }
     idle_noop_decision(projection).boundary(boundary)
-}
-
-pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
-    matches!(
-        status,
-        TaskStatus::Completed
-            | TaskStatus::Failed
-            | TaskStatus::Cancelled
-            | TaskStatus::Interrupted
-    )
 }
 
 pub(crate) fn projected_status_for_idle(
