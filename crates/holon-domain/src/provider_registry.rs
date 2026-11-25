@@ -58,6 +58,7 @@ pub enum ModelDiscoveryDecoder {
     Arcee,
     HuggingFace,
     Kilo,
+    Magpie,
     Ollama,
     OpenAiCompatible,
     NearAi,
