@@ -861,6 +861,196 @@ async fn startup_recovery_without_work_item_or_retained_claim_admits_operator_in
     assert_ne!(execution.open_attempt().unwrap().attempt_id, attempt_id);
 }
 
+/// Deterministic startup-recovery fixture for phase counters: one claimed
+/// source, one open Turn row, external/timer/TaskResult wake sources, then a
+/// shaped amount of unrelated historical rows.
+async fn seed_startup_counter_fixture(
+    unrelated_history: usize,
+) -> (TempDir, TempDir, RuntimeHandle) {
+    let harness = LifecycleHarness::new();
+    {
+        let runtime = harness.runtime();
+        let message = trusted_operator_prompt(None, "startup counter interrupted turn");
+        let message = runtime.enqueue(message).await.unwrap();
+        let scheduler_executor::RunLoopPoll::Message(_scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+                .poll()
+                .await
+                .unwrap()
+        else {
+            panic!("startup counter fixture source must be claimed");
+        };
+        finish_claimed_test_run(runtime).await;
+        let mut entry = runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap();
+        entry.status = QueueEntryStatus::Processed;
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .upsert(&entry)
+            .unwrap();
+        // One open Turn row keeps startup's interrupted-turn loop non-empty
+        // without fabricating a dispatch memory start.
+        runtime
+            .storage()
+            .append_turn(&TurnRecord::new("default", "turn-startup-counter-open", 1))
+            .unwrap();
+        let external_work = runtime
+            .create_work_item("external wake".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        runtime
+            .register_wait_for(
+                "default",
+                Some(external_work.id.clone()),
+                WaitForWakeKind::External,
+                Some("holon-run/holon#4484".into()),
+                "external state must change".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let timer_work = runtime
+            .create_work_item("timer wake".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        let timer = runtime
+            .schedule_timer(60_000, None, Some("startup counter timer".into()))
+            .await
+            .unwrap();
+        runtime
+            .register_wait_for(
+                "default",
+                Some(timer_work.id.clone()),
+                WaitForWakeKind::Timer,
+                Some(timer.id.clone()),
+                "resume this exact timer".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let task_work = runtime
+            .create_work_item("task result wake".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        let task_id = "task-startup-counter-rejoin";
+        append_running_rejoin_task(runtime, task_id, &task_work.id).await;
+        runtime
+            .register_wait_for(
+                "default",
+                Some(task_work.id.clone()),
+                WaitForWakeKind::TaskResult,
+                Some(task_id.into()),
+                "waiting for the fixture task".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Unrelated historical rows are closed Tasks; startup recovery only
+        // selects active task owners and interrupted Turns.
+        for index in 0..unrelated_history {
+            runtime
+                .persist_task_transition(
+                    &TaskRecord {
+                        id: format!("task-closed-history-{index}"),
+                        agent_id: "default".into(),
+                        kind: TaskKind::CommandTask,
+                        status: TaskStatus::Completed,
+                        created_at: Utc::now(),
+                        updated_at: Utc::now(),
+                        parent_message_id: None,
+                        work_item_id: None,
+                        summary: Some("closed history".into()),
+                        detail: None,
+                        recovery: None,
+                    },
+                    "closed_history_fixture",
+                )
+                .await
+                .unwrap();
+        }
+    }
+    harness.into_startup_fixture_parts()
+}
+
+async fn observe_startup_counter_fixture(
+    fixture: (TempDir, TempDir, RuntimeHandle),
+) -> (
+    crate::runtime_db::transitions::StartupRuntimeRecoveryReport,
+    crate::startup::StartupPhaseSummary,
+) {
+    let (home, workspace, runtime) = fixture;
+    let provider = runtime.inner.base_provider.clone();
+    let agent_id = runtime.agent_id().await.unwrap();
+    drop(runtime);
+    let host_home = tempdir().unwrap();
+    std::fs::write(
+        host_home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let mut config = AppConfig::load_with_home(Some(host_home.path().to_path_buf())).unwrap();
+    config.default_agent_id = agent_id;
+    config.data_dir = home.path().join(".holon");
+    config.workspace_dir = workspace.path().to_path_buf();
+    config.user_home_dir = Some(host_home.path().to_path_buf());
+    let host = RuntimeHost::new_with_provider(config, provider).unwrap();
+    let observed = host.durable_reconcile_for_fixture_observed().await.unwrap();
+    drop(host);
+    observed
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn startup_durable_reconcile_counters_stay_bounded_by_selected_recovery_surface() {
+    let baseline = seed_startup_counter_fixture(0).await;
+    let scaled = seed_startup_counter_fixture(32).await;
+    let (baseline_report, baseline_summary) = observe_startup_counter_fixture(baseline).await;
+    let (scaled_report, scaled_summary) = observe_startup_counter_fixture(scaled).await;
+
+    assert!(
+        baseline_report.interrupted_turns >= 1,
+        "fixture must interrupt its dispatched turn: {baseline_report:?}"
+    );
+    assert_eq!(
+        baseline_report.interrupted_turns, scaled_report.interrupted_turns,
+        "unrelated history must not add interrupted turns"
+    );
+    assert!(baseline_summary.counters.candidates >= 1);
+    assert_eq!(
+        baseline_summary.counters.candidates, scaled_summary.counters.candidates,
+        "unrelated history must not add recovery candidates: {scaled_summary:?}"
+    );
+    assert_eq!(
+        baseline_summary.counters.rows_scanned, scaled_summary.counters.rows_scanned,
+        "unrelated history must not widen the scanned surface"
+    );
+    assert_eq!(
+        baseline_summary.counters.rows_decoded, scaled_summary.counters.rows_decoded,
+        "unrelated history must not add decoded rows"
+    );
+    assert_eq!(
+        baseline_summary.counters.write_tx_count, scaled_summary.counters.write_tx_count,
+        "unrelated history must not add write transactions"
+    );
+    assert!(baseline_summary.counters.write_tx_count >= 1);
+    // Wall clock is reported only; the attribution bound tolerates timer
+    // truncation without gating on host speed.
+    assert!(
+        baseline_summary.attributed_ms + 5 >= baseline_summary.elapsed_ms,
+        "named subphases must attribute the measured durable scope: {baseline_summary:?}"
+    );
+}
+
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revision_fences() {

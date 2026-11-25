@@ -3953,31 +3953,10 @@ impl RuntimeHost {
         let mut failed = 0usize;
         let mut dispatch = None;
         let result = async {
-        let recovery_report = observation.observe("durable_reconcile", async {
-        self.reconcile_control_obligations_at_startup_inner(Some(admission))
+        let durable_scope = observation.scope("durable_reconcile");
+        let (recovery_report, _scope_summary) = self
+            .durable_reconcile_scope(admission, observation, durable_scope)
             .await?;
-        let recovery_report = self
-            .recover_startup_dispatch_memory_inner(admission)
-            .await?;
-        let stale_waits = self
-            .reconcile_stale_waits_at_startup_inner(Some(admission))
-            .await?;
-        // Any Result Queue ACK is visible to the original activation predicates
-        // below. Stop history alone never supplies an activation request.
-        self.sweep_pending_task_stops_at_startup().await?;
-        tracing::info!(
-            startup_id = %observation.startup_id,
-            queue_entries_changed = recovery_report.queue_entries_changed,
-            interrupted_turns = recovery_report.interrupted_turns,
-            superseded_turns = recovery_report.superseded_turns,
-            orphaned_claim_turns = recovery_report.orphaned_claim_turns,
-            daemon_restart_turns = recovery_report.daemon_restart_turns,
-            interrupted_execution_attempts = recovery_report.interrupted_execution_attempts,
-            stale_waits_cancelled = stale_waits,
-            "startup durable reconciliation completed"
-        );
-        Ok(recovery_report)
-        }).await?;
         observation.observe_sync("agent_list_publication", || self.refresh_agent_list())?;
         let recovered_queue_agent_ids = recovery_report.recovered_queue_agent_ids.clone();
         let (recovery_agent_ids, queue_recovery_candidate_ids, active_task_owner_ids, active_timer_owner_ids) =
@@ -4125,6 +4104,61 @@ impl RuntimeHost {
         ))
     }
 
+    /// Durable startup reconciliation, observed through the caller's
+    /// `durable_reconcile` scope. Subphases bracket the existing transaction and
+    /// loop boundaries; they never reorder, retry, or widen recovery work.
+    async fn durable_reconcile_scope(
+        &self,
+        admission: &AcceptedStartupRecovery,
+        observation: &crate::startup::StartupObservation,
+        scope: crate::startup::StartupPhase,
+    ) -> Result<(
+        startup_dispatch_memory::ObservedStartupRecoveryReport,
+        crate::startup::StartupPhaseSummary,
+    )> {
+        // The recovery chain is much deeper than this call site; keep the
+        // aggregate future heap-allocated so polling cannot exhaust the
+        // caller's stack frame.
+        let reconciliation = Box::pin(async {
+            let control_phase = scope.child("control_obligations");
+            let obligations = self
+                .reconcile_control_obligations_at_startup_inner(Some(admission))
+                .await;
+            if let Ok(observed) = &obligations {
+                control_phase.counters().add_candidates(*observed as u64);
+            }
+            control_phase.finish(&obligations);
+            obligations?;
+            let recovery_report = self
+                .recover_startup_dispatch_memory_inner(admission, Some(&scope))
+                .await?;
+            let stale_waits = self
+                .reconcile_stale_waits_at_startup_inner(Some(admission), Some(&scope))
+                .await?;
+            // Any Result Queue ACK is visible to the original activation predicates
+            // below. Stop history alone never supplies an activation request.
+            let task_stop_phase = scope.child("task_stop_sweep");
+            let swept = self.sweep_pending_task_stops_at_startup().await;
+            task_stop_phase.finish(&swept);
+            swept?;
+            tracing::info!(
+                startup_id = %observation.startup_id,
+                queue_entries_changed = recovery_report.queue_entries_changed,
+                interrupted_turns = recovery_report.interrupted_turns,
+                superseded_turns = recovery_report.superseded_turns,
+                orphaned_claim_turns = recovery_report.orphaned_claim_turns,
+                daemon_restart_turns = recovery_report.daemon_restart_turns,
+                interrupted_execution_attempts = recovery_report.interrupted_execution_attempts,
+                stale_waits_cancelled = stale_waits,
+                "startup durable reconciliation completed"
+            );
+            Ok(recovery_report)
+        })
+        .await;
+        let summary = scope.finish_with_summary(&reconciliation);
+        Ok((reconciliation?, summary))
+    }
+
     #[cfg(test)]
     async fn reconcile_control_obligations_at_startup(&self) -> Result<usize> {
         self.reconcile_control_obligations_at_startup_inner(None)
@@ -4266,13 +4300,16 @@ impl RuntimeHost {
 
     #[cfg(test)]
     async fn reconcile_stale_waits_at_startup(&self) -> Result<usize> {
-        self.reconcile_stale_waits_at_startup_inner(None).await
+        self.reconcile_stale_waits_at_startup_inner(None, None)
+            .await
     }
 
     async fn reconcile_stale_waits_at_startup_inner(
         &self,
         admission: Option<&AcceptedStartupRecovery>,
+        scope: Option<&crate::startup::StartupPhase>,
     ) -> Result<usize> {
+        let scan_span = scope.map(|s| s.child("stale_wait_scan"));
         let (mut reservations, handoff) = self.reserve_startup_mutations_inner(admission).await?;
         // Exact identities/State return from the guarded original transaction;
         // do not decode a second full State before its material preflight.
@@ -4321,6 +4358,12 @@ impl RuntimeHost {
                 },
             )
             .collect::<Vec<_>>();
+        if let Some(span) = scan_span {
+            span.counters().add_candidates(agent_ids.len() as u64);
+            span.counters().add_rows_scanned(input_scopes.len() as u64);
+            span.finish(&Ok::<(), anyhow::Error>(()));
+        }
+        let commit_span = scope.map(|s| s.child("stale_wait_commit"));
         let mut scheduling_ack = None;
         let mut handoff = Some(handoff);
         let mut acknowledged = None;
@@ -4366,7 +4409,13 @@ impl RuntimeHost {
                 })?;
         }
         drop(scheduling_ack);
-        Ok(acknowledged.expect("startup wait cleanup ACK must retain its count"))
+        let cancelled = acknowledged.expect("startup wait cleanup ACK must retain its count");
+        if let Some(span) = commit_span {
+            span.counters().record_write_transaction(span.elapsed_ms());
+            span.counters().add_rows_decoded(cancelled as u64);
+            span.finish(&Ok::<(), anyhow::Error>(()));
+        }
+        Ok(cancelled)
     }
 
     fn active_agent_identity(

@@ -621,7 +621,7 @@ impl RuntimeHost {
                 host: Arc::downgrade(&host.inner),
             };
             let report = host
-                .recover_startup_dispatch_memory_at_inner(&admission, Some(recovered_at))
+                .recover_startup_dispatch_memory_at_inner(&admission, Some(recovered_at), None)
                 .await?;
             let result = (*report).clone();
             host.finish_startup_recovery_report();
@@ -633,16 +633,46 @@ impl RuntimeHost {
     pub(super) async fn recover_startup_dispatch_memory_inner(
         &self,
         admission: &AcceptedStartupRecovery,
+        scope: Option<&crate::startup::StartupPhase>,
     ) -> Result<ObservedStartupRecoveryReport> {
-        self.recover_startup_dispatch_memory_at_inner(admission, None)
+        self.recover_startup_dispatch_memory_at_inner(admission, None, scope)
             .await
+    }
+
+    /// Run the complete pre-activation `durable_reconcile` scope once and
+    /// return both the recovery report and the phase's attribution summary.
+    /// Counters are observation-only; recovery behavior is unchanged.
+    #[cfg(test)]
+    pub(crate) async fn durable_reconcile_for_fixture_observed(
+        &self,
+    ) -> Result<(
+        StartupRuntimeRecoveryReport,
+        crate::startup::StartupPhaseSummary,
+    )> {
+        let host = self.clone();
+        self.run_owned_external_mutation(async move {
+            let admission = AcceptedStartupRecovery {
+                host: Arc::downgrade(&host.inner),
+            };
+            let observation = crate::startup::StartupObservation::new();
+            let scope = observation.scope("durable_reconcile");
+            let (report, summary) = host
+                .durable_reconcile_scope(&admission, &observation, scope)
+                .await?;
+            let result = (*report).clone();
+            host.finish_startup_recovery_report();
+            Ok((result, summary))
+        })
+        .await
     }
 
     async fn recover_startup_dispatch_memory_at_inner(
         &self,
         admission: &AcceptedStartupRecovery,
         recovered_at: Option<chrono::DateTime<Utc>>,
+        scope: Option<&crate::startup::StartupPhase>,
     ) -> Result<ObservedStartupRecoveryReport> {
+        let selection_span = scope.map(|s| s.child("startup_scope_selection"));
         let (mut reservations, handoff) = self
             .reserve_startup_mutations_inner(Some(admission))
             .await?;
@@ -668,6 +698,12 @@ impl RuntimeHost {
                 .map(|s| s.agent_id.clone())
                 .collect::<Vec<_>>(),
         )?;
+        if let Some(span) = selection_span {
+            span.counters().add_candidates(reservations.len() as u64);
+            span.counters().add_rows_scanned(scopes.len() as u64);
+            span.finish(&Ok::<(), anyhow::Error>(()));
+        }
+        let recovery_span = scope.map(|s| s.child("startup_recovery_tx"));
         let final_guards;
         {
             // No suspension is allowed inside the borrowed physical capability.
@@ -730,6 +766,10 @@ impl RuntimeHost {
             };
             // The SQL ACK and exact cold publication are recorded before any
             // further proof preparation can fail. These old deltas are not roots.
+            let recovered_rows = global.report.interrupted_turns
+                + global.report.interrupted_execution_attempts
+                + global.report.orphaned_claim_turns;
+            let queue_entry_changes = global.report.queue_entries_changed;
             let report_result = self
                 .inner
                 .startup_recovery_report
@@ -743,7 +783,17 @@ impl RuntimeHost {
             drop(global.input_deltas);
             self.publish_startup_cold_phase(&mut reservations)?;
             report_result?;
+            if let Some(span) = recovery_span {
+                let counters = span.counters();
+                counters.record_write_transaction(span.elapsed_ms());
+                counters.add_rows_decoded(recovered_rows as u64);
+                counters.add_batches(queue_entry_changes as u64);
+                span.finish(&Ok::<(), anyhow::Error>(()));
+            }
 
+            let settlement_span = scope.map(|s| s.child("startup_checkpoint_settlement"));
+            let mut checkpoint_batches = 0u64;
+            let mut checkpoint_skipped = 0u64;
             let (addresses, _address_guard) = self.startup_memory_addresses(&scopes)?;
             for address in addresses {
                 let index = reservations
@@ -754,8 +804,17 @@ impl RuntimeHost {
                     })
                     .context("unfinished memory scope was not reserved")?;
                 let selected = self.select_startup_checkpoint(&address, &session)?;
-                let Some(selected) = selected else { continue };
+                let Some(selected) = selected else {
+                    checkpoint_skipped += 1;
+                    continue;
+                };
+                checkpoint_batches += 1;
+                let checkpoint_started = std::time::Instant::now();
                 self.finish_startup_checkpoint(&mut reservations[index..index + 1], selected)?;
+                if let Some(span) = settlement_span.as_ref() {
+                    span.counters()
+                        .record_write_transaction(checkpoint_started.elapsed().as_millis() as u64);
+                }
             }
             // Capture final identity and State in one fresh view. Domains stay
             // cold until ordinary bootstrap, never carried through old metadata.
@@ -773,6 +832,11 @@ impl RuntimeHost {
                     MutationReservation::definitely_not_committed_all(&mut reservations)?;
                     return Err(error);
                 }
+            }
+            if let Some(span) = settlement_span {
+                span.counters().add_batches(checkpoint_batches);
+                span.counters().add_skipped(checkpoint_skipped);
+                span.finish(&Ok::<(), anyhow::Error>(()));
             }
         }
         // Session/maintenance borrow end before registry installation can await.
@@ -2022,7 +2086,7 @@ mod tests {
             host: Arc::downgrade(&host.inner),
         };
         let report = host
-            .recover_startup_dispatch_memory_inner(&admission)
+            .recover_startup_dispatch_memory_inner(&admission, None)
             .await?;
         assert_eq!(report.interrupted_execution_attempts, 1);
         assert!(report
@@ -2060,7 +2124,7 @@ mod tests {
             host: Arc::downgrade(&restarted.inner),
         };
         let report = restarted
-            .recover_startup_dispatch_memory_inner(&admission)
+            .recover_startup_dispatch_memory_inner(&admission, None)
             .await?;
         assert_eq!(report.interrupted_execution_attempts, 0);
         let receipts: usize = restarted.runtime_db().connection()?.query_row(
