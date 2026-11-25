@@ -129,6 +129,7 @@ fn http_candidate(
     ProviderCandidate {
         model_ref: format!("{}/test", id.as_str()),
         provider_name: id.as_str().into(),
+        transport_id: None,
         resolved_image_input: false,
         provider,
     }
@@ -232,6 +233,7 @@ async fn dispatch_guard_rejection_preserves_prior_http_retry_diagnostics() {
         candidates: vec![ProviderCandidate {
             model_ref: "openai/test".into(),
             provider_name: "openai".into(),
+            transport_id: None,
             resolved_image_input: false,
             provider: Arc::new(inner),
         }],
@@ -589,6 +591,7 @@ fn scripted_candidate(model_ref: &str, script: Vec<ScriptedFailure>) -> Provider
     ProviderCandidate {
         model_ref: model_ref.into(),
         provider_name: "openai".into(),
+        transport_id: None,
         resolved_image_input: false,
         provider: Arc::new(ScriptedProvider {
             script: Arc::new(Mutex::new(script)),
@@ -605,6 +608,7 @@ fn scripted_candidate_with_identity(
     ProviderCandidate {
         model_ref: model_ref.into(),
         provider_name: "openai".into(),
+        transport_id: None,
         resolved_image_input: false,
         provider: Arc::new(ScriptedProvider {
             script: Arc::new(Mutex::new(script)),
@@ -765,6 +769,7 @@ async fn hard_quota_stops_after_one_request_and_propagates_typed_diagnostics() {
             ProviderCandidate {
                 model_ref: "bigmodel@default/glm-5.2".into(),
                 provider_name: "bigmodel".into(),
+                transport_id: None,
                 resolved_image_input: false,
                 provider: Arc::new(ScriptedProvider {
                     script: script.clone(),
@@ -1083,6 +1088,7 @@ fn candidate(model_ref: &str, policy: ProviderContextManagementPolicy) -> Provid
     ProviderCandidate {
         model_ref: model_ref.into(),
         provider_name: "anthropic".into(),
+        transport_id: None,
         resolved_image_input: false,
         provider: Arc::new(PolicyProvider {
             policy: Some(policy),
@@ -1098,6 +1104,7 @@ fn recording_candidate(
     ProviderCandidate {
         model_ref: model_ref.into(),
         provider_name: provider_name.into(),
+        transport_id: None,
         resolved_image_input: false,
         provider: Arc::new(provider),
     }
@@ -1273,6 +1280,7 @@ fn builtin_web_search_uses_current_turn_candidate() {
             ProviderCandidate {
                 model_ref: "zai/glm-4.7".into(),
                 provider_name: "zai".into(),
+                transport_id: None,
                 resolved_image_input: false,
                 provider: Arc::new(SearchProvider {
                     capability: Some(search_capability(
@@ -1285,6 +1293,7 @@ fn builtin_web_search_uses_current_turn_candidate() {
             ProviderCandidate {
                 model_ref: "deepseek/deepseek-v4-flash".into(),
                 provider_name: "deepseek".into(),
+                transport_id: None,
                 resolved_image_input: false,
                 provider: Arc::new(SearchProvider { capability: None }),
             },
@@ -1307,12 +1316,14 @@ fn resolved_image_input_uses_current_turn_candidate() {
             ProviderCandidate {
                 model_ref: "volcengine@plan/glm-5.2".into(),
                 provider_name: "volcengine".into(),
+                transport_id: None,
                 resolved_image_input: false,
                 provider: Arc::new(PolicyProvider { policy: None }),
             },
             ProviderCandidate {
                 model_ref: "anthropic/claude-sonnet-4-6".into(),
                 provider_name: "anthropic".into(),
+                transport_id: None,
                 resolved_image_input: true,
                 provider: Arc::new(PolicyProvider { policy: None }),
             },
@@ -1336,6 +1347,7 @@ fn image_candidate(
     ProviderCandidate {
         model_ref: model_ref.into(),
         provider_name: "openai".into(),
+        transport_id: None,
         resolved_image_input,
         provider: Arc::new(ConversationRecorder { conversations }),
     }
@@ -1459,6 +1471,7 @@ async fn generate_image_uses_current_turn_candidate() {
         candidates: vec![ProviderCandidate {
             model_ref: "openai-codex/gpt-5.5".into(),
             provider_name: "openai-codex".into(),
+            transport_id: None,
             resolved_image_input: false,
             provider: Arc::new(ImageProvider),
         }],
