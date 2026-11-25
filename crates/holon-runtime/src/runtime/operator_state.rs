@@ -123,13 +123,7 @@ impl RuntimeHandle {
                 && root.token.identity_incarnation == self.inner.identity_incarnation,
             "State root scope differs"
         );
-        let unavailable = || {
-            crate::runtime_db::RuntimeDbRetryableError::new(
-                Self::OBSERVER_PUBLICATION_OPERATION,
-                self.inner.runtime_db.path(),
-                "State dependencies need publication",
-            )
-        };
+        let unavailable = || state_publication_retryable_error(&self.inner.runtime_db);
         let identity = root.identity.as_deref().ok_or_else(unavailable)?;
         anyhow::ensure!(
             identity.agent_id == root.state.id
@@ -236,7 +230,32 @@ impl RuntimeHandle {
     }
 }
 
-fn state_domains_need_publication(error: &anyhow::Error) -> bool {
+/// A resident dependency is unpublished or behind its committed truth. Every
+/// read boundary that cannot prepare the owner maps it to one retryable
+/// publication error instead of leaking the typed preparation sentinel as
+/// `domain: unknown`.
+pub(in crate::runtime) fn state_publication_retryable_error(
+    db: &crate::runtime_db::RuntimeDb,
+) -> crate::runtime_db::RuntimeDbRetryableError {
+    crate::runtime_db::RuntimeDbRetryableError::new(
+        RuntimeHandle::OBSERVER_PUBLICATION_OPERATION,
+        db.path(),
+        "State dependencies need publication",
+    )
+}
+
+pub(in crate::runtime) fn normalize_state_publication_error(
+    error: anyhow::Error,
+    db: &crate::runtime_db::RuntimeDb,
+) -> anyhow::Error {
+    if state_domains_need_publication(&error) {
+        error.context(state_publication_retryable_error(db))
+    } else {
+        error
+    }
+}
+
+pub(in crate::runtime) fn state_domains_need_publication(error: &anyhow::Error) -> bool {
     use super::{
         resident_input_evidence::{InputEvidenceReadError, InputQueryError},
         resident_scheduling::SchedulingReadError,
