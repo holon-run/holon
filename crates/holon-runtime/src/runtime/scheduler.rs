@@ -12,6 +12,8 @@ use crate::types::{
 };
 use anyhow::bail;
 use chrono::{DateTime, Utc};
+pub(super) use holon_domain::wake_matching::message_matches_wait_condition;
+use holon_domain::wake_matching::scheduler_wait_correlation;
 use std::collections::HashMap;
 
 /// The ordinary closure policy has always observed the latest 64 Briefs.
@@ -899,10 +901,10 @@ pub(crate) fn canonical_activation_candidate(
             _
         ) | (MessageKind::SystemTick, MessageOrigin::System { .. })
     ) {
-        if let Some(correlated_wait) = authoritative_wait_correlation(message) {
+        if let Some(correlated_wait) = scheduler_wait_correlation(message) {
             return Ok(Some(CanonicalActivationCandidate::ExactWaitResume {
                 expected_work_item_id: message.work_item_id.clone(),
-                correlated_wait: Some(correlated_wait),
+                correlated_wait: Some(correlated_wait.to_owned()),
             }));
         }
         return Ok(Some(CanonicalActivationCandidate::LifecycleExternalNudge {
@@ -1136,29 +1138,6 @@ pub(crate) fn resolve_canonical_activation_scenario(
     }))
 }
 
-fn authoritative_wait_correlation(message: &MessageEnvelope) -> Option<String> {
-    let trusted = matches!(
-        (message.delivery_surface, message.admission_context),
-        (
-            Some(MessageDeliverySurface::RuntimeSystem),
-            Some(AdmissionContext::RuntimeOwned)
-        ) | (
-            Some(MessageDeliverySurface::TaskRejoin),
-            Some(AdmissionContext::RuntimeOwned)
-        ) | (
-            Some(MessageDeliverySurface::HttpCallbackWake),
-            Some(AdmissionContext::ExternalTriggerCapability)
-        )
-    ) && matches!(
-        message.authority_class,
-        AuthorityClass::RuntimeInstruction | AuthorityClass::IntegrationSignal
-    );
-    if !trusted {
-        return None;
-    }
-    message.source_refs.get("wait_id").cloned()
-}
-
 pub(super) fn matching_wait_conditions<'a>(
     projection: &'a SchedulerProjection,
     message: &MessageEnvelope,
@@ -1316,88 +1295,6 @@ fn wait_resume_scenario_applies(
             | MessageKind::TimerTick
             | MessageKind::SystemTick
     ) && !matching_wait_conditions(projection, message).is_empty()
-}
-
-pub(super) fn message_matches_wait_condition(
-    message: &MessageEnvelope,
-    condition: &WaitConditionRecord,
-) -> bool {
-    if crate::wake_contract::is_agent_message(message) {
-        return crate::wake_contract::matching_wake_source(message, condition).is_some();
-    }
-    if matches!(
-        (&message.kind, &message.origin),
-        (
-            MessageKind::SystemTick,
-            MessageOrigin::System { subsystem }
-        ) if subsystem == "wait_condition_recheck"
-    ) && message.authority_class == AuthorityClass::RuntimeInstruction
-        && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
-        && message.admission_context == Some(AdmissionContext::RuntimeOwned)
-        && condition.work_item_id == message.work_item_id
-        && message.source_refs.get("wait_id") == Some(&condition.id)
-    {
-        return true;
-    }
-    match (&message.kind, &message.origin) {
-        (MessageKind::TaskResult, MessageOrigin::Task { task_id }) => {
-            condition.wake_sources.iter().any(
-                |source| matches!(source, WakeSource::TaskResult { task_id: id } if id == task_id),
-            )
-        }
-        (MessageKind::OperatorPrompt, MessageOrigin::Operator { .. }) => condition
-            .wake_sources
-            .iter()
-            .any(|source| matches!(source, WakeSource::OperatorInput)),
-        (MessageKind::CallbackEvent | MessageKind::WebhookEvent | MessageKind::ChannelEvent, _) => {
-            let external_trigger_id = message.source_refs.get("external_trigger_id");
-            condition.wake_sources.iter().any(|source| {
-                matches!(
-                    source,
-                    WakeSource::ExternalIngress {
-                        external_trigger_id: expected,
-                    } if expected.as_ref().is_none_or(|expected| {
-                        external_trigger_id.is_some_and(|actual| actual == expected)
-                    })
-                )
-            })
-        }
-        (MessageKind::TimerTick, MessageOrigin::Timer { timer_id }) => {
-            condition
-                .subject_ref
-                .as_deref()
-                .is_none_or(|subject_ref| subject_ref == timer_id)
-                && condition.wake_sources.iter().any(|source| {
-                    matches!(source, WakeSource::Timer { .. })
-                        && message
-                            .source_refs
-                            .get("timer_id")
-                            .is_none_or(|source_timer_id| source_timer_id == timer_id)
-                })
-        }
-        (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
-            if subsystem == "work_queue" {
-                return false;
-            }
-            if let Some(external_trigger_id) = message.source_refs.get("external_trigger_id") {
-                return condition.wake_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        WakeSource::ExternalIngress {
-                            external_trigger_id: expected,
-                        } if expected.as_ref().is_none_or(|expected| {
-                            expected == external_trigger_id
-                        })
-                    )
-                });
-            }
-            condition
-                .wake_sources
-                .iter()
-                .any(|source| matches!(source, WakeSource::SystemTick))
-        }
-        _ => false,
-    }
 }
 
 pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerDecision {
