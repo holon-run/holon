@@ -488,6 +488,12 @@ Recommended implementation boundary:
 
 ## WorkItem Contract
 
+The WorkItem projection in `holon-domain` derives readiness, candidate class,
+and queue order from a WorkItem, its active WaitConditions and Trigger
+deliveries, and the current and yielded facts supplied by the caller. The
+runtime owns those snapshots, resource admission for materialized queue
+views, and all scheduling transitions and effects.
+
 WorkItem scheduling should use readiness:
 
 - completed work is not runnable;

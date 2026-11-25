@@ -7,9 +7,8 @@ use crate::{
         resident_input_evidence::InputEvidenceScope,
     },
     types::{WakeSource, WorkItemPlanStatus},
-    work_item_scheduling::derive_owned_work_item_scheduling,
 };
-use std::{cmp::Ordering, sync::Arc};
+use std::sync::Arc;
 
 fn item(id: String, state: WorkItemState) -> WorkItemRecord {
     let mut item = WorkItemRecord::new("web", "sort 汉字\0🦀", state);
@@ -18,61 +17,6 @@ fn item(id: String, state: WorkItemState) -> WorkItemRecord {
     item.created_at = "2026-10-01T00:00:00Z".parse().unwrap();
     item.updated_at = item.created_at;
     item
-}
-
-#[test]
-fn queue_sort_comparators_have_unique_id_ties_and_match_stable_sort() {
-    let classes = [
-        WorkItemCandidateClass::CurrentRunnable,
-        WorkItemCandidateClass::TriggeredBlocked,
-        WorkItemCandidateClass::QueuedRunnable,
-        WorkItemCandidateClass::Yielded,
-        WorkItemCandidateClass::WaitingForOperator,
-        WorkItemCandidateClass::Blocked,
-        WorkItemCandidateClass::Completing,
-        WorkItemCandidateClass::CompletedRecent,
-    ];
-    let mut rows = Vec::new();
-    for (class_index, class) in classes.into_iter().enumerate() {
-        for index in (0..33).rev() {
-            let mut record = item(
-                format!("{class_index}-{index:03}-汉字\0🦀"),
-                WorkItemState::Open,
-            );
-            record.created_at += chrono::Duration::seconds(index % 3);
-            record.updated_at += chrono::Duration::seconds(index % 5);
-            if index % 2 == 0 {
-                record.blocked_by = Some("manual".into());
-            }
-            let mut row = derive_owned_work_item_scheduling(record, false, false, &[], &|_| None);
-            row.candidate_class = class;
-            row.last_triggered_at = (index % 2 == 0).then_some(row.work_item.updated_at);
-            rows.push(row);
-        }
-    }
-    for (index, left) in rows.iter().enumerate() {
-        for right in &rows[index + 1..] {
-            assert_ne!(left.id, right.id);
-            for order in [
-                compare_queue_display_order(left, right),
-                compare_scheduling_projection_order(left, right),
-            ] {
-                assert_ne!(order, Ordering::Equal);
-            }
-        }
-    }
-    let mut stable = rows.clone();
-    stable.sort_by(compare_scheduling_projection_order);
-    rows.sort_unstable_by(compare_scheduling_projection_order);
-    assert_eq!(rows, stable);
-    let mut records = rows
-        .into_iter()
-        .map(|row| row.work_item)
-        .collect::<Vec<_>>();
-    let mut stable = records.clone();
-    stable.sort_by(compare_queue_display_order);
-    records.sort_unstable_by(compare_queue_display_order);
-    assert_eq!(records, stable);
 }
 
 fn ids(rows: &[WorkItemSchedulingProjection]) -> Vec<&str> {
