@@ -829,6 +829,44 @@ pub struct ProviderDiscoveryConfig {
     pub kind: ProviderDiscoveryKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Optional explicit decoder selection. When absent, discovery kind
+    /// `openai_models` keeps the historical `OpenAiCompatible` decoder, so
+    /// existing configs behave exactly as before. Only
+    /// [`ModelDiscoveryDecoder::CONFIG_ALLOWED`] values are accepted on
+    /// deserialize (see [`parse_discovery_decoder`]); `ollama` is rejected.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_discovery_decoder",
+        deserialize_with = "deserialize_discovery_decoder"
+    )]
+    pub decoder: Option<ModelDiscoveryDecoder>,
+}
+
+fn serialize_discovery_decoder<S>(
+    value: &Option<ModelDiscoveryDecoder>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(decoder) => serializer.serialize_str(decoder.as_str()),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_discovery_decoder<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<ModelDiscoveryDecoder>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    raw.map(|value| {
+        ModelDiscoveryDecoder::parse(&value).map_err(|err| serde::de::Error::custom(err))
+    })
+    .transpose()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -846,6 +884,7 @@ impl ProviderDiscoveryConfig {
         Self {
             kind: ProviderDiscoveryKind::OpenAiModels,
             path: Some(path.into()),
+            decoder: None,
         }
     }
 
@@ -853,6 +892,7 @@ impl ProviderDiscoveryConfig {
         Self {
             kind: ProviderDiscoveryKind::Disabled,
             path: None,
+            decoder: None,
         }
     }
 
@@ -870,12 +910,22 @@ impl ProviderDiscoveryConfig {
                         "{key}.path must not be set when discovery kind is disabled"
                     ));
                 }
+                if self.decoder.is_some() {
+                    return Err(anyhow!(
+                        "{key}.decoder must not be set when discovery kind is disabled"
+                    ));
+                }
             }
             ProviderDiscoveryKind::OpenAiModels => {
                 let path = self.path.as_deref().ok_or_else(|| {
                     anyhow!("{key}.path is required when discovery kind is openai_models")
                 })?;
                 validate_discovery_path(key, path)?;
+                if self.decoder == Some(ModelDiscoveryDecoder::Ollama) {
+                    return Err(anyhow!(
+                        "{key}.decoder must not be ollama; it is not a configurable discovery decoder"
+                    ));
+                }
             }
         }
         Ok(())

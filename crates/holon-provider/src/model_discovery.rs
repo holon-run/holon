@@ -283,7 +283,12 @@ fn effective_discovery(
             ProviderDiscoveryKind::Disabled => None,
             ProviderDiscoveryKind::OpenAiModels => Some(EffectiveDiscovery {
                 auth: ModelDiscoveryAuth::Optional,
-                decoder: ModelDiscoveryDecoder::OpenAiCompatible,
+                // Absent decoder preserves the historical OpenAI-compatible
+                // default; an explicit decoder lets gateways such as Magpie opt
+                // into their richer payload without changing transport.
+                decoder: config
+                    .decoder
+                    .unwrap_or(ModelDiscoveryDecoder::OpenAiCompatible),
                 route: EffectiveDiscoveryRoute::EndpointPath(
                     config.models_path().ok()?.to_string(),
                 ),
@@ -493,57 +498,7 @@ pub async fn refresh_provider_models(
     })?;
     let response_hash = format!("sha256:{}", sha256_hex(&raw));
     let fetched_at = Utc::now();
-    let models = match discovery.decoder {
-        ModelDiscoveryDecoder::Arcee => serde_json::from_slice::<ArceeModelsResponse>(&raw)
-            .context("failed to parse Arcee model discovery response")?
-            .into_model_metadata(&provider.id),
-        ModelDiscoveryDecoder::HuggingFace => {
-            serde_json::from_slice::<HuggingFaceModelsResponse>(&raw)
-                .context("failed to parse Hugging Face model discovery response")?
-                .into_model_metadata(&provider.id)
-        }
-        ModelDiscoveryDecoder::Kilo => serde_json::from_slice::<KiloModelsResponse>(&raw)
-            .context("failed to parse Kilo Gateway model discovery response")?
-            .into_model_metadata(&provider.id),
-        ModelDiscoveryDecoder::Magpie => serde_json::from_slice::<MagpieModelsResponse>(&raw)
-            .context("failed to parse Magpie model discovery response")?
-            .into_model_metadata(&provider.id),
-        ModelDiscoveryDecoder::OpenAiCompatible => {
-            serde_json::from_slice::<OpenAiCompatibleModelsResponse>(&raw)
-                .context("failed to parse OpenAI-compatible model discovery response")?
-                .into_model_metadata(&provider.id)
-        }
-        ModelDiscoveryDecoder::Ollama => unreachable!("Ollama discovery is handled above"),
-        ModelDiscoveryDecoder::NearAi => serde_json::from_slice::<NearAiModelsResponse>(&raw)
-            .context("failed to parse NEAR AI model discovery response")?
-            .into_model_metadata(&provider.id),
-        ModelDiscoveryDecoder::OpenCodeGo => {
-            serde_json::from_slice::<OpenCodeGoModelsResponse>(&raw)
-                .context("failed to parse OpenCode Go model discovery response")?
-                .into_model_metadata(&provider.id)
-        }
-        ModelDiscoveryDecoder::OpenRouter => {
-            serde_json::from_slice::<OpenRouterModelsResponse>(&raw)
-                .context("failed to parse OpenRouter model discovery response")?
-                .into_model_metadata(&provider.id)
-        }
-        ModelDiscoveryDecoder::Synthetic => serde_json::from_slice::<SyntheticModelsResponse>(&raw)
-            .context("failed to parse Synthetic model discovery response")?
-            .into_model_metadata(&provider.id),
-        ModelDiscoveryDecoder::TencentTokenHub => {
-            serde_json::from_slice::<TencentTokenHubModelsResponse>(&raw)
-                .context("failed to parse Tencent TokenHub model discovery response")?
-                .into_model_metadata(&provider.id)
-        }
-        ModelDiscoveryDecoder::Venice => serde_json::from_slice::<VeniceModelsResponse>(&raw)
-            .context("failed to parse Venice model discovery response")?
-            .into_model_metadata(&provider.id, fetched_at),
-        ModelDiscoveryDecoder::VercelAiGateway => {
-            serde_json::from_slice::<VercelModelsResponse>(&raw)
-                .context("failed to parse Vercel AI Gateway model discovery response")?
-                .into_model_metadata(&provider.id)
-        }
-    };
+    let models = decode_discovered_models(provider, discovery.decoder, &raw, fetched_at)?;
     let models = attribute_discovered_models(models, provider);
 
     let mut cache = load_discovery_cache_at(cache_path)?;
@@ -565,6 +520,69 @@ pub async fn refresh_provider_models(
         fetched_at,
         model_count: models.len(),
         cache_path: cache_path.to_path_buf(),
+    })
+}
+
+/// Decode a raw model-discovery payload into catalog metadata using the given
+/// decoder. This is the single payload-decoding implementation shared by the
+/// async refresh path and the unit tests, so tests can exercise the decoder
+/// selected by [`effective_discovery`] without a live endpoint.
+fn decode_discovered_models(
+    provider: &ProviderRuntimeConfig,
+    decoder: ModelDiscoveryDecoder,
+    raw: &[u8],
+    fetched_at: DateTime<Utc>,
+) -> Result<Vec<BuiltInModelMetadata>> {
+    Ok(match decoder {
+        ModelDiscoveryDecoder::Arcee => serde_json::from_slice::<ArceeModelsResponse>(raw)
+            .context("failed to parse Arcee model discovery response")?
+            .into_model_metadata(&provider.id),
+        ModelDiscoveryDecoder::HuggingFace => {
+            serde_json::from_slice::<HuggingFaceModelsResponse>(raw)
+                .context("failed to parse Hugging Face model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
+        ModelDiscoveryDecoder::Kilo => serde_json::from_slice::<KiloModelsResponse>(raw)
+            .context("failed to parse Kilo Gateway model discovery response")?
+            .into_model_metadata(&provider.id),
+        ModelDiscoveryDecoder::Magpie => serde_json::from_slice::<MagpieModelsResponse>(raw)
+            .context("failed to parse Magpie model discovery response")?
+            .into_model_metadata(&provider.id),
+        ModelDiscoveryDecoder::OpenAiCompatible => {
+            serde_json::from_slice::<OpenAiCompatibleModelsResponse>(raw)
+                .context("failed to parse OpenAI-compatible model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
+        ModelDiscoveryDecoder::Ollama => unreachable!("Ollama discovery is handled above"),
+        ModelDiscoveryDecoder::NearAi => serde_json::from_slice::<NearAiModelsResponse>(raw)
+            .context("failed to parse NEAR AI model discovery response")?
+            .into_model_metadata(&provider.id),
+        ModelDiscoveryDecoder::OpenCodeGo => {
+            serde_json::from_slice::<OpenCodeGoModelsResponse>(raw)
+                .context("failed to parse OpenCode Go model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
+        ModelDiscoveryDecoder::OpenRouter => {
+            serde_json::from_slice::<OpenRouterModelsResponse>(raw)
+                .context("failed to parse OpenRouter model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
+        ModelDiscoveryDecoder::Synthetic => serde_json::from_slice::<SyntheticModelsResponse>(raw)
+            .context("failed to parse Synthetic model discovery response")?
+            .into_model_metadata(&provider.id),
+        ModelDiscoveryDecoder::TencentTokenHub => {
+            serde_json::from_slice::<TencentTokenHubModelsResponse>(raw)
+                .context("failed to parse Tencent TokenHub model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
+        ModelDiscoveryDecoder::Venice => serde_json::from_slice::<VeniceModelsResponse>(raw)
+            .context("failed to parse Venice model discovery response")?
+            .into_model_metadata(&provider.id, fetched_at),
+        ModelDiscoveryDecoder::VercelAiGateway => {
+            serde_json::from_slice::<VercelModelsResponse>(raw)
+                .context("failed to parse Vercel AI Gateway model discovery response")?
+                .into_model_metadata(&provider.id)
+        }
     })
 }
 

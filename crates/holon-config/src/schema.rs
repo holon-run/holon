@@ -284,6 +284,17 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "providers.<id>.discovery.decoder",
+            kind: "enum",
+            description: "Optional decoder for discovery kind openai_models. Omit to keep the historical OpenAI-compatible decoder; `magpie` selects the Magpie payload mapping. `ollama` is not configurable here.",
+            default: Value::Null,
+            allowed_values: ModelDiscoveryDecoder::CONFIG_ALLOWED
+                .iter()
+                .copied()
+                .map(ModelDiscoveryDecoder::as_str)
+                .collect(),
+        },
+        ConfigSchemaEntry {
             key: "providers.<id>.endpoints.<endpoint_id>.discovery.kind",
             kind: "enum",
             description: "Endpoint-level discovery override. Wins over the provider-level default.",
@@ -296,6 +307,17 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             description: "Endpoint-level model list path relative to this endpoint base_url.",
             default: Value::Null,
             allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "providers.<id>.endpoints.<endpoint_id>.discovery.decoder",
+            kind: "enum",
+            description: "Endpoint-level optional decoder override. Omit to inherit the provider-level discovery decoder.",
+            default: Value::Null,
+            allowed_values: ModelDiscoveryDecoder::CONFIG_ALLOWED
+                .iter()
+                .copied()
+                .map(ModelDiscoveryDecoder::as_str)
+                .collect(),
         },
         ConfigSchemaEntry {
             key: "providers.<id>.endpoints.<endpoint_id>.transport",

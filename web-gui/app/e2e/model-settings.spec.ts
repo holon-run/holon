@@ -362,3 +362,22 @@ test("failed speed changes retain the previous selection", async ({ page }) => {
   await speed.click();
   await expect(page.getByRole("dialog", { name: "Speed", exact: true }).getByRole("button", { name: "Auto", exact: true })).toHaveAttribute("aria-pressed", "true");
 });
+
+test("provider discovery kind, path and decoder persist from the settings editor", async ({ page }) => {
+  const { updates } = await setup(page);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/settings");
+  await page.locator("#settings-tab-models").click();
+  await page.getByRole("button", { name: "Connect a service", exact: true }).click();
+  await page.locator('[data-provider="openai"]').click();
+  const editor = page.locator(".model-services-card .settings-provider-editor");
+  await editor.locator("summary", { hasText: "Advanced" }).first().click();
+  await editor.getByLabel("Model discovery").selectOption("openai_models");
+  await editor.getByLabel("Discovery path").fill("/v1/models");
+  await editor.getByLabel("Decoder").selectOption("magpie");
+  await editor.getByRole("button", { name: "Save openai", exact: true }).click();
+  await expect.poll(() => updates.length).toBeGreaterThan(0);
+  expect(updates).toContainEqual({ key: "providers.openai.discovery.kind", value: "openai_models" });
+  expect(updates).toContainEqual({ key: "providers.openai.discovery.path", value: "/v1/models" });
+  expect(updates).toContainEqual({ key: "providers.openai.discovery.decoder", value: "magpie" });
+});

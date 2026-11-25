@@ -455,12 +455,14 @@ gateway that speaks several protocols can expose one model list:
 ```bash
 holon config set providers.magpie.discovery.kind openai_models
 holon config set providers.magpie.discovery.path /models
+holon config set providers.magpie.discovery.decoder magpie
 holon config set providers.magpie.endpoints.anthropic.discovery.path /v1/models
 ```
 
 - `providers.<id>.discovery` is the provider-level default; `providers.<id>.endpoints.<endpoint_id>.discovery` overrides it.
 - `kind`: `openai_models` or `disabled`. `disabled` opts out of the transport default, including the automatic `openai_chat_completions` `/v1/models` fallback.
 - `path`: relative to the effective endpoint `base_url`. Absolute URLs, `..` segments, query strings, fragments and percent-escapes are rejected when the config loads, and the joined URL never leaves the endpoint origin.
+- `decoder`: optional; selects how the model-list payload is parsed. Defaults to `openai_compatible` (unchanged historical behavior). Set `magpie` for Magpie-shaped lists that carry `display_name`/`owned_by`/`context_window`/`kind`. Allowed values are the configurable decoders (`openai_compatible`, `magpie`, `hugging_face`, `kilo`, `near_ai`, `open_code_go`, `open_router`, `synthetic`, `tencent_token_hub`, `venice`, `vercel_ai_gateway`, `arcee`); `ollama` is not configurable because its payload is handled by the dedicated Ollama path. Setting `decoder` requires `kind`, and `disabled` must not carry `decoder`; unknown values and `disabled`+`decoder` are configuration errors.
 - A block without `discovery` keeps the previous behavior. Unknown `kind` values and unknown fields are configuration errors, not silent fallbacks.
 - Cached results are owned by `provider@endpoint`; changing an endpoint's base URL or discovery path invalidates only that endpoint's entry.
 

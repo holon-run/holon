@@ -243,7 +243,13 @@ function isProviderKeyCredential(kind: string): boolean {
 type ProviderDraft = Pick<
   RuntimeProviderSummary,
   "transport" | "baseUrl" | "oauthSupported" | "apiKeySupported" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
->;
+> & {
+  // Empty string means "not configured"; openai_models uses path and an
+  // optional decoder, disabled clears both.
+  discoveryKind: string;
+  discoveryPath: string;
+  discoveryDecoder: string;
+};
 
 type SearchProviderDraft = Pick<RuntimeWebSearchProviderSummary, "kind" | "baseUrl" | "engineId" | "credentialProfile">;
 
@@ -316,6 +322,43 @@ export function buildSearchProviderConfigUpdates(
   if (draft.kind === "google") {
     updates.push({ key: `web.providers.${providerId}.engine_id`, value: draft.engineId?.trim() ?? "" });
   }
+  return updates;
+}
+
+/**
+ * Assemble `providers.<id>.discovery.*` updates from a provider draft.
+ *
+ * Order matters: `kind` must be set before `path`/`decoder` so the config
+ * layer never sees a decoder without a discovery block. Switching to
+ * `disabled` (or clearing the block) unsets `path` and `decoder`.
+ */
+export function buildProviderDiscoveryConfigUpdates(
+  providerId: string,
+  draft: Pick<ProviderDraft, "discoveryKind" | "discoveryPath" | "discoveryDecoder">,
+): Array<{ key: string; value?: unknown; unset?: boolean }> {
+  const base = `providers.${providerId}.discovery`;
+  const kind = draft.discoveryKind.trim();
+  if (kind === "") {
+    // Clear the whole block; provider-level unset removes the declared entry.
+    return [
+      { key: `${base}.path`, unset: true },
+      { key: `${base}.decoder`, unset: true },
+      { key: `${base}.kind`, unset: true },
+    ];
+  }
+  const updates: Array<{ key: string; value?: unknown; unset?: boolean }> = [
+    { key: `${base}.kind`, value: kind },
+  ];
+  if (kind === "disabled") {
+    updates.push({ key: `${base}.path`, unset: true });
+    updates.push({ key: `${base}.decoder`, unset: true });
+    return updates;
+  }
+  // openai_models: path is required; decoder is optional (empty = default).
+  const path = draft.discoveryPath.trim();
+  updates.push(path ? { key: `${base}.path`, value: path } : { key: `${base}.path`, unset: true });
+  const decoder = draft.discoveryDecoder.trim();
+  updates.push(decoder ? { key: `${base}.decoder`, value: decoder } : { key: `${base}.decoder`, unset: true });
   return updates;
 }
 
@@ -554,6 +597,9 @@ export function SettingsPage({
             credentialEnv: provider.credentialEnv ?? "",
             credentialProfile: provider.credentialProfile ?? "",
             credentialExternal: provider.credentialExternal ?? "",
+            discoveryKind: provider.discovery?.kind ?? "",
+            discoveryPath: provider.discovery?.path ?? "",
+            discoveryDecoder: provider.discovery?.decoder ?? "",
           },
         ]),
       ),
@@ -815,6 +861,9 @@ export function SettingsPage({
           credentialEnv: "",
           credentialProfile: "",
           credentialExternal: "",
+          discoveryKind: "",
+          discoveryPath: "",
+          discoveryDecoder: "",
         }),
         ...patch,
       },
@@ -864,6 +913,7 @@ export function SettingsPage({
       { key: `providers.${providerId}.auth.env`, value: effectiveEnv },
       { key: `providers.${providerId}.auth.profile`, value: effectiveProfile },
       { key: `providers.${providerId}.auth.external`, value: useProfile ? "" : (draft.credentialExternal?.trim() ?? "") },
+      ...buildProviderDiscoveryConfigUpdates(providerId, draft),
     ]);
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
@@ -2063,6 +2113,53 @@ export function SettingsPage({
                           <span>{t("settings.baseUrl")}</span>
                           <input value={draft.baseUrl} onChange={(event) => updateProviderDraft(provider.id, { baseUrl: event.target.value })} />
                         </label>
+                      </div>
+                      <div className="settings-form-row">
+                        <label>
+                          <span>{t("settings.discoveryKind")}</span>
+                          <select
+                            value={draft.discoveryKind}
+                            onChange={(event) => {
+                              const nextKind = event.target.value;
+                              updateProviderDraft(
+                                provider.id,
+                                nextKind === "openai_models"
+                                  ? { discoveryKind: nextKind }
+                                  : { discoveryKind: nextKind, discoveryPath: "", discoveryDecoder: "" },
+                              );
+                            }}
+                          >
+                            <option value="">{t("settings.discoveryKindDefault")}</option>
+                            <option value="openai_models">{t("settings.discoveryKindOpenAiModels")}</option>
+                            <option value="disabled">{t("settings.discoveryKindDisabled")}</option>
+                          </select>
+                        </label>
+                        {draft.discoveryKind === "openai_models" ? (
+                          <>
+                            <label>
+                              <span>{t("settings.discoveryPath")}</span>
+                              <input value={draft.discoveryPath} placeholder="/v1/models" onChange={(event) => updateProviderDraft(provider.id, { discoveryPath: event.target.value })} />
+                            </label>
+                            <label>
+                              <span>{t("settings.discoveryDecoder")}</span>
+                              <select value={draft.discoveryDecoder} onChange={(event) => updateProviderDraft(provider.id, { discoveryDecoder: event.target.value })}>
+                                <option value="">{t("settings.discoveryDecoderDefault")}</option>
+                                <option value="openai_compatible">openai_compatible</option>
+                                <option value="magpie">magpie</option>
+                                <option value="hugging_face">hugging_face</option>
+                                <option value="kilo">kilo</option>
+                                <option value="arcee">arcee</option>
+                                <option value="near_ai">near_ai</option>
+                                <option value="open_code_go">open_code_go</option>
+                                <option value="open_router">open_router</option>
+                                <option value="synthetic">synthetic</option>
+                                <option value="tencent_token_hub">tencent_token_hub</option>
+                                <option value="venice">venice</option>
+                                <option value="vercel_ai_gateway">vercel_ai_gateway</option>
+                              </select>
+                            </label>
+                          </>
+                        ) : null}
                       </div>
                     </details>
                     <div className="settings-actions">

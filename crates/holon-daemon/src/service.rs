@@ -1,8 +1,9 @@
 pub use holon_client::wire::{
     RuntimeActivityState, RuntimeActivitySummary, RuntimeConfigSurface, RuntimeControlAuthMode,
     RuntimeDecisionLocalOnnxSurface, RuntimeDecisionSurface, RuntimeDecisionToolsSurface,
-    RuntimeProviderSummary, RuntimeShutdownResponse, RuntimeStartupSurface, RuntimeStatusResponse,
-    RuntimeWebSearchProviderKindSummary, RuntimeWebSearchProviderSummary, RuntimeWebSearchSummary,
+    RuntimeProviderDiscoverySummary, RuntimeProviderSummary, RuntimeShutdownResponse,
+    RuntimeStartupSurface, RuntimeStatusResponse, RuntimeWebSearchProviderKindSummary,
+    RuntimeWebSearchProviderSummary, RuntimeWebSearchSummary,
 };
 
 use std::{

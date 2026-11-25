@@ -248,6 +248,14 @@ holon config set providers.magpie.endpoints.anthropic.discovery.path /v1/models
 holon config set providers.magpie.plans.anthropic.endpoint anthropic
 ```
 
+If the gateway returns a **Magpie-shaped** list (with `display_name`/`owned_by`/`context_window`/`kind` extension fields), select the Magpie decoder so context window, modalities and max output tokens are picked up instead of the generic OpenAI-compatible result:
+
+```bash
+holon config set providers.magpie.discovery.decoder magpie
+```
+
+`decoder` defaults to `openai_compatible` (unchanged behavior); `ollama` is not configurable, and unknown values or `disabled`+`decoder` are rejected by config validation.
+
 The same declared block in `config.json`:
 
 ```json

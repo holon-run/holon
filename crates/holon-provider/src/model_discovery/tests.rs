@@ -2499,12 +2499,14 @@ fn configured_discovery_path_rejects_escape_attempts() {
     assert!(ProviderDiscoveryConfig {
         kind: ProviderDiscoveryKind::Disabled,
         path: Some("/models".to_string()),
+        decoder: None,
     }
     .validate("providers.gateway.discovery")
     .is_err());
     assert!(ProviderDiscoveryConfig {
         kind: ProviderDiscoveryKind::OpenAiModels,
         path: None,
+        decoder: None,
     }
     .validate("providers.gateway.discovery")
     .is_err());
@@ -2771,4 +2773,35 @@ async fn configured_discovery_does_not_follow_cross_origin_redirects() {
         matches!(target_listener.accept(), Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock),
         "the cross-origin redirect target must never be contacted"
     );
+}
+
+#[test]
+fn configured_decoder_drives_magpie_payload_via_effective_discovery() {
+    let provider = custom_openai_provider("http://magpie.internal:8080".into());
+    let configured = ProviderDiscoveryConfig {
+        kind: ProviderDiscoveryKind::OpenAiModels,
+        path: Some("/v1/models".into()),
+        decoder: Some(ModelDiscoveryDecoder::Magpie),
+    };
+
+    // A configured decoder flows through effective_discovery rather than being
+    // constructed directly, proving the config -> effective wiring.
+    let discovery = effective_discovery(&provider, Some(&configured)).expect("discovery enabled");
+    assert_eq!(discovery.decoder, ModelDiscoveryDecoder::Magpie);
+    assert_eq!(
+        discovery.route,
+        EffectiveDiscoveryRoute::EndpointPath("/v1/models".to_string())
+    );
+    assert_eq!(
+        discovery_models_url(&provider, &discovery).unwrap(),
+        "http://magpie.internal:8080/v1/models"
+    );
+
+    let payload = br#"{"data":[{"id":"magpie-chat","display_name":"Magpie Chat","context_window":131072,"owned_by":"magpie","kind":"chat"}]}"#;
+    let models =
+        decode_discovered_models(&provider, discovery.decoder, payload, Utc::now()).unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].model_ref.model, "magpie-chat");
+    assert_eq!(models[0].display_name, "Magpie Chat");
+    assert_eq!(models[0].context_window_tokens, Some(131072));
 }

@@ -466,6 +466,13 @@ interface RuntimeProviderSummaryDto {
   credential_external?: string;
   credential_configured?: boolean;
   configured_in_config?: boolean;
+  discovery?: RuntimeProviderDiscoveryDto | null;
+}
+
+interface RuntimeProviderDiscoveryDto {
+  kind?: string;
+  path?: string | null;
+  decoder?: string | null;
 }
 
 interface RuntimeConfigUpdateResultDto {
@@ -2415,6 +2422,13 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
       credentialExternal: provider.credential_external,
       credentialConfigured: provider.credential_configured ?? false,
       configuredInConfig: provider.configured_in_config ?? false,
+      discovery: provider.discovery
+        ? {
+            kind: provider.discovery.kind ?? "",
+            path: provider.discovery.path ?? undefined,
+            decoder: provider.discovery.decoder ?? undefined,
+          }
+        : null,
     })),
     webSearch: surface.web_search
       ? {

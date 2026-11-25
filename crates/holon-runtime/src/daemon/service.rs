@@ -181,6 +181,15 @@ impl holon_client::wire::RuntimeConfigSource for AppConfig {
                         == crate::config::CredentialKind::None
                         || provider.has_configured_credential(),
                     configured_in_config: config.stored_config.providers.contains_key(&provider.id),
+                    discovery: config.provider_discovery(provider).map(|discovery| {
+                        RuntimeProviderDiscoverySummary {
+                            kind: discovery.kind.as_str().to_string(),
+                            path: discovery.path.clone(),
+                            decoder: discovery
+                                .decoder
+                                .map(|decoder| decoder.as_str().to_string()),
+                        }
+                    }),
                 })
                 .collect(),
             web_search: RuntimeWebSearchSummary {
