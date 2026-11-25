@@ -469,8 +469,9 @@ dirty copy.
 
 Holon also carries one hidden built-in `holon-default` template for zero-config
 and offline startup. It is not seeded into `~/.agents/agent_templates`, and it
-is not shown as a catalog entry. It is used only when creating an agent without
-an explicit template selector.
+is not shown as a catalog entry. It initializes the zero-config main entry
+agent; creating an agent without an explicit template selector performs blank
+initialization instead of falling back to this template.
 
 Browse the catalog without creating an agent:
 

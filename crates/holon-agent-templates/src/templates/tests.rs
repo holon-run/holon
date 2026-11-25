@@ -491,7 +491,7 @@ async fn initialize_agent_home_from_absolute_template_path_works() {
 }
 
 #[tokio::test]
-async fn ensure_agent_home_agents_md_from_template_fills_missing_agents_md() {
+async fn ensure_agent_home_agents_md_without_template_writes_blank_agents_md() {
     let _lock = self::lock_env();
     let home = tempdir().unwrap();
     let _guard = EnvGuard::set("HOME", home.path().display().to_string());
@@ -510,16 +510,12 @@ async fn ensure_agent_home_agents_md_from_template_fills_missing_agents_md() {
     .await
     .unwrap()
     .expect("missing AGENTS.md should be materialized");
-    assert!(matches!(
-        record.source,
-        TemplateProvenanceSource::TemplateId { .. }
-    ));
-    assert!(fs::read_to_string(agent_home.join("AGENTS.md"))
-        .unwrap()
-        .contains("Holon Default Agent"));
-    assert!(fs::read_to_string(agent_home.join("AGENTS.md"))
-        .unwrap()
-        .contains("## Holon Agent Home"));
+    assert!(record.selector.is_none());
+    assert!(matches!(record.source, TemplateProvenanceSource::Blank));
+    let agents_md = fs::read_to_string(agent_home.join("AGENTS.md")).unwrap();
+    assert!(agents_md.contains("# Agent"));
+    assert!(agents_md.contains("## Holon Agent Home"));
+    assert!(!agents_md.contains("Holon Default Agent"));
 }
 
 #[tokio::test]

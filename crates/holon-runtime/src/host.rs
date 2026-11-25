@@ -6656,17 +6656,21 @@ impl RuntimeHost {
     async fn apply_agent_template_bootstrap(&self, bootstrap: &AgentBootstrapRecord) -> Result<()> {
         let agent_home = self.agent_data_dir(&bootstrap.agent_id);
         let agents_md = agent_home.join("AGENTS.md");
-        let expected_selector = bootstrap
-            .desired
-            .template
-            .as_deref()
-            .unwrap_or(DEFAULT_AGENT_TEMPLATE_ID);
+        // `None` means blank initialization (no role template).
+        let expected_selector = bootstrap.desired.template.as_deref();
         let provenance_path = template_provenance_path(&agent_home);
         if provenance_path.is_file() {
             let content = fs::read_to_string(&provenance_path)?;
             let provenance: TemplateProvenanceRecord = serde_json::from_str(&content)?;
+            // Legacy agents created before blank initialization existed recorded
+            // the implicit `holon-default` fallback while `desired.template`
+            // stayed unset. Accept that provenance for a blank bootstrap so an
+            // upgrade never raises a spurious template conflict.
+            let selector_matches = provenance.selector.as_deref() == expected_selector
+                || (expected_selector.is_none()
+                    && provenance.selector.as_deref() == Some(DEFAULT_AGENT_TEMPLATE_ID));
             anyhow::ensure!(
-                provenance.selector == expected_selector,
+                selector_matches,
                 "agent {} template conflict: expected {:?}, found {:?}",
                 bootstrap.agent_id,
                 expected_selector,
@@ -8695,8 +8699,16 @@ impl RuntimeHost {
             .user_home_dir
             .as_deref()
             .unwrap_or(config.home_dir.as_path());
-        let _ = ensure_agent_home_agents_md_without_template_with_home(&agent_home, template_home)
-            .await?;
+        // The zero-config default agent is the operator's main entry point, so
+        // it is initialized from the hidden `holon-default` template
+        // explicitly. Blank initialization is reserved for callers that omit
+        // `template`.
+        let _ = ensure_agent_home_agents_md_from_template_with_home(
+            &agent_home,
+            template_home,
+            DEFAULT_AGENT_TEMPLATE_ID,
+        )
+        .await?;
         Ok(())
     }
 
@@ -15501,8 +15513,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            provenance.selector,
-            crate::agent_template::DEFAULT_AGENT_TEMPLATE_ID
+            provenance.selector.as_deref(),
+            Some(crate::agent_template::DEFAULT_AGENT_TEMPLATE_ID)
         );
         assert_eq!(
             runtime.agent_summary().await.unwrap().identity.agent_id,

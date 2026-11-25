@@ -65,6 +65,11 @@ Use this file for stable operator preferences that should influence future turns
 
 "#;
 
+/// Minimal durable-role note used for blank (no-template) agent homes. It is
+/// intentionally role-neutral so the agent can be shaped by its first
+/// assignment rather than inheriting a preset identity.
+const BLANK_AGENT_HOME_GUIDANCE: &str = "# Agent\n\nThis agent was created without a role template. Record durable, agent-specific responsibilities and coordination rules here as they are established.";
+
 pub const REQUIRED_AGENT_HOME_GUIDANCE: &str = r#"## Holon Agent Home
 
 - `agent_home` is this agent's default workspace. Use it for agent-local state, notes, memory, and non-project-local work.
@@ -154,11 +159,16 @@ pub enum TemplateProvenanceSource {
         git_ref: String,
         template_path: String,
     },
+    /// No role template was applied. The agent home was initialized with only
+    /// the required agent-home guidance, which is the blank canvas used when a
+    /// caller omits `template`.
+    Blank,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TemplateProvenanceRecord {
-    pub selector: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
     pub source: TemplateProvenanceSource,
     pub applied_at: DateTime<Utc>,
     #[serde(default)]
@@ -333,7 +343,8 @@ pub fn template_staging_path(agent_home: &Path) -> PathBuf {
 /// from genuine user content, without ever overwriting the latter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TemplateStagingRecord {
-    selector: String,
+    #[serde(default)]
+    selector: Option<String>,
     started_at: DateTime<Utc>,
     /// SHA-256 of the AGENTS.md bytes the runtime wrote, so user edits after
     /// an interrupted install are detected and preserved.
@@ -384,11 +395,14 @@ fn remove_template_staging(agent_home: &Path) -> Result<()> {
 /// content that must be preserved. An absent AGENTS.md is cleaned up: the run
 /// was interrupted before its first artifact landed, so nothing is user
 /// content yet.
-pub fn recover_template_staging(agent_home: &Path, expected_selector: &str) -> Result<bool> {
+pub fn recover_template_staging(
+    agent_home: &Path,
+    expected_selector: Option<&str>,
+) -> Result<bool> {
     let Some(staging) = read_template_staging(agent_home)? else {
         return Ok(false);
     };
-    if staging.selector != expected_selector {
+    if staging.selector.as_deref() != expected_selector {
         return Ok(false);
     }
     let agents_md = agent_home.join(TEMPLATE_AGENTS_FILENAME);
@@ -421,7 +435,7 @@ pub fn recover_template_staging(agent_home: &Path, expected_selector: &str) -> R
     }
     remove_template_staging(agent_home)?;
     tracing::info!(target: "holon::agent_template",
-        selector = %staging.selector,
+        selector = ?staging.selector,
         agent_home = %agent_home.display(),
         "template_staging_recovered: cleaned interrupted template materialization"
     );
@@ -435,9 +449,9 @@ struct TemplateStagingGuard {
 }
 
 impl TemplateStagingGuard {
-    fn begin(agent_home: &Path, selector: &str, agents_md_content: &str) -> Result<Self> {
+    fn begin(agent_home: &Path, selector: Option<&str>, agents_md_content: &str) -> Result<Self> {
         let record = TemplateStagingRecord {
-            selector: selector.to_string(),
+            selector: selector.map(str::to_string),
             started_at: Utc::now(),
             agents_md_sha256: sha256_hex(agents_md_content.as_bytes()),
             created_paths: Vec::new(),
@@ -521,7 +535,11 @@ pub async fn initialize_agent_home_without_template_with_home(
     agent_home: &Path,
     home_dir: &Path,
 ) -> Result<TemplateProvenanceRecord> {
-    initialize_agent_home_from_builtin_default(environment, agent_home, home_dir).await
+    // Blank initialization applies no role template, so it needs neither the
+    // template environment nor the catalog home. Keep the parameters for API
+    // stability with the explicit-template entry points.
+    let _ = (environment, home_dir);
+    initialize_agent_home_blank(agent_home).await
 }
 
 pub async fn initialize_agent_home_from_template_with_home(
@@ -577,13 +595,13 @@ async fn initialize_agent_home_from_template_with_home_and_catalog(
         .await?;
         materialize_template(environment, &agent_home, &resolved).await?;
         let record = TemplateProvenanceRecord {
-            selector: template.to_string(),
+            selector: Some(template.to_string()),
             source: resolved.provenance,
             applied_at: Utc::now(),
             schema_version: resolved.schema_version,
         };
         tracing::info!(target: "holon::agent_template",
-            template = %record.selector,
+            template = ?record.selector,
             schema_version = ?record.schema_version,
             agent_home = %agent_home.display(),
             "template_applied: agent initialized from template"
@@ -611,11 +629,7 @@ async fn initialize_agent_home_from_template_with_home_and_catalog(
     result
 }
 
-async fn initialize_agent_home_from_builtin_default(
-    environment: TemplateEnvironment,
-    agent_home: &Path,
-    home_dir: &Path,
-) -> Result<TemplateProvenanceRecord> {
+async fn initialize_agent_home_blank(agent_home: &Path) -> Result<TemplateProvenanceRecord> {
     let agent_home = agent_home.to_path_buf();
     let existed_before = agent_home.exists();
     let was_empty_before = if existed_before {
@@ -637,28 +651,7 @@ async fn initialize_agent_home_from_builtin_default(
 
     let result = async {
         ensure_agent_home_layout(&agent_home)?;
-        let resolved = resolve_builtin_template(environment, DEFAULT_AGENT_TEMPLATE_ID, home_dir)?;
-        materialize_template(environment, &agent_home, &resolved).await?;
-        let record = TemplateProvenanceRecord {
-            selector: DEFAULT_AGENT_TEMPLATE_ID.to_string(),
-            source: resolved.provenance,
-            applied_at: Utc::now(),
-            schema_version: resolved.schema_version,
-        };
-        tracing::info!(target: "holon::agent_template",
-            template = %record.selector,
-            schema_version = ?record.schema_version,
-            agent_home = %agent_home.display(),
-            "template_applied: agent initialized from hidden builtin default template"
-        );
-        let content = serde_json::to_vec_pretty(&record)?;
-        fs::write(template_provenance_path(&agent_home), content).with_context(|| {
-            format!(
-                "failed to write {}",
-                template_provenance_path(&agent_home).display()
-            )
-        })?;
-        Ok(record)
+        materialize_blank_agents_md(&agent_home).await
     }
     .await;
 
@@ -669,6 +662,41 @@ async fn initialize_agent_home_from_builtin_default(
             let _ = fs::remove_dir_all(&agent_home);
             let _ = fs::create_dir_all(&agent_home);
         }
+    }
+
+    result
+}
+
+/// Writes the blank agent-home `AGENTS.md` and provenance marker. The caller
+/// must have created the agent-home layout and ensured `AGENTS.md` is absent.
+async fn materialize_blank_agents_md(agent_home: &Path) -> Result<TemplateProvenanceRecord> {
+    let agents_md = render_blank_agent_home_agents_md();
+    let staging = TemplateStagingGuard::begin(agent_home, None, &agents_md)?;
+    let result: Result<TemplateProvenanceRecord> = async {
+        write_file_atomically(
+            &agent_home.join(TEMPLATE_AGENTS_FILENAME),
+            agents_md.as_bytes(),
+        )?;
+        let record = TemplateProvenanceRecord {
+            selector: None,
+            source: TemplateProvenanceSource::Blank,
+            applied_at: Utc::now(),
+            schema_version: None,
+        };
+        tracing::info!(target: "holon::agent_template",
+            agent_home = %agent_home.display(),
+            "template_applied: agent initialized without a role template"
+        );
+        let content = serde_json::to_vec_pretty(&record)?;
+        write_file_atomically(&template_provenance_path(agent_home), &content)?;
+        staging.finish()?;
+        Ok(record)
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = fs::remove_file(agent_home.join(TEMPLATE_AGENTS_FILENAME));
+        let _ = fs::remove_file(template_provenance_path(agent_home));
     }
 
     result
@@ -723,11 +751,11 @@ pub async fn ensure_agent_home_agents_md_from_template_with_home(
 }
 
 pub async fn ensure_agent_home_agents_md_without_template_with_home(
-    environment: TemplateEnvironment,
+    _environment: TemplateEnvironment,
     agent_home: &Path,
-    home_dir: &Path,
+    _home_dir: &Path,
 ) -> Result<Option<TemplateProvenanceRecord>> {
-    ensure_agent_home_agents_md_from_builtin_default(environment, agent_home, home_dir).await
+    ensure_agent_home_agents_md_blank(agent_home).await
 }
 
 async fn ensure_agent_home_agents_md_from_template_with_home_and_catalog(
@@ -752,13 +780,18 @@ async fn ensure_agent_home_agents_md_from_template_with_home_and_catalog(
         catalog_agent_home.unwrap_or(&agent_home),
     )
     .await?;
-    materialize_resolved_template(environment, &agent_home, template, &resolved, "template").await
+    materialize_resolved_template(
+        environment,
+        &agent_home,
+        Some(template),
+        &resolved,
+        "template",
+    )
+    .await
 }
 
-async fn ensure_agent_home_agents_md_from_builtin_default(
-    environment: TemplateEnvironment,
+async fn ensure_agent_home_agents_md_blank(
     agent_home: &Path,
-    home_dir: &Path,
 ) -> Result<Option<TemplateProvenanceRecord>> {
     let agent_home = agent_home.to_path_buf();
     fs::create_dir_all(&agent_home)
@@ -768,15 +801,7 @@ async fn ensure_agent_home_agents_md_from_builtin_default(
     if agents_md_path.exists() {
         return Ok(None);
     }
-    let resolved = resolve_builtin_template(environment, DEFAULT_AGENT_TEMPLATE_ID, home_dir)?;
-    materialize_resolved_template(
-        environment,
-        &agent_home,
-        DEFAULT_AGENT_TEMPLATE_ID,
-        &resolved,
-        "hidden builtin default template",
-    )
-    .await
+    materialize_blank_agents_md(&agent_home).await.map(Some)
 }
 
 /// Shared materialization body for resolved templates: write AGENTS.md under
@@ -788,7 +813,7 @@ async fn ensure_agent_home_agents_md_from_builtin_default(
 async fn materialize_resolved_template(
     environment: TemplateEnvironment,
     agent_home: &Path,
-    selector: &str,
+    selector: Option<&str>,
     resolved: &ResolvedTemplate,
     source_label: &str,
 ) -> Result<Option<TemplateProvenanceRecord>> {
@@ -814,13 +839,13 @@ async fn materialize_resolved_template(
         )
         .await?;
         let record = TemplateProvenanceRecord {
-            selector: selector.to_string(),
+            selector: selector.map(str::to_string),
             source: resolved.provenance.clone(),
             applied_at: Utc::now(),
             schema_version: resolved.schema_version.clone(),
         };
         tracing::info!(target: "holon::agent_template",
-            template = %record.selector,
+            template = ?record.selector,
             schema_version = ?record.schema_version,
             agent_home = %agent_home.display(),
             "template_applied: agent initialized from {source_label}"
@@ -2792,6 +2817,10 @@ fn render_agent_home_agents_md(template_guidance: &str, profile_seed: Option<&st
         sections.push(profile_seed.to_string());
     }
     format!("{}\n", sections.join("\n\n"))
+}
+
+fn render_blank_agent_home_agents_md() -> String {
+    render_agent_home_agents_md(BLANK_AGENT_HOME_GUIDANCE, None)
 }
 
 async fn materialize_skill_ref(

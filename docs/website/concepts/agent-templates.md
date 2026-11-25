@@ -22,9 +22,12 @@ For example, `code-reviewer` can be the template while `payments-reviewer` is
 the agent ID. The template name selects the starting material. The agent ID
 addresses the worker that now owns its own guidance, memory, and work.
 
-When no template is selected, Holon uses its built-in default bootstrap.
-Named catalog templates must be available before selection; the built-in
-default does not mean the full template catalog is already installed.
+When no template is selected, Holon performs blank initialization: the Agent
+Home receives a minimal role-neutral `AGENTS.md` plus the required agent-home
+guidance, and records a `Blank` provenance source. The zero-config main entry
+agent is instead initialized explicitly from the hidden `holon-default`
+template. Named catalog templates must be available before selection; the
+hidden default does not mean the full template catalog is already installed.
 
 ## Role, workflow, and execution
 
