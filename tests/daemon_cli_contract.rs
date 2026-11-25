@@ -188,7 +188,10 @@ fn blocked_status_reports_exit_21() {
     let value = envelope(&output);
     assert_eq!(value["command"], "daemon.status");
     assert_eq!(value["status"], "blocked");
-    assert!(value["data"].is_null(), "{value}");
+    // A blocked status still carries the lifecycle view so GUI consumers can
+    // reconcile state while scripts keep the blocked exit code.
+    assert_eq!(value["data"]["state"], "stopped", "{value}");
+    assert_eq!(value["data"]["desired_running"], true, "{value}");
     assert_eq!(value["error"]["kind"], "daemon_unavailable");
     assert_eq!(value["error"]["code"], "daemon_not_running");
     assert_eq!(value["error"]["retryable"], true);
@@ -198,6 +201,7 @@ fn blocked_status_reports_exit_21() {
     let text = String::from_utf8(human.stdout).unwrap();
     assert_eq!(text.lines().next(), Some("status: blocked"), "{text}");
     assert!(text.contains("next: "), "{text}");
+    assert!(text.contains("state: stopped"), "{text}");
 }
 
 #[test]

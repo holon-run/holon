@@ -6,8 +6,11 @@ final class HolonMenuFakeClientTests: XCTestCase {
         let client = FakeHolonClient()
 
         let initial = try await client.status()
-        XCTAssertEqual(initial.state, .stopped)
-        XCTAssertEqual(initial.state.title(locale: Locale(identifier: "en")), "Stopped")
+        XCTAssertEqual(initial.state, .running)
+        XCTAssertEqual(initial.state.title(locale: Locale(identifier: "en")), "Running")
+
+        let stopped = try await client.stop()
+        XCTAssertEqual(stopped.state, .stopped)
 
         let running = try await client.start()
         XCTAssertEqual(running.state, .running)
@@ -34,6 +37,7 @@ final class HolonMenuFakeClientTests: XCTestCase {
             commands,
             [
                 .status,
+                .stop,
                 .start,
                 .webURL,
                 .logsURL,
