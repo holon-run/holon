@@ -298,8 +298,9 @@ pub fn project_legacy_in_flight_work_item(
         ));
     }
 
-    let legacy: LegacyInFlightRecord = serde_json::from_str(payload)
-        .with_context(|| format!("decoding legacy in_flight work item {work_item_id}"))?;
+    let legacy: LegacyInFlightRecord = serde_json::from_str(payload).with_context(|| {
+        format!("decoding legacy in_flight work item {work_item_id} payload {payload}")
+    })?;
     ensure!(
         legacy.state.state == "in_flight",
         "legacy work item {work_item_id} payload state {:?} disagrees with its in_flight lifecycle",

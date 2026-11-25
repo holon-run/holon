@@ -1985,6 +1985,11 @@ pub(crate) fn load_state_unchecked_tx(
 /// The pre-v47 offline fallback can open a database before schema migrations.
 /// Project its retired rows as Runnable only for the repair's before-image;
 /// the fallback itself advances those generations when it writes the repair.
+///
+/// The revision marker is rewritten together with the payload: a row projected
+/// to a canonical `runnable` record must not still claim the retired
+/// `in_flight` lifecycle, or the shared pre-migration decoder sees a marker and
+/// payload that disagree (#4571).
 pub(crate) fn load_retired_scheduler_state_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -1997,7 +2002,9 @@ pub(crate) fn load_retired_scheduler_state_tx(
                      THEN json_set(payload_json, '$.state', json_object(
                           'state', 'runnable', 'generation', generation))
                      ELSE payload_json END,
-                source_revision||':'||generation||':'||lifecycle_state
+                source_revision||':'||generation||':'||
+                CASE WHEN lifecycle_state = 'in_flight'
+                     THEN 'runnable' ELSE lifecycle_state END
          FROM execution_protocol_work_items WHERE agent_id = ?1",
     )
 }
