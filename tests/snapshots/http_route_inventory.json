@@ -2151,6 +2151,28 @@
   },
   {
     "method": "post",
+    "path": "/api/control/agents/{agent_id}/deletion/resolve",
+    "handler": "resolve_agent_deletion",
+    "operation_id": "resolveAgentDeletion",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "ResolveAgentDeletionRequest",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/control/agents/{agent_id}/external-triggers/{external_trigger_id}/reveal",
     "handler": "reveal_external_trigger",
     "operation_id": "revealExternalTrigger",
