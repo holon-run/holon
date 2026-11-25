@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   GlobalSyncCoordinator,
+  ROSTER_REFRESH_INTERVAL_MS,
   ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS,
   retryDelayWithServerHintMs,
   type GlobalSyncStoreSet,
@@ -656,7 +657,12 @@ describe("authoritative discovery cutover", () => {
       });
       // Hold the old subject response across the authenticated subject change.
       await useRuntimeStore.getState().refreshBootstrap();
-      await vi.waitFor(() => expect(snapshots).toBe(2));
+      // The second roster fan-out is gated by the production throttle, so the
+      // wait budget must cover a full throttle window instead of relying on
+      // the 1s vi.waitFor default, which races the throttle boundary.
+      await vi.waitFor(() => expect(snapshots).toBe(2), {
+        timeout: ROSTER_REFRESH_INTERVAL_MS * 2,
+      });
       user = "bob";
       refreshBob = useRuntimeStore.getState().refreshBootstrap({ syncEvents: false });
       await vi.waitFor(() => expect(useRuntimeStore.getState().currentUser?.userId).toBe("bob"));

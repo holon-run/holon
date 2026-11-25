@@ -55,7 +55,13 @@ interface GlobalSyncCoordinatorDependencies<State extends GlobalSyncStoreState> 
   ) => string[] | Promise<string[]>;
 }
 
-const ROSTER_REFRESH_INTERVAL_MS = 1_000;
+/**
+ * Minimum spacing between roster fan-out requests. Any caller that must wait
+ * for a refresh gated by this throttle has to budget more than this window;
+ * it is exported so such waits are derived from the throttle instead of
+ * repeating a hard-coded duration that races its boundary.
+ */
+export const ROSTER_REFRESH_INTERVAL_MS = 1_000;
 
 /**
  * Once transient roster retries pass this attempt count (backoff fully
