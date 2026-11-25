@@ -1051,15 +1051,16 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const workItem = await fetchAgentWorkItem(baseUrl, fetchImpl, requestHeaders, agentId, workItemId, options);
       return projectWorkItem(workItem);
     },
-    async getAgentTimers(agentId: string, options: { limit?: number; incarnation?: number; signal?: AbortSignal } = {}): Promise<components["schemas"]["TimerRecord"][]> {
+    async getAgentTimers(agentId: string, options: { status?: "active" | "terminal"; limit?: number; incarnation?: number; signal?: AbortSignal } = {}): Promise<components["schemas"]["TimerRecord"][]> {
       if (!baseUrl) {
         return [];
       }
       const limit = options.limit ?? 50;
+      const status = options.status ?? "active";
       return getJson<components["schemas"]["TimerRecord"][]>(
         fetchImpl,
         baseUrl,
-        `/agents/${encodeURIComponent(agentId)}/timers?status=active&limit=${encodeURIComponent(limit)}`,
+        `/agents/${encodeURIComponent(agentId)}/timers?status=${status}&limit=${encodeURIComponent(limit)}`,
         { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, ...identityFencedGetOptions(requestHeaders, agentId, options) },
       );
     },

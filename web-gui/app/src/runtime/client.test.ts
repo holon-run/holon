@@ -1803,13 +1803,15 @@ describe("createRuntimeClient", () => {
   type DetailFenceOptions = { incarnation?: number; signal?: AbortSignal };
   type RuntimeClientForTests = ReturnType<typeof createRuntimeClient>;
 
-  it("requests active timers and terminal recent tasks without loading unfiltered history", async () => {
+  it("requests active timers by default and terminal history explicitly", async () => {
     const fetchImpl = vi.fn().mockImplementation(async () => Response.json([]));
     const client = createRuntimeClient({ mode: "local", fetchImpl });
     await expect(client.getAgentTimers("agent/one")).resolves.toEqual([]);
+    await expect(client.getAgentTimers("agent/one", { status: "terminal" })).resolves.toEqual([]);
     await expect(client.getAgentRecentTasks("agent/one")).resolves.toEqual([]);
     expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
       "/api/agents/agent%2Fone/timers?status=active&limit=50",
+      "/api/agents/agent%2Fone/timers?status=terminal&limit=50",
       "/api/agents/agent%2Fone/tasks?status=terminal&limit=20",
     ]);
     for (const [, init] of fetchImpl.mock.calls) {
