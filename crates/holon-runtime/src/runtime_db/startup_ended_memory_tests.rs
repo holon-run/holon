@@ -1147,3 +1147,74 @@ fn queue_reentry_requires_original_receipt_and_unchanged_native_facts() -> Resul
     }
     Ok(())
 }
+
+/// The retired-scheduler cleanup and this validator describe the same canonical
+/// end for the same activation. #4500: the cleanup interrupted a WorkItem-bound
+/// activation with a cleanup-private reason, `interrupted_outcome_matches`
+/// rejected the outcome, and the upgraded daemon aborted in `durable_reconcile`
+/// before it ever published readiness. The two writers must not diverge again.
+#[test]
+fn retired_scheduler_cleanup_outcomes_are_canonical_startup_ends() {
+    use crate::{
+        domain::execution_protocol::{
+            AdmittedFences, ExecutionOrigin, ExecutionPriority, ExecutionProvenance,
+            ExecutionSource, ExecutionSourceIdentity, ExecutionTrust,
+        },
+        runtime_db::retired_scheduler_cleanup::fallback_outcome,
+    };
+    let at = Utc::now().to_rfc3339();
+    for binding in [
+        ExecutionBinding::WorkItem {
+            work_item_id: "work-a".to_string(),
+        },
+        ExecutionBinding::Conversation {
+            interaction_id: "interaction-a".to_string(),
+        },
+    ] {
+        let attempt = ExecutionAttempt {
+            input_projection: None,
+            attempt_id: "activation:message:msg-a".to_string(),
+            agent_id: "agent-a".to_string(),
+            source_message_id: Some("msg-a".to_string()),
+            source: ExecutionSource {
+                identity: ExecutionSourceIdentity::QueueMessage {
+                    message_id: "msg-a".to_string(),
+                },
+                generation: 1,
+            },
+            provenance: ExecutionProvenance {
+                origin: ExecutionOrigin::Operator,
+                trust: ExecutionTrust::OperatorInstruction,
+                priority: ExecutionPriority::Normal,
+                correlation_id: None,
+                causation_id: None,
+            },
+            admitted_fences: AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: Some(1),
+                work_item_generation: Some(1),
+                rejoin: None,
+                agent_control_revision: 1,
+                host_registry_revision: 1,
+            },
+            state: ExecutionAttemptState::Interrupted,
+            run_id: None,
+            turn_id: Some("turn-a".to_string()),
+            recovery_of_attempt_id: None,
+            terminal_outcome_id: Some(format!(
+                "retired-scheduler-cleanup:{}",
+                "activation:message:msg-a"
+            )),
+            admitted_at: at.clone(),
+            terminal_at: Some(at.clone()),
+            binding,
+        };
+        let outcome = fallback_outcome(&attempt, &at);
+        assert!(
+            interrupted_outcome_matches(&attempt, &outcome),
+            "cleanup outcome {:?} is not a canonical startup end for {:?}",
+            outcome.outcome,
+            attempt.binding
+        );
+    }
+}
