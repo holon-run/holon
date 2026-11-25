@@ -93,6 +93,7 @@ final class SendingCoordinator {
     /// Only a full disconnect (revoked identity) drops the scope.
     func activateOffline(partition: ReadingPartition) {
         let previous = transport
+        previous?.revokeAdmission()
         cancelLocalSend()
         revision += 1
         connectionRevision += 1
@@ -166,6 +167,7 @@ final class SendingCoordinator {
 
     func disconnect() {
         let previous = transport
+        previous?.revokeAdmission()
         cancelLocalSend()
         revision += 1
         connectionRevision += 1
@@ -357,6 +359,7 @@ final class SendingCoordinator {
         }
         guard original.state != .received else { return }
         let token = revision
+        let connection = connectionRevision
         activeRequestID = original.requestID
         status = .sending
         sendTask = Task { [weak self] in
@@ -402,7 +405,11 @@ final class SendingCoordinator {
                 try self.store.update(entry)
                 self.status = .ready
             } catch {
-                guard self.revision == token, !Task.isCancelled else { return }
+                guard self.revision == token, !Task.isCancelled else {
+                    // A view change does not make a same-session HTTP authorization failure stale.
+                    if self.connectionRevision == connection { self.reportConnectionFailure(error) }
+                    return
+                }
                 entry.state = error is SendingFailure ? .failed : .unknown
                 entry.error = error.localizedDescription
                 do { try self.store.update(entry) } catch { self.error = error.localizedDescription }

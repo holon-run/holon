@@ -9,17 +9,20 @@ private final class LegacyModelProtocol: URLProtocol, @unchecked Sendable {
         var waiting: LegacyModelProtocol?
         var arrived: XCTestExpectation?
         var promptCount = 0
+        var modelCount = 0
     }
     private static let fixture = Fixture()
 
-    static func install(arrived: XCTestExpectation) {
+    static func install(arrived: XCTestExpectation? = nil) {
         fixture.lock.withLock {
             fixture.arrived = arrived
             fixture.promptCount = 0
+            fixture.modelCount = 0
         }
     }
 
     static var promptCount: Int { fixture.lock.withLock { fixture.promptCount } }
+    static var modelCount: Int { fixture.lock.withLock { fixture.modelCount } }
 
     @discardableResult
     static func finishWrite() -> Bool {
@@ -38,9 +41,15 @@ private final class LegacyModelProtocol: URLProtocol, @unchecked Sendable {
 
     override func startLoading() {
         if request.httpMethod == "POST", request.url?.path.hasSuffix("/control/agents/A/model") == true {
-            Self.fixture.lock.withLock {
+            let held = Self.fixture.lock.withLock {
+                Self.fixture.modelCount += 1
+                guard let arrived = Self.fixture.arrived else { return false }
                 Self.fixture.waiting = self
-                Self.fixture.arrived?.fulfill()
+                arrived.fulfill()
+                return true
+            }
+            if !held {
+                reply(status: 200, body: #"{"ok":true,"model":{"effective_model":"test/legacy"}}"#)
             }
         } else {
             Self.fixture.lock.withLock { Self.fixture.promptCount += 1 }
@@ -65,6 +74,33 @@ private final class LegacyModelProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class SendingTransportTests: XCTestCase {
+    @MainActor
+    func testRevokingAdmissionRejectsLegacyWriteBeforeSDKCloses() async throws {
+        let base = URL(string: "https://sending.invalid/api")!
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [LegacyModelProtocol.self]
+        let client = try HolonClient(endpoint: HolonEndpoint(apiBaseURL: base),
+                                    networkID: "network", configuration: configuration)
+        let identity = try await client.bindIdentity(runtimeID: "runtime", userID: "user",
+                                                    visibilityScopeID: "private", credential: "test-credential")
+        let suite = "SendingTransportTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let consent = SharingConsent(defaults: defaults)
+        consent.approve(base)
+        let transport = SendingClientTransport(client: client, authority: identity, apiBaseURL: base, consent: consent)
+        LegacyModelProtocol.install()
+        transport.revokeAdmission()
+        do {
+            _ = try await transport.send(agentID: "A", requestID: UUID(),
+                payload: SendingPayload(text: "draft", modelID: "test/legacy", attachments: []))
+            XCTFail("No new model write may be admitted while the revoked SDK is awaiting close")
+        } catch is CancellationError {}
+        XCTAssertEqual(LegacyModelProtocol.modelCount, 0)
+        XCTAssertEqual(LegacyModelProtocol.promptCount, 0)
+        await transport.close()
+    }
+
     @MainActor
     func testLocalCancellationWaitsForLegacyModelHTTPResponseWithoutPostingPrompt() async throws {
         let base = URL(string: "https://sending.invalid/api")!

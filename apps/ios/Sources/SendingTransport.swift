@@ -9,14 +9,29 @@ protocol SendingTransport: Sendable {
     func agentModel(agentID: String) async throws -> AgentModelConfiguration
     func updateAgentModel(agentID: String, selection: AgentModelSelection) async throws -> AgentModelConfiguration
     func stop(agentID: String, runID: String) async throws
+    func revokeAdmission()
     func close() async
 }
 
 extension SendingTransport {
+    func revokeAdmission() {}
     func close() async {}
     func agentModel(agentID: String) async throws -> AgentModelConfiguration { throw SendingFailure.unavailable }
     func updateAgentModel(agentID: String, selection: AgentModelSelection) async throws -> AgentModelConfiguration {
         throw SendingFailure.unavailable
+    }
+}
+
+private final class SendingAdmission: @unchecked Sendable {
+    private let lock = NSLock()
+    private var revoked = false
+
+    func revoke() { lock.withLock { revoked = true } }
+
+    func check() throws {
+        try lock.withLock {
+            if revoked { throw CancellationError() }
+        }
     }
 }
 
@@ -25,6 +40,7 @@ actor SendingClientTransport: SendingTransport {
     private let authority: HolonConnectionIdentity
     private let consent: SharingConsent
     private let apiBaseURL: URL
+    private let admission = SendingAdmission()
     private var bound: HolonConnectionIdentity?
 
     init(client: HolonClient, authority: HolonConnectionIdentity,
@@ -93,13 +109,17 @@ actor SendingClientTransport: SendingTransport {
             let selection = try HolonAgentModelRequest(model: model)
             // Leaving a conversation cancels delivery, not an already confirmed model write.
             // Wait for the HTTP result so the coordinator does not unlock a stale model read.
-            let write = Task {
-                try await request(sharing: true) { try await $0.setAgentModel(agentID: agentID, request: selection) }
+            let write = Task { [admission] in
+                try await request(sharing: true) {
+                    try await $0.setAgentModel(agentID: agentID, request: selection, admit: admission.check)
+                }
             }
             _ = try await write.value
         }
         try Task.checkCancellation()
-        let receipt = try await request(sharing: true) { try await $0.sendOperatorPrompt(agentID: agentID, request: prompt) }
+        let receipt = try await request(sharing: true) { [admission] in
+            try await $0.sendOperatorPrompt(agentID: agentID, request: prompt, admit: admission.check)
+        }
         guard receipt.isAccepted else { throw HolonClientError.malformedResponse }
         return receipt.messageID
     }
@@ -154,10 +174,14 @@ actor SendingClientTransport: SendingTransport {
         let state: HolonAgentModelState
         switch selection {
         case .automatic:
-            state = try await request(sharing: true) { try await $0.clearAgentModel(agentID: agentID) }
+            state = try await request(sharing: true) { [admission] in
+                try await $0.clearAgentModel(agentID: agentID, admit: admission.check)
+            }
         case .manual(let model, let effort, let tier):
             let body = try HolonAgentModelRequest(model: model, reasoningEffort: effort, serviceTier: tier)
-            state = try await request(sharing: true) { try await $0.setAgentModel(agentID: agentID, request: body) }
+            state = try await request(sharing: true) { [admission] in
+                try await $0.setAgentModel(agentID: agentID, request: body, admit: admission.check)
+            }
         }
         return try Self.modelConfiguration(state)
     }
@@ -179,7 +203,10 @@ actor SendingClientTransport: SendingTransport {
         _ = try await request { try await $0.stopCurrentRun(agentID: agentID, runID: runID) }
     }
 
+    nonisolated func revokeAdmission() { admission.revoke() }
+
     func close() async {
+        revokeAdmission()
         await client.close()
     }
 }

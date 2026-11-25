@@ -44,6 +44,7 @@ private actor SendingMockTransport: SendingTransport {
     }
     func updateAgentModel(agentID: String, selection: AgentModelSelection) async throws -> AgentModelConfiguration {
         if delayModelWrite { await withCheckedContinuation { modelWrite = $0 } }
+        if let failure { throw failure }
         if case .manual(let modelID, let effort, let tier) = selection {
             model = AgentModelConfiguration(effectiveModel: modelID, activeModel: nil, source: "agent_override",
                 overrideModel: modelID, reasoningEffort: effort, serviceTier: tier)
@@ -486,6 +487,37 @@ final class SendingCoordinatorTests: XCTestCase {
         let current = try await coordinator.readAgentModel(revision: resumedToken)
         XCTAssertEqual(current.overrideModel, "test/updated")
         XCTAssertEqual(current.serviceTier, "fast")
+    }
+
+    func testLateLegacyAuthorizationFailureAppliesOnlyToItsOriginalConnection() async throws {
+        for replaceConnection in [false, true] {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let coordinator = makeCoordinator(store: try makeStore(directory: folder))
+            let transport = SendingMockTransport()
+            let connectionIdentity = identity()
+            let url = URL(string: "https://example.test")!
+            coordinator.activate(transport: transport, identity: connectionIdentity, apiBaseURL: url)
+            var reports = 0
+            coordinator.onConnectionFailure = { failure in
+                XCTAssertEqual(failure.statusCode, 401)
+                reports += 1
+            }
+            coordinator.selectAgent("A")
+            await transport.deferModelWrite()
+            coordinator.editDraft(text: "original", modelID: "test/legacy")
+            coordinator.enqueue(legacyModelConfirmedAt: coordinator.draftScopeRevision)
+            try await waitUntil { await transport.hasPendingModelWrite() }
+            coordinator.selectAgent("B")
+            if replaceConnection {
+                coordinator.activate(transport: SendingMockTransport(), identity: connectionIdentity, apiBaseURL: url)
+            }
+            coordinator.selectAgent("A")
+            await transport.rejectAuthentication(connectionIdentity)
+            await transport.settleModelWrite()
+            try await waitUntil { !coordinator.isUpdatingAgentModel }
+            XCTAssertEqual(reports, replaceConnection ? 0 : 1)
+        }
     }
 
     func testLegacyRetryBlocksOnlyItsScopeUntilLateModelWriteSettles() async throws {

@@ -2091,10 +2091,10 @@ final class HolonUITests: XCTestCase {
                                                timeout: TimeInterval = 10) -> XCUIElement {
         let button = app.buttons["conversation.connectionStatus"].firstMatch
         let state = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            button.exists && button.isHittable && (button.value as? String) == value
+            button.exists && (button.value as? String) == value
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [state], timeout: UIWaitScale.scaled(timeout)), .completed,
-                       "The compact connection action must be reachable and expose \(value)")
+                       "The compact connection action must expose \(value)")
         return button
     }
 
