@@ -2221,11 +2221,6 @@ fn dashscope_qwen4_reasoning_uses_exact_effort_without_manual_budget() {
         ("qwen4-max", "high", "high"),
         ("qwen4-max", "xhigh", "xhigh"),
         ("qwen4-max", "max", "xhigh"),
-        ("qwen4-max-preview", "low", "low"),
-        ("qwen4-max-preview", "medium", "medium"),
-        ("qwen4-max-preview", "high", "xhigh"),
-        ("qwen4-max-preview", "xhigh", "xhigh"),
-        ("qwen4-max-preview", "max", "xhigh"),
     ] {
         let (thinking, output_config) =
             anthropic_reasoning_controls("dashscope", model, true, Some(effort), 8192).unwrap();
@@ -2236,7 +2231,7 @@ fn dashscope_qwen4_reasoning_uses_exact_effort_without_manual_budget() {
             "{model}/{effort}"
         );
     }
-    for model in ["qwen4-max", "qwen4-max-preview"] {
+    for model in ["qwen4-max"] {
         let (thinking, output_config) =
             anthropic_reasoning_controls("dashscope", model, true, None, 8192).unwrap();
         assert!(thinking.is_none());

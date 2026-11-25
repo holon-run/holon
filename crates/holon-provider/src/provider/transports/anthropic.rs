@@ -361,14 +361,13 @@ fn anthropic_reasoning_controls<'a>(
             reasoning_effort.map(|effort| OutputConfigRequest { effort }),
         ));
     }
-    if route_provider == "dashscope" && matches!(model, "qwen4-max" | "qwen4-max-preview") {
+    if route_provider == "dashscope" && model == "qwen4-max" {
         let effort = match reasoning_effort {
             None => None,
             Some(effort) => Some(match (model, effort) {
                 (_, "low" | "xhigh") => effort,
                 ("qwen4-max", "medium" | "high") => "high",
-                ("qwen4-max-preview", "medium") => "medium",
-                ("qwen4-max-preview", "high") | (_, "max") => "xhigh",
+                (_, "max") => "xhigh",
                 _ => {
                     return Err(anyhow!(
                         "DashScope {model} reasoning effort must be low, medium, high, xhigh, or max"

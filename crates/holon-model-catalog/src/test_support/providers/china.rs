@@ -318,7 +318,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
         None,
     ));
     // Append admissions without changing the existing preferred plan model.
-    for model in ["qwen4-max", "qwen4-max-preview"] {
+    for model in ["qwen4-max"] {
         let mut definition = route_definition(
             "dashscope-token-plan",
             "dashscope",
@@ -1499,22 +1499,13 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             endpoint: Some(ProviderEndpointId::default_endpoint()),
         }),
     );
-    for (model, endpoint, context, upper, efforts) in [
-        (
-            "qwen4-max",
-            "default",
-            Some(1_000_000),
-            262_144,
-            &["low", "high", "xhigh"][..],
-        ),
-        (
-            "qwen4-max-preview",
-            "token-plan",
-            None,
-            393_216,
-            &["low", "medium", "xhigh"][..],
-        ),
-    ] {
+    for (model, endpoint, context, upper, efforts) in [(
+        "qwen4-max",
+        "default",
+        Some(1_000_000),
+        262_144,
+        &["low", "high", "xhigh"][..],
+    )] {
         let mut entry =
             reviewed_subscription_model("dashscope", endpoint, model, model, true, true);
         entry.description = format!(
@@ -2144,7 +2135,7 @@ fn qianfan_ernie_abbreviated_context_does_not_keep_conflicting_exact_limits() {
 }
 
 #[test]
-fn dashscope_qwen4_routes_keep_preview_and_messages_limits_separate() {
+fn dashscope_qwen4_max_routes_keep_plan_limits_consistent() {
     for catalog in [
         legacy_builtin_catalog().unwrap(),
         BuiltInModelCatalog::new(),
@@ -2163,13 +2154,6 @@ fn dashscope_qwen4_routes_keep_preview_and_messages_limits_separate() {
                 Some(1_000_000),
                 262_144,
                 &["low", "high", "xhigh"][..],
-            ),
-            (
-                "qwen4-max-preview",
-                "token-plan",
-                None,
-                393_216,
-                &["low", "medium", "xhigh"][..],
             ),
         ] {
             let route = ModelRouteRef::parse(&format!("dashscope@{endpoint}/{model}")).unwrap();
@@ -2213,13 +2197,11 @@ fn dashscope_qwen4_routes_keep_preview_and_messages_limits_separate() {
             assert!(policy.validate_reasoning_effort("none").is_err());
         }
         for endpoint in ["coding-plan", "coding-plan-intl"] {
-            for model in ["qwen4-max", "qwen4-max-preview"] {
+            for model in ["qwen4-max"] {
                 let route = ModelRouteRef::parse(&format!("dashscope@{endpoint}/{model}")).unwrap();
                 assert!(catalog.get_route(&route).is_none(), "{}", route.as_string());
             }
         }
-        let preview = ModelRouteRef::parse("dashscope@default/qwen4-max-preview").unwrap();
-        assert!(catalog.get_route(&preview).is_none());
     }
 }
 

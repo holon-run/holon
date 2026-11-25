@@ -9,6 +9,20 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-25 incremental review
+
+Retire `dashscope@token-plan/qwen4-max-preview`: the official Chinese and English
+model pages state that its preview window ran from **November 11, 2026 at 10:00
+UTC+8** to **November 25, 2026 at 10:00 UTC+8** and that the model is retired
+once the preview ends. A post-boundary recheck at 10:03 UTC+8 returned the same
+published text, and the stated window had elapsed. Remove only that Token Plan
+preview route. Keep formal `dashscope@default/qwen4-max` and
+`dashscope@token-plan/qwen4-max`; the deadline is specific to the preview
+entitlement. Alibaba's personal and team Token Plan model tables still listed the
+preview row at that hour, so the removal rests on the published retirement
+commitment rather than on an already updated listing.
+[Field evidence](metadata-evidence.md#incremental-review-2026-11-25)
+
 ## 2026-11-24 incremental review
 
 Add only `volcengine@plan/glm-5.4`: the personal Agent Plan lists the exact
@@ -30,9 +44,9 @@ calls for rechecking `doubao-seed-2-0-code-preview-260215` at 14:00 UTC+8
 on November 24; it does not retire the same ID on a plan. The same
 notice puts `doubao-seed-2-0-pro-260215` at January 22, 2027, 14:00
 UTC+8. Keep the separate November 25 boundary for plan `kimi-k3`.
-DashScope `qwen4-max-preview` stays on the reviewed Token Plan route
-through its published preview window, which ends November 26 at
-00:00 UTC+8. Do not remove the two older OpenCode Go LongCat IDs:
+The November 24 review's DashScope `qwen4-max-preview` window (ending
+November 26 at 00:00 UTC+8) is historical and superseded by the corrected
+November 25 evidence above. Do not remove the two older OpenCode Go LongCat IDs:
 repeated absence from Go's public list is not proof of a Go shutdown,
 and the Console pay-as-you-go retirement is scoped to a different service.
 
@@ -688,7 +702,8 @@ first-party certification of every field or an account-entitlement test.
 
 ### Deferred candidates and evidence boundaries
 
-Alibaba's separate personal and team Token Plan tables add
+The following pre-correction window is historical and superseded by the
+2026-11-25 evidence above. Alibaba's separate personal and team Token Plan tables add
 `qwen4-max-preview` and callable alias `qwen4.0-max-preview`; the preview runs
 from November 11, 2026 at 10:00 through November 25 at 24:00 (UTC+8), after which
 it is scheduled to go offline. The Messages contract marks this model as
