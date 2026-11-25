@@ -20,7 +20,9 @@ export function timerContentValues(timer: TimerContentFields) {
 
 export function timerDisplayName(timer: TimerContentFields & { id: string }) {
   const { title, instruction } = timerContentValues(timer);
-  return title.trim() || instruction.trim().replace(/\s+/g, " ") || timer.id;
+  if (title.trim()) return title.trim();
+  const preview = Array.from(instruction.trim().replace(/\s+/g, " "));
+  return preview.length > 48 ? `${preview.slice(0, 47).join("")}…` : preview.join("") || timer.id;
 }
 
 export function TimerContentEditor({

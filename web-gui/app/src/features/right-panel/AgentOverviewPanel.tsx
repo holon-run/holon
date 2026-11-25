@@ -2,8 +2,10 @@ import { useMemo, useState } from "react";
 import {
   CalendarClock,
   Check,
+  ChevronRight,
   Inbox,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Play,
   Repeat2,
@@ -27,6 +29,7 @@ import { TimerContentEditor, timerContentValues, timerDisplayName, type TimerCon
 import { AgentWorkItemsPanel } from "./AgentWorkItemsPanel";
 import { RuntimeHttpError } from "../../runtime/client";
 import { useRuntimeStore } from "../../runtime/runtime-store";
+import { useVisibleAgentResourceRefresh } from "../../runtime/useVisibleAgentResourceRefresh";
 import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, TaskTargetRef, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { components } from "../../runtime/generated/openapi";
 import { useTranslation } from "react-i18next";
@@ -114,32 +117,31 @@ function ManageAgentSkillItem({
 type TimerRecord = components["schemas"]["TimerRecord"];
 type TimerAction = Parameters<ReturnType<typeof useRuntimeStore.getState>["controlAgentTimer"]>[2];
 
-const timerActionLabels = {
-  pause: { idle: "rightPanel.pauseTimer", pending: "rightPanel.pausingTimer" },
-  resume: { idle: "rightPanel.resumeTimer", pending: "rightPanel.resumingTimer" },
-  cancel: { idle: "common.cancel", pending: "rightPanel.cancellingTimer" },
-} as const;
-
-function formatTimerDuration(milliseconds: number): string {
-  if (milliseconds < 1_000) return `${milliseconds} ms`;
-  if (milliseconds % 86_400_000 === 0) return `${milliseconds / 86_400_000} d`;
-  if (milliseconds % 3_600_000 === 0) return `${milliseconds / 3_600_000} h`;
-  if (milliseconds % 60_000 === 0) return `${milliseconds / 60_000} min`;
-  if (milliseconds % 1_000 === 0) return `${milliseconds / 1_000} s`;
-  return `${milliseconds} ms`;
+function formatTimerDuration(milliseconds: number, locale: string): string {
+  const [size, unit] = ([[3_600_000, "hour"], [60_000, "minute"], [1_000, "second"]] as const)
+    .find(([size]) => milliseconds >= size && milliseconds % size === 0) ?? [1, "millisecond"];
+  return new Intl.NumberFormat(locale, { style: "unit", unit, unitDisplay: "long" }).format(milliseconds / size);
 }
 
-function formatTimerDate(value: string | null, timezone?: string): string | null {
+function formatTimerDate(value: string | null, locale: string, timezone?: string): string | null {
   if (!value) return null;
   try {
-    return new Date(value).toLocaleString(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
+    return new Date(value).toLocaleString(locale, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
       ...(timezone ? { timeZone: timezone } : {}),
     });
   } catch {
     return new Date(value).toLocaleString();
   }
+}
+
+function isControllableTimer(timer: TimerRecord) {
+  return timer.status === "active" || timer.status === "paused";
 }
 
 function TimerRow({
@@ -152,13 +154,15 @@ function TimerRow({
   timer: TimerRecord;
   disabled: boolean;
   pendingAction?: TimerAction | "edit";
-  onAction: (action: TimerAction) => void;
+  onAction?: (action: TimerAction) => void;
   onSave?: (patch: TimerContentPatch) => Promise<boolean>;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.resolvedLanguage ?? i18n.language;
+  const [expanded, setExpanded] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const paused = timer.status === "paused";
-  const primaryAction = timer.status === "active" ? "pause" : paused ? "resume" : undefined;
   const calendar = timer.calendar;
   const timerType = calendar
     ? t("rightPanel.timerTypeCron")
@@ -166,65 +170,94 @@ function TimerRow({
       ? t("rightPanel.timerTypeInterval")
       : t("rightPanel.timerTypeOneTime");
   const schedule = calendar
-    ? calendar.expression
+    ? `${calendar.expression} · ${calendar.timezone}`
     : timer.interval_ms
-      ? t("rightPanel.timerInterval", { value: formatTimerDuration(timer.interval_ms) })
-      : t("rightPanel.timerRelative", { value: formatTimerDuration(timer.duration_ms) });
+      ? t("rightPanel.timerInterval", { value: formatTimerDuration(timer.interval_ms, locale) })
+      : t("rightPanel.timerRelative", { value: formatTimerDuration(timer.duration_ms, locale) });
   const ScheduleIcon = calendar ? CalendarClock : timer.interval_ms ? Repeat2 : Timer;
-  const nextFire = paused ? null : formatTimerDate(timer.next_fire_at, calendar?.timezone);
-  const lastFired = formatTimerDate(timer.last_fired_at, calendar?.timezone);
+  const nextFire = formatTimerDate(timer.next_fire_at, locale, calendar?.timezone);
+  const lastFired = formatTimerDate(timer.last_fired_at, locale, calendar?.timezone);
   const displayName = timerDisplayName(timer);
   const { instruction } = timerContentValues(timer);
 
   return (
-    <article className={`agent-timer-row${primaryAction ? "" : " is-history"}`} aria-busy={pendingAction ? true : undefined}>
+    <article className={`agent-timer-row${onAction ? "" : " is-history"}`} aria-busy={pendingAction ? true : undefined}>
       <div className="agent-timer-summary">
-        <div className="agent-timer-heading">
+        <button type="button" className="agent-timer-heading" aria-expanded={expanded}
+          onClick={() => setExpanded(!expanded)}>
+          <ChevronRight size={14} aria-hidden="true" />
           <strong title={displayName}>{displayName}</strong>
-          <span className="agent-timer-type" title={timerType} aria-label={timerType}>
-            {calendar ? <CalendarClock size={14} aria-hidden="true" /> : timer.interval_ms ? <Repeat2 size={14} aria-hidden="true" /> : <Timer size={14} aria-hidden="true" />}
-            <span className="sr-only">{timerType}</span>
-          </span>
-        </div>
-        <StatusBadge className="state-chip" kind="task" value={timer.status} showLabel />
+        </button>
+        {onAction ? (
+          <div className="agent-timer-controls">
+            <button type="button" role="switch" className="agent-timer-switch" aria-checked={!paused}
+              aria-label={t("rightPanel.timerEnabled", { name: displayName })}
+              title={t(paused ? "rightPanel.resumeTimer" : "rightPanel.pauseTimer")}
+              disabled={disabled} onClick={() => onAction(paused ? "resume" : "pause")} />
+            <button type="button" className="agent-timer-more" aria-expanded={actionsOpen}
+              aria-label={t("rightPanel.timerMoreActions", { name: displayName })}
+              disabled={disabled} onClick={() => setActionsOpen(!actionsOpen)}>
+              <MoreHorizontal size={17} aria-hidden="true" />
+            </button>
+          </div>
+        ) : <StatusBadge className="state-chip" kind="task" value={timer.status} showLabel />}
       </div>
-      <div className="agent-timer-schedule">
-        <ScheduleIcon size={15} aria-hidden="true" />
-        <strong>{schedule}</strong>
-        {calendar ? <span>{calendar.timezone}</span> : null}
+      <div className="agent-timer-schedule" title={timerType}>
+        <ScheduleIcon size={13} aria-hidden="true" />
+        <span className="sr-only">{timerType}</span>
+        <span>{schedule}</span>
       </div>
-      <dl className="agent-timer-meta">
-        {nextFire ? (
-          <div>
-            <dt>{t("rightPanel.timerNextRun")}</dt>
-            <dd><time dateTime={timer.next_fire_at ?? undefined}>{nextFire}</time></dd>
-          </div>
-        ) : null}
-        {lastFired ? (
-          <div>
-            <dt>{t("rightPanel.timerLastRun")}</dt>
-            <dd><time dateTime={timer.last_fired_at ?? undefined}>{lastFired}</time></dd>
-          </div>
-        ) : null}
-        <div>
-          <dt>{t("rightPanel.timerRuns")}</dt>
-          <dd>{timer.fire_count}</dd>
+      {onAction ? (
+        <div className="agent-timer-next" aria-live="polite">
+          {paused ? t("rightPanel.timerPaused") : <>
+            <span>{t("rightPanel.timerNextRun")}</span>{" "}
+            <strong>{nextFire ? <time dateTime={timer.next_fire_at ?? undefined}>{nextFire}</time> : "—"}</strong>
+          </>}
         </div>
-        {timer.repeat ? (
-          <div>
-            <dt>{t("rightPanel.timerRepeating")}</dt>
-            <dd>{t("inspector.yes")}</dd>
-          </div>
-        ) : null}
-      </dl>
-      {paused ? (
-        <p className="inspector-muted">
-          {calendar
-            ? t("rightPanel.timerResumeCalendar")
-            : timer.paused_remaining_ms == null
-              ? t("rightPanel.timerResumeFrozen")
-              : t("rightPanel.timerResumeRemaining", { value: formatTimerDuration(timer.paused_remaining_ms) })}
-        </p>
+      ) : null}
+      {expanded ? (
+        <div className="agent-timer-details">
+          <dl className="agent-timer-meta">
+            <div>
+              <dt>{t("rightPanel.timerLastRun")}</dt>
+              <dd>{lastFired ? <time dateTime={timer.last_fired_at ?? undefined}>{lastFired}</time> : "—"}</dd>
+            </div>
+            <div>
+              <dt>{t("rightPanel.timerRuns")}</dt>
+              <dd>{timer.fire_count}</dd>
+            </div>
+          </dl>
+          {paused ? <p className="inspector-muted">
+            {calendar
+              ? t("rightPanel.timerResumeCalendar")
+              : timer.paused_remaining_ms == null
+                ? t("rightPanel.timerResumeFrozen")
+                : t("rightPanel.timerResumeRemaining", { value: formatTimerDuration(timer.paused_remaining_ms, locale) })}
+          </p> : null}
+          {instruction ? <div>
+            <div className="inspector-muted">{t("rightPanel.timerInstruction")}</div>
+            <p className="agent-timer-instruction">{instruction}</p>
+          </div> : null}
+        </div>
+      ) : null}
+      {actionsOpen && onAction ? (
+        <div className="agent-timer-actions">
+          {onSave && !editing ? (
+            <button type="button" className="secondary-button" disabled={disabled} onClick={() => {
+              setActionsOpen(false);
+              setEditing(true);
+            }}>
+              {t("rightPanel.editTimer")}
+            </button>
+          ) : null}
+          <button type="button" className="secondary-button" disabled={disabled} onClick={() => {
+            if (window.confirm(`${t("rightPanel.cancelTimerConfirm", { name: displayName })}\n\n${t("rightPanel.timerWakePolicy")}`)) {
+              onAction("cancel");
+            }
+          }}>
+            {t(pendingAction === "cancel" ? "rightPanel.cancellingTimer" : "rightPanel.cancelTimer")}
+          </button>
+        </div>
       ) : null}
       {editing && onSave ? (
         <TimerContentEditor
@@ -241,28 +274,7 @@ function TimerRow({
           onSave={async (patch) => { if (await onSave(patch)) setEditing(false); }}
           onCancel={() => setEditing(false)}
         />
-      ) : (
-        <>
-          {instruction ? (
-            <details>
-              <summary>{t("rightPanel.timerInstruction")}</summary>
-              <p className="agent-timer-instruction">{instruction}</p>
-            </details>
-          ) : null}
-          <div className="agent-timer-actions">
-            {onSave ? (
-              <button type="button" className="secondary-button" disabled={disabled} onClick={() => setEditing(true)}>
-                {t("rightPanel.editTimer")}
-              </button>
-            ) : null}
-            {primaryAction && ([primaryAction, "cancel"] as const).map((action) => (
-              <button key={action} type="button" className="secondary-button" disabled={disabled} onClick={() => onAction(action)}>
-                {t(timerActionLabels[action][pendingAction === action ? "pending" : "idle"])}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+      ) : null}
     </article>
   );
 }
@@ -271,15 +283,21 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
   const { t } = useTranslation();
   const controlAgentTimer = useRuntimeStore((state) => state.controlAgentTimer);
   const editAgentTimerContent = useRuntimeStore((state) => state.editAgentTimerContent);
+  const queryAgentTimers = useRuntimeStore((state) => state.queryAgentTimers);
   const refreshAgentState = useRuntimeStore((state) => state.refreshAgentState);
   const refreshState = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh?.state);
   const [pending, setPending] = useState<{ timerId: string; action: TimerAction | "edit" }>();
   const [error, setError] = useState<{ message: string; conflict: boolean }>();
+  const [sectionOpen, setSectionOpen] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const history = useVisibleAgentResourceRefresh(agent.id, "timerHistory", sectionOpen && historyOpen && stateIsCurrent,
+    (agentId, options) => queryAgentTimers(agentId, { ...options, status: "terminal" }));
   const incarnation = agent.incarnation;
   const timers = agent.timers ?? [];
   const shownActive = timers.filter((timer) => timer.status === "active").length;
   const activeTimerCount = agent.activeTimerCount ?? shownActive;
   const disabled = Boolean(!stateIsCurrent || pending || refreshState?.stale);
+  const scheduled = timers.filter(isControllableTimer);
 
   async function handleAction(timerId: string, action: TimerAction | "edit", mutate: () => Promise<void>) {
     if (disabled) return false;
@@ -287,6 +305,7 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
     setError(undefined);
     try {
       await mutate();
+      if (action === "cancel") history.refresh();
       return true;
     } catch (error) {
       setError({
@@ -303,12 +322,10 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
     <CollapsibleInspectorCard
       title={activeTimerCount ? t("rightPanel.timersWithActiveCount", { count: activeTimerCount }) : t("rightPanel.timers")}
       className="agent-timers-card"
+      onOpenChange={setSectionOpen}
       badge={activeTimerCount ? <span className="inspector-card-count">{activeTimerCount}</span> : undefined}
     >
       {activeTimerCount > shownActive ? <p className="inspector-muted">{t("rightPanel.activeSnapshotTruncated", { shown: shownActive, count: activeTimerCount })}</p> : null}
-      {timers.some((timer) => timer.status === "active" || timer.status === "paused") ? (
-        <p className="inspector-muted">{t("rightPanel.timerWakePolicy")}</p>
-      ) : null}
       {error ? <p className="error-text" role="alert">{t(error.conflict ? "rightPanel.timerConflict" : "rightPanel.timerActionError", { error: error.message })}</p> : null}
       {refreshState?.stale ? (
         <>
@@ -319,10 +336,10 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
           </button>
         </>
       ) : null}
-      {!timers.length && !refreshState?.stale ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
-      {timers.length ? (
+      {!scheduled.length && !refreshState?.stale ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
+      {scheduled.length ? (
         <div className="agent-timer-list">
-          {timers.map((timer) => (
+          {scheduled.map((timer) => (
             <TimerRow
               key={timer.id}
               timer={timer}
@@ -336,6 +353,19 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
           ))}
         </div>
       ) : null}
+      <details className="agent-timer-history" onToggle={(event) => {
+        if (event.target === event.currentTarget) setHistoryOpen(event.currentTarget.open);
+      }}>
+        <summary>{t("rightPanel.timerHistory")}</summary>
+        {historyOpen ? (
+          <div className="agent-timer-list">
+            <ObjectDetailRefreshFeedback state={history.state} onRefresh={stateIsCurrent ? history.refresh : undefined} />
+            {history.state?.loading ? <p className="inspector-muted" role="status">{t("rightPanel.loadingTimers")}</p> : null}
+            {history.state?.data?.length === 0 ? <p className="muted">{t("rightPanel.noTimerHistory")}</p> : null}
+            {history.state?.data?.map((timer) => <TimerRow key={timer.id} timer={timer} disabled />)}
+          </div>
+        ) : null}
+      </details>
     </CollapsibleInspectorCard>
   );
 }

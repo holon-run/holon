@@ -400,7 +400,7 @@ export interface RuntimeStoreState {
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
   queryAgentRecentTasks: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<TaskSummary[]>;
-  queryAgentTimers: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"][]>;
+  queryAgentTimers: (agentId: string, options?: AgentResourceRefreshOptions & { status?: "active" | "terminal" }) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"][]>;
   queryAgentCompletedWorkItems: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<WorkItemSummary[]>;
   controlAgentTimer: (agentId: string, timerId: string, action: Parameters<RuntimeClient["controlAgentTimer"]>[2], incarnation?: number) => Promise<void>;
   editAgentTimerContent: (agentId: string, timerId: string, patch: Parameters<RuntimeClient["editAgentTimerContent"]>[2], incarnation: number) => Promise<void>;
