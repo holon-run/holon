@@ -189,19 +189,22 @@ test("active Timer snapshots follow state checkpoints and fallback without any t
   const before = await ui.counts();
   await ui.checkpoint({ timers: [timer()] });
   await ui.advance(6000);
-  await expect(ui.timers.locator(".agent-timer-row")).toContainText(timer().summary);
+  const row = ui.timers.locator(".agent-timer-row");
+  const details = row.getByRole("button", { name: timer().summary, exact: true });
+  await expect(details).toHaveAttribute("aria-expanded", "false");
+  await details.click();
   expect((await ui.counts()).timers).toBe(0);
 
   const firedAt = "2026-10-31T03:00:10.000Z";
   await ui.checkpoint({ timers: [timer({ fire_count: 1, last_fired_at: firedAt })] });
   await ui.advance(6000);
-  await expect(ui.timers.locator(`time[datetime="${firedAt}"]`)).toBeVisible();
-  await expect(ui.timers.locator(".agent-timer-meta dd").filter({ hasText: /^1$/ })).toHaveCount(1);
+  await expect(row.locator(`time[datetime="${firedAt}"]`)).toBeVisible();
+  await expect(row.locator(".agent-timer-meta dd").filter({ hasText: /^1$/ })).toHaveCount(1);
   expect((await ui.counts()).timers).toBe(0);
 
   await ui.checkpoint({ timers: [timer({ status: "cancelled" })] });
   await ui.advance(6000);
-  await expect(ui.timers.locator(".agent-timer-row")).toHaveCount(0);
+  await expect(row).toHaveCount(0);
   expect((await ui.counts()).timers).toBe(0);
 
   const head = (await ui.conversation())?.throughSeq;
