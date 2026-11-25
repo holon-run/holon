@@ -351,10 +351,33 @@ impl RuntimeHandle {
             }
             Err(error) => return Err(error),
         };
+        let scheduling_request = super::resident_scheduling::SchedulingCaptureRequest::current();
+        let scheduling =
+            match acquisition.read(|| mutation.capture_scheduling_read(&scheduling_request)) {
+                Ok(scheduling) => scheduling,
+                Err(error)
+                    if error
+                        .downcast_ref::<super::resident_scheduling::SchedulingReadError>()
+                        .is_some() =>
+                {
+                    // A retained publication can be a stale narrow window. Repair
+                    // it through the owner's full-window preparation, then read the
+                    // same request again; a second miss is a publication conflict.
+                    mutation
+                        .prepare_owner_scheduling_request(&scheduling_request)
+                        .await?;
+                    acquisition
+                        .read(|| mutation.capture_scheduling_read(&scheduling_request))
+                        .map_err(|error| {
+                            super::operator_state::normalize_state_publication_error(
+                                error,
+                                &self.inner.runtime_db,
+                            )
+                        })?
+                }
+                Err(error) => return Err(error),
+            };
         acquisition.read(|| {
-            let scheduling = mutation.capture_scheduling_read(
-                &super::resident_scheduling::SchedulingCaptureRequest::current(),
-            )?;
             ensure!(
                 scheduling.state == captured.state
                     && scheduling.scheduling.scope == captured.work.scope,

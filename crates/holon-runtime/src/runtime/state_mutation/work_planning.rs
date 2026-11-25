@@ -587,6 +587,14 @@ impl RuntimeHandle {
                 adapter_root,
                 &material,
             )
+        })
+        .map_err(|error| {
+            // A synchronous observer cannot prepare the owner; keep the typed
+            // preparation debt retryable instead of leaking it as `unknown`.
+            crate::runtime::operator_state::normalize_state_publication_error(
+                error,
+                &self.inner.runtime_db,
+            )
         })?;
         if let SchedulerAdapterRoot::ObservedPublication(db) = adapter_root {
             db.check_read_scope()?;

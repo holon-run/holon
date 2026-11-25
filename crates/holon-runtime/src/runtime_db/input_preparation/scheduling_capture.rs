@@ -5,7 +5,7 @@ use crate::runtime::{
         OwnedBytesEstimate,
     },
     resident_input_evidence::InputEvidenceScope,
-    resident_scheduling::{SchedulingCaptureRequest, SchedulingKey},
+    resident_scheduling::{SchedulingCaptureRequest, SchedulingKey, SCHEDULING_HISTORY_WINDOW},
 };
 use crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest;
 use anyhow::{Context, Result};
@@ -57,7 +57,15 @@ impl PreparedSchedulingRequest {
                 },
             )?;
             (
-                capture.clone(),
+                SchedulingCaptureRequest {
+                    include_live: capture.include_live,
+                    // An owner publication always carries the full history
+                    // window. A caller's `history_limit` only narrows the keys
+                    // it selects; it must never shrink the shared coverage that
+                    // later `current()` readers validate against.
+                    history_limit: SCHEDULING_HISTORY_WINDOW,
+                    required_keys: capture.required_keys.clone(),
+                },
                 Some(guard),
                 context_material,
                 records,

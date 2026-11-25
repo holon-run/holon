@@ -839,14 +839,33 @@ impl RuntimeHandle {
         })
     }
 
-    /// Pure loaded read; an absent domain/key remains typed preparation debt.
+    /// Loaded read whose retained owner domain is repaired once when a
+    /// full-window capture finds it unpublished or narrowed.
     pub(crate) async fn capture_scheduling_records_read(
         &self,
         timer_limit: usize,
     ) -> Result<SchedulingRecordsRead> {
-        let read = self
-            .capture_scheduling_read(&SchedulingCaptureRequest::current())
-            .await?;
+        let request = SchedulingCaptureRequest::current();
+        let read = match self.capture_scheduling_read(&request).await {
+            Ok(read) => read,
+            Err(error) if error.downcast_ref::<SchedulingReadError>().is_some() => {
+                // Prepare the owner's full window once, then read the same
+                // request again; a second miss is a publication conflict.
+                let mut owner = self.begin_mutation().await?;
+                owner.prepare_owner_scheduling_request(&request).await?;
+                match owner.capture_scheduling_read(&request) {
+                    Ok(read) => read,
+                    Err(error) if error.downcast_ref::<SchedulingReadError>().is_some() => {
+                        return Err(super::operator_state::normalize_state_publication_error(
+                            error,
+                            &self.inner.runtime_db,
+                        ));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        };
         self.scheduling_records_from_capture(read, timer_limit)
     }
     /// Explicit accepted list/output query boundary, with no late canonical adoption.

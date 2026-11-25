@@ -855,3 +855,105 @@ async fn task_status_child_observation_crosses_transient_publication_window() ->
     assert_eq!(child.state.id, "scheduling-reader");
     Ok(())
 }
+
+#[tokio::test]
+async fn narrow_owner_preparation_retains_the_full_history_window() -> Result<()> {
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    // Produce at least one published history row for the Timer family.
+    let timer = runtime.schedule_timer(3_600_000, None, None).await?;
+    runtime.cancel_timer(&timer.id).await?;
+    // Drop Scheduling as a metadata ACK does, forcing the next preparation to
+    // reload the history window from SQL.
+    publish_active_metadata_ack(&runtime).await?;
+    assert!(runtime
+        .inner
+        .mutation_owner
+        .capture()?
+        .unwrap()
+        .scheduling
+        .is_none());
+
+    let narrow = SchedulingCaptureRequest {
+        include_live: true,
+        history_limit: 0,
+        required_keys: Default::default(),
+    };
+    let mut mutation = runtime.begin_mutation().await?;
+    mutation.prepare_owner_scheduling_request(&narrow).await?;
+    let root = mutation.capture_published_root()?;
+    let domain = root
+        .scheduling
+        .as_ref()
+        .expect("owner preparation must publish Scheduling");
+    // The caller's zero limit selects keys; it must not shrink the published
+    // coverage that later `current()` readers validate against.
+    domain.validate_capture_request(&SchedulingCaptureRequest::current())?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn short_window_publication_stays_typed_and_retryable_at_read_boundaries() -> Result<()> {
+    use crate::runtime::resident_scheduling::ResidentSchedulingDomain;
+    use crate::runtime_error::{describe_runtime_error, RuntimeErrorDomain};
+    use std::sync::Arc;
+
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    runtime
+        .create_work_item("observer boundary work".into(), None, None, Vec::new())
+        .await?;
+
+    // Publish a domain whose history window is too small for a `current()`
+    // capture, mimicking the retained narrow publication from the incident.
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let source = root
+        .scheduling
+        .as_ref()
+        .expect("initial Scheduling publication");
+    let captured = source.capture(&SchedulingCaptureRequest::current())?;
+    let mut coverage = captured.coverage.clone();
+    for history in coverage.history.values_mut() {
+        history.keys.clear();
+        history.loaded_keys.clear();
+        history.is_exhaustive = false;
+    }
+    let short = Arc::new(ResidentSchedulingDomain::bootstrap(
+        captured.scope.clone(),
+        coverage,
+        captured.records.clone(),
+        4096,
+        16 * 1024 * 1024,
+    )?);
+    let mut reservation = runtime.inner.mutation_owner.reserve().await?;
+    reservation.begin("short-scheduling-window".into())?;
+    reservation.committed_prepared_with_scheduling_domains(
+        root.state.clone(),
+        root.episodes.clone(),
+        root.input_evidence.clone(),
+        root.work.clone(),
+        root.tasks.clone(),
+        Some(short),
+    )?;
+    reservation.publish(root.state.clone())?;
+    drop(reservation);
+
+    // The synchronous GetAgent observation cannot prepare its owner, so it must
+    // report a retryable publication conflict instead of `domain: unknown`.
+    if let Err(error) = runtime.lightweight_agent_state_projection().await {
+        let descriptor = describe_runtime_error(&error);
+        assert_ne!(descriptor.domain, RuntimeErrorDomain::Unknown, "{error:#}");
+        assert!(descriptor.retryable, "{error:#}");
+    }
+
+    // The accepted Work query may repair the owner domain and succeed; if it
+    // still misses, the error stays the same typed retryable conflict.
+    if let Err(error) = runtime.capture_work_query_snapshot().await {
+        let descriptor = describe_runtime_error(&error);
+        assert_ne!(descriptor.domain, RuntimeErrorDomain::Unknown, "{error:#}");
+        assert!(descriptor.retryable, "{error:#}");
+    }
+    Ok(())
+}
