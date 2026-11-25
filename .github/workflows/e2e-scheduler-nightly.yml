@@ -2,8 +2,10 @@ name: E2E Scheduler Nightly
 
 on:
   schedule:
-    # Daily at 03:00 UTC
-    - cron: "0 3 * * *"
+    # Daily at 02:00 Beijing (18:00 UTC, previous calendar day). The
+    # beta-train dispatch follows at 03:00 Beijing on the holon-release
+    # timer, so the E2E (~20-30 min) is finished and green before the train.
+    - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
       model:

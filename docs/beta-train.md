@@ -19,22 +19,22 @@ the channels, not by machine-to-machine communication. A workstation that may be
 powered off (the Mac) is deliberately not part of the gate: the canary lives in
 the always-on Railway demo service.
 
-## Daily timeline (UTC; Beijing = UTC+8)
+## Daily timeline (Beijing = UTC+8)
 
 The train is **not** on a GitHub cron. The release orchestrator
 (`holon-release`) owns a daily timer that fires after the scheduled E2E and
 dispatches the train, so every triggered run is downstream of a green nightly
 E2E.
 
-| Time (UTC) | Actor | Action |
+| Time | Actor | Action |
 |---|---|---|
-| ~02:40–03:00 | existing schedules | Nightly full-sweep CI (`40 2 * * *`) and E2E Scheduler Nightly (`0 3 * * *`) run. The train never starts before the scheduled E2E finishes. |
-| ~06:00 | `holon-release` timer | 24h promotion gate for yesterday's beta (below). Pass → standard prep PR → dual verification → stable tag → Release workflow → channel verification. |
-| ~06:10 | `holon-release` timer | Dispatch `beta-train.yml` (`workflow_dispatch`). Preflight refuses to run unless the latest scheduled E2E run is green and less than 36h old; then requires no open `priority:critical` (P0) issues, new commits on `main` in the last 24h, the tag free, main CI green on HEAD, and no queued/running Release workflow (milestone releases keep the stable slot). Dispatches the Release E2E attestation (`candidate_ref` = main HEAD, `release_tag` = the beta tag, `previous_ref` = latest stable). |
-| ~07:00–10:00 | `beta-train.yml` | When the attestation is green and its artifact is bound to this candidate SHA + tag, tags `vX.Y.Z-beta.<date>` on main HEAD, then dispatches the Release workflow on that tag (a `GITHUB_TOKEN` tag push does not trigger the tag-push workflow). Release runs in **beta mode**: CLI binaries + GHCR `:beta` + `:<version>` image, GitHub prerelease, no latest/Homebrew/appcast/mobile apps. An interrupted train resumes: an existing tag without a prerelease is re-dispatched instead of skipped, and Release updates the existing prerelease in place. |
+| 02:00 Beijing (18:00 UTC) | E2E Scheduler Nightly (`0 18 * * *`) | Scheduled E2E runs (~20-30 min). GitHub can delay scheduled runs by hours; the train tolerates that via the 36h freshness gate below. The nightly full-sweep CI (`40 2 * * *`, 10:40 Beijing) stays on UTC and is not a train gate. |
+| 02:40 Beijing (18:40 UTC) | `holon-release` timer | 24h promotion gate for yesterday's beta (below). Pass → standard prep PR → dual verification → stable tag → Release workflow → channel verification. |
+| 03:00 Beijing (19:00 UTC) | `holon-release` timer | Dispatch `beta-train.yml` (`workflow_dispatch`). Preflight refuses to run unless the latest scheduled E2E run is green and less than 36h old; then requires no open `priority:critical` (P0) issues, new commits on `main` in the last 24h, the tag free, main CI green on HEAD, and no queued/running Release workflow (milestone releases keep the stable slot). Dispatches the Release E2E attestation (`candidate_ref` = main HEAD, `release_tag` = the beta tag, `previous_ref` = latest stable). |
+| ~03:10–06:00 Beijing (19:10Z–22:00Z) | `beta-train.yml` | When the attestation is green and its artifact is bound to this candidate SHA + tag, tags `vX.Y.Z-beta.<date>` on main HEAD, then dispatches the Release workflow on that tag (a `GITHUB_TOKEN` tag push does not trigger the tag-push workflow). Release runs in **beta mode**: CLI binaries + GHCR `:beta` + `:<version>` image, GitHub prerelease, no latest/Homebrew/appcast/mobile apps. An interrupted train resumes: an existing tag without a prerelease is re-dispatched instead of skipped, and Release updates the existing prerelease in place. |
 | after publish | `scripts/beta-real-lib-smoke.sh` (runs on the real-library Linux host) | Snapshots the live daemon home's runtime database (WAL-consistent sqlite `.backup` of `state/runtime.sqlite`) into a zero-credential sandbox — no `config.json`, `credentials.json`, or model-discovery cache is copied, and the serve environment is scrubbed (`env -i`), so no agent in the sandbox can make a model call or take any external action while the real database shape is still what gets migrated — then boots the published beta against it and flips the release-body marker to `[smoke: passed]`. |
 | after publish | `scripts/demo-trial.sh run --image ghcr.io/holon-run/holon:<version-tag>` | Requires the candidate beta version (explicit `--expect-version` or a version-bearing image tag), points the Railway demo service at the beta image, waits for **this** deployment (bound to the new deployment id, not the mutable source image) to succeed, verifies the running daemon reports that `product_version`, and a live agent round-trip. The 24h trial starts here. |
-| next day ~06:00 | `holon-release` timer | Promotion gate: attestation green, the demo ran the beta for ≥20h without a failed deployment or restart loop, the agent round-trip is healthy at the end of the window, no release-blocking issue, stable slot free. Pass → stable promotion. Fail → the beta dies; the next train restarts from the new `main`. |
+| next day 02:40 Beijing | `holon-release` timer | Promotion gate: attestation green, the demo ran the beta for ≥20h without a failed deployment or restart loop, the agent round-trip is healthy at the end of the window, no release-blocking issue, stable slot free. Pass → stable promotion. Fail → the beta dies; the next train restarts from the new `main`. |
 | after stable verification | owner machine(s) | `channel-upgrade.sh` installs the new stable and restarts. |
 
 ## Operator release principles
