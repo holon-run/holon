@@ -106,6 +106,13 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str], env: &[(&str, &str)]) -> Command {
+        // Every daemon invocation asserts the machine contract: `--json` is
+        // injected so the shared envelope (not bare command JSON) is exercised
+        // throughout this compiled-binary suite.
+        let mut command_args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        if command_args.first().map(String::as_str) == Some("daemon") {
+            command_args.insert(1, "--json".to_string());
+        }
         let mut command = Command::new(holon_bin());
         command
             .env_clear()
@@ -124,7 +131,7 @@ impl Fixture {
             .current_dir(&self.cwd)
             .stdin(Stdio::null())
             .process_group(0)
-            .args(args);
+            .args(&command_args);
         command
     }
 
@@ -212,12 +219,19 @@ impl Fixture {
     fn success_env(&mut self, args: &[&str], env: &[(&str, &str)]) -> Value {
         let output = self.run_env(args, env);
         assert_success(&output);
-        serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
             panic!(
-                "expected JSON from {args:?}: {error}\n{}",
+                "expected a daemon envelope from {args:?}: {error}\n{}",
                 output_text(&output)
             )
-        })
+        });
+        assert_eq!(
+            envelope["status"],
+            Value::String("ok".into()),
+            "daemon command did not succeed: {args:?}\n{}",
+            output_text(&output)
+        );
+        envelope["data"].clone()
     }
 
     fn success(&mut self, args: &[&str]) -> Value {
@@ -278,8 +292,11 @@ impl Fixture {
                 process.diagnostics()
             );
             if self.path("run/control.sock").exists() {
-                let status = self.success(&["daemon", "status"]);
-                if status["healthy"] == true {
+                // Readiness polling must tolerate transient blocked states
+                // while the daemon is still starting.
+                let output = self.run(&["daemon", "status"]);
+                let status: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+                if status["status"] == "ok" && status["data"]["healthy"] == true {
                     return index;
                 }
             }
@@ -979,6 +996,7 @@ fn concurrent_foreground_and_start_keep_the_winning_profile_and_identity() {
         } else {
             assert_success(&started);
             let started: Value = serde_json::from_slice(&started.stdout).unwrap();
+            let started = &started["data"];
             assert_eq!(started["process_created"], true, "{started}");
             assert_eq!(started["pid"], running["pid"], "{started}");
             let rejected = fixture.wait(foreground);

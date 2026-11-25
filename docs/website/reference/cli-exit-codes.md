@@ -79,6 +79,25 @@ Scripts must inspect the documented JSON fields for business state. Holon will
 only promote a business state to a non-zero process exit when a command's
 specific reference page documents that behavior.
 
+## Daemon `--json` machine interface
+
+`holon daemon --json <command>` (equivalently `holon daemon <command> --json`)
+is a documented exception to the table above. It always writes one
+`{ schema_version, command, status, data, error }` envelope to stdout and maps
+its `status` to a dedicated exit code:
+
+| Exit code | Meaning |
+|---:|---|
+| `0` | `status: ok` |
+| `1` | usage/parse failure or unexpected internal error |
+| `20` | expected domain failure (`status: failed`, `error.kind: domain`) |
+| `21` | blocked state: `daemon_unavailable`, `daemon_running`, `daemon_lease_held`, or a stale/unresponsive runtime |
+| `22` | reserved for `daemon validate-startup` reporting `migration_required` |
+
+Human (non-`--json`) daemon output keeps the same exit codes but writes bounded
+prose instead of the envelope. Because daemon failures always emit an error
+envelope on stdout, scripts should read `error.code` rather than parse stderr.
+
 ## Stdout and stderr
 
 - Treat stdout as machine-readable only for commands whose reference or

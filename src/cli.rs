@@ -220,6 +220,12 @@ pub enum Commands {
         options: ServeOptions,
     },
     Daemon {
+        #[arg(
+            long,
+            global = true,
+            help = "Write one machine-readable JSON envelope per command"
+        )]
+        json: bool,
         #[command(subcommand)]
         command: DaemonCommands,
     },

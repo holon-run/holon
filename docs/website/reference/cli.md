@@ -323,6 +323,25 @@ holon daemon restart
 holon daemon stop
 ```
 
+#### Machine-readable output
+
+Every daemon subcommand shares one machine interface through the daemon-level
+`--json` flag, which may appear before or after the subcommand:
+
+```bash
+holon daemon --json status
+holon daemon logs --json --tail 40
+```
+
+JSON mode writes exactly one `{ schema_version, command, status, data, error }`
+envelope to stdout and nothing else, with `status` equal to `ok`, `failed`, or
+`blocked`. Without `--json`, the same result renders as bounded, redacted human
+text. Both modes share daemon exit codes `0`, `1`, `20`, `21`, and the reserved
+`22`; see [CLI exit codes](./cli-exit-codes.md) and
+[local operator troubleshooting](../../local-operator-troubleshooting.md) for
+the full contract. There is no compatibility mode for the previous unwrapped
+daemon JSON output: scripts must switch to `--json` and read `data`.
+
 Lifecycle command JSON includes `process_created`: true only when the command
 created the returned daemon process. An idempotent Start that reuses an existing
 daemon reports false; success alone does not establish process ownership.

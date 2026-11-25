@@ -40,6 +40,69 @@ This order is deliberate:
 - `tui` is for live observation and interaction, not the first place to debug
   whether the daemon is even healthy
 
+## Machine-Readable Daemon Output
+
+`holon daemon` has one machine interface for every subcommand:
+
+```bash
+holon daemon --json status
+holon daemon --json logs --tail 40
+holon daemon --json start --listen 127.0.0.1:7878
+```
+
+`--json` is a `daemon`-level flag, so it also works after the subcommand
+(`holon daemon status --json`). JSON mode writes exactly one object to stdout
+and nothing else:
+
+```json
+{
+  "schema_version": 1,
+  "command": "daemon.status",
+  "status": "blocked",
+  "data": null,
+  "error": {
+    "kind": "daemon_unavailable",
+    "code": "daemon_not_running",
+    "message": "the daemon should be running but is not; start it with `holon daemon start`",
+    "retryable": true
+  }
+}
+```
+
+Contract rules:
+
+- `command` is the normalized dot path (`daemon.start`, `daemon.logs`, ...).
+- `status` is `ok`, `failed`, or `blocked`; success sets `data` and leaves
+  `error` null, while failures set `data` null and fill `error`.
+- `error.code` is a stable snake_case code. `error.message` is bounded and
+  redacted; it never carries raw anyhow chains, SQL, secrets, control tokens,
+  or callback URL credentials.
+- Relevant filesystem paths appear only in fields that exist for that purpose,
+  never in `error.message`.
+- Human output is the default. It is bounded, starts with
+  `status: ok|failed|blocked`, and ends with one next action on failure. Human
+  wording is not a machine contract.
+
+Both modes share one exit-code mapping:
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | `status: ok` |
+| `1` | usage/parse error or unexpected internal error |
+| `20` | expected domain failure |
+| `21` | blocked or retryable daemon/precondition state (`daemon_unavailable`, `daemon_running`, `daemon_lease_held`, stale or unresponsive runtimes) |
+| `22` | reserved for `daemon validate-startup` reporting `migration_required` |
+
+`daemon status` therefore exits `21` when a runtime was supposed to be running
+but is not reachable; an explicitly stopped daemon stays a successful `0`.
+There is no compatibility layer for the previous unwrapped daemon JSON output:
+scripts that parsed it must switch to `--json` and read `data`.
+
+`holon daemon validate-startup` (tracked separately) uses the same envelope:
+its phases, database/agent/quarantine summaries, warnings, and failures stay
+its `data` payload, and its approved failure codes and `20/21/22` meanings are
+preserved.
+
 ## One-Shot Reproduction
 
 Use `holon run` when you need a fresh, bounded reproduction:
