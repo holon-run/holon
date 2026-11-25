@@ -651,6 +651,7 @@ fn retired_volcengine_api_ids_are_not_drafted_or_retained() {
         "doubao-seed-1-6-vision-250815",
         "doubao-seed-2-0-lite-260215",
         "doubao-seed-2-0-mini-260215",
+        "doubao-seed-2-0-code-preview-260215",
     ];
     let mut parsed: ModelsDevSnapshot =
         serde_json::from_str(r#"{"volcengine":{"id":"volcengine","models":{}}}"#).unwrap();
@@ -679,12 +680,7 @@ fn retired_volcengine_api_ids_are_not_drafted_or_retained() {
         .values()
         .next()
         .unwrap();
-    for id in [
-        "doubao-seed-2-0-pro-260215",
-        "doubao-seed-2-0-code-preview-260215",
-        "kimi-k2.7-code",
-        "minimax-m3",
-    ] {
+    for id in ["doubao-seed-2-0-pro-260215", "kimi-k2.7-code", "minimax-m3"] {
         assert!(supplement_model_supported_by_provider(
             "volcengine",
             id,

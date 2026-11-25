@@ -5,6 +5,34 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-26
+
+The November 26 Beijing cycle re-sampled 71 official Volcengine and other
+special-endpoint sources. The relevant Volcengine sources were all HTTP 200:
+the [model list](https://ark.volcengine.com/region:cn-beijing/docs/model-list.md),
+[general deprecation notice](https://ark.volcengine.com/region:cn-beijing/docs/model-deprecation-notice.md),
+[Coding Plan deprecation notice](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-model-deprecation.md),
+[Agent Plan deprecation notice](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-model-deprecation-announcement.md),
+and [Coding Plan overview](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-plan-overview.md).
+
+The notices confirm the following route-level changes:
+
+- Remove the `doubao-seed-2-0-code-preview-260215` default, Coding Plan, and
+  Agent Plan routes after its **November 24, 2026 14:00 UTC+8** EOS.
+- Remove the Coding Plan route for `doubao-seed-2-0-lite-260215` and the
+  Agent Plan routes for `doubao-seed-2-0-lite-260215` and
+  `doubao-seed-2-0-mini-260215`; their EOS was **October 22, 2026 14:00
+  UTC+8**.
+- Remove `kimi-k3` from Coding Plan and Agent Plan after its **November 25,
+  2026 14:00 UTC+8** EOS. The dated `doubao-seed-2-0-pro-260215` routes remain
+  because their separately published EOS is **January 22, 2027 14:00 UTC+8**.
+
+The Coding Plan overview newly lists `glm-5.4` with **1024K context** and
+**128K maximum output**. Those exact limits are recorded only for
+`volcengine@coding/glm-5.4`; the existing Agent Plan route remains conservative
+with unknown exact capacity. No general API route, default route, or unrelated
+subscription route inherits these limits.
+
 ## Incremental review: 2026-11-25
 
 The November 25 Beijing cycle sampled the official

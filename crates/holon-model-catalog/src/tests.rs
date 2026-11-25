@@ -3134,20 +3134,42 @@ fn volcengine_doubao_routes_inherit_canonical_intrinsic_capabilities() {
         );
         assert!(pro.capabilities.supports_reasoning, "{endpoint}");
         assert!(pro.capabilities.image_input, "{endpoint}");
-
-        let code = catalog.resolve_route_policy(
-            &ModelRouteRef::parse(&format!(
-                "volcengine@{endpoint}/doubao-seed-2-0-code-preview-260215"
-            ))
-            .unwrap(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            &base_context(),
-            8192,
-        );
-        assert!(code.capabilities.image_input, "{endpoint}");
     }
+}
+
+#[test]
+fn volcengine_expired_subscription_routes_are_absent_and_coding_glm54_has_reviewed_limits() {
+    let catalog = BuiltInModelCatalog::new();
+
+    for route_ref in [
+        "volcengine@default/doubao-seed-2-0-code-preview-260215",
+        "volcengine@coding/doubao-seed-2-0-code-preview-260215",
+        "volcengine@coding/doubao-seed-2-0-lite-260215",
+        "volcengine@plan/doubao-seed-2-0-code-preview-260215",
+        "volcengine@plan/doubao-seed-2-0-lite-260215",
+        "volcengine@plan/doubao-seed-2-0-mini-260215",
+        "volcengine@coding/kimi-k3",
+        "volcengine@plan/kimi-k3",
+    ] {
+        assert!(
+            catalog
+                .get_route(&ModelRouteRef::parse(route_ref).unwrap())
+                .is_none(),
+            "{route_ref}"
+        );
+    }
+
+    let policy = catalog.resolve_route_policy(
+        &ModelRouteRef::parse("volcengine@coding/glm-5.4").unwrap(),
+        &HashMap::new(),
+        &HashMap::new(),
+        None,
+        &base_context(),
+        8192,
+    );
+    assert_eq!(policy.context_window_tokens, Some(1_024_000));
+    assert_eq!(policy.runtime_max_output_tokens, 8192);
+    assert_eq!(policy.max_output_tokens_upper_limit, Some(131_072));
 }
 
 #[test]

@@ -44792,148 +44792,6 @@
       }
     },
     {
-      "route_ref": "volcengine@coding/doubao-seed-2-0-code-preview-260215",
-      "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 4096,
-        "max_output_tokens_upper_limit": 4096,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 4096,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 4096,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 4096,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "route_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "volcengine@coding/doubao-seed-2-0-lite-260215",
-      "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 4096,
-        "max_output_tokens_upper_limit": 4096,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 4096,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 4096,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 4096,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
       "route_ref": "volcengine@coding/doubao-seed-2-0-pro-260215",
       "facts": {
         "context_window_tokens": 256000,
@@ -45564,6 +45422,89 @@
       }
     },
     {
+      "route_ref": "volcengine@coding/glm-5.4",
+      "facts": {
+        "context_window_tokens": 1024000,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": 131072,
+        "prompt_budget_estimated_tokens": 972800,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
+          "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": false
+          }
+        },
+        "route": {
+          "capabilities": {},
+          "context_window_tokens": 1024000,
+          "default_max_output_tokens": null,
+          "effective_context_window_percent": null,
+          "max_output_tokens_upper_limit": 131072,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "route_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "route_builtin",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "route_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "derived"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "known",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-26",
+        "reason": "Volcengine Coding Plan documentation lists GLM-5.4 with 1024K context and 128K maximum output; only this exact Coding Plan route receives those limits.",
+        "recheck": "Recheck the Coding Plan model list and exact limits at the next vendor documentation update.",
+        "evidence": [
+          "models.dev/metadata-evidence.md",
+          "models.dev/endpoint-review.md"
+        ]
+      }
+    },
+    {
       "route_ref": "volcengine@coding/glm-latest",
       "facts": {
         "context_window_tokens": null,
@@ -45725,91 +45666,6 @@
         "owner": "holon-model-provider",
         "reviewed_at": "2026-10-25",
         "reason": "volcengine@coding/kimi-k2.8-preview: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
-        ]
-      }
-    },
-    {
-      "route_ref": "volcengine@coding/kimi-k3",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": [
-          "low",
-          "medium",
-          "high"
-        ]
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "route_builtin"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "volcengine@coding/kimi-k3: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
         "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
         "evidence": [
           "models.dev/metadata-evidence.md",
@@ -46491,77 +46347,6 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "model_builtin"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "volcengine@default/doubao-seed-2-0-code-preview-260215",
-      "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 4096,
-        "max_output_tokens_upper_limit": 4096,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 4096,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 4096,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 4096,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
           }
         }
       },
@@ -48146,219 +47931,6 @@
       }
     },
     {
-      "route_ref": "volcengine@plan/doubao-seed-2-0-code-preview-260215",
-      "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 4096,
-        "max_output_tokens_upper_limit": 4096,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 4096,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 4096,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 4096,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "route_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "volcengine@plan/doubao-seed-2-0-lite-260215",
-      "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 4096,
-        "max_output_tokens_upper_limit": 4096,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 4096,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 4096,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 4096,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "volcengine@plan/doubao-seed-2-0-mini-260215",
-      "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 4096,
-        "max_output_tokens_upper_limit": 4096,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 4096,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 4096,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 4096,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
       "route_ref": "volcengine@plan/doubao-seed-2-0-pro-260215",
       "facts": {
         "context_window_tokens": 256000,
@@ -49668,91 +49240,6 @@
         "owner": "holon-model-provider",
         "reviewed_at": "2026-10-25",
         "reason": "volcengine@plan/kimi-k2.8-preview: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
-        ]
-      }
-    },
-    {
-      "route_ref": "volcengine@plan/kimi-k3",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": [
-          "low",
-          "medium",
-          "high"
-        ]
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "route_builtin"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "volcengine@plan/kimi-k3: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
         "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
         "evidence": [
           "models.dev/metadata-evidence.md",
