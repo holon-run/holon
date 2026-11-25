@@ -95,10 +95,11 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(address.waitForExistence(timeout: UIWaitScale.scaled(10)))
         reveal(address, in: app)
         address.tap()
-        clearTextField(address)
         address.typeText(payload)
-        let typed = (address.value as? String) ?? ""
-        XCTAssertEqual(typed, payload, "Address field must hold the exact pairing payload")
+        guard address.value as? String == payload else {
+            XCTFail("Address field must hold the exact pairing payload")
+            throw FixtureError.invalidEndpoint
+        }
         let next = app.buttons["onboarding.checkAddress"]
         reveal(next, in: app)
         next.tap()
@@ -1838,6 +1839,103 @@ final class HolonUITests: XCTestCase {
                        "Load the newest real fixture brief", file: file, line: line)
     }
 
+    private func waitForRosterStatus(_ label: String, in app: XCUIApplication,
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        let status = app.staticTexts["agents.connectionStatus"]
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            status.exists && status.label == label && status.isHittable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: UIWaitScale.scaled(30)), .completed,
+                       "Roster status must visibly become \(label)", file: file, line: line)
+    }
+
+    func testAgentsRosterMaximumTextSize() async throws {
+        let endpoint = try required("ENDPOINT")
+        // Prepare the named profile through ordinary onboarding, then change
+        // the real system text size in the roster this case is testing.
+        let app = launchClean(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        let name = "long-connection-name-department-research-development-and-infrastructure.fixture"
+        let advanced = app.buttons["Advanced"]
+        reveal(advanced, in: app); advanced.tap()
+        let nameField = app.textFields["Network name"]
+        reveal(nameField, in: app); nameField.tap(); nameField.typeText(name)
+        let address = app.textFields["onboarding.address"]
+        reveal(address, in: app); address.tap(); address.typeText(endpoint)
+        XCTAssertEqual(address.value as? String, endpoint)
+        let allowHTTP = app.switches["onboarding.allowHTTP"]
+        let permission = allowHTTP.switches.firstMatch
+        reveal(permission, in: app, fullyVisible: true); permission.tap()
+        waitForValue(allowHTTP, "1")
+        let next = app.buttons["onboarding.checkAddress"]
+        reveal(next, in: app, fullyVisible: true)
+        waitForEnabled(next)
+        next.tap()
+        XCTAssertTrue(app.switches["privacy.accept"].waitForExistence(timeout: UIWaitScale.scaled(10)))
+        agreeToSharingConsent(app)
+        let proceed = app.buttons["privacy.continueLogin"]
+        reveal(proceed, in: app)
+        waitForEnabled(proceed)
+        proceed.tap()
+        XCTAssertTrue(app.navigationBars.buttons["onboarding.back"].waitForExistence(timeout: UIWaitScale.scaled(10)))
+        // Keep the saved profile, but start a fresh address screen so pairing
+        // never depends on replacing existing text at the current caret.
+        app.terminate()
+        app.launchArguments.removeAll { $0 == TestingStateResetArgument.value }
+        app.launch()
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
+        try await connectThroughPairing(app, endpoint: endpoint)
+        waitForRosterStatus("Live", in: app)
+        let status = app.staticTexts["agents.connectionStatus"]
+        let ordinaryStatusHeight = status.frame.height
+        try await changeSystemTextSize("accessibility-extra-extra-extra-large")
+        let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            status.exists && status.frame.height > ordinaryStatusHeight + 1
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: UIWaitScale.scaled(10)), .completed,
+                       "The roster must redraw at the verified system text size")
+        let host = app.buttons["connection.manage"]
+        let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+        XCTAssertTrue(host.isHittable)
+        XCTAssertEqual(host.label, name, "The accessibility label must not truncate the host")
+        XCTAssertTrue(agent.waitForExistence(timeout: UIWaitScale.scaled(10)))
+        XCTAssertTrue(agent.isHittable)
+        let liveHost = host.frame
+        let liveAgent = agent.frame
+        capture(app, "agents-maximum-text-size-live")
+
+        try await changeFixtureNodeAvailability(false)
+        waitForRosterStatus("Cached content · offline", in: app)
+        let retry = app.buttons["agents.retry"]
+        XCTAssertTrue(retry.isHittable)
+        XCTAssertTrue(agent.isHittable)
+        XCTAssertTrue(agent.label.contains("Status unavailable"))
+        XCTAssertFalse(agent.label.contains("Cached content"))
+        XCTAssertEqual(host.frame.height, liveHost.height, accuracy: 2)
+        XCTAssertEqual(agent.frame.height, liveAgent.height, accuracy: 2)
+        XCTAssertEqual(agent.frame.minY - host.frame.minY, liveAgent.minY - liveHost.minY, accuracy: 2)
+        capture(app, "agents-maximum-text-size-offline")
+        // Tap while the button is still observable, before background recovery
+        // can make it disappear. This must not activate the host link.
+        retry.tap()
+        XCTAssertFalse(app.buttons["connection.add"].exists)
+        // A row can be hittable even when the floating search bar covers its
+        // bottom edge. Verify the complete accessibility-sized row can scroll clear.
+        reveal(agent, in: app, fullyVisible: true)
+        XCTAssertTrue(agent.label.contains("Status unavailable"))
+        let scrolledOfflineAgent = agent.frame
+        capture(app, "agents-maximum-text-size-offline-scrolled")
+        try await changeFixtureNodeAvailability(true)
+        waitForRosterStatus("Live", in: app)
+        XCTAssertEqual(agent.frame.minY, scrolledOfflineAgent.minY, accuracy: 2,
+                       "Recovering from offline must preserve the scrolled row position")
+        let retryRemoved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !retry.exists },
+                                                     object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [retryRemoved], timeout: UIWaitScale.scaled(10)), .completed,
+                       "The recovered roster must not expose an invisible retry action")
+        capture(app, "agents-maximum-text-size-recovered")
+    }
+
     func testOfflineReadingCacheColdLaunchAndRetry() async throws {
         try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
@@ -1847,6 +1945,13 @@ final class HolonUITests: XCTestCase {
             app.navigationBars.buttons.element(boundBy: 0).tap()
         }
         let agent = app.buttons["agent." + agentID]
+        let host = app.buttons["connection.manage"]
+        waitForRosterStatus("Live", in: app)
+        XCTAssertTrue(host.isHittable)
+        XCTAssertTrue(agent.waitForExistence(timeout: UIWaitScale.scaled(10)))
+        XCTAssertTrue(agent.isHittable)
+        let liveHost = host.frame
+        let liveAgent = agent.frame
         reveal(agent, in: app); agent.tap()
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(30)), "Populate the cache from an authenticated online reader")
@@ -1904,9 +2009,16 @@ final class HolonUITests: XCTestCase {
 
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(agent.waitForExistence(timeout: UIWaitScale.scaled(10)), "The cached Agent roster must survive process death")
-        XCTAssertTrue(app.staticTexts["agents.connectionStatus"].waitForExistence(timeout: UIWaitScale.scaled(10)))
-        XCTAssertTrue(app.staticTexts["agents.connectionStatus"].label.contains("offline"))
-        XCTAssertTrue(app.buttons["agents.retry"].exists)
+        waitForRosterStatus("Cached content · offline", in: app)
+        XCTAssertTrue(host.isHittable)
+        XCTAssertTrue(agent.isHittable)
+        XCTAssertTrue(app.buttons["agents.retry"].isHittable)
+        XCTAssertFalse(agent.label.contains("Cached content"), "Cache state belongs to the roster header, not every Agent")
+        XCTAssertTrue(agent.label.contains("Status unavailable"), "An unverified Agent still exposes Unknown to VoiceOver")
+        XCTAssertEqual(host.frame.height, liveHost.height, accuracy: 2)
+        XCTAssertEqual(agent.frame.height, liveAgent.height, accuracy: 2)
+        XCTAssertEqual(agent.frame.minY - host.frame.minY, liveAgent.minY - liveHost.minY, accuracy: 2)
+        capture(app, "offline-roster-stable-connection-and-agent-rows")
         reveal(agent, in: app); agent.tap()
         XCTAssertTrue(body.waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertTrue(app.staticTexts["conversation.readOnly"].exists)

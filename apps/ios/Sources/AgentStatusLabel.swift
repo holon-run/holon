@@ -3,6 +3,7 @@ import SwiftUI
 /// The same primary icon, visible status, and VoiceOver label on both identity surfaces.
 struct AgentStatusLabel: View {
     let presentation: AgentIdentityPresentation
+    var reservedLines: Int? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var color: Color {
@@ -16,7 +17,11 @@ struct AgentStatusLabel: View {
 
     var body: some View {
         Label {
-            Text(LocalizedStringKey(presentation.statusKey))
+            if let reservedLines {
+                Text(LocalizedStringKey(presentation.statusKey)).lineLimit(reservedLines, reservesSpace: true)
+            } else {
+                Text(LocalizedStringKey(presentation.statusKey))
+            }
         } icon: {
             if presentation.animates(reduceMotion: reduceMotion) {
                 ProgressView().controlSize(.mini)

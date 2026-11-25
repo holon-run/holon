@@ -8,6 +8,7 @@ struct ReadingView: View {
     @State private var filter: AgentListFilter = .all
     @State private var window = 80
     @State private var visibleAgents: Set<String> = []
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var matching: [ReadingAgent] {
         AgentSummaryPresentation.sorted(reader.agents, query: query, filter: filter)
@@ -18,29 +19,68 @@ struct ReadingView: View {
     private var rosterLoading: Bool {
         reader.status == .syncing || (reader.status == .offline && isConnecting)
     }
+    private var connectionStatusKey: String {
+        ReadingPresentation.connectionStatusKey(
+            status: reader.status, hasContent: true, isCached: reader.isShowingCachedContent,
+            isRefreshing: reader.isRefreshing, connecting: isConnecting
+        ) ?? "reading.status.live"
+    }
+    private var canRetryConnection: Bool {
+        ReadingPresentation.showsConnectionRetry(status: reader.status, isRefreshing: reader.isRefreshing,
+                                                 connecting: isConnecting)
+    }
+    private var rosterBottomMargin: CGFloat? {
+        // Leave enough scroll range to lift a tall row above the floating search bar.
+        if #available(iOS 26, *), dynamicTypeSize.isAccessibilitySize { return 96 }
+        return nil
+    }
+    private var connectionStatusLines: Int {
+        if dynamicTypeSize.isAccessibilitySize { return 3 }
+        return dynamicTypeSize >= .xLarge ? 2 : 1
+    }
 
     var body: some View {
             List {
                 Section {
                     // Keep one list row while connection state changes offscreen.
-                    VStack(alignment: .leading, spacing: 12) {
-                        NavigationLink(value: AppRoute.connections) {
-                            HStack {
-                                Image(systemName: "network").foregroundStyle(.secondary)
-                                Text(verbatim: connection.selectedProfile?.name ?? "")
-                                Spacer()
-                                if let key = ReadingPresentation.connectionStatusKey(
-                                    status: reader.status, hasContent: true,
-                                    isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing,
-                                    connecting: isConnecting
-                                ) {
-                                    Text(LocalizedStringKey(key))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                        .accessibilityIdentifier("agents.connectionStatus")
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 4) {
+                            NavigationLink(value: AppRoute.connections) {
+                                let host = connection.selectedProfile?.name ?? ""
+                                Label {
+                                    Text(verbatim: host).lineLimit(1).truncationMode(.middle)
+                                } icon: {
+                                    Image(systemName: "network").foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityLabel(Text(verbatim: host))
+                            }
+                            .accessibilityIdentifier("connection.manage")
+                            Group {
+                                if canRetryConnection {
+                                    Button {
+                                        Task { await reader.refresh() }
+                                    } label: {
+                                        Image(systemName: "arrow.clockwise")
+                                            .frame(width: 44, height: 44)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel(Text("reading.retry"))
+                                    .accessibilityIdentifier("agents.retry")
+                                } else {
+                                    // Keep the slot without leaving an invisible action in the list.
+                                    Color.clear.frame(width: 44, height: 44)
+                                        .allowsHitTesting(false)
+                                        .accessibilityHidden(true)
                                 }
                             }
                         }
-                        .accessibilityIdentifier("connection.manage")
+                        // Reserve lines for the current text size, not the current connection state.
+                        Text(LocalizedStringKey(connectionStatusKey))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(connectionStatusLines, reservesSpace: true)
+                            .accessibilityIdentifier("agents.connectionStatus")
                         if rosterLoading && reader.agents.isEmpty { ProgressView() }
                         if reader.agents.isEmpty {
                             if reader.status == .live {
@@ -52,13 +92,6 @@ struct ReadingView: View {
                             } else if !rosterLoading {
                                 Text("reading.emptyAgents")
                             }
-                        }
-                        if ReadingPresentation.showsConnectionRetry(status: reader.status,
-                                                                    isRefreshing: reader.isRefreshing,
-                                                                    connecting: isConnecting) {
-                            Button("reading.retry") { Task { await reader.refresh() } }
-                                .buttonStyle(.borderless)
-                                .accessibilityIdentifier("agents.retry")
                         }
                     }
                 }
@@ -83,6 +116,7 @@ struct ReadingView: View {
                 }
             }
             .listStyle(.plain)
+            .contentMargins(.bottom, rosterBottomMargin, for: .scrollContent)
             .searchable(text: $query, prompt: Text("agents.search"))
             .navigationTitle("agents.title")
             .navigationBarTitleDisplayMode(.inline)
@@ -118,6 +152,8 @@ private struct AgentSummaryRow: View {
     let agent: ReadingAgent
     let store: AgentAvatarStore
     let presentation: AgentIdentityPresentation
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .caption) private var statusHeight: CGFloat = 16
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -133,25 +169,38 @@ private struct AgentSummaryRow: View {
                     }
                 }
                 let preview = AgentSummaryPresentation.preview(agent)
-                if !preview.isEmpty {
-                    HStack(spacing: 4) {
-                        if AgentSummaryPresentation.showsOperatorPreview(agent) {
-                            Text("reading.inputPreview")
-                        }
-                        Text(verbatim: preview)
+                HStack(spacing: 4) {
+                    if AgentSummaryPresentation.showsOperatorPreview(agent) {
+                        Text("reading.inputPreview")
                     }
-                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    // Keep the same row height when an asynchronously loaded preview arrives.
+                    Text(verbatim: preview.isEmpty ? " " : preview)
                 }
-                HStack(spacing: 8) {
-                    AgentStatusLabel(presentation: presentation)
-                    if let unread = agent.unreadCount, unread > 0 {
-                        Text("reading.unread \(unread)").fontWeight(.semibold)
+                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                .accessibilityHidden(preview.isEmpty)
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 4) {
+                            AgentStatusLabel(presentation: presentation, reservedLines: 2)
+                            if let unread = agent.unreadCount, unread > 0 {
+                                Text("reading.unread \(unread)").fontWeight(.semibold).lineLimit(1)
+                            } else {
+                                Text(verbatim: " ").lineLimit(1).accessibilityHidden(true)
+                            }
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            AgentStatusLabel(presentation: presentation)
+                            Spacer(minLength: 0)
+                            if let unread = agent.unreadCount, unread > 0 {
+                                Text("reading.unread \(unread)").fontWeight(.semibold)
+                            }
+                        }
+                        .lineLimit(1)
+                        .frame(minHeight: statusHeight)
                     }
                 }
                 .font(.caption).foregroundStyle(.secondary)
-                if let key = presentation.connectionStatusKey {
-                    Text(LocalizedStringKey(key)).font(.caption).foregroundStyle(.secondary)
-                }
             }
         }
         .padding(.vertical, 8)

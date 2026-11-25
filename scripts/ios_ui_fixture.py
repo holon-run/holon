@@ -1248,6 +1248,7 @@ with fixture_directory(repo) as root:
                          # Authenticate through shipped onboarding before diagnostics.
                          ("testAuthenticatedNativeWorkflow", "large"),
                          ("testOfflineReadingCacheColdLaunchAndRetry", "large"),
+                         ("testAgentsRosterMaximumTextSize", "large"),
                          ("testLiveInterruptionRecoversInPlace", "large"),
                          ("testVisibleBriefAutomaticallyUpdatesHomeUnreadCount", "large"),
                          ("testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored", "large"),
