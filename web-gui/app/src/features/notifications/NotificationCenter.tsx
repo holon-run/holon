@@ -188,7 +188,9 @@ function SystemNotificationSettings() {
   useEffect(() => { refresh(); }, [refresh]);
   if (permission === "unsupported") return null;
   return (
-    <section className="notification-system" aria-label={t("notifications.system.title")}>
+    // No landmark role here: the panel is already the region, and a second
+    // named region (it would contain "Notifications") confuses region queries.
+    <section className="notification-system">
       <h3>{t("notifications.system.title")}</h3>
       {permission === "granted" ? <p>{t("notifications.system.enabled")}</p> : null}
       {permission === "denied" ? <p>{t("notifications.system.blocked")}</p> : null}
