@@ -29,6 +29,8 @@ use std::sync::Arc;
 pub struct ProviderCandidate {
     pub model_ref: String,
     pub provider_name: String,
+    /// Wire transport of this candidate, copied onto every attempt record.
+    pub transport_id: Option<&'static str>,
     pub resolved_image_input: bool,
     pub provider: Arc<dyn AgentProvider>,
 }
@@ -53,6 +55,10 @@ mod tests;
 
 #[async_trait]
 impl AgentProvider for FallbackProvider {
+    fn transport_id(&self) -> Option<&'static str> {
+        self.candidates.first().and_then(|c| c.transport_id)
+    }
+
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let (response, _) = self.complete_turn_with_diagnostics(request).await?;
         Ok(response)
@@ -99,6 +105,8 @@ impl AgentProvider for FallbackProvider {
                         attempts: vec![ProviderAttemptRecord {
                             provider: candidate.provider_name.clone(),
                             model_ref: candidate.model_ref.clone(),
+                            transport: candidate.transport_id.map(str::to_string),
+                            served_service_tier: None,
                             attempt: 1,
                             max_attempts: provider_max_attempts(),
                             started_at: None,
@@ -169,6 +177,7 @@ impl AgentProvider for FallbackProvider {
                     timeline.push(ProviderAttemptRecord {
                         provider: candidate.provider_name.clone(),
                         model_ref: candidate.model_ref.clone(),
+                        transport: candidate.transport_id.map(str::to_string),
                         attempt,
                         max_attempts,
                         started_at: Some(attempt_started_at),
@@ -186,6 +195,11 @@ impl AgentProvider for FallbackProvider {
                         )),
                         cache_usage: response.cache_usage.clone(),
                         normalized_token_usage: response.normalized_token_usage,
+                        served_service_tier: response
+                            .request_diagnostics
+                            .as_ref()
+                            .and_then(|diagnostics| diagnostics.openai_request_controls.as_ref())
+                            .and_then(|controls| controls.served_service_tier.clone()),
                         provider_message_id: response.provider_message_id.clone(),
                         provider_request_id: response.provider_request_id.clone(),
                         provider_http_trace_id: None,
@@ -282,6 +296,8 @@ impl AgentProvider for FallbackProvider {
                         timeline.push(ProviderAttemptRecord {
                             provider: candidate.provider_name.clone(),
                             model_ref: candidate.model_ref.clone(),
+                            transport: candidate.transport_id.map(str::to_string),
+                            served_service_tier: None,
                             attempt,
                             max_attempts,
                             started_at: Some(attempt_started_at),
@@ -347,6 +363,8 @@ impl AgentProvider for FallbackProvider {
                     timeline.push(ProviderAttemptRecord {
                         provider: candidate.provider_name.clone(),
                         model_ref: candidate.model_ref.clone(),
+                        transport: candidate.transport_id.map(str::to_string),
+                        served_service_tier: None,
                         attempt,
                         max_attempts,
                         started_at: Some(attempt_started_at),

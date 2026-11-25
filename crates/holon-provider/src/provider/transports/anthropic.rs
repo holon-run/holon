@@ -608,6 +608,10 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl AgentProvider for AnthropicProvider {
+    fn transport_id(&self) -> Option<&'static str> {
+        Some("anthropic_messages")
+    }
+
     fn quota_identity(&self) -> Option<crate::provider::ProviderQuotaIdentity> {
         self.quota_identity.clone()
     }

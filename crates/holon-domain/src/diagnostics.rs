@@ -194,6 +194,22 @@ pub struct TraceAttributes {
     pub tool_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Full resolved route ref (`provider@endpoint/model`) for this attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    /// Endpoint segment of `model_ref` (`default`, `token-plan`, `messages`,
+    /// ...). Paired with `provider` it is the surviving route identity when one
+    /// provider id folds several billing endpoints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_endpoint: Option<String>,
+    /// Wire transport of this attempt (`anthropic_messages`, `openai_chat`,
+    /// `openai_responses`, `gemini_generate_content`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    /// Service tier the provider actually served, when the transport reports
+    /// it. `None` means "not reported", not "default".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served_service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -2091,6 +2091,18 @@ impl RuntimeHandle {
     }
 }
 
+/// Endpoint segment of a resolved route ref (`provider@endpoint/model`).
+///
+/// The endpoint carries the surviving billing identity when several endpoints
+/// fold onto one provider id (`opencode-go` vs `opencode-go-messages`), so
+/// traces record it next to `provider`. An unparsable ref yields `None`
+/// instead of a guess.
+fn provider_endpoint_of(model_ref: &str) -> Option<String> {
+    ModelRouteRef::parse(model_ref)
+        .ok()
+        .map(|route| route.endpoint.as_str().to_string())
+}
+
 fn record_provider_round_span(
     parent: Option<&crate::observability::TraceContext>,
     agent_id: &str,
@@ -2169,6 +2181,10 @@ fn record_provider_round_span(
                 crate::observability::TraceAttributes {
                     agent_id: Some(agent_id.to_string()),
                     provider: Some(attempt.provider.clone()),
+                    model_ref: Some(attempt.model_ref.clone()),
+                    provider_endpoint: provider_endpoint_of(&attempt.model_ref),
+                    transport: attempt.transport.clone(),
+                    served_service_tier: attempt.served_service_tier.clone(),
                     round: Some(round as u64),
                     attempt: Some(attempt.attempt as u64),
                     max_attempts: Some(attempt.max_attempts as u64),
@@ -2368,6 +2384,8 @@ mod provider_span_tests {
                     provider_http_trace_id: Some("capture-1".into()),
                     transport_diagnostics: None,
                     transport_timeline: None,
+                    transport: None,
+                    served_service_tier: None,
                 },
                 ProviderAttemptRecord {
                     provider: "openai".into(),
@@ -2402,6 +2420,8 @@ mod provider_span_tests {
                         parse_completed_at: second_completed_at,
                         streaming: true,
                     }),
+                    transport: None,
+                    served_service_tier: None,
                 },
             ],
             requested_model_ref: "openai/test".into(),
@@ -2517,6 +2537,127 @@ mod provider_span_tests {
             backoff.attributes.backoff_source.as_deref(),
             Some("server_retry_after")
         );
+    }
+
+    #[test]
+    fn provider_attempt_spans_keep_route_transport_and_served_tier_attribution() {
+        let parent = TraceContext::new_root(true);
+        let started_at = Utc::now() - Duration::seconds(1);
+        let first_completed_at = started_at + Duration::milliseconds(40);
+        let second_started_at = first_completed_at + Duration::milliseconds(10);
+        let second_completed_at = second_started_at + Duration::milliseconds(50);
+        let timeline = ProviderAttemptTimeline {
+            attempts: vec![
+                ProviderAttemptRecord {
+                    provider: "opencode-go".into(),
+                    model_ref: "opencode-go@default/kimi-k2".into(),
+                    attempt: 1,
+                    max_attempts: 2,
+                    started_at: Some(started_at),
+                    completed_at: Some(first_completed_at),
+                    duration_ms: Some(40),
+                    failure_kind: Some("server_error".into()),
+                    disposition: Some("retryable".into()),
+                    outcome: ProviderAttemptOutcome::Retrying,
+                    advanced_to_fallback: false,
+                    backoff_ms: None,
+                    backoff_source: None,
+                    token_usage: Some(TokenUsage::new(120, 0)),
+                    cache_usage: Some(ProviderCacheUsage {
+                        read_input_tokens: 20,
+                        creation_input_tokens: 0,
+                    }),
+                    normalized_token_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: Some("request-1".into()),
+                    provider_http_trace_id: None,
+                    transport_diagnostics: None,
+                    transport_timeline: None,
+                    transport: Some("openai_chat".into()),
+                    served_service_tier: None,
+                },
+                ProviderAttemptRecord {
+                    provider: "opencode-go".into(),
+                    model_ref: "opencode-go@messages/kimi-k2".into(),
+                    attempt: 2,
+                    max_attempts: 2,
+                    started_at: Some(second_started_at),
+                    completed_at: Some(second_completed_at),
+                    duration_ms: Some(50),
+                    failure_kind: None,
+                    disposition: None,
+                    outcome: ProviderAttemptOutcome::Succeeded,
+                    advanced_to_fallback: true,
+                    backoff_ms: None,
+                    backoff_source: None,
+                    token_usage: Some(TokenUsage::new(150, 5)),
+                    cache_usage: Some(ProviderCacheUsage {
+                        read_input_tokens: 20,
+                        creation_input_tokens: 0,
+                    }),
+                    normalized_token_usage: None,
+                    provider_message_id: Some("message-2".into()),
+                    provider_request_id: Some("request-2".into()),
+                    provider_http_trace_id: None,
+                    transport_diagnostics: None,
+                    transport_timeline: None,
+                    transport: Some("openai_chat".into()),
+                    served_service_tier: Some("priority".into()),
+                },
+            ],
+            requested_model_ref: "opencode-go@default/kimi-k2".into(),
+            active_model_ref: Some("opencode-go@messages/kimi-k2".into()),
+            winning_model_ref: Some("opencode-go@messages/kimi-k2".into()),
+            pending_fallback_model_ref: Some("opencode-go@messages/kimi-k2".into()),
+            pending_fallback_disposition: None,
+            aggregated_token_usage: Some(TokenUsage::new(150, 5)),
+        };
+        let result = Ok((
+            ProviderTurnResponse {
+                normalized_token_usage: None,
+                material: Default::default(),
+                blocks: Vec::new(),
+                stop_reason: Some("end_turn".into()),
+                input_tokens: 150,
+                output_tokens: 5,
+                cache_usage: Some(ProviderCacheUsage {
+                    read_input_tokens: 20,
+                    creation_input_tokens: 0,
+                }),
+                provider_message_id: Some("message-2".into()),
+                provider_request_id: Some("request-2".into()),
+                request_diagnostics: None,
+            },
+            Some(timeline),
+        ));
+
+        record_provider_round_span(Some(&parent), "agent-1", 1, started_at, &result);
+
+        let trace = recent_trace(&parent.trace_id).expect("provider trace");
+        let attempts = trace
+            .spans
+            .iter()
+            .filter(|span| span.name == "holon.provider.attempt")
+            .collect::<Vec<_>>();
+        assert_eq!(attempts.len(), 2);
+
+        let failed = &attempts[0].attributes;
+        assert_eq!(failed.provider.as_deref(), Some("opencode-go"));
+        assert_eq!(
+            failed.model_ref.as_deref(),
+            Some("opencode-go@default/kimi-k2")
+        );
+        assert_eq!(failed.provider_endpoint.as_deref(), Some("default"));
+        assert_eq!(failed.transport.as_deref(), Some("openai_chat"));
+        assert!(failed.served_service_tier.is_none());
+
+        // Same provider family, different endpoint: `provider` stays identical
+        // and only `provider_endpoint` separates the two billing routes.
+        let succeeded = &attempts[1].attributes;
+        assert_eq!(succeeded.provider.as_deref(), Some("opencode-go"));
+        assert_eq!(succeeded.provider_endpoint.as_deref(), Some("messages"));
+        assert_eq!(succeeded.transport.as_deref(), Some("openai_chat"));
+        assert_eq!(succeeded.served_service_tier.as_deref(), Some("priority"));
     }
 }
 
@@ -6373,6 +6514,8 @@ mod tests {
             provider_http_trace_id: None,
             transport_diagnostics: None,
             transport_timeline: None,
+            transport: None,
+            served_service_tier: None,
         }
     }
 
@@ -6605,6 +6748,8 @@ mod tests {
                     parse_completed_at: now,
                     streaming,
                 }),
+                transport: None,
+                served_service_tier: None,
             }],
             requested_model_ref: "test/model".into(),
             active_model_ref: None,
@@ -6652,6 +6797,8 @@ mod tests {
                     provider_http_trace_id: None,
                     transport_diagnostics: None,
                     transport_timeline: None,
+                    transport: None,
+                    served_service_tier: None,
                 }],
                 requested_model_ref: "test/model".into(),
                 active_model_ref: None,

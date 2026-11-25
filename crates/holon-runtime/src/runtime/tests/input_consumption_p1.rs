@@ -674,6 +674,8 @@ impl AgentProvider for ResultFallbackProvider {
                         provider_http_trace_id: None,
                         transport_timeline: None,
                         transport_diagnostics: None,
+                        transport: None,
+                        served_service_tier: None,
                     }],
                     aggregated_token_usage: None,
                     requested_model_ref: "openai/gpt-5.4".into(),

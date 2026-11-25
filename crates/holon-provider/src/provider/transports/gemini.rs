@@ -364,6 +364,10 @@ impl GeminiProvider {
 
 #[async_trait]
 impl AgentProvider for GeminiProvider {
+    fn transport_id(&self) -> Option<&'static str> {
+        Some("gemini_generate_content")
+    }
+
     fn quota_identity(&self) -> Option<crate::provider::ProviderQuotaIdentity> {
         self.quota_identity.clone()
     }

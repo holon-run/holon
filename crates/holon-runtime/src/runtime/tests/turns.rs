@@ -4984,6 +4984,8 @@ async fn single_candidate_quota_failures_park_without_recovery_enqueue() {
                 provider_http_trace_id: None,
                 transport_diagnostics: None,
                 transport_timeline: None,
+                transport: None,
+                served_service_tier: None,
             }],
             requested_model_ref: "test/model".into(),
             active_model_ref: Some("test/model".into()),
@@ -5095,6 +5097,8 @@ async fn parked_quota_work_item_probes_after_deadline_and_resolves_on_success() 
                 provider_http_trace_id: None,
                 transport_diagnostics: None,
                 transport_timeline: None,
+                transport: None,
+                served_service_tier: None,
             }],
             requested_model_ref: "default".into(),
             active_model_ref: Some("default".into()),
@@ -6206,6 +6210,8 @@ fn turn_event_attempt(
         provider_http_trace_id: None,
         transport_diagnostics: None,
         transport_timeline: None,
+        transport: None,
+        served_service_tier: None,
     }
 }
 

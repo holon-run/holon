@@ -1314,6 +1314,8 @@ fn normalize_provider_attempt_timing_backfills_missing_attempt_timing() {
             provider_http_trace_id: None,
             transport_timeline: None,
             transport_diagnostics: None,
+            transport: None,
+            served_service_tier: None,
         }
     }
 

@@ -749,6 +749,12 @@ impl ToolResultBlock {
 pub trait AgentProvider: Send + Sync {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse>;
 
+    /// Wire transport this provider speaks, when it has one. Recorded on
+    /// attempts so a failed attempt is still attributable without a response.
+    fn transport_id(&self) -> Option<&'static str> {
+        None
+    }
+
     fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
         None
     }
@@ -960,6 +966,14 @@ pub enum ProviderFallbackDisposition {
 pub struct ProviderAttemptRecord {
     pub provider: String,
     pub model_ref: String,
+    /// Wire transport of this attempt (`anthropic_messages`, `openai_chat`,
+    /// `openai_responses`, `gemini_generate_content`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    /// Service tier the provider actually served. `None` means the transport
+    /// has no served-tier reporting surface or did not report one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served_service_tier: Option<String>,
     pub attempt: usize,
     pub max_attempts: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]

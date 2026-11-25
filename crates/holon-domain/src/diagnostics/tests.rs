@@ -68,3 +68,37 @@ fn trace_token_usage_round_trips_with_semantics() {
     let back: TraceTokenUsage = serde_json::from_str(&json).unwrap();
     assert_eq!(back, usage);
 }
+
+#[test]
+fn trace_attributes_without_attempt_attribution_deserialize() {
+    // Trace rows written before attempt attribution existed carry none of the
+    // route/transport fields; they must still deserialize with `None`.
+    let legacy = r#"{
+        "agent_id": "a1",
+        "provider": "opencode-go",
+        "round": 1,
+        "attempt": 1,
+        "outcome": "succeeded"
+    }"#;
+    let attributes: TraceAttributes =
+        serde_json::from_str(legacy).expect("legacy TraceAttributes without attribution");
+    assert!(attributes.model_ref.is_none());
+    assert!(attributes.provider_endpoint.is_none());
+    assert!(attributes.transport.is_none());
+    assert!(attributes.served_service_tier.is_none());
+}
+
+#[test]
+fn trace_attempt_attribution_round_trips() {
+    let attributes = TraceAttributes {
+        provider: Some("opencode-go".to_string()),
+        model_ref: Some("opencode-go@messages/kimi-k2".to_string()),
+        provider_endpoint: Some("messages".to_string()),
+        transport: Some("openai_chat".to_string()),
+        served_service_tier: Some("priority".to_string()),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&attributes).unwrap();
+    let back: TraceAttributes = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, attributes);
+}

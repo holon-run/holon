@@ -139,9 +139,11 @@ pub(crate) fn build_candidate_from_model_route(
         route.validate_reasoning_effort(reasoning_effort)?;
     }
     let provider = build_provider_for_route(home_dir, route)?;
+    let transport_id = provider.transport_id();
     Ok(ProviderCandidate {
         model_ref: route.route_ref.as_string(),
         provider_name: route.provider_name().to_string(),
+        transport_id,
         resolved_image_input: route.capabilities.image_input,
         provider,
     })
