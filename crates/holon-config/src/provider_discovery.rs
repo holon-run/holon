@@ -7,19 +7,29 @@ use super::{
 
 /// Effective discovery configuration for one endpoint.
 ///
-/// Resolution order is fixed: the endpoint entry wins over the provider-level
-/// default. `None` means "nothing declared", so the transport/built-in default
-/// still applies; an explicit `disabled` kind is returned as configured and
-/// turns discovery off.
+/// The endpoint entry overrides the provider-level kind and path. An omitted
+/// endpoint decoder inherits the provider-level decoder, except for an
+/// explicitly disabled endpoint. `None` means "nothing declared", so the
+/// transport/built-in default still applies.
 pub fn provider_discovery_for(
     provider: &ProviderConfigFile,
     endpoint: &ProviderEndpointId,
 ) -> Option<ProviderDiscoveryConfig> {
-    provider
+    let Some(mut discovery) = provider
         .endpoints
         .get(endpoint)
         .and_then(|endpoint| endpoint.discovery.clone())
-        .or_else(|| provider.discovery.clone())
+    else {
+        return provider.discovery.clone();
+    };
+
+    if !discovery.is_disabled() && discovery.decoder.is_none() {
+        discovery.decoder = provider
+            .discovery
+            .as_ref()
+            .and_then(|discovery| discovery.decoder);
+    }
+    Some(discovery)
 }
 
 /// Effective discovery configuration for a resolved endpoint runtime.

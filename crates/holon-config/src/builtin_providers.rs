@@ -393,10 +393,11 @@ pub(crate) fn set_provider_config_key(
                 decoder: None,
             });
         discovery.kind = kind;
-        // `disabled` never carries a path; switching kind must not leave the
-        // rejected `disabled` + `path` pair behind in the stored config.
+        // `disabled` never carries a path or decoder; switching kind must not
+        // leave either rejected combination behind in the stored config.
         if kind == ProviderDiscoveryKind::Disabled {
             discovery.path = None;
+            discovery.decoder = None;
         }
         return Ok(());
     }
@@ -589,10 +590,11 @@ fn set_provider_endpoint_config_key(
                 decoder: None,
             });
         discovery.kind = kind;
-        // `disabled` never carries a path; switching kind must not leave the
-        // rejected `disabled` + `path` pair behind in the stored config.
+        // `disabled` never carries a path or decoder; switching kind must not
+        // leave either rejected combination behind in the stored config.
         if kind == ProviderDiscoveryKind::Disabled {
             discovery.path = None;
+            discovery.decoder = None;
         }
         return Ok(true);
     }

@@ -2720,6 +2720,7 @@ kind = "none"
 [providers.gateway.discovery]
 kind = "openai_models"
 path = "/models"
+decoder = "magpie"
 
 [providers.gateway.endpoints.anthropic]
 transport = "anthropic_messages"
@@ -2746,6 +2747,7 @@ path = "/v1/models"
     let anthropic =
         provider_discovery_for(gateway, &ProviderEndpointId::parse("anthropic").unwrap()).unwrap();
     assert_eq!(anthropic.path.as_deref(), Some("/v1/models"));
+    assert_eq!(anthropic.decoder, Some(ModelDiscoveryDecoder::Magpie));
 
     // Endpoints without their own block inherit the provider default.
     let inherited =
@@ -3083,5 +3085,27 @@ kind = "none"
     let discovery =
         provider_discovery_for(provider, &ProviderEndpointId::default_endpoint()).unwrap();
     assert_eq!(discovery.kind, ProviderDiscoveryKind::OpenAiModels);
+    assert_eq!(discovery.decoder, None);
+
+    // Switching either discovery block to disabled clears both fields that
+    // disabled rejects, so offline config changes cannot persist an invalid
+    // combination.
+    set_config_key(&mut config, "providers.gateway.discovery.decoder", "magpie").unwrap();
+    set_config_key(&mut config, "providers.gateway.discovery.kind", "disabled").unwrap();
+    let provider = &config.providers[&ProviderId::parse("gateway").unwrap()];
+    let discovery = provider.discovery.as_ref().unwrap();
+    assert_eq!(discovery.path, None);
+    assert_eq!(discovery.decoder, None);
+
+    set_config_key(
+        &mut config,
+        "providers.gateway.endpoints.anthropic.discovery.kind",
+        "disabled",
+    )
+    .unwrap();
+    let endpoint = &config.providers[&ProviderId::parse("gateway").unwrap()].endpoints
+        [&ProviderEndpointId::parse("anthropic").unwrap()];
+    let discovery = endpoint.discovery.as_ref().unwrap();
+    assert_eq!(discovery.path, None);
     assert_eq!(discovery.decoder, None);
 }
