@@ -15,6 +15,10 @@ Decision:
   operation (schema migrations, backfills, verification) instead of the server
   bootstrap path, so it never materializes workspace/identity rows, normalizes
   wakes or queues, or appends `timer_wakes_recovered`.
+- `--migrate` runs `RuntimeDb::migrate` unconditionally, including when the
+  schema ledger is already current. That operation also performs the on-open
+  backfills and verification `holon serve` depends on, so skipping it would
+  report a library as healthy that the daemon cannot open.
 
 Reason:
 
@@ -36,3 +40,7 @@ Boundaries:
   input.
 - `--migrate` mutates only the library it is pointed at; it does not detect or
   redirect a live daemon's database beyond the lease and socket gate.
+- A migration failure reports the migration version, name, and persistence
+  certainty but no `agent_id`: `RuntimeDb::migrate` returns a single error chain
+  without agent scope, so the per-agent attribution of `failures[]` stays empty
+  for that phase.

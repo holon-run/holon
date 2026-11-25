@@ -159,6 +159,7 @@ pub enum PersistenceCertainty {
 pub enum WarningCode {
     NoActiveDefaultAgent,
     QuarantineUnavailable,
+    StorageDomainsInitializedOnStart,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,32 +423,53 @@ fn execute(
         verify_schema(&connection, mode, &mut state.db)
     })?;
 
-    let connection = match migration_target {
-        None => connection,
-        Some(target) => {
-            let before = state.db.schema_version;
-            drop(connection);
-            run_phase(phases, PhaseName::Migrate, || {
-                migrate(&paths.runtime_db).map_err(|error| {
-                    migration_failure(&error, &paths.runtime_db, before, &target, mode)
-                })?;
-                let connection = open_for_inspection(&paths.runtime_db, mode).map_err(|_| {
-                    failure(
-                        FailureCode::MigrationFailed,
-                        PhaseName::Migrate,
-                        "runtime database migration finished but the database could not be reopened for verification",
-                    )
-                    .with_migration(&target)
-                })?;
-                verify_migrated_schema(&connection, &target, &mut state.db)?;
-                Ok(connection)
-            })?
-        }
+    let connection = if mode == StartupValidationMode::Migrate {
+        // `--migrate` always runs the real migration entrypoint, even when the
+        // schema ledger is already current: `RuntimeDb::migrate` also performs
+        // the on-open backfills and verification that decide whether
+        // `holon serve` can start, so skipping it would report a library as
+        // healthy that the daemon cannot open.
+        let target = migration_target.unwrap_or_else(|| current_schema_target(&state.db));
+        let before = state.db.schema_version;
+        drop(connection);
+        run_phase(phases, PhaseName::Migrate, || {
+            migrate(&paths.runtime_db).map_err(|error| {
+                migration_failure(&error, &paths.runtime_db, before, &target, mode)
+            })?;
+            let connection = open_for_inspection(&paths.runtime_db, mode).map_err(|_| {
+                failure(
+                    FailureCode::MigrationFailed,
+                    PhaseName::Migrate,
+                    "runtime database migration finished but the database could not be reopened for verification",
+                )
+                .with_migration(&target)
+            })?;
+            verify_migrated_schema(&connection, &target, &mut state.db)?;
+            Ok(connection)
+        })?
+    } else {
+        // A read-only run fails schema drift with `migration_required`, so no
+        // migration target can be returned here.
+        debug_assert!(migration_target.is_none());
+        connection
     };
 
-    run_phase(phases, PhaseName::StorageDomains, || {
+    let unregistered_domains = run_phase(phases, PhaseName::StorageDomains, || {
         check_storage_domains(&connection)
     })?;
+    if !unregistered_domains.is_empty() {
+        // Startup upserts a missing domain row before it validates the
+        // registry, so an absent row is not a startup failure. Only an
+        // existing but non-canonical row blocks the daemon.
+        warnings.push(ValidationWarning {
+            code: WarningCode::StorageDomainsInitializedOnStart,
+            phase: PhaseName::StorageDomains,
+            message: bounded_message(&format!(
+                "the runtime storage domain registry is uninitialized ({}); startup inserts these rows before validating them",
+                unregistered_domains.join(", ")
+            )),
+        });
+    }
     run_phase(phases, PhaseName::AgentRegistry, || {
         inspect_agents(&connection, config, &mut state.agents, warnings)
     })?;
@@ -781,14 +803,7 @@ fn verify_schema(
     }
 
     if current < db.max_known {
-        let target = MigrationTarget {
-            version: db.max_known,
-            name: MIGRATIONS
-                .iter()
-                .find(|migration| migration.version == db.max_known)
-                .map(|migration| migration.name.to_string())
-                .unwrap_or_default(),
-        };
+        let target = current_schema_target(db);
         if mode == StartupValidationMode::ReadOnly {
             return Err(failure(
                 FailureCode::MigrationRequired,
@@ -804,6 +819,18 @@ fn verify_schema(
         return Ok(Some(target));
     }
     Ok(None)
+}
+
+/// The migration target representing the schema this binary expects.
+fn current_schema_target(db: &DbSummary) -> MigrationTarget {
+    MigrationTarget {
+        version: db.max_known,
+        name: MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == db.max_known)
+            .map(|migration| migration.name.to_string())
+            .unwrap_or_default(),
+    }
 }
 
 fn verify_migrated_schema(
@@ -881,7 +908,11 @@ fn read_schema_version_best_effort(path: &Path, mode: StartupValidationMode) -> 
     Some(applied.last().map(|(version, _)| *version).unwrap_or(0))
 }
 
-fn check_storage_domains(connection: &Connection) -> std::result::Result<(), ValidationFailure> {
+/// Verifies the storage domain registry. Returns the domains that startup will
+/// insert on its own; an incomplete existing row is a failure.
+fn check_storage_domains(
+    connection: &Connection,
+) -> std::result::Result<Vec<String>, ValidationFailure> {
     const REQUIRED_TABLES: [&str; 5] = [
         "schema_migrations",
         "runtime_metadata",
@@ -912,8 +943,12 @@ fn check_storage_domains(connection: &Connection) -> std::result::Result<(), Val
         return Err(storage_domain_failure(&missing));
     }
 
+    let mut unregistered = Vec::new();
     let mut incomplete = Vec::new();
     for expected in RuntimeDb::expected_storage_domains() {
+        if unregistered.len() + incomplete.len() >= MAX_DOMAIN_NAMES {
+            break;
+        }
         match holon_storage::storage_domain::read_storage_domain_connection(
             connection,
             expected.domain,
@@ -925,7 +960,7 @@ fn check_storage_domains(connection: &Connection) -> std::result::Result<(), Val
                 "domain {} is {} with canonical_source={}",
                 snapshot.domain, snapshot.import_status, snapshot.canonical_source
             )),
-            Ok(None) => incomplete.push(format!("domain {} is missing", expected.domain)),
+            Ok(None) => unregistered.push(expected.domain.to_string()),
             Err(_) => {
                 return Err(failure(
                     FailureCode::DbNotReadable,
@@ -934,14 +969,11 @@ fn check_storage_domains(connection: &Connection) -> std::result::Result<(), Val
                 ))
             }
         }
-        if incomplete.len() >= MAX_DOMAIN_NAMES {
-            break;
-        }
     }
     if !incomplete.is_empty() {
         return Err(storage_domain_failure(&incomplete));
     }
-    Ok(())
+    Ok(unregistered)
 }
 
 fn storage_domain_failure(problems: &[String]) -> ValidationFailure {
@@ -954,7 +986,7 @@ fn storage_domain_failure(problems: &[String]) -> ValidationFailure {
     failure(
         FailureCode::StorageDomainMissing,
         PhaseName::StorageDomains,
-        format!("the runtime database is missing required storage domains: {shown}"),
+        format!("the runtime database has incomplete storage domain rows: {shown}"),
     )
 }
 
@@ -1189,29 +1221,49 @@ mod tests {
         let db_path = home.path().join("state/runtime.sqlite");
         let lock_path = home.path().join("state/runtime.lock");
         drop(RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap());
-        let wal = sidecar_path(&db_path, "-wal");
-        if !wal.is_file() {
-            // A build that checkpoints on close leaves nothing to copy.
-            return;
-        }
 
-        let before = snapshot_dir(home.path());
+        // Hold a live writer so the WAL keeps uncheckpointed frames: closing
+        // every connection can truncate `-wal` to zero bytes even though the
+        // file itself survives, which would silently skip the copy path.
+        let writer = Connection::open(&db_path).unwrap();
+        writer
+            .execute(
+                "INSERT OR REPLACE INTO runtime_metadata (key, value, created_at, updated_at)
+                 VALUES ('validate_startup_wal_fixture', 'pending', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+                [],
+            )
+            .unwrap();
+        let wal = sidecar_path(&db_path, "-wal");
+        assert!(
+            std::fs::metadata(&wal).is_ok_and(|metadata| metadata.len() > 0),
+            "the fixture must leave pending WAL frames"
+        );
+
+        let state_dir = home.path().join("state");
+        let before = snapshot_dir(&state_dir);
         let expected = max_known_migration_version();
-        let connection = open_for_inspection(&db_path, StartupValidationMode::ReadOnly).unwrap();
-        let version: i64 = connection
+        let inspection = open_for_inspection(&db_path, StartupValidationMode::ReadOnly).unwrap();
+        assert!(
+            inspection._copy.is_some(),
+            "pending WAL frames must be read through the zero-write copy"
+        );
+        let version: i64 = inspection
             .query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        drop(connection);
+        drop(inspection);
+        // Snapshot while the writer still holds the WAL; closing the last
+        // connection checkpoints and removes the sidecars.
+        let after = snapshot_dir(&state_dir);
         assert_eq!(version, expected);
         assert_eq!(
-            before,
-            snapshot_dir(home.path()),
+            before, after,
             "WAL inspection must not write the source data directory"
         );
+        drop(writer);
     }
 
     #[test]

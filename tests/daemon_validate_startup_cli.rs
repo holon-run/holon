@@ -66,9 +66,7 @@ impl Fixture {
     /// Build a complete library: migrated schema, every expected storage
     /// domain, and the configured default agent identity.
     fn create_library(&self) {
-        let db_path = self.db_path();
-        let lock_path = self.home.path().join("state").join("runtime.lock");
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap();
+        let db = self.open_migrated_db();
         {
             let connection = db.connection().unwrap();
             for expected in RuntimeDb::expected_storage_domains() {
@@ -87,6 +85,24 @@ impl Fixture {
                     .unwrap();
             }
         }
+        self.register_default_agent(&db);
+        drop(db);
+    }
+
+    /// Build a migrated library that never completed its first bootstrap, so
+    /// no storage domain rows exist yet.
+    fn create_migrated_library(&self) {
+        let db = self.open_migrated_db();
+        self.register_default_agent(&db);
+        drop(db);
+    }
+
+    fn open_migrated_db(&self) -> RuntimeDb {
+        let lock_path = self.home.path().join("state").join("runtime.lock");
+        RuntimeDb::open_and_migrate(&self.db_path(), &lock_path).unwrap()
+    }
+
+    fn register_default_agent(&self, db: &RuntimeDb) {
         db.agent_identities()
             .upsert(&AgentIdentityRecord::new(
                 "main",
@@ -98,7 +114,6 @@ impl Fixture {
                 None,
             ))
             .unwrap();
-        drop(db);
     }
 
     fn schema_version(&self) -> i64 {
@@ -353,6 +368,83 @@ fn migrate_mode_accepts_a_healthy_stopped_library() {
     assert_eq!(data["mode"], "migrate");
     assert_eq!(data["db"]["mode"], "migrate");
     assert_eq!(phase_status(data, "daemon_gate"), Some("ok"));
-    assert_eq!(phase_status(data, "migrate"), Some("skipped"));
+    // `--migrate` always runs `RuntimeDb::migrate`, even when the schema ledger
+    // is already current, because that call also performs the on-open backfills
+    // and verification `holon serve` depends on.
+    assert_eq!(phase_status(data, "migrate"), Some("ok"));
     assert_eq!(phase_status(data, "storage_domains"), Some("ok"));
+}
+
+#[test]
+fn migrate_mode_surfaces_on_open_verification_failures_of_a_current_schema() {
+    let fixture = Fixture::new();
+    fixture.create_library();
+    // The schema ledger stays current, but the on-open verification inside
+    // `RuntimeDb::migrate` rejects the runtime identity metadata, so
+    // `holon serve` cannot open this library. The migration mode must report
+    // the failure instead of accepting it.
+    {
+        let connection = rusqlite::Connection::open(fixture.db_path()).unwrap();
+        connection
+            .execute(
+                "UPDATE runtime_metadata SET value = 'not-a-generation'
+                 WHERE key = 'visibility_policy_generation'",
+                [],
+            )
+            .unwrap();
+    }
+
+    let output = fixture.run(&["daemon", "validate-startup", "--migrate", "--json"]);
+    let envelope = parse_envelope(&output, 20);
+    assert_eq!(envelope["status"], "failed");
+    assert_eq!(envelope["error"]["code"], "migration_failed");
+    assert_eq!(
+        envelope["data"]["db"]["schema_version"],
+        fixture.schema_version()
+    );
+    assert_eq!(phase_status(&envelope["data"], "schema_verify"), Some("ok"));
+    assert_eq!(phase_status(&envelope["data"], "migrate"), Some("failed"));
+}
+
+#[test]
+fn uninitialized_storage_domains_are_a_warning_not_a_startup_failure() {
+    let fixture = Fixture::new();
+    // Startup completes the registry itself, so a migrated library that never
+    // bootstrapped can still open.
+    fixture.create_migrated_library();
+
+    let output = fixture.run(&["daemon", "validate-startup", "--json"]);
+    let envelope = parse_envelope(&output, 0);
+    assert_eq!(envelope["status"], "ok");
+    let data = &envelope["data"];
+    assert_eq!(phase_status(data, "storage_domains"), Some("ok"));
+    assert!(data["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning["code"] == "storage_domains_initialized_on_start"));
+}
+
+#[test]
+fn incomplete_storage_domain_rows_block_startup() {
+    let fixture = Fixture::new();
+    fixture.create_library();
+    {
+        let connection = rusqlite::Connection::open(fixture.db_path()).unwrap();
+        connection
+            .execute(
+                "UPDATE storage_domains SET import_status = 'pending' WHERE domain = 'agent_states'",
+                [],
+            )
+            .unwrap();
+    }
+
+    let output = fixture.run(&["daemon", "validate-startup", "--json"]);
+    let envelope = parse_envelope(&output, 20);
+    assert_eq!(envelope["status"], "failed");
+    assert_eq!(envelope["error"]["code"], "storage_domain_missing");
+    assert_eq!(
+        phase_status(&envelope["data"], "storage_domains"),
+        Some("failed")
+    );
 }
