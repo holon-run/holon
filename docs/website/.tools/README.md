@@ -14,7 +14,7 @@ commands use that isolated root; do not run mdorigin directly on the source tree
 ## Documentation layout
 
 `../mdorigin.config.json` keeps shared site settings. The code entry point,
-`../mdorigin.config.mjs`, adds the public mdorigin 0.7 `renderPage` plugin from
+`../mdorigin.config.mjs`, adds the public mdorigin 0.9 `renderPage` plugin from
 `../.theme/docs-layout.mjs`. It wraps the rendered body and calls `next(page)`;
 mdorigin still owns routes, metadata, search, the header, language switching,
 the footer, and Markdown negotiation. No mdorigin fork is needed.

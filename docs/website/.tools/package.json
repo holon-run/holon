@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "gray-matter": "^4.0.3",
-    "mdorigin": "^0.7.0",
+    "mdorigin": "^0.9.0",
     "wrangler": "4.102.0"
   }
 }
