@@ -2985,9 +2985,25 @@ fn load_work_items_with_migration(
         let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?.to_owned();
         let payload = crate::runtime_db::repositories::borrowed_sql_text(row, 1)?;
         let marker = crate::runtime_db::repositories::borrowed_sql_text(row, 2)?;
-        let record =
-            holon_storage::execution::decode_work_item_record_with_migration(payload, marker)
-                .with_context(|| format!("decoding execution protocol record {}", id))?;
+        let (record, legacy_projection) =
+            holon_storage::execution::project_legacy_in_flight_work_item(
+                tx, agent_id, &id, payload, marker,
+            )
+            .with_context(|| format!("decoding execution protocol record {}", id))?;
+        if let Some(evidence) = legacy_projection {
+            tracing::info!(
+                agent_id = %evidence.agent_id,
+                work_item_id = %evidence.work_item_id,
+                lifecycle = %evidence.original_lifecycle,
+                attempt_id = %evidence.attempt_id,
+                matching_open_attempt = evidence.matching_open_attempt,
+                wait_source = ?evidence.wait_source,
+                wait_id = evidence.wait_id.as_deref(),
+                generation_before = evidence.generation_before,
+                generation_after = evidence.generation_after,
+                "projected legacy in_flight work item from a pre-migration database"
+            );
+        }
         records.insert(id, record);
     }
     Ok(records)

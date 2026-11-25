@@ -289,11 +289,8 @@ fn validate_created_outcome_tx(
     key: &Key,
     before: &ExecutionAttempt,
 ) -> Result<()> {
-    let record = decode_canonical(
-        key,
-        &payload_on(tx, agent, key)?.context("fallback Outcome missing")?,
-        None,
-    )?;
+    let payload = payload_on(tx, agent, key)?.context("fallback Outcome missing")?;
+    let record = decode_canonical_on(tx, agent, key, &payload)?;
     let CanonicalInputEvidence::Outcome(outcome) = record else {
         unreachable!()
     };

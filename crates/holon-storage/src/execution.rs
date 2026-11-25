@@ -244,6 +244,273 @@ pub fn decode_work_item_record_with_migration(
     }
 }
 
+/// Where a legacy `in_flight` projection took its wait evidence from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyWaitSource {
+    /// The matching attempt's triggered-wait identity resolved to a wait row.
+    ExactAttemptWait,
+    /// No exact match; the newest active/triggered wait owned by the work item.
+    LatestOwnerWait,
+    /// No wait evidence applies, so the projection stays `runnable`.
+    None,
+}
+
+/// Evidence recorded while projecting one legacy `in_flight` WorkItem.
+/// It explains what the pre-migration reader inferred; it never creates or
+/// mutates attempts, waits, or scheduler authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyInFlightProjectionEvidence {
+    pub agent_id: String,
+    pub work_item_id: String,
+    pub original_lifecycle: String,
+    pub attempt_id: String,
+    pub matching_open_attempt: bool,
+    pub wait_source: LegacyWaitSource,
+    pub wait_id: Option<String>,
+    pub generation_before: u64,
+    pub generation_after: u64,
+}
+
+/// Project a pre-migration WorkItem row that still carries the retired
+/// `in_flight` lifecycle.
+///
+/// The payload-only decoder cannot answer this: retiring `in_flight` moved its
+/// meaning into the migration's SQL, which needs row columns, the matching open
+/// attempt, and wait evidence. This reader reproduces that projection against a
+/// pre-migration database so the upgrade recovery report can decode what the
+/// previous release wrote. Rows that are not `in_flight` keep using
+/// [`decode_work_item_record_with_migration`].
+pub fn project_legacy_in_flight_work_item(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    work_item_id: &str,
+    payload: &str,
+    marker: &str,
+) -> Result<(
+    execution_protocol::WorkItemExecutionRecord,
+    Option<LegacyInFlightProjectionEvidence>,
+)> {
+    let (source_revision, generation, lifecycle) = work_item_marker_parts(marker)?;
+    if lifecycle != "in_flight" {
+        return Ok((
+            decode_work_item_record_with_migration(payload, marker)?,
+            None,
+        ));
+    }
+
+    let legacy: LegacyInFlightRecord = serde_json::from_str(payload)
+        .with_context(|| format!("decoding legacy in_flight work item {work_item_id}"))?;
+    ensure!(
+        legacy.state.state == "in_flight",
+        "legacy work item {work_item_id} payload state {:?} disagrees with its in_flight lifecycle",
+        legacy.state.state
+    );
+    ensure!(
+        legacy.source_revision == source_revision,
+        "legacy work item {work_item_id} payload revision {} disagrees with row revision {source_revision}",
+        legacy.source_revision
+    );
+    ensure!(
+        legacy.state.generation == generation,
+        "legacy work item {work_item_id} payload generation {} disagrees with row generation {generation}",
+        legacy.state.generation
+    );
+    ensure!(
+        !legacy.state.attempt_id.is_empty(),
+        "legacy in_flight work item {work_item_id} lacks an attempt id"
+    );
+
+    let matching = matching_open_attempt(
+        connection,
+        agent_id,
+        work_item_id,
+        &legacy.state.attempt_id,
+        generation,
+    )?;
+
+    let (next_generation, wait_source, wait_id) = match matching.as_ref() {
+        Some(attempt) => {
+            let (wait_source, wait_id) =
+                select_legacy_wait(connection, agent_id, work_item_id, attempt)?;
+            (generation, wait_source, wait_id)
+        }
+        None => {
+            ensure!(
+                generation < i64::MAX as u64,
+                "legacy in_flight work item {work_item_id} generation {generation} overflows SQLite INTEGER"
+            );
+            (generation + 1, LegacyWaitSource::None, None)
+        }
+    };
+
+    let state = match wait_id.as_deref() {
+        Some(wait_id) => WorkItemExecutionState::Waiting {
+            generation: next_generation,
+            wait: execution_protocol::WaitReference {
+                wait_id: wait_id.to_owned(),
+            },
+        },
+        None => WorkItemExecutionState::Runnable {
+            generation: next_generation,
+            recovery_ref: None,
+        },
+    };
+
+    Ok((
+        execution_protocol::WorkItemExecutionRecord {
+            source_revision,
+            state,
+        },
+        Some(LegacyInFlightProjectionEvidence {
+            agent_id: agent_id.to_owned(),
+            work_item_id: work_item_id.to_owned(),
+            original_lifecycle: lifecycle,
+            attempt_id: legacy.state.attempt_id,
+            matching_open_attempt: matching.is_some(),
+            wait_source,
+            wait_id,
+            generation_before: generation,
+            generation_after: next_generation,
+        }),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct LegacyInFlightRecord {
+    source_revision: u64,
+    state: LegacyInFlightState,
+}
+
+#[derive(serde::Deserialize)]
+struct LegacyInFlightState {
+    state: String,
+    generation: u64,
+    attempt_id: String,
+}
+
+fn work_item_marker_parts(marker: &str) -> Result<(u64, u64, String)> {
+    let mut parts = marker.split(':');
+    let (Some(revision), Some(generation), Some(lifecycle), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        bail!("work item revision marker {marker:?} is not revision:generation:lifecycle");
+    };
+    let revision = revision
+        .parse()
+        .with_context(|| format!("parsing revision from marker {marker:?}"))?;
+    let generation: u64 = generation
+        .parse()
+        .with_context(|| format!("parsing generation from marker {marker:?}"))?;
+    ensure!(
+        generation <= i64::MAX as u64,
+        "work item revision marker generation {generation} exceeds SQLite INTEGER"
+    );
+    Ok((revision, generation, lifecycle.to_owned()))
+}
+
+/// Migration 119 accepts an attempt only when agent, attempt id, open state,
+/// work-item binding, and the admitted work-item generation all agree.
+fn matching_open_attempt(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    work_item_id: &str,
+    attempt_id: &str,
+    generation: u64,
+) -> Result<Option<execution_protocol::ExecutionAttempt>> {
+    let row = connection
+        .query_row(
+            "SELECT lifecycle_state, payload_json
+             FROM execution_protocol_attempts
+             WHERE agent_id = ?1 AND attempt_id = ?2",
+            params![agent_id, attempt_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((lifecycle_state, payload)) = row else {
+        return Ok(None);
+    };
+    let attempt: execution_protocol::ExecutionAttempt = serde_json::from_str(&payload)
+        .with_context(|| {
+            format!("decoding execution attempt {attempt_id} from a legacy upgrade")
+        })?;
+    ensure!(
+        attempt.agent_id == agent_id,
+        "legacy attempt {attempt_id} payload agent {} disagrees with row agent {agent_id}",
+        attempt.agent_id
+    );
+    let payload_open = matches!(
+        &attempt.state,
+        execution_protocol::ExecutionAttemptState::Open
+    );
+    ensure!(
+        (lifecycle_state == "open") == payload_open,
+        "legacy attempt {attempt_id} lifecycle {lifecycle_state:?} disagrees with its payload state"
+    );
+    if !payload_open {
+        return Ok(None);
+    }
+    let binding_matches = matches!(
+        &attempt.binding,
+        execution_protocol::ExecutionBinding::WorkItem { work_item_id: bound }
+            if bound == work_item_id
+    );
+    let generation_matches = attempt.admitted_fences.work_item_generation == Some(generation);
+    Ok((binding_matches && generation_matches).then_some(attempt))
+}
+
+fn select_legacy_wait(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    work_item_id: &str,
+    attempt: &execution_protocol::ExecutionAttempt,
+) -> Result<(LegacyWaitSource, Option<String>)> {
+    if !table_exists(connection, "wait_conditions")? {
+        return Ok((LegacyWaitSource::None, None));
+    }
+    if let execution_protocol::ExecutionSourceIdentity::TriggeredWait { wait_id, .. } =
+        &attempt.source.identity
+    {
+        let exact = connection
+            .query_row(
+                "SELECT wait_condition_id FROM wait_conditions
+                 WHERE wait_condition_id = ?1 AND agent_id = ?2 AND work_item_id = ?3
+                   AND status IN ('active', 'triggered', 'resolved')",
+                params![wait_id, agent_id, work_item_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(exact) = exact {
+            return Ok((LegacyWaitSource::ExactAttemptWait, Some(exact)));
+        }
+    }
+    let latest = connection
+        .query_row(
+            "SELECT wait_condition_id FROM wait_conditions
+             WHERE agent_id = ?1 AND work_item_id = ?2
+               AND status IN ('active', 'triggered')
+             ORDER BY created_at DESC, wait_condition_id DESC
+             LIMIT 1",
+            params![agent_id, work_item_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(match latest {
+        Some(wait_id) => (LegacyWaitSource::LatestOwnerWait, Some(wait_id)),
+        None => (LegacyWaitSource::None, None),
+    })
+}
+
+fn table_exists(connection: &rusqlite::Connection, table: &str) -> Result<bool> {
+    Ok(connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 /// Rewrite a stored legacy WorkItem `needs_repair` outcome payload with the
 /// same mapping the load path applies. Returns `Ok(None)` for every other
 /// payload. A structurally damaged legacy row fails closed instead of being
