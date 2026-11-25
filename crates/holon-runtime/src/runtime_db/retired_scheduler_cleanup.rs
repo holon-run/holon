@@ -50,6 +50,23 @@ pub struct RetiredSchedulerFallbackResult {
     pub actions: Vec<RetiredSchedulerFallbackAction>,
 }
 
+/// Reason the retired-scheduler cleanup records on the terminal outcome of an
+/// attempt it interrupts.
+///
+/// Startup ended-memory recovery may seal an unfinished dispatch only when a
+/// canonical recovery writer already ended it
+/// (`startup_ended_memory::interrupted_outcome_matches`), and the vocabulary of
+/// that proof is the `scheduler-recovery --apply` plan, which interrupts the
+/// same unsettled activation with `runtime_interrupted`. The cleanup repairs the
+/// retired schema so that very plan can run, so an activation it settles has to
+/// carry the same canonical reason: a cleanup-private reason left the upgraded
+/// daemon unable to seal the dispatch, and `holon serve` aborted before
+/// readiness instead of booting (#4500). The repair stays attributable through
+/// `RetiredSchedulerFallbackAction::reason`, the
+/// `retired_scheduler_cleanup_fallback_applied` audit event, and the
+/// `scheduler_execution_recovered` audit reason written below.
+pub(super) const RETIRED_SCHEDULER_INTERRUPTED_REASON: &str = "runtime_interrupted";
+
 pub(crate) fn apply_retired_scheduler_cleanup_fallback(
     tx: &Transaction<'_>,
     db: &super::RuntimeDb,
@@ -137,12 +154,18 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
         .filter(|attempt| attempt.state == ExecutionAttemptState::Open)
         .map(|attempt| attempt.attempt_id.clone())
         .collect::<Vec<_>>();
+    let mut interrupted_attempts = Vec::with_capacity(open_attempt_ids.len());
     for attempt_id in open_attempt_ids {
         let attempt = state
             .attempts
             .get(&attempt_id)
             .cloned()
             .ok_or_else(|| anyhow!("open execution attempt disappeared from recovery state"))?;
+        let recovery_proof = (
+            attempt_id.clone(),
+            attempt.source_message_id.clone(),
+            attempt.binding.work_item_id().map(str::to_owned),
+        );
         let outcome_id = format!("retired-scheduler-cleanup:{attempt_id}");
         let outcome = fallback_outcome(&attempt, &now_text);
         let attempt = state
@@ -153,6 +176,7 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
         attempt.terminal_outcome_id = Some(outcome_id.clone());
         attempt.terminal_at = Some(now_text.clone());
         state.outcomes.insert(outcome_id, outcome);
+        interrupted_attempts.push(recovery_proof);
         actions.push(RetiredSchedulerFallbackAction {
             kind: RetiredSchedulerFallbackActionKind::InterruptOpenExecutionAttempt,
             record_id: attempt_id,
@@ -230,6 +254,28 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
             updated_at: recovery_message.created_at,
         },
     )?;
+    // The canonical `scheduler-recovery --apply` plan proves every activation it
+    // interrupts with one `scheduler_execution_recovered` event, and startup
+    // requires that proof before it seals the dispatch's unfinished Start
+    // receipt (#4399). The cleanup interrupts the same activations, so it has to
+    // leave the same audit; without it the upgraded daemon cannot prove a
+    // canonical end for the dispatch and refuses to boot (#4500). `created_at`
+    // is pinned to the attempt's terminal time so the event describes exactly
+    // the settlement it proves.
+    for (attempt_id, message_id, work_item_id) in &interrupted_attempts {
+        let mut event = AuditEvent::legacy(
+            "scheduler_execution_recovered",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "message_id": message_id,
+                "activation_id": attempt_id,
+                "work_item_id": work_item_id,
+                "reason": "retired_scheduler_cleanup",
+            }),
+        );
+        event.created_at = now;
+        append_audit_event_tx(tx, Some(agent_id), &event)?;
+    }
     append_audit_event_tx(
         tx,
         Some(agent_id),
@@ -262,16 +308,22 @@ pub(super) fn fallback_outcome(
         outcome_id: format!("retired-scheduler-cleanup:{}", attempt.attempt_id),
         attempt_id: attempt.attempt_id.clone(),
         outcome: if attempt.binding.is_command() {
+            // Command bindings keep their quarantine: the cleanup cannot prove
+            // the command had no external effect, and startup has no canonical
+            // interrupted shape for a quarantined command. Proven repairs only
+            // interrupt turn-shaped activations, so that combination is not a
+            // reachable upgrade path today; widening recovery for it needs a
+            // separate decision.
             ExecutionOutcome::Command(CommandResult::Quarantined {
                 reason: "retired_scheduler_cleanup".into(),
             })
         } else if attempt.binding.work_item_id().is_some() {
             ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
-                reason: "retired_scheduler_cleanup".into(),
+                reason: RETIRED_SCHEDULER_INTERRUPTED_REASON.into(),
             })
         } else {
             ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
-                reason: "retired_scheduler_cleanup".into(),
+                reason: RETIRED_SCHEDULER_INTERRUPTED_REASON.into(),
             })
         },
         created_at: now.into(),
