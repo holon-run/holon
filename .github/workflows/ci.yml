@@ -872,6 +872,7 @@ jobs:
           cargo fmt --manifest-path crates/holon-daemon/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-domain/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-github/Cargo.toml -- --check
+          cargo fmt --manifest-path crates/holon-acp/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-agent-templates/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-system/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-server/Cargo.toml -- --check
