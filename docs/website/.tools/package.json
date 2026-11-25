@@ -8,7 +8,7 @@
     "dev": "npm run prepare:content && mdorigin dev --root ./dist/content --config ./dist/content/mdorigin.config.mjs",
     "build:index": "mdorigin build index --root ./dist/content --config ./dist/content/mdorigin.config.mjs",
     "build:search": "mdorigin build search --root ./dist/content --config ./dist/content/mdorigin.config.mjs --out ./dist/search",
-    "build:cloudflare": "mdorigin build cloudflare --root ./dist/content --config ./dist/content/mdorigin.config.mjs --search ./dist/search --out ./dist/cloudflare && node check-template-bundle.mjs && node check-docs-layout.mjs",
+    "build:cloudflare": "mdorigin build cloudflare --root ./dist/content --config ./dist/content/mdorigin.config.mjs --search ./dist/search --binary-mode external --out ./dist/cloudflare && node check-template-bundle.mjs && node check-docs-layout.mjs",
     "check:docs-layout": "node check-docs-layout.mjs",
     "check:templates": "node check-template-bundle.mjs",
     "check:content": "python3 check-links.py --root ./dist/content",

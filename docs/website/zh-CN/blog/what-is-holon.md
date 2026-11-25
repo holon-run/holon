@@ -51,8 +51,8 @@ reviewer 进入项目，阅读变更，调用本地工具执行检查，并为�
 
 打开工作项，可以看到计划、检查清单和等待原因。如果是在等 CI，你可以了解进度后离开；如果需要你决定兼容范围，就直接补充要求，让它继续。下图展示了 reviewer 已复核新提交、正在等待 CI 结果的状态。
 
-<a href="/assets/lite-paper/web-gui-review-zh-CN.png">
-<img src="/assets/lite-paper/web-gui-review-zh-CN.png" width="3000" height="1880" alt="Holon Web 工作台：查看审阅进展、工作项计划与检查清单，以及等待 CI 结果后继续核对的原因。" loading="lazy" decoding="async">
+<a href="/assets/lite-paper/web-gui-review-zh-CN.webp">
+<img src="/assets/lite-paper/web-gui-review-zh-CN.webp" width="1600" height="1003" alt="Holon Web 工作台：查看审阅进展、工作项计划与检查清单，以及等待 CI 结果后继续核对的原因。" loading="lazy" decoding="async">
 </a>
 
 *Web 工作台演示：新提交已复核，正在等待 CI，后续步骤保存在同一个工作项中。截图使用演示数据，点击可查看大图。*
