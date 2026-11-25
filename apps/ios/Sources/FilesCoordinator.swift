@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Observation
 import HolonClient
@@ -25,6 +26,8 @@ final class FilesCoordinator {
     @ObservationIgnored private var foreground = true
     @ObservationIgnored private var revision = 0
     @ObservationIgnored private var operation = 0
+    private var conversationImageRevision = 0
+    @ObservationIgnored private let conversationImageSlots = ConversationImageSlots()
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private let cache: FilesCache
     @ObservationIgnored private var pins: [FilesRequest: FilesSource] = [:]
@@ -52,6 +55,7 @@ final class FilesCoordinator {
     func disconnect() {
         let previous = transport
         revision &+= 1
+        resetConversationImages()
         cancelOperation()
         transport = nil
         identity = nil
@@ -70,6 +74,7 @@ final class FilesCoordinator {
         guard foreground != value else { return }
         foreground = value
         revision &+= 1
+        resetConversationImages()
         cancelOperation()
         if let directory { folder = (directory.workspace, directory.path) }
         directory = nil
@@ -115,6 +120,7 @@ final class FilesCoordinator {
     }
 
     func selectAgent(_ agentID: String?) {
+        if selectedAgentID != agentID { resetConversationImages() }
         cancelOperation()
         selectedAgentID = agentID
         request = nil; pins.removeAll(); positions.removeAll(); folder = nil; directoryPosition = nil
@@ -184,6 +190,35 @@ final class FilesCoordinator {
     private func accepts(_ agentID: String) -> Bool {
         foreground && identity != nil && transport != nil &&
             !agentID.isEmpty && selectedAgentID == agentID
+    }
+
+    func conversationImageScope(agentID: String) -> Int? {
+        let revision = conversationImageRevision
+        return accepts(agentID) ? revision : nil
+    }
+
+    private func resetConversationImages() {
+        conversationImageRevision &+= 1
+        conversationImageSlots.cancelWaiting()
+    }
+
+    func loadConversationImage(_ reference: String, agentID: String, scope: Int) async throws -> CGImage {
+        try Task.checkCancellation()
+        guard conversationImageScope(agentID: agentID) == scope else { throw CancellationError() }
+        try await conversationImageSlots.acquire()
+        defer { conversationImageSlots.release() }
+        try Task.checkCancellation()
+        guard conversationImageScope(agentID: agentID) == scope, let transport else { throw CancellationError() }
+        let download = try await transport.download(source: .reference(reference),
+                                                     maximumBytes: ConversationImageThumbnail.maximumBytes)
+        try Task.checkCancellation()
+        guard conversationImageScope(agentID: agentID) == scope else { throw CancellationError() }
+        let decoded = await Task.detached(priority: .utility) {
+            Result { try ConversationImageThumbnail.decode(download.data, mediaType: download.mediaType) }
+        }.value
+        try Task.checkCancellation()
+        guard conversationImageScope(agentID: agentID) == scope else { throw CancellationError() }
+        return try decoded.get()
     }
 
     private func string(_ value: JSONValue?) -> String? {

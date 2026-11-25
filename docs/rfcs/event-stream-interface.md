@@ -474,6 +474,14 @@ audit events.
 
 ## Event Payload Strategy
 
+Canonical HTTP operator prompt messages may include
+`metadata.control_prompt_caption_utf8_bytes`, the length of the original
+operator text in UTF-8 bytes. Any text after this boundary consists of
+server-appended attachment markup and its separating newlines. The message body
+remains plain text for existing clients. Absence means provenance is unknown
+(including historical records); zero is valid for attachment-only prompts.
+This metadata does not grant access to the referenced files.
+
 The stream envelope should remain raw and explicit about provenance and cursor.
 Event payloads are the documented standard payloads and are delivered in full.
 

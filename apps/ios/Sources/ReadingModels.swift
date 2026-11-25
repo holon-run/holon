@@ -90,14 +90,49 @@ struct ReadingOperatorPreview: Equatable, Sendable {
 }
 
 enum OperatorInputPresentation {
+    struct Preview: Equatable {
+        let text: String
+        let isTruncated: Bool
+    }
+
+    struct Message: Sendable {
+        let text: String
+        // nil means legacy or unrelated provenance; [] is an authoritative absence.
+        let uploadedImages: [ConversationImageReference]?
+    }
+
+    static func message(_ envelope: JSONValue, agentID: String, messageID: String) -> Message? {
+        guard let text = messageText(envelope, agentID: agentID, messageID: messageID) else { return nil }
+        let uploadedImages: [ConversationImageReference]?
+        if envelope["kind"]?.readingString == "operator_prompt",
+           envelope["delivery_surface"]?.readingString == "http_control_prompt",
+           let captionBytes = envelope["metadata"]?["control_prompt_caption_utf8_bytes"]?.readingInteger {
+            uploadedImages = ConversationImageReference.controlAttachments(in: text, captionUTF8Bytes: captionBytes)
+        } else {
+            uploadedImages = nil
+        }
+        return Message(text: text, uploadedImages: uploadedImages)
+    }
+
     static func text(_ preview: String) -> String {
+        decodePreview(preview).text
+    }
+
+    static func messageText(_ message: JSONValue, agentID: String, messageID: String) -> String? {
+        guard message["agent_id"]?.readingString == agentID,
+              message["id"]?.readingString == messageID,
+              message["body"]?["type"]?.readingString == "text" else { return nil }
+        return message["body"]?["text"]?.readingString
+    }
+
+    static func decodePreview(_ preview: String) -> Preview {
         if let envelope = try? JSONDecoder().decode(JSONValue.self, from: Data(preview.utf8)),
            envelope["type"]?.readingString == "text",
-           let text = envelope["text"]?.readingString { return text }
+           let text = envelope["text"]?.readingString { return Preview(text: text, isTruncated: false) }
 
         let bytes = Array(preview.utf8)
         let prefix = Array(#"{"type":"text","text":""#.utf8)
-        guard bytes.starts(with: prefix) else { return preview }
+        guard bytes.starts(with: prefix) else { return Preview(text: preview, isTruncated: false) }
         let encoded = bytes.dropFirst(prefix.count)
         // A byte cut can leave a closing quote, an escape, or half a surrogate pair.
         for trim in 0...min(11, encoded.count) {
@@ -106,10 +141,10 @@ enum OperatorInputPresentation {
             candidate.append(contentsOf: encoded.dropLast(trim))
             candidate.append(0x22)
             if let text = try? JSONDecoder().decode(String.self, from: candidate) {
-                return text + "…"
+                return Preview(text: text + "…", isTruncated: true)
             }
         }
-        return preview
+        return Preview(text: preview, isTruncated: false)
     }
 
     private static func isIncompleteTail(_ tail: ArraySlice<UInt8>) -> Bool {
@@ -226,6 +261,36 @@ struct ReadingPartition: Hashable, Codable, Sendable {
 }
 
 /// Keep the server's live cursor authoritative while retaining a bounded history window.
+struct ReadingConversationProjection {
+    let snapshot: HolonConversationSnapshot
+    let turns: [ReadingTurnPresentation]
+    let turnIDs: [String]
+
+    init(snapshot: HolonConversationSnapshot) {
+        self.snapshot = snapshot
+        // The SDK's canonical `turns` already includes `active_turns`,
+        // deduplicated and sorted by index then ID.
+        if case .array(let rawTurns) = snapshot.raw["turns"] {
+            turns = rawTurns.compactMap(ReadingTurnPresentation.init(raw:))
+        } else {
+            turns = []
+        }
+        turnIDs = turns.map(\.id)
+    }
+}
+
+struct ReadingTurnPresentation: Identifiable {
+    let id: String
+    let raw: JSONValue
+
+    init?(raw: JSONValue) {
+        guard let id = raw["turn_id"]?.readingString, !id.isEmpty,
+              raw["key"]?["turn_index"]?.readingInteger != nil else { return nil }
+        self.id = id
+        self.raw = raw
+    }
+}
+
 enum ReadingSnapshotWindow {
     static let maximumTurns = 180
     static let maximumBytes = 262_144

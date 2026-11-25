@@ -8,6 +8,7 @@ struct ReadingView: View {
     @State private var filter: AgentListFilter = .all
     @State private var window = 80
     @State private var visibleAgents: Set<String> = []
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var matching: [ReadingAgent] {
         AgentSummaryPresentation.sorted(reader.agents, query: query, filter: filter)
@@ -18,29 +19,68 @@ struct ReadingView: View {
     private var rosterLoading: Bool {
         reader.status == .syncing || (reader.status == .offline && isConnecting)
     }
+    private var connectionStatusKey: String {
+        ReadingPresentation.connectionStatusKey(
+            status: reader.status, hasContent: true, isCached: reader.isShowingCachedContent,
+            isRefreshing: reader.isRefreshing, connecting: isConnecting
+        ) ?? "reading.status.live"
+    }
+    private var canRetryConnection: Bool {
+        ReadingPresentation.showsConnectionRetry(status: reader.status, isRefreshing: reader.isRefreshing,
+                                                 connecting: isConnecting)
+    }
+    private var rosterBottomMargin: CGFloat? {
+        // Leave enough scroll range to lift a tall row above the floating search bar.
+        if #available(iOS 26, *), dynamicTypeSize.isAccessibilitySize { return 96 }
+        return nil
+    }
+    private var connectionStatusLines: Int {
+        if dynamicTypeSize.isAccessibilitySize { return 3 }
+        return dynamicTypeSize >= .xLarge ? 2 : 1
+    }
 
     var body: some View {
             List {
                 Section {
                     // Keep one list row while connection state changes offscreen.
-                    VStack(alignment: .leading, spacing: 12) {
-                        NavigationLink(value: AppRoute.connections) {
-                            HStack {
-                                Image(systemName: "network").foregroundStyle(.secondary)
-                                Text(verbatim: connection.selectedProfile?.name ?? "")
-                                Spacer()
-                                if let key = ReadingPresentation.connectionStatusKey(
-                                    status: reader.status, hasContent: true,
-                                    isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing,
-                                    connecting: isConnecting
-                                ) {
-                                    Text(LocalizedStringKey(key))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                        .accessibilityIdentifier("agents.connectionStatus")
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 4) {
+                            NavigationLink(value: AppRoute.connections) {
+                                let host = connection.selectedProfile?.name ?? ""
+                                Label {
+                                    Text(verbatim: host).lineLimit(1).truncationMode(.middle)
+                                } icon: {
+                                    Image(systemName: "network").foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityLabel(Text(verbatim: host))
+                            }
+                            .accessibilityIdentifier("connection.manage")
+                            Group {
+                                if canRetryConnection {
+                                    Button {
+                                        Task { await reader.refresh() }
+                                    } label: {
+                                        Image(systemName: "arrow.clockwise")
+                                            .frame(width: 44, height: 44)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel(Text("reading.retry"))
+                                    .accessibilityIdentifier("agents.retry")
+                                } else {
+                                    // Keep the slot without leaving an invisible action in the list.
+                                    Color.clear.frame(width: 44, height: 44)
+                                        .allowsHitTesting(false)
+                                        .accessibilityHidden(true)
                                 }
                             }
                         }
-                        .accessibilityIdentifier("connection.manage")
+                        // Reserve lines for the current text size, not the current connection state.
+                        Text(LocalizedStringKey(connectionStatusKey))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(connectionStatusLines, reservesSpace: true)
+                            .accessibilityIdentifier("agents.connectionStatus")
                         if rosterLoading && reader.agents.isEmpty { ProgressView() }
                         if reader.agents.isEmpty {
                             if reader.status == .live {
@@ -52,13 +92,6 @@ struct ReadingView: View {
                             } else if !rosterLoading {
                                 Text("reading.emptyAgents")
                             }
-                        }
-                        if ReadingPresentation.showsConnectionRetry(status: reader.status,
-                                                                    isRefreshing: reader.isRefreshing,
-                                                                    connecting: isConnecting) {
-                            Button("reading.retry") { Task { await reader.refresh() } }
-                                .buttonStyle(.borderless)
-                                .accessibilityIdentifier("agents.retry")
                         }
                     }
                 }
@@ -83,6 +116,7 @@ struct ReadingView: View {
                 }
             }
             .listStyle(.plain)
+            .contentMargins(.bottom, rosterBottomMargin, for: .scrollContent)
             .searchable(text: $query, prompt: Text("agents.search"))
             .navigationTitle("agents.title")
             .navigationBarTitleDisplayMode(.inline)
@@ -118,6 +152,8 @@ private struct AgentSummaryRow: View {
     let agent: ReadingAgent
     let store: AgentAvatarStore
     let presentation: AgentIdentityPresentation
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .caption) private var statusHeight: CGFloat = 16
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -133,25 +169,38 @@ private struct AgentSummaryRow: View {
                     }
                 }
                 let preview = AgentSummaryPresentation.preview(agent)
-                if !preview.isEmpty {
-                    HStack(spacing: 4) {
-                        if AgentSummaryPresentation.showsOperatorPreview(agent) {
-                            Text("reading.inputPreview")
-                        }
-                        Text(verbatim: preview)
+                HStack(spacing: 4) {
+                    if AgentSummaryPresentation.showsOperatorPreview(agent) {
+                        Text("reading.inputPreview")
                     }
-                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    // Keep the same row height when an asynchronously loaded preview arrives.
+                    Text(verbatim: preview.isEmpty ? " " : preview)
                 }
-                HStack(spacing: 8) {
-                    AgentStatusLabel(presentation: presentation)
-                    if let unread = agent.unreadCount, unread > 0 {
-                        Text("reading.unread \(unread)").fontWeight(.semibold)
+                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                .accessibilityHidden(preview.isEmpty)
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 4) {
+                            AgentStatusLabel(presentation: presentation, reservedLines: 2)
+                            if let unread = agent.unreadCount, unread > 0 {
+                                Text("reading.unread \(unread)").fontWeight(.semibold).lineLimit(1)
+                            } else {
+                                Text(verbatim: " ").lineLimit(1).accessibilityHidden(true)
+                            }
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            AgentStatusLabel(presentation: presentation)
+                            Spacer(minLength: 0)
+                            if let unread = agent.unreadCount, unread > 0 {
+                                Text("reading.unread \(unread)").fontWeight(.semibold)
+                            }
+                        }
+                        .lineLimit(1)
+                        .frame(minHeight: statusHeight)
                     }
                 }
                 .font(.caption).foregroundStyle(.secondary)
-                if let key = presentation.connectionStatusKey {
-                    Text(LocalizedStringKey(key)).font(.caption).foregroundStyle(.secondary)
-                }
             }
         }
         .padding(.vertical, 8)
@@ -189,31 +238,28 @@ struct ConversationReadingView: View {
     @State private var nearBottom = true
     @State private var follow = ConversationFollowState()
     @State private var newContent = false
+    @State private var showConnectionDetails = false
     @State private var initializedAgent: String?
     @State private var readThroughToConfirm: ReadingReadConfirmation?
     @State private var historyEndTurnID: String?
     @State private var visibleTurnIDs: [String] = []
     @State private var userScrolling = false
+
+    private var connectionPresentation: ConversationConnectionPresentation {
+        .init(status: reader.status, hasSnapshot: reader.snapshot != nil,
+              isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing,
+              canPersistDraft: sender?.canPersistDraft == true)
+    }
     @State private var scrollRequest: ScrollRequest?
     @State private var scrollPosition = ScrollPosition(idType: String.self)
     @State private var historyScrollIntent: String?
     @State private var showPrivacyInfo = false
 
-    private var turnIDs: [String] { turns.map(\.id) }
+    private var turnIDs: [String] { reader.conversationProjection?.turnIDs ?? [] }
     private var turnRange: Range<Int> { ConversationTurnWindow.range(ids: turnIDs, endingAt: historyEndTurnID) }
     private var visibleTurns: ArraySlice<ReadingTurnPresentation> { turns[turnRange] }
 
-    private var turns: [ReadingTurnPresentation] {
-        guard let raw = reader.snapshot?.raw else { return [] }
-        var byID: [String: ReadingTurnPresentation] = [:]
-        for turn in raw["turns"].viewArray + raw["active_turns"].viewArray {
-            guard let item = ReadingTurnPresentation(raw: turn) else { continue }
-            byID[item.id] = item
-        }
-        return byID.values.sorted {
-            $0.index == $1.index ? $0.id < $1.id : $0.index < $1.index
-        }
-    }
+    private var turns: [ReadingTurnPresentation] { reader.conversationProjection?.turns ?? [] }
 
     private var currentRunID: String? {
         guard reader.status == .live,
@@ -286,7 +332,7 @@ struct ConversationReadingView: View {
                     }.accessibilityIdentifier("conversation.newer")
                 }
                 ForEach((reader.snapshot?.raw["pending_inputs"].viewArray ?? []).filter { $0["presentation_class"] == .string("operator") && TaskResultInput($0) == nil }, id: \.viewMessageID) { input in
-                    ReadingInputView(input: input)
+                    ReadingInputView(input: input, reader: reader)
                         .environment(\.holonOpenReference, reader.status == .live ? openReference : nil)
                         .accessibilityIdentifier("pending." + input.viewMessageID)
                 }
@@ -413,18 +459,10 @@ struct ConversationReadingView: View {
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            ConversationConnectionStatus(status: reader.status, hasSnapshot: reader.snapshot != nil,
-                                         isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing,
-                                         canPersistDraft: sender?.canPersistDraft == true) {
-                Task { await reader.refresh() }
-            }
-        }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 if let sender {
-                    SendingView(sender: sender, currentRunID: currentRunID,
-                                commonModels: reader.agents.compactMap(\.effectiveModel))
+                    SendingView(sender: sender, reader: reader, currentRunID: currentRunID)
                 } else {
                     Text("status.storageError").font(.caption).padding()
                 }
@@ -432,19 +470,25 @@ struct ConversationReadingView: View {
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                if let agent = reader.agents.first(where: { $0.id == reader.selectedAgentID }) {
-                    AgentConversationTitle(agent: agent, store: reader.avatars, presentation: .derive(
-                        agent, status: reader.status, isRosterCurrent: reader.isRosterCurrent,
-                        isCached: reader.rosterIsCached,
-                        isRefreshing: reader.isRefreshing
-                    ))
-                } else {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(verbatim: reader.selectedAgentID ?? "Holon").lineLimit(1)
-                        AgentStatusLabel(presentation: .init(kind: .unknown)).font(.caption2)
+                HStack(spacing: 0) {
+                    if let agent = reader.agents.first(where: { $0.id == reader.selectedAgentID }) {
+                        AgentConversationTitle(agent: agent, store: reader.avatars, presentation: .derive(
+                            agent, status: reader.status, isRosterCurrent: reader.isRosterCurrent,
+                            isCached: reader.rosterIsCached,
+                            isRefreshing: reader.isRefreshing
+                        ))
+                    } else {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(verbatim: reader.selectedAgentID ?? "Holon").lineLimit(1)
+                            AgentStatusLabel(presentation: .init(kind: .unknown)).font(.caption2)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("conversation.identity")
                     }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("conversation.identity")
+                    ConversationConnectionButton(presentation: connectionPresentation) {
+                        showConnectionDetails = true
+                    }
+                    .layoutPriority(1)
                 }
             }
             ToolbarItemGroup(placement: .primaryAction) {
@@ -467,6 +511,24 @@ struct ConversationReadingView: View {
                         .accessibilityIdentifier("conversation.privacyInfo")
                 } label: { Image(systemName: "ellipsis.circle").accessibilityLabel(Text("conversation.more")) }
                 .accessibilityIdentifier("conversation.more")
+            }
+        }
+        .sheet(isPresented: $showConnectionDetails) {
+            NavigationStack {
+                ScrollView {
+                    ConversationConnectionDetails(presentation: connectionPresentation) {
+                        Task { await reader.refresh() }
+                    }
+                    .padding(20)
+                }
+                .navigationTitle("reading.connectionDetails")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("files.dismiss") { showConnectionDetails = false }
+                            .accessibilityIdentifier("conversation.connectionClose")
+                    }
+                }
             }
         }
         .sheet(isPresented: $showPrivacyInfo) { PrivacyInfoSheet(apiBaseURL: apiBaseURL) }
@@ -512,20 +574,6 @@ struct ConversationReadingView: View {
     }
 }
 
-private struct ReadingTurnPresentation: Identifiable {
-    let id: String
-    let index: Int64
-    let raw: JSONValue
-
-    init?(raw: JSONValue) {
-        guard let id = raw["turn_id"].viewString, !id.isEmpty,
-              case .integer(let index)? = raw["key"]?["turn_index"] else { return nil }
-        self.id = id
-        self.index = index
-        self.raw = raw
-    }
-}
-
 private struct ReadingTurnView: View {
     let turn: ReadingTurnPresentation
     @Bindable var reader: ReadingCoordinator
@@ -546,7 +594,7 @@ private struct ReadingTurnView: View {
             }
             .font(.caption2).foregroundStyle(.secondary)
             ForEach(turn.raw["inputs"].viewArray, id: \.viewMessageID) { input in
-                ReadingInputView(input: input, fallbackClass: turn.raw["presentation_class"].viewString)
+                ReadingInputView(input: input, reader: reader, fallbackClass: turn.raw["presentation_class"].viewString)
             }
             ForEach(turn.raw["brief_ids"].viewArray.compactMap(\.viewString), id: \.self) { briefID in
                 ReadingBriefView(briefID: briefID, reader: reader, inputs: turn.raw["inputs"].viewArray,
@@ -596,122 +644,260 @@ private struct ReadingTurnView: View {
 
 struct ReadingInputView: View {
     let input: JSONValue
+    let reader: ReadingCoordinator
     var fallbackClass: String? = nil
+    @State private var showsFullMessage = false
 
     var body: some View {
         if (input["presentation_class"].viewString ?? fallbackClass) == "operator" {
+            let preview = OperatorInputPresentation.decodePreview(input["preview"].viewString ?? "")
             OperatorMessageBubble {
                 VStack(alignment: .leading, spacing: 6) {
-                    OperatorMessageText(text: ReadingPresentation.operatorText(input))
+                    OperatorMessageText(text: preview.text)
+                    if !preview.isTruncated, !input.viewMessageID.isEmpty {
+                        ReadingOperatorInlineImages(reader: reader, messageID: input.viewMessageID, text: preview.text)
+                    }
+                    if preview.isTruncated, !input.viewMessageID.isEmpty {
+                        Button("reading.fullMessage") { showsFullMessage = true }
+                            .font(.callout)
+                            .disabled(reader.status != .live)
+                            .accessibilityIdentifier("operator.fullMessage." + input.viewMessageID)
+                    }
                     if let actor = input["actor_display_name"].viewString?.trimmingCharacters(in: .whitespacesAndNewlines), !actor.isEmpty {
                         Text(verbatim: actor).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
             .accessibilityIdentifier("operator." + input.viewMessageID)
+            .sheet(isPresented: $showsFullMessage) {
+                if let agentID = reader.selectedAgentID {
+                    ReadingFullOperatorMessage(reader: reader, agentID: agentID, messageID: input.viewMessageID)
+                }
+            }
         }
     }
 }
 
-/// Connection state is chrome, not an invented entry in the conversation.
-struct ConversationConnectionStatus: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+private struct ReadingOperatorInlineImages: View {
+    private struct Request: Equatable {
+        let scope: Int
+        let agentID: String
+        let messageID: String
+        let attempt: Int
+    }
+
+    let reader: ReadingCoordinator
+    let messageID: String
+    let text: String
+    @Environment(\.holonConversationImageAccess) private var imageAccess
+    private enum Resolution {
+        case message(OperatorInputPresentation.Message), deferred, failed
+    }
+    @State private var resolved: (Request, Resolution)?
+    @State private var attempt = 0
+
+    var body: some View {
+        if !ConversationImageReference.operatorTailReferences(text).isEmpty,
+           let scope = imageAccess?.scope, let agentID = reader.selectedAgentID {
+            let request = Request(scope: scope, agentID: agentID, messageID: messageID, attempt: attempt)
+            Group {
+                if let resolved, resolved.0 == request {
+                    switch resolved.1 {
+                    case .message(let message):
+                        ReadingOperatorImages(message: message)
+                            .id(messageID)
+                    case .deferred:
+                        Button("reading.imageLoadPreview") { attempt &+= 1 }
+                            .font(.callout)
+                    case .failed:
+                        Button("reading.retry") { attempt &+= 1 }
+                            .font(.callout)
+                    }
+                } else {
+                    ProgressView("reading.imageLoading").font(.caption)
+                }
+            }
+            .task(id: request) {
+                do {
+                    let message = try await reader.loadInlineImageMessage(messageID, agentID: agentID)
+                    try Task.checkCancellation()
+                    resolved = (request, .message(message))
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    let deferred = error is ConversationPreviewDeferred || error is CancellationError
+                    resolved = (request, deferred ? .deferred : .failed)
+                }
+            }
+        }
+    }
+}
+
+private struct ReadingOperatorImages: View {
+    let message: OperatorInputPresentation.Message
+    @State private var loadLegacyReferences = false
+
+    var body: some View {
+        if let uploadedImages = message.uploadedImages {
+            ConversationImagePreviews(images: uploadedImages)
+        } else {
+            let references = ConversationImageReference.operatorTailReferences(message.text)
+            if !references.isEmpty {
+                if loadLegacyReferences {
+                    ConversationImagePreviews(images: references)
+                } else {
+                    Button("reading.loadImageReferences") { loadLegacyReferences = true }
+                        .font(.callout)
+                        .accessibilityIdentifier("conversation.image.loadReferences")
+                }
+            }
+        }
+    }
+}
+
+private struct ReadingFullOperatorMessage: View {
+    let reader: ReadingCoordinator
+    let agentID: String
+    let messageID: String
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.holonOpenReference) private var openReference
+    @State private var message: OperatorInputPresentation.Message?
+    @State private var didFail = false
+    @State private var attempt = 0
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let message {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ReadingOperatorImages(message: message)
+                                .environment(\.holonOpenReference, openReference.map { open in
+                                    { reference in
+                                        dismiss()
+                                        open(reference)
+                                    }
+                                })
+                            OperatorMessageText(text: message.text)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                    }
+                } else if didFail {
+                    VStack(spacing: 12) {
+                        Text("reading.fullMessageUnavailable")
+                        Button("reading.retry") {
+                            didFail = false
+                            attempt += 1
+                        }.disabled(reader.status != .live)
+                    }.padding()
+                } else {
+                    ProgressView()
+                }
+            }
+            .navigationTitle("reading.fullMessage")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("files.dismiss") { dismiss() }
+                }
+            }
+        }
+        .task(id: attempt) {
+            do {
+                let loaded = try await reader.loadOperatorMessage(messageID, agentID: agentID)
+                try Task.checkCancellation()
+                message = loaded
+            } catch {
+                guard !Task.isCancelled else { return }
+                didFail = true
+            }
+        }
+        .onChange(of: reader.selectedAgentID) { _, selected in
+            if selected != agentID { dismiss() }
+        }
+        .onChange(of: reader.status) { _, status in
+            if status == .sessionExpired || status == .permissionDenied { dismiss() }
+        }
+    }
+}
+
+/// The connection is independent of the Agent's scheduling state.
+struct ConversationConnectionPresentation {
     let status: ReadingStatus
     let hasSnapshot: Bool
     var isCached = false
     var isRefreshing = false
     var canPersistDraft = false
-    var retry: () -> Void
-
-    // Reserve natural, localized heights rather than truncating recovery text.
-    private static let statusKeys = [
-        "reading.status.disconnected", "reading.status.syncing", "reading.status.live",
-        "reading.status.offline", "reading.status.permissionDenied", "reading.status.sessionExpired",
-        "reading.status.incompatible", "reading.cache.offline", "reading.cache.refreshing",
-        "reading.cache.saved", "reading.loadingConversation"
-    ]
-
-    var body: some View {
-        let key = ReadingPresentation.connectionStatusKey(
+    var key: String {
+        ReadingPresentation.connectionStatusKey(
             status: status, hasContent: hasSnapshot, isCached: isCached, isRefreshing: isRefreshing
         ) ?? "reading.status.live"
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                // Keep recovery instructions full-width at accessibility sizes.
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        statusIcon
-                        Spacer()
-                        retryControl
-                    }
-                    statusCaption(key)
-                    draftNotice
-                }
-            } else {
-                HStack(spacing: 8) {
-                    statusIcon
-                    VStack(alignment: .leading, spacing: 2) {
-                        statusCaption(key)
-                        draftNotice
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    retryControl
+    }
+    var showsDraftNotice: Bool { status != .live && canPersistDraft }
+    var showsRetry: Bool {
+        ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing)
+    }
+    var isError: Bool {
+        switch status {
+        case .permissionDenied, .sessionExpired, .incompatible: true
+        default: false
+        }
+    }
+    var isLoading: Bool {
+        !isError && (isRefreshing || status == .syncing || (status == .live && !hasSnapshot))
+    }
+    var symbol: String {
+        if isError { return "exclamationmark.circle" }
+        if status != .live { return "wifi.exclamationmark" }
+        return isCached ? "internaldrive" : "dot.radiowaves.left.and.right"
+    }
+}
+
+struct ConversationConnectionButton: View {
+    let presentation: ConversationConnectionPresentation
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            Group {
+                if presentation.isLoading {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: presentation.symbol)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(presentation.isError || presentation.showsRetry ? Color.orange : Color.secondary)
                 }
             }
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 16).padding(.vertical, 8)
-        .background(.bar)
-        .accessibilityElement(children: .contain)
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text("reading.connectionDetails"))
+        .accessibilityValue(Text(LocalizedStringKey(presentation.key)))
         .accessibilityIdentifier("conversation.connectionStatus")
     }
+}
 
-    private func statusCaption(_ key: String) -> some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(Self.statusKeys, id: \.self) { candidate in
-                Text(LocalizedStringKey(candidate)).hidden().accessibilityHidden(true)
-            }
-            Text(LocalizedStringKey(key))
-        }
-        .font(.caption).foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+struct ConversationConnectionDetails: View {
+    let presentation: ConversationConnectionPresentation
+    let retry: () -> Void
 
-    private var draftNotice: some View {
-        ZStack(alignment: .topLeading) {
-            Text("reading.cache.readOnly").hidden().accessibilityHidden(true)
-            if status != .live && canPersistDraft {
-                Text("reading.cache.readOnly")
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(LocalizedStringKey(presentation.key)).font(.headline)
+                .accessibilityIdentifier("conversation.connectionMessage")
+            if presentation.showsDraftNotice {
+                Text("reading.cache.readOnly").foregroundStyle(.secondary)
                     .accessibilityIdentifier("conversation.readOnly")
             }
+            if presentation.showsRetry {
+                Button("reading.retry", action: retry)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("conversation.retry")
+            }
         }
-        .font(.caption2).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var statusIcon: some View {
-        Group {
-            if isRefreshing || status == .syncing || (status == .live && !hasSnapshot) {
-                ProgressView().controlSize(.mini)
-            } else {
-                Image(systemName: status == .live ? (isCached ? "internaldrive" : "checkmark.circle") : "wifi.exclamationmark")
-            }
-        }
-        .frame(width: 20, height: 20)
-        .accessibilityHidden(true)
-    }
-
-    private var retryControl: some View {
-        Group {
-            if ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing) {
-                Button("reading.retry", action: retry)
-                    .accessibilityIdentifier("conversation.retry")
-            } else {
-                Text("reading.retry").hidden().accessibilityHidden(true)
-            }
-        }
-        .font(.caption).frame(minWidth: 44, minHeight: 44)
     }
 }
 
@@ -823,9 +1009,15 @@ enum ReadingPresentation {
         !(connecting || isRefreshing) && (status == .offline || status == .incompatible)
     }
 
-    static func date(_ value: String) -> Date? {
-        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    @MainActor private static let fractionalDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    @MainActor private static let wholeSecondDateFormatter = ISO8601DateFormatter()
+
+    @MainActor static func date(_ value: String) -> Date? {
+        fractionalDateFormatter.date(from: value) ?? wholeSecondDateFormatter.date(from: value)
     }
 
     static func turnStatus(_ turn: JSONValue) -> String? {

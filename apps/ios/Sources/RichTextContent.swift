@@ -269,12 +269,18 @@ struct RichTextContent: View {
     var openReference: ((String) -> Void)? = nil
     var openRelative: ((String) -> Void)? = nil
     var onReport: (() -> Void)? = nil
+    @Environment(\.holonConversationImageAccess) private var imageAccess
     @Environment(\.holonOpenWebLink) private var openWebLink
     @State private var unsupportedLink = false
     @State private var selectingText = false
 
     var body: some View {
-        StructuredText(text, parser: HolonMarkdownParser(allowsRelativePaths: openRelative != nil))
+        VStack(alignment: .leading, spacing: 6) {
+            StructuredText(text, parser: HolonMarkdownParser(allowsRelativePaths: openRelative != nil))
+            if imageAccess != nil {
+                ConversationImagePreviews(images: ConversationImageReference.markdown(text))
+            }
+        }
             .textual.structuredTextStyle(.gitHub)
             // Textual's UIKit selection overlay swallows link taps on iOS 26.
             // Keep native links; range selection has its own system text surface.

@@ -6,12 +6,33 @@ protocol SendingTransport: Sendable {
     func upload(agentID: String, attachment: SendingAttachment, file: URL) async throws -> SendingPreparedAttachment
     func send(agentID: String, requestID: UUID, payload: SendingPayload) async throws -> String?
     func models() async throws -> [SendingModel]
+    func agentModel(agentID: String) async throws -> AgentModelConfiguration
+    func updateAgentModel(agentID: String, selection: AgentModelSelection) async throws -> AgentModelConfiguration
     func stop(agentID: String, runID: String) async throws
+    func revokeAdmission()
     func close() async
 }
 
 extension SendingTransport {
+    func revokeAdmission() {}
     func close() async {}
+    func agentModel(agentID: String) async throws -> AgentModelConfiguration { throw SendingFailure.unavailable }
+    func updateAgentModel(agentID: String, selection: AgentModelSelection) async throws -> AgentModelConfiguration {
+        throw SendingFailure.unavailable
+    }
+}
+
+private final class SendingAdmission: @unchecked Sendable {
+    private let lock = NSLock()
+    private var revoked = false
+
+    func revoke() { lock.withLock { revoked = true } }
+
+    func check() throws {
+        try lock.withLock {
+            if revoked { throw CancellationError() }
+        }
+    }
 }
 
 actor SendingClientTransport: SendingTransport {
@@ -19,6 +40,7 @@ actor SendingClientTransport: SendingTransport {
     private let authority: HolonConnectionIdentity
     private let consent: SharingConsent
     private let apiBaseURL: URL
+    private let admission = SendingAdmission()
     private var bound: HolonConnectionIdentity?
 
     init(client: HolonClient, authority: HolonConnectionIdentity,
@@ -82,33 +104,109 @@ actor SendingClientTransport: SendingTransport {
             prompt = try HolonPromptRequest(clientRequestID: requestID.uuidString, text: payload.text,
                                            attachments: attachments)
         } catch { throw SendingFailure.rejected("Invalid prompt or attachment body exceeds the server limit.") }
+        try Task.checkCancellation()
         if let model = payload.modelID {
             let selection = try HolonAgentModelRequest(model: model)
-            _ = try await request(sharing: true) { try await $0.setAgentModel(agentID: agentID, request: selection) }
+            // Leaving a conversation cancels delivery, not an already confirmed model write.
+            // Wait for the HTTP result so the coordinator does not unlock a stale model read.
+            let write = Task { [admission] in
+                try await request(sharing: true) {
+                    try await $0.setAgentModelCheckingAdmission(agentID: agentID, request: selection, admit: admission.check)
+                }
+            }
+            _ = try await write.value
         }
-        let receipt = try await request(sharing: true) { try await $0.sendOperatorPrompt(agentID: agentID, request: prompt) }
+        try Task.checkCancellation()
+        let receipt = try await request(sharing: true) { [admission] in
+            try await $0.sendOperatorPromptCheckingAdmission(agentID: agentID, request: prompt, admit: admission.check)
+        }
         guard receipt.isAccepted else { throw HolonClientError.malformedResponse }
         return receipt.messageID
     }
 
     func models() async throws -> [SendingModel] {
         let catalog = try await request { try await $0.modelCatalog() }
-        guard case .array(let values) = catalog.availableModels else { return [] }
-        return values.compactMap { value in
-            if case .string(let id) = value { return SendingModel(id: id, name: id) }
-            guard case .string(let id) = value["model_ref"] ?? value["id"] else { return nil }
-            let name: String
-            if case .string(let displayName) = value["display_name"] { name = displayName }
-            else { name = id }
-            return SendingModel(id: id, name: name)
+        return Self.modelChoices(catalog.raw)
+    }
+
+    nonisolated static func modelChoices(_ catalog: JSONValue) -> [SendingModel] {
+        func efforts(_ value: JSONValue?) -> [String] {
+            guard case .array(let list) = value else { return [] }
+            var seen: Set<String> = []
+            return list.compactMap(\.readingString).filter { !$0.isEmpty && seen.insert($0).inserted }
         }
+        var models: [String: SendingModel] = [:]
+        if case .array(let availability) = catalog["model_availability"] {
+            // The metadata catalog includes built-ins for providers this server cannot call.
+            for item in availability {
+                guard item["available"] == .bool(true)
+                    || (item["available"] == .bool(false) && item["failure_disposition"]?.readingString == "retryable"),
+                    let model = item["model"]?.readingString, !model.isEmpty else { continue }
+                let parts = model.split(separator: "/", maxSplits: 1)
+                let id: String
+                if parts.count == 2, !parts[0].contains("@"),
+                   let family = item["provider_family"]?.readingString,
+                   let endpoint = item["endpoint"]?.readingString {
+                    id = "\(family)@\(endpoint)/\(parts[1])"
+                } else {
+                    id = model
+                }
+                models[id] = SendingModel(id: id, name: item["display_name"]?.readingString ?? model,
+                                          reasoningEfforts: efforts(item["policy"]?["reasoning_effort_options"]))
+            }
+        } else if case .array(let values) = catalog["available_models"] {
+            for value in values {
+                guard let id = value.readingString ?? (value["model"] ?? value["model_ref"] ?? value["id"])?.readingString,
+                      !id.isEmpty else { continue }
+                models[id] = SendingModel(id: id, name: value["display_name"]?.readingString ?? id,
+                                          reasoningEfforts: efforts(value["reasoning_effort_options"]
+                                                                    ?? value["policy"]?["reasoning_effort_options"]))
+            }
+        }
+        return models.values.sorted { ($0.name.lowercased(), $0.id) < ($1.name.lowercased(), $1.id) }
+    }
+
+    func agentModel(agentID: String) async throws -> AgentModelConfiguration {
+        try Self.modelConfiguration(await request { try await $0.agentModel(agentID: agentID) })
+    }
+
+    func updateAgentModel(agentID: String, selection: AgentModelSelection) async throws -> AgentModelConfiguration {
+        let state: HolonAgentModelState
+        switch selection {
+        case .automatic:
+            state = try await request(sharing: true) { [admission] in
+                try await $0.clearAgentModelCheckingAdmission(agentID: agentID, admit: admission.check)
+            }
+        case .manual(let model, let effort, let tier):
+            let body = try HolonAgentModelRequest(model: model, reasoningEffort: effort, serviceTier: tier)
+            state = try await request(sharing: true) { [admission] in
+                try await $0.setAgentModelCheckingAdmission(agentID: agentID, request: body, admit: admission.check)
+            }
+        }
+        return try Self.modelConfiguration(state)
+    }
+
+    private static func modelConfiguration(_ state: HolonAgentModelState) throws -> AgentModelConfiguration {
+        let raw = state.raw
+        guard let effective = raw["effective_model"]?.readingString, !effective.isEmpty else {
+            throw HolonClientError.malformedResponse
+        }
+        return AgentModelConfiguration(effectiveModel: effective,
+                                       activeModel: raw["active_model"]?.readingString,
+                                       source: raw["source"]?.readingString,
+                                       overrideModel: raw["override_model"]?.readingString,
+                                       reasoningEffort: raw["override_reasoning_effort"]?.readingString,
+                                       serviceTier: raw["override_service_tier"]?.readingString)
     }
 
     func stop(agentID: String, runID: String) async throws {
         _ = try await request { try await $0.stopCurrentRun(agentID: agentID, runID: runID) }
     }
 
+    nonisolated func revokeAdmission() { admission.revoke() }
+
     func close() async {
+        revokeAdmission()
         await client.close()
     }
 }

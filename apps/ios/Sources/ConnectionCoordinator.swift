@@ -163,6 +163,11 @@ final class ConnectionCoordinator {
 
     func handleClientFailure(_ failure: HolonHTTPFailure, expectedIdentity: HolonConnectionIdentity) {
         guard identity == expectedIdentity else { return }
+        if failure.statusCode == 401 || failure.statusCode == 403 {
+            // The rejection belongs to the connection, not the cancelled view task.
+            handleAuthorizationFailure(statusCode: failure.statusCode, authenticating: false)
+            return
+        }
         handle(failure, stamp: epoch, authenticating: false)
     }
 
@@ -628,12 +633,7 @@ final class ConnectionCoordinator {
         guard current(stamp) else { return }
         if let failure = error as? HolonHTTPFailure {
             if failure.statusCode == 401 || failure.statusCode == 403 {
-                do {
-                    if let selectedProfile {
-                        try revokeReadingContext(for: selectedProfile)
-                    }
-                    finish(failure.statusCode == 403 ? .permissionDenied : (authenticating ? .loginFailed : .sessionExpired))
-                } catch { finish(.storageError) }
+                handleAuthorizationFailure(statusCode: failure.statusCode, authenticating: authenticating)
             }
             else if authenticating && ([408, 429].contains(failure.statusCode) || failure.statusCode >= 500) {
                 finish(.networkError)
@@ -645,6 +645,13 @@ final class ConnectionCoordinator {
         } else if error is CancellationError || error as? HolonClientError == .staleConnection {
             finish(.disconnected)
         } else { finish(authenticating ? .loginFailed : .networkError) }
+    }
+
+    private func handleAuthorizationFailure(statusCode: Int, authenticating: Bool) {
+        do {
+            if let selectedProfile { try revokeReadingContext(for: selectedProfile) }
+            finish(statusCode == 403 ? .permissionDenied : (authenticating ? .loginFailed : .sessionExpired))
+        } catch { finish(.storageError) }
     }
 
     private func current(_ stamp: UUID) -> Bool { epoch == stamp && !Task.isCancelled }

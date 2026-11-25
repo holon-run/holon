@@ -32,13 +32,214 @@ private struct SendingPhoto: Transferable {
     }
 }
 
+private struct LegacyDraftModelSection: View {
+    let sender: SendingCoordinator
+    let onSend: () -> Void
+
+    var body: some View {
+        if let model = sender.draft.modelID {
+            let token = sender.draftScopeRevision
+            Section("sending.model.legacyDraft") {
+                Text(verbatim: model)
+                Text("sending.model.legacyDraft.explanation")
+                Button("sending.model.legacyDraft.remove") { sender.removeLegacyDraftModel(revision: token) }
+                if SendingPresentation.hasContent(sender.draft) {
+                    Button("sending.model.legacyDraft.send") {
+                        sender.enqueue(legacyModelConfirmedAt: token)
+                        onSend()
+                    }
+                    .disabled(!sender.canEnqueueDraft)
+                }
+            }
+        }
+    }
+}
+
+private struct AgentModelSheet: View {
+    let sender: SendingCoordinator
+    let reader: ReadingCoordinator
+    @Environment(\.dismiss) private var dismiss
+    @State private var configuration: AgentModelConfiguration?
+    @State private var models: [SendingModel] = []
+    @State private var modelID: String?
+    @State private var reasoningEffort: String?
+    @State private var loadedKey: LoadKey?
+    @State private var loadError = false
+    @State private var catalogError = false
+    @State private var applyError = false
+    @State private var reload = 0
+
+    private struct LoadKey: Equatable {
+        let revision: Int?
+        let liveConnectionRevision: Int
+        let modelReadRevision: Int
+        let reload: Int
+    }
+
+    private var modelAccessRevision: Int? {
+        // An authenticated sender can outlive the reader's live connection.
+        reader.status == .live ? sender.modelAccessRevision : nil
+    }
+
+    private var currentLoadKey: LoadKey {
+        LoadKey(revision: modelAccessRevision, liveConnectionRevision: reader.liveConnectionRevision,
+                modelReadRevision: sender.modelReadRevision, reload: reload)
+    }
+
+    var body: some View {
+        let key = currentLoadKey
+        NavigationStack {
+            Form {
+                LegacyDraftModelSection(sender: sender) { dismiss() }
+                if sender.hasLegacyModelInQueue {
+                    Section { Text("sending.model.legacyQueue.block") }
+                }
+                if key.revision != nil {
+                    if sender.isUpdatingAgentModel || loadedKey != key {
+                        ProgressView()
+                    } else {
+                        if let configuration {
+                            Section("sending.model.current") {
+                                Text(verbatim: configuration.effectiveModel)
+                                    .accessibilityIdentifier("sending.model.effective")
+                                if let source = configuration.source {
+                                    LabeledContent("sending.model.source") {
+                                        switch source {
+                                        case "runtime_default": Text("sending.model.source.runtime_default")
+                                        case "agent_override": Text("sending.model.source.agent_override")
+                                        default: Text(verbatim: source)
+                                        }
+                                    }
+                                    .accessibilityIdentifier("sending.model.source")
+                                }
+                                if let effort = configuration.reasoningEffort {
+                                    LabeledContent("sending.model.reasoning") { Text(verbatim: effort) }
+                                }
+                                if let tier = configuration.serviceTier {
+                                    LabeledContent("sending.model.serviceTier") { Text(verbatim: tier) }
+                                }
+                                if let active = configuration.activeModel, active != configuration.effectiveModel {
+                                    LabeledContent("sending.model.active") { Text(verbatim: active) }
+                                }
+                            }
+                            selectionSection(configuration, key: key)
+                        }
+                        if loadError || catalogError || applyError {
+                            Section {
+                                if loadError { Text("sending.model.loadError") }
+                                if catalogError { Text("sending.model.catalogError") }
+                                if applyError { Text("sending.model.applyError") }
+                                Button("reading.retry") {
+                                    if let state = configuration { show(state) }
+                                    applyError = false
+                                    reload += 1
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Section { Text("sending.model.offline").accessibilityIdentifier("sending.model.offline") }
+                }
+            }
+            .navigationTitle("sending.model")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("sending.close") { dismiss() }
+                        .accessibilityIdentifier("sending.model.close")
+                }
+            }
+        }
+        .onChange(of: key.revision) { _, _ in applyError = false }
+        .task(id: key) { await load(key) }
+    }
+
+    private func selectionSection(_ current: AgentModelConfiguration, key: LoadKey) -> some View {
+        Section("sending.model.selection") {
+            Picker("sending.model", selection: Binding(get: { modelID }, set: { next in
+                guard next != modelID else { return }
+                modelID = next
+                reasoningEffort = current.initialReasoningEffort(for: next)
+            })) {
+                Text("sending.model.automatic").tag(nil as String?)
+                ForEach(models) { model in
+                    Text(verbatim: modelName(model)).tag(Optional(model.id))
+                }
+                if let override = current.overrideModel, !models.contains(where: { $0.id == override }) {
+                    Text(verbatim: override).tag(Optional(override))
+                }
+            }
+            .accessibilityIdentifier("sending.model.options")
+            if let model = models.first(where: { $0.id == modelID }), !model.reasoningEfforts.isEmpty {
+                Picker("sending.model.reasoning", selection: $reasoningEffort) {
+                    Text("sending.model.default").tag(nil as String?)
+                    ForEach(model.reasoningEfforts, id: \.self) { Text(verbatim: $0).tag(Optional($0)) }
+                    if let reasoningEffort, !model.reasoningEfforts.contains(reasoningEffort) {
+                        Text(verbatim: reasoningEffort).tag(Optional(reasoningEffort))
+                    }
+                }
+                .accessibilityIdentifier("sending.model.reasoning")
+            }
+            if current.serviceTier != nil && modelID != current.overrideModel {
+                Text("sending.model.serviceTier.removed")
+                    .font(.caption)
+                    .accessibilityIdentifier("sending.model.serviceTier.removed")
+            }
+            Button {
+                let requested = current.selection(modelID: modelID, reasoningEffort: reasoningEffort)
+                Task { await apply(requested, key: key) }
+            } label: { Text("sending.model.apply") }
+            .accessibilityIdentifier("sending.model.apply")
+            .disabled(modelID == current.overrideModel && (modelID == nil || reasoningEffort == current.reasoningEffort)
+                      || modelID != nil && !models.contains(where: { $0.id == modelID }))
+        }
+        .disabled(!sender.canChangeAgentModel)
+    }
+
+    private func modelName(_ model: SendingModel) -> String {
+        models.filter { $0.name == model.name }.count > 1 ? "\(model.name) · \(model.id)" : model.name
+    }
+
+    private func load(_ key: LoadKey) async {
+        guard let token = key.revision, key == currentLoadKey, !sender.isUpdatingAgentModel else { return }
+        async let current = try? sender.readAgentModel(revision: token)
+        async let catalog = try? sender.readModelCatalog(revision: token)
+        let (state, choices) = await (current, catalog)
+        guard !Task.isCancelled, key == currentLoadKey, !sender.isUpdatingAgentModel else { return }
+        models = choices ?? []
+        catalogError = choices == nil
+        loadError = state == nil
+        if let state { show(state) } else { configuration = nil }
+        loadedKey = key
+    }
+
+    private func show(_ state: AgentModelConfiguration) {
+        configuration = state
+        modelID = state.overrideModel
+        reasoningEffort = state.reasoningEffort
+    }
+
+    private func apply(_ selection: AgentModelSelection, key: LoadKey) async {
+        guard let token = key.revision, loadedKey == key, currentLoadKey == key,
+              sender.canChangeAgentModel else { return }
+        applyError = false
+        do {
+            _ = try await sender.applyAgentModel(selection, revision: token)
+        } catch {
+            guard modelAccessRevision == token, reader.liveConnectionRevision == key.liveConnectionRevision else { return }
+            applyError = true
+        }
+    }
+}
+
 struct SendingView: View {
     let sender: SendingCoordinator
+    let reader: ReadingCoordinator
     var currentRunID: String? = nil
-    var commonModels: [String] = []
     @FocusState private var focused: Bool
     @State private var showDraft = false
     @State private var showQueue = false
+    @State private var showModels = false
     @State private var showFiles = false
     @State private var showPhotos = false
     @State private var showStop = false
@@ -108,24 +309,27 @@ struct SendingView: View {
                 .padding(.vertical, 10)
                 .accessibilityLabel(Text("sending.text"))
                 .accessibilityIdentifier("sending.text")
-                Button { sender.enqueue() } label: {
+                Button {
+                    if sender.draft.modelID != nil { focused = false; showModels = true }
+                    else { sender.enqueue() }
+                } label: {
                     Image(systemName: "arrow.up.circle.fill").font(.title).frame(width: 44, height: 44)
                 }
-                .disabled(sender.selectedAgentID == nil || !SendingPresentation.hasContent(sender.draft))
+                .disabled(!sender.canEnqueueDraft || !SendingPresentation.hasContent(sender.draft))
                 .tint(Color(uiColor: .systemBlue))
                 .accessibilityLabel(Text("sending.send"))
                 .accessibilityIdentifier("sending.enqueue")
+                Button { focused = false; showModels = true } label: {
+                    Image(systemName: sender.draft.modelID == nil && !sender.hasLegacyModelInQueue
+                          ? "cpu" : "exclamationmark.circle")
+                        .font(.title3).frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text("sending.model"))
+                .accessibilityIdentifier("sending.model")
             }
             .padding(.horizontal, 4)
             .background(Color(uiColor: .tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
-            HStack(spacing: 4) {
-                Image(systemName: "cpu").foregroundStyle(.secondary).accessibilityHidden(true)
-                modelPicker.labelsHidden().pickerStyle(.menu)
-                    .accessibilityIdentifier("sending.model")
-                Spacer(minLength: 0)
-            }
-            .font(.caption)
-            .frame(minHeight: 44)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(.bar)
@@ -134,6 +338,7 @@ struct SendingView: View {
         .background(attachmentHandlers)
         .sheet(isPresented: $showDraft) { draftEditor }
         .sheet(isPresented: $showQueue) { queue }
+        .sheet(isPresented: $showModels) { AgentModelSheet(sender: sender, reader: reader) }
         .fullScreenCover(isPresented: $showCamera) {
             CameraAttachmentView { data in
                 showCamera = false
@@ -161,6 +366,7 @@ struct SendingView: View {
             focused = false
             showDraft = false
             showQueue = false
+            showModels = false
             importError = nil
             cameraErrorKey = nil
             photoContext = nil
@@ -169,25 +375,6 @@ struct SendingView: View {
         }
         .onChange(of: scenePhase) { _, value in
             if value == .background { showCamera = false; cameraContext = nil }
-        }
-    }
-
-    private var modelPicker: some View {
-        Picker("sending.model", selection: Binding(
-            get: { sender.draft.modelID ?? "" },
-            set: { sender.editDraft(text: sender.draft.text, modelID: $0.isEmpty ? nil : $0) }
-        )) {
-            Text("sending.model.default").tag("")
-            let common = sender.models.filter { commonModels.contains($0.id) || $0.id == sender.draft.modelID }
-            ForEach(common) { Text(verbatim: $0.name).tag($0.id) }
-            Section("sending.models.more") {
-                ForEach(sender.models.filter { model in !common.contains(where: { $0.id == model.id }) }) {
-                    Text(verbatim: $0.name).tag($0.id)
-                }
-            }
-            if let selected = sender.draft.modelID, !sender.models.contains(where: { $0.id == selected }) {
-                Text(verbatim: selected).tag(selected)
-            }
         }
     }
 
@@ -227,8 +414,8 @@ struct SendingView: View {
                     .frame(minHeight: 140)
                     .accessibilityLabel(Text("sending.text"))
                     .accessibilityIdentifier("sending.text")
-                    modelPicker
                 }
+                LegacyDraftModelSection(sender: sender) { showDraft = false }
                 Section("sending.attachments") {
                     ForEach(sender.draft.attachments) { attachment in
                         HStack {
@@ -261,7 +448,8 @@ struct SendingView: View {
                 Section {
                     Text(LocalizedStringKey(SendingPresentation.statusKey(sender.status)))
                     Button("sending.enqueue") { sender.enqueue() }
-                        .disabled(sender.selectedAgentID == nil || !SendingPresentation.hasContent(sender.draft))
+                        .disabled(!sender.canEnqueueDraft || sender.draft.modelID != nil
+                                  || !SendingPresentation.hasContent(sender.draft))
                         .accessibilityIdentifier("sending.enqueue")
                 }
             }
@@ -330,14 +518,15 @@ struct SendingView: View {
                         Text(entry.requestID.uuidString).font(.caption2).textSelection(.enabled)
                             .accessibilityIdentifier("sending.requestID." + entry.requestID.uuidString)
                         ForEach(entry.draft.attachments) { attachment in Text(attachment.name).font(.caption) }
+                        if let model = entry.legacyModelID, entry.state != .received {
+                            Text("sending.model.legacyQueue.item").font(.caption)
+                            Text(verbatim: model).font(.caption)
+                        }
                         if let error = entry.error { Text(error).font(.caption) }
                         if entry.state == .unknown { Text("sending.unknown.explanation").font(.caption) }
                         HStack {
                             if SendingPresentation.canRetry(entry.state) {
-                                Button(LocalizedStringKey(entry.state == .unknown ? "sending.retry.same" : "sending.retry")) {
-                                    sender.retry(requestID: entry.requestID)
-                                }
-                                .disabled(!sender.canRetry(requestID: entry.requestID))
+                                SendingEntryRetryButton(sender: sender, entry: entry)
                                 .accessibilityIdentifier("sending.retry." + entry.requestID.uuidString)
                             }
                             Button("sending.delete", role: .destructive) {

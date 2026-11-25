@@ -29,11 +29,13 @@ final class SendingStoreTests: XCTestCase {
         store.beforeSave = { throw SendingFailure.rejected("disk failure") }
         XCTAssertThrowsError(try store.enqueue(scope))
         XCTAssertEqual(store.draft(scope).text, "hello")
+        XCTAssertEqual(store.draft(scope).modelID, "model")
         XCTAssertTrue(store.entries(scope).isEmpty)
         store.beforeSave = nil
         var entry = try store.enqueue(scope)
         XCTAssertEqual(store.draft(scope).text, "")
-        XCTAssertEqual(store.draft(scope).modelID, "model")
+        XCTAssertNil(store.draft(scope).modelID)
+        XCTAssertEqual(entry.draft.modelID, "model")
         entry.state = .sending
         entry.payload = SendingPayload(text: "hello", modelID: "model", attachments: [])
         try store.update(entry)

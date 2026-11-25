@@ -2743,6 +2743,22 @@ final class ReadingCoordinatorTests: XCTestCase {
         }
     }
 
+    func testConversationProjectionTracksCanonicalSnapshotAndClearsOnDeselect() async throws {
+        let active = readingTurn("b-active", index: 1, execution: "active")
+        let (coordinator, _, _) = try await start(turns: [
+            readingTurn("later", index: 2, execution: "terminal"),
+            active,
+            readingTurn("a-closed", index: 1, execution: "terminal"),
+        ])
+        let projection = try XCTUnwrap(coordinator.conversationProjection)
+        XCTAssertEqual(projection.snapshot, coordinator.snapshot)
+        XCTAssertEqual(projection.turnIDs, ["a-closed", "b-active", "later"])
+        XCTAssertEqual(projection.turns[1].raw, active)
+        coordinator.selectAgent(nil)
+        XCTAssertNil(coordinator.snapshot)
+        XCTAssertNil(coordinator.conversationProjection)
+    }
+
     func testSameEpochRefreshUsesOnlyLiveActiveTurns() throws {
         let cachedClosed = (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) }
         // A long-running execution can finish outside the latest terminal window.
@@ -2817,6 +2833,7 @@ final class ReadingCoordinatorTests: XCTestCase {
     func testSameEpochReconnectLoadsGapBetweenCachedAndLiveWindows() async throws {
         let (coordinator, fake, _) = try await start(
             turns: (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        let originalConnection = coordinator.liveConnectionRevision
         await fake.setHistoryTurns([])
         await coordinator.loadHistory()
         XCTAssertFalse(coordinator.canLoadHistory)
@@ -2827,6 +2844,9 @@ final class ReadingCoordinatorTests: XCTestCase {
         await fake.setLiveTurns((41...100).map { readingTurn("turn-\($0)", index: Int64($0)) })
         await fake.setOffline(false)
         await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertNotEqual(coordinator.liveConnectionRevision, originalConnection,
+                          "An in-place reconnect must invalidate previously loaded live settings.")
         XCTAssertEqual(turnIDs(coordinator).count, 80)
         XCTAssertTrue(coordinator.canLoadHistory)
         await fake.setHistoryTurns((1...40).map { readingTurn("turn-\($0)", index: Int64($0)) })

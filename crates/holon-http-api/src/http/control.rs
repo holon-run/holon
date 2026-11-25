@@ -2004,6 +2004,7 @@ pub async fn control_prompt(
     let semantic_content = serde_json::to_value(&request)
         .map_err(anyhow::Error::from)
         .map_err(error_response)?;
+    let caption_utf8_bytes = request.text.len();
     let materialized = control_prompt_text_with_attachments(
         &runtime.agent_home(),
         request,
@@ -2051,6 +2052,7 @@ pub async fn control_prompt(
         text,
         work_item_id,
         client_request_id.clone(),
+        caption_utf8_bytes,
     );
     let prepared = match preparation {
         Ok(prepared) => prepared,

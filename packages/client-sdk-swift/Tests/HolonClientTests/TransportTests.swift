@@ -109,7 +109,8 @@ final class TransportTests: XCTestCase {
         do { _ = try await sdk.sendOperatorPrompt(agentID: "main", request: prompt); XCTFail() }
         catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
         XCTAssertEqual(exchange.requests.count, 1)
-        let receipt = try await sdk.sendOperatorPrompt(agentID: "main", request: prompt)
+        let send = sdk.sendOperatorPrompt
+        let receipt = try await send("main", prompt)
         XCTAssertTrue(receipt.value.isAccepted)
         XCTAssertEqual(receipt.value.raw["future"], .integer(42))
         XCTAssertEqual(exchange.requests[0].httpBody, exchange.requests[1].httpBody)
@@ -187,23 +188,37 @@ final class TransportTests: XCTestCase {
             MockReply(body: Data(#"{"available_models":["vendor/model"],"future":true}"#.utf8)),
             MockReply(body: Data(#"{"model":{"effective_model":"vendor/model","future":42}}"#.utf8)),
             MockReply(body: Data(#"{"ok":true,"model":{"effective_model":"vendor@default/new","future":43}}"#.utf8)),
+            MockReply(body: Data(#"{"ok":true,"model":{"source":"runtime_default","effective_model":"vendor/model"}}"#.utf8)),
             MockReply(body: Data(#"{"ok":true,"aborted":true,"agent_id":"main","run_id":"observed-run","mode":"stop_after_abort","future":true}"#.utf8))])
         let catalog = try await sdk.modelCatalog()
         XCTAssertEqual(catalog.value.raw["future"], .bool(true))
         let state = try await sdk.agentModel(agentID: "main")
         XCTAssertEqual(state.value.raw["future"], .integer(42))
-        let model = try HolonAgentModelRequest(model: "vendor/new", reasoningEffort: "high")
-        let updated = try await sdk.setAgentModel(agentID: "main", request: model)
+        let model = try HolonAgentModelRequest(model: "vendor/new", reasoningEffort: "high", serviceTier: "fast")
+        let set = sdk.setAgentModel
+        let updated = try await set("main", model)
         XCTAssertEqual(updated.value.effectiveModel, .string("vendor@default/new"))
+        let clearModel = sdk.clearAgentModel
+        let cleared = try await clearModel("main")
+        XCTAssertEqual(cleared.value.effectiveModel, .string("vendor/model"))
+        XCTAssertEqual(cleared.value.raw["source"], .string("runtime_default"))
         let stopped = try await sdk.stopCurrentRun(agentID: "main", runID: "observed-run")
         XCTAssertEqual(stopped.value.runID, "observed-run")
         XCTAssertEqual(exchange.requests.map { $0.url!.path }, [
             "/prefix/api/models", "/prefix/api/agents/main",
-            "/prefix/api/control/agents/main/model", "/prefix/api/control/agents/main/current-run/abort"])
+            "/prefix/api/control/agents/main/model", "/prefix/api/control/agents/main/model/clear",
+            "/prefix/api/control/agents/main/current-run/abort"])
+        let clear = exchange.requests[3]
+        XCTAssertEqual(clear.httpMethod, "POST")
+        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(clear.httpBody)),
+                       .object(["authority_class": .string("operator_instruction")]))
         let stop = try JSONDecoder().decode(JSONValue.self, from: exchange.requests.last!.httpBody!)
         XCTAssertEqual(stop["mode"], .string("stop_after_abort"))
         XCTAssertEqual(stop["run_id"], .string("observed-run"))
         XCTAssertEqual(exchange.requests[2].httpMethod, "POST")
+        let modelBody = try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(exchange.requests[2].httpBody))
+        XCTAssertEqual(modelBody["reasoning_effort"], .string("high"))
+        XCTAssertEqual(modelBody["service_tier"], .string("fast"))
         XCTAssertEqual(exchange.requests[3].httpMethod, "POST")
     }
 

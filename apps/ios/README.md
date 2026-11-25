@@ -219,7 +219,7 @@ wire, SDK and real-daemon probes without the simulator. The full simulator UI sw
 dispatch the CI workflow on the branch to verify, or use the scheduled nightly
 full-sweep safety net. Ordinary PR and push runs skip UI. Run the same sweep
 locally with `IOS_SHARE_ACCEPTANCE=1 IOS_TASK_RESULT_ACCEPTANCE=1 make ios-ui-test`.
-Without those acceptance flags, `make ios-ui-test` runs 19 cases.
+Without those acceptance flags, `make ios-ui-test` runs 20 cases.
 Useful knobs: `IOS_UI_CASES` takes a
 comma-separated subset of UI test case names, `HOLON_UI_WAIT_SCALE` scales wait
 budgets on a slow machine, and the `IOS_SHARE_ACCEPTANCE` /

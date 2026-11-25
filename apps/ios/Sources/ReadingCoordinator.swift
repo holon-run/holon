@@ -28,7 +28,14 @@ final class ReadingCoordinator {
     // Only a successful roster response in the current context authorizes missing-agent decisions.
     private(set) var isRosterCurrent = false
     private(set) var selectedAgentID: String?
-    private(set) var snapshot: HolonConversationSnapshot?
+    private(set) var conversationProjection: ReadingConversationProjection?
+    private(set) var snapshot: HolonConversationSnapshot? {
+        get { conversationProjection?.snapshot }
+        set {
+            guard newValue != conversationProjection?.snapshot else { return }
+            conversationProjection = newValue.map(ReadingConversationProjection.init(snapshot:))
+        }
+    }
     private(set) var briefs: [String: JSONValue] = [:]
     private(set) var loadingBriefs: Set<String> = []
     private(set) var failedBriefs: Set<String> = []
@@ -41,8 +48,12 @@ final class ReadingCoordinator {
     }
     private(set) var loadingActivities: Set<String> = []
     private(set) var failedActivities: Set<String> = []
+    private(set) var liveConnectionRevision = 0
     private(set) var status: ReadingStatus = .disconnected {
-        didSet { avatars.setOnline(status == .live) }
+        didSet {
+            if status == .live && oldValue != .live { liveConnectionRevision += 1 }
+            avatars.setOnline(status == .live)
+        }
     }
     private(set) var canLoadHistory = false
     private(set) var isLoadingHistory = false
@@ -65,6 +76,7 @@ final class ReadingCoordinator {
     @ObservationIgnored private var reportDrafts: [ContentReportKey: ContentReportDraft] = [:]
     private var foreground = true
     @ObservationIgnored private var revision = 0
+    @ObservationIgnored private let conversationImageDetails = ConversationImageDetails()
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var streams: [UUID: ReadingStream] = [:]
     @ObservationIgnored private var reducer: HolonConversationReducer?
@@ -347,6 +359,7 @@ final class ReadingCoordinator {
         previewTask = nil
         previewedAgentIDs = []
         revision += 1
+        conversationImageDetails.cancelAll()
         isRosterCurrent = false
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
@@ -849,6 +862,39 @@ final class ReadingCoordinator {
             }
         }
         await task.value
+    }
+
+    func loadInlineImageMessage(_ messageID: String, agentID: String) async throws -> OperatorInputPresentation.Message {
+        let token = revision
+        guard current(token), status == .live, selectedAgentID == agentID else { throw ConversationPreviewDeferred() }
+        let message = try await conversationImageDetails.load(messageID) {
+            guard self.current(token), self.selectedAgentID == agentID else { throw CancellationError() }
+            return try await self.loadOperatorMessage(messageID, agentID: agentID)
+        }
+        guard current(token), status == .live, selectedAgentID == agentID else { throw CancellationError() }
+        return message
+    }
+
+    func loadOperatorMessage(_ messageID: String, agentID: String) async throws -> OperatorInputPresentation.Message {
+        let token = revision
+        guard status == .live, current(token), selectedAgentID == agentID,
+              !messageID.isEmpty, messageID.utf8.count <= 512, let transport else {
+            throw HolonClientError.invalidRequest
+        }
+        let response: JSONValue
+        do {
+            response = try await transport.message(agentID: agentID, messageID: messageID)
+        } catch {
+            failed(error, token: token, recover: false)
+            throw error
+        }
+        guard current(token), status == .live, selectedAgentID == agentID else {
+            throw CancellationError()
+        }
+        guard let message = OperatorInputPresentation.message(response, agentID: agentID, messageID: messageID) else {
+            throw HolonClientError.invalidRequest
+        }
+        return message
     }
 
     func loadBrief(_ briefID: String) async {

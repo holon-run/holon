@@ -4,6 +4,14 @@ import XCTest
 
 @MainActor
 final class ReadingPresentationTests: XCTestCase {
+    func testDatesKeepFractionalSecondsAndFallbackToWholeSeconds() throws {
+        let whole = try XCTUnwrap(ReadingPresentation.date("2026-11-25T19:00:00Z"))
+        let fractional = try XCTUnwrap(ReadingPresentation.date("2026-11-25T14:00:00.125-05:00"))
+        XCTAssertEqual(fractional.timeIntervalSince(whole), 0.125, accuracy: 0.000_001)
+        XCTAssertNil(ReadingPresentation.date("not a timestamp"))
+        XCTAssertEqual(ReadingPresentation.date("2026-11-25T19:00:00Z"), whole)
+    }
+
     func testCachedContentDistinguishesBackgroundRefreshFromOffline() {
         XCTAssertEqual(ReadingPresentation.connectionStatusKey(
             status: .syncing, hasContent: true, isCached: true, isRefreshing: true
@@ -99,6 +107,20 @@ final class ReadingPresentationTests: XCTestCase {
         XCTAssertTrue(shown.hasPrefix("First line\n\nQuoted \"value\" and a path\\name. 保持原文🙂 "))
         XCTAssertTrue(shown.hasSuffix("…"))
         XCTAssertFalse(shown.contains(#"{"type":"text""#))
+        XCTAssertTrue(OperatorInputPresentation.decodePreview(preview).isTruncated)
+    }
+
+    func testFullMessageRequiresMatchingTextEnvelope() {
+        XCTAssertFalse(OperatorInputPresentation.decodePreview("legacy text…").isTruncated)
+        XCTAssertFalse(OperatorInputPresentation.decodePreview(#"{"type":"text","text":"complete…"}"#).isTruncated)
+        let message: JSONValue = .object([
+            "id": .string("message"), "agent_id": .string("agent"),
+            "body": .object(["type": .string("text"), "text": .string("full\n![photo](/media/photo.png)")])
+        ])
+        XCTAssertEqual(OperatorInputPresentation.messageText(message, agentID: "agent", messageID: "message"),
+                       "full\n![photo](/media/photo.png)")
+        XCTAssertNil(OperatorInputPresentation.messageText(message, agentID: "other", messageID: "message"))
+        XCTAssertNil(OperatorInputPresentation.messageText(message, agentID: "agent", messageID: "other"))
     }
 
     func testTruncatedTextEnvelopeDropsOnlyIncompleteEscapeTail() {

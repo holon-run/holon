@@ -228,8 +228,15 @@ public actor HolonClient {
 
     public func sendOperatorPrompt(agentID: String, request prompt: HolonPromptRequest)
         async throws -> HolonResponse<HolonPromptReceipt> {
+        try await sendOperatorPromptCheckingAdmission(agentID: agentID, request: prompt, admit: nil)
+    }
+
+    /// Submits only if the optional caller-supplied admission check succeeds.
+    public func sendOperatorPromptCheckingAdmission(agentID: String, request prompt: HolonPromptRequest,
+                                                    admit: (@Sendable () throws -> Void)?)
+        async throws -> HolonResponse<HolonPromptReceipt> {
         let result = try await request(path: ["control", "agents", agentID, "prompt"],
-                                       method: "POST", body: prompt.payload)
+                                       method: "POST", body: prompt.payload, admit: admit)
         return try decoded(result) {
             try HolonPromptReceipt(raw: JSONDecoder().decode(JSONValue.self, from: $0), agentID: agentID)
         }
@@ -267,13 +274,38 @@ public actor HolonClient {
 
     public func setAgentModel(agentID: String, request model: HolonAgentModelRequest)
         async throws -> HolonResponse<HolonAgentModelState> {
+        try await setAgentModelCheckingAdmission(agentID: agentID, request: model, admit: nil)
+    }
+
+    /// Updates only if the optional caller-supplied admission check succeeds.
+    public func setAgentModelCheckingAdmission(agentID: String, request model: HolonAgentModelRequest,
+                                               admit: (@Sendable () throws -> Void)?)
+        async throws -> HolonResponse<HolonAgentModelState> {
         let result = try await request(path: ["control", "agents", agentID, "model"],
-                                       method: "POST", body: model.payload)
+                                       method: "POST", body: model.payload, admit: admit)
         return try decoded(result) {
             let raw = try JSONDecoder().decode(JSONValue.self, from: $0)
             guard raw["ok"] == .bool(true), let state = raw["model"]
             else { throw HolonClientError.malformedResponse }
             return try HolonAgentModelState(raw: state)
+        }
+    }
+
+    public func clearAgentModel(agentID: String) async throws -> HolonResponse<HolonAgentModelState> {
+        try await clearAgentModelCheckingAdmission(agentID: agentID, admit: nil)
+    }
+
+    /// Clears only if the optional caller-supplied admission check succeeds.
+    public func clearAgentModelCheckingAdmission(agentID: String, admit: (@Sendable () throws -> Void)?)
+        async throws -> HolonResponse<HolonAgentModelState> {
+        let result = try await request(path: ["control", "agents", agentID, "model", "clear"],
+                                       method: "POST", body: .object([
+                                        "authority_class": .string("operator_instruction"),
+                                       ]), admit: admit)
+        return try decoded(result) {
+            let raw = try JSONDecoder().decode(JSONValue.self, from: $0)
+            guard raw["ok"] != .bool(false) else { throw HolonClientError.malformedResponse }
+            return try HolonAgentModelState(raw: raw["model"] ?? raw)
         }
     }
 
@@ -312,7 +344,8 @@ public actor HolonClient {
     private func request(path: [String], query: [String: String] = [:],
                          method: String = "GET", body: JSONValue? = nil,
                          authenticated: Bool = true, retry: HolonRetryPolicy = .none,
-                         onRetry: (@Sendable (HolonRetryNotice) -> Void)? = nil)
+                         onRetry: (@Sendable (HolonRetryNotice) -> Void)? = nil,
+                         admit: (@Sendable () throws -> Void)? = nil)
         async throws -> HolonResponse<Data> {
         let captured = identity
         let request = try makeRequest(path: path, query: query, method: method, body: body,
@@ -320,6 +353,9 @@ public actor HolonClient {
         let transport = session
         for attempt in 1...retry.maxAttempts {
             try check(captured)
+            // Local admission is synchronous and immediately precedes HTTP submission.
+            // It cannot retract writes already admitted or substitute for server authorization.
+            try admit?()
             do {
                 let (bytes, response) = try await transport.bytes(for: request)
                 let data = try await collect(bytes)

@@ -606,6 +606,7 @@ task_result_acceptance = os.environ.get("IOS_TASK_RESULT_ACCEPTANCE") == "1"
 lost_response_acceptance = os.environ.get("IOS_LOST_RESPONSE_ACCEPTANCE") == "1"
 history_acceptance = os.environ.get("IOS_HISTORY_ACCEPTANCE") == "1"
 share_acceptance = os.environ.get("IOS_SHARE_ACCEPTANCE") == "1"
+long_image_history_probe = os.environ.get("IOS_LONG_IMAGE_HISTORY_PROBE") == "1"
 if report_acceptance and not rich_acceptance:
     raise RuntimeError("Content-report acceptance requires IOS_RICH_ACCEPTANCE=1")
 # Compile before starting the fixture; pairing TTL covers only SDK execution.
@@ -740,6 +741,26 @@ with fixture_directory(repo) as root:
             pass  # Never log session headers or pairing tickets.
 
         def do_GET(self):
+            if share_acceptance and self.path == "/fixture/shared-image-reference":
+                if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
+                    self.send_error(403); return
+                images = []
+                for candidate in (workspace / "media" / "inbox").glob("request-*.png"):
+                    with candidate.open("rb") as stream:
+                        header = stream.read(24)
+                    if (header.startswith(b"\x89PNG\r\n\x1a\n") and len(header) == 24
+                            and struct.unpack(">II", header[16:24]) == (16, 16)):
+                        images.append(candidate)
+                if len(images) != 1:
+                    self.send_error(404, "Expected one isolated share image"); return
+                data = json.dumps({"reference": str(images[0])}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             self.forward()
 
         def do_POST(self):
@@ -948,6 +969,8 @@ with fixture_directory(repo) as root:
     home.mkdir()
     (home / "config.json").write_text(json.dumps({
         "model": {"default": "ios-fixture/fixture-model"},
+        "models": {"catalog": {"ios-fixture/fixture-alternate": {
+            "display_name": "Fixture alternate model"}}},
         "providers": {"ios-fixture": {"transport": "openai_chat_completions",
             "base_url": f"http://127.0.0.1:{provider.server_port}/v1",
             "auth": {"source": "env", "kind": "api_key", "env": "HOLON_IOS_TEST_KEY"}}}}))
@@ -990,6 +1013,12 @@ with fixture_directory(repo) as root:
                     return data
                 finally:
                     connection.close()
+
+            model_choices = local("GET", "/models")["model_availability"]
+            if not any(option["model"] == "ios-fixture/fixture-alternate"
+                       and option["display_name"] == "Fixture alternate model" and option["available"]
+                       for option in model_choices):
+                raise RuntimeError("UI fixture alternate model is not selectable")
 
             agent = "holon-tester"
             agent_name = "Holon Native Interface Verification — Long Display Name"
@@ -1193,6 +1222,73 @@ with fixture_directory(repo) as root:
                                      "--filter", "LiveDaemonPopulatedProbeTests"], env=test_env)
             if result.returncode:
                 raise RuntimeError("真实 populated SDK probes 失败")
+            if long_image_history_probe:
+                # This measures server history shape, not the native share sheet or file permission.
+                missing = workspace / "media" / "inbox" / "missing-history-probe.png"
+                if missing.exists():
+                    raise RuntimeError("Negative image fixture must not exist")
+                caption = ("IOS_IMAGE_HISTORY_CAPTION 截图\n" + "isolated caption line\n" * 1500
+                           + "".join(f"![Caption {i}]({urllib.parse.quote(str(missing.with_stem(f'missing-caption-{i}')))})\n"
+                                     for i in range(3))
+                           + "![External image](https://example.invalid/image.png)\n")
+                sample_image = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGNQKDhAEmIY1TCqYfhqAAABLlAQG7VYsQAAAABJRU5ErkJggg=="
+                receipt = local("POST", f"/control/agents/{agent}/prompt", {
+                    "client_request_id": str(uuid.uuid4()), "text": caption,
+                    "attachments": [{
+                        "kind": "image", "name": name, "media_type": "image/png",
+                        "data_base64": sample_image,
+                    } for name in ("history-probe.png", "history-deleted.png", "history-oversized.png")],
+                })
+                message_id = receipt["message_id"]
+                message_path = f"/agents/{agent}/messages/{urllib.parse.quote(message_id, safe='')}"
+                canonical = local("GET", message_path)
+                body = canonical.get("body", {}).get("text", "")
+                if not body.startswith(caption) or canonical.get("metadata", {}).get(
+                        "control_prompt_caption_utf8_bytes") != len(caption.encode()):
+                    raise RuntimeError("Canonical message lacks the original UTF-8 caption boundary")
+                suffix = body[len(caption):]
+                image_paths = [pathlib.Path(urllib.parse.unquote(value)).resolve(strict=True)
+                               for value in re.findall(r"^!\[[^\n]*\]\(([^()\n]+)\)$", suffix, re.MULTILINE)]
+                if len(image_paths) != 3 or any(not path.is_relative_to(root.resolve())
+                                                or path.parent.name != "inbox" or path.parent.parent.name != "media"
+                                                for path in image_paths):
+                    raise RuntimeError("Expected three materialized images in the private fixture")
+                if not image_paths[1].name.endswith("history-deleted.png") or not image_paths[2].name.endswith("history-oversized.png"):
+                    raise RuntimeError("Unexpected attachment order in the private fixture")
+                image_paths[1].unlink()
+                with image_paths[2].open("r+b") as image_file:
+                    image_file.truncate(5 * 1024 * 1024 + 1)
+                # Match the native client's HTTP pairing and read path, not local operator control.
+                ticket = local("POST", "/auth/pairing/issue")["ticket"]
+                redeem = urllib.request.Request(base + "/auth/pairing/redeem/native",
+                    data=json.dumps({"ticket": ticket}).encode(),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(redeem, timeout=10) as response:
+                    session = json.load(response)
+                credential = session.get("credential")
+                if not session.get("ok") or not credential:
+                    raise RuntimeError("Native pairing did not issue a fixture credential")
+                detail = urllib.request.Request(base + message_path,
+                    headers={"Authorization": "Bearer " + credential})
+                with urllib.request.urlopen(detail, timeout=10) as response:
+                    paired = json.load(response)
+                if (paired.get("id") != canonical.get("id") or paired.get("body") != canonical.get("body")
+                        or paired.get("metadata") != canonical.get("metadata")
+                        or paired.get("kind") != "operator_prompt" or paired.get("delivery_surface") != "http_control_prompt"):
+                    raise RuntimeError("Paired message detail did not match the canonical fixture message")
+                for _ in range(100):
+                    inputs = conversation_inputs(local("GET", f"/agents/{agent}/conversation?limit=60"))
+                    matching = [item for item in inputs if item.get("message_id") == message_id]
+                    if matching:
+                        break
+                    time.sleep(.1)
+                else:
+                    raise RuntimeError("Typed upload must appear in the conversation")
+                preview = matching[0]["preview"]
+                if len(preview) >= len(body) or "history-probe.png" in preview:
+                    raise RuntimeError("Long image fixture no longer reproduces the truncated preview")
+                print(f"Long image history: preview_chars={len(preview)} canonical_chars={len(body)} "
+                      "paired_message_body_matches=true preview_has_image=false", flush=True)
             if mode != "--sdk-only":
                 runner_inputs = {
                     "ENDPOINT": base,
@@ -1201,6 +1297,8 @@ with fixture_directory(repo) as root:
                     "READ_MARKER": "IOS_POPULATED_BRIEF", "PLAN_MARKER": "IOS_POPULATED_FULL_PLAN",
                     "TASK_MARKER": "IOS_POPULATED_OUTPUT",
                     "FILE_REFERENCE": str(workspace / file_path), "FILE_MARKER": "IOS_POPULATED_FILE"}
+                if long_image_history_probe:
+                    runner_inputs["IMAGE_HISTORY_MESSAGE_ID"] = message_id
                 if proxy:
                     runner_inputs.update(
                         ENDPOINT=f"http://127.0.0.1:{proxy.server_port}/api",
@@ -1248,6 +1346,7 @@ with fixture_directory(repo) as root:
                          # Authenticate through shipped onboarding before diagnostics.
                          ("testAuthenticatedNativeWorkflow", "large"),
                          ("testOfflineReadingCacheColdLaunchAndRetry", "large"),
+                         ("testAgentsRosterMaximumTextSize", "large"),
                          ("testLiveInterruptionRecoversInPlace", "large"),
                          ("testVisibleBriefAutomaticallyUpdatesHomeUnreadCount", "large"),
                          ("testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored", "large"),
@@ -1267,6 +1366,8 @@ with fixture_directory(repo) as root:
                     cases.append(("testConversationHistoryWindowPosition", "large"))
                 if share_acceptance:
                     cases.append(("testDirectAgentShareWorkflow", "large"))
+                if long_image_history_probe:
+                    cases.append(("testConversationLongImageHistory", "large"))
                 if report_acceptance:
                     cases.extend([
                         ("testContentReportFullResponseIncludesTail", "large"),
@@ -1735,8 +1836,8 @@ with fixture_directory(repo) as root:
                 if fixture_evidence is not None:
                     with lost_lock:
                         share_prompts = [record for record in prompt_evidence if record["kind"].startswith("share-")]
-                    write_fixture_json(fixture_evidence, "direct-share.json",
-                                       direct_share_evidence(root, workspace, agent, share_prompts, inputs, local))
+                    evidence = direct_share_evidence(root, workspace, agent, share_prompts, inputs, local)
+                    write_fixture_json(fixture_evidence, "direct-share.json", evidence)
                 print("Direct-share acceptance: OS extension text, URL, image and file received by isolated Agent", flush=True)
         finally:
             try:
