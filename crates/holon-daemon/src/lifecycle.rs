@@ -1513,6 +1513,15 @@ async fn metadata_status_if_pid_alive(
     let Ok(Some(metadata)) = load_daemon_metadata(config) else {
         return None;
     };
+    // A recorded pid that equals this process cannot name another running
+    // daemon; the run files must be residue from an earlier incarnation.
+    // Inside a container the daemon is PID 1 and records pid 1, so after a
+    // container restart the new PID 1 is this very process: `pid_is_alive`
+    // would otherwise keep reporting the stale run files as a live runtime and
+    // block self-healing (#4468).
+    if metadata.pid == std::process::id() {
+        return None;
+    }
     if !pid_is_alive(metadata.pid) {
         return None;
     }

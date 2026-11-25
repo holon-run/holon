@@ -403,6 +403,122 @@ fn dead_pid() -> u32 {
     pid
 }
 
+/// PID of a live process that is not this one.
+///
+/// Probe fixtures need a recorded daemon PID that is alive but must not be
+/// mistaken for the caller's own stale run files (#4468). The test process's
+/// parent stays alive for the whole run and is always a different process.
+#[cfg(unix)]
+fn live_foreign_pid() -> u32 {
+    let pid = std::os::unix::process::parent_id();
+    assert_ne!(pid, std::process::id());
+    assert!(
+        crate::lifecycle::pid_is_alive(pid),
+        "parent pid {pid} must be alive"
+    );
+    pid
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn probe_runtime_treats_metadata_recording_current_pid_as_stale() {
+    // #4468: a container restart keeps run files from the previous incarnation
+    // where the daemon was PID 1. The new PID 1 is this very process, so pid
+    // liveness alone must not make the residue look like a running runtime.
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let pid = std::process::id();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    let mut metadata = replacement_metadata(&config, pid, std::env::current_exe().unwrap());
+    metadata.control_protocol_version = crate::DAEMON_CONTROL_PROTOCOL_VERSION;
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+    match probe_runtime(&config).await {
+        ProbeRuntime::Stopped { occupied_socket } => assert!(!occupied_socket),
+        other => panic!("expected stale runtime probe, got {:?}", other),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serve_preflight_heals_stale_run_files_recording_current_pid() {
+    // #4468 acceptance: the #4373 restart shape, but metadata and pid file
+    // record this process because the daemon is PID 1 inside the container.
+    // Preflight must treat the residue as stale, clean it, and let startup
+    // continue.
+    let config = test_config();
+    let profile = serve_profile_fixture();
+    super::persist_serve_profile(&config, &profile).unwrap();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(&paths.run_dir).unwrap();
+    let pid = std::process::id();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    let mut metadata = replacement_metadata(&config, pid, std::env::current_exe().unwrap());
+    metadata.control_protocol_version = crate::DAEMON_CONTROL_PROTOCOL_VERSION;
+    fs::write(
+        &paths.metadata_path,
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+    let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    drop(listener);
+
+    let (_plan, _registration_lock) = super::prepare_serve_with_profile(&config, false, |_, _| {
+        Ok(super::ResolvedDaemonServePlan {
+            config: config.clone(),
+            profile: profile.clone(),
+            serve_args: vec![],
+            control_token_env: None,
+            startup_summary: String::new(),
+        })
+    })
+    .await
+    .unwrap();
+
+    assert!(!paths.pid_path.exists());
+    assert!(!paths.metadata_path.exists());
+    assert!(!config.socket_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serve_preflight_refuses_live_foreign_pid_runtime() {
+    // #4468 guard rail: a recorded pid owned by another live process stays a
+    // running runtime; only the caller's own pid is residue.
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let pid = live_foreign_pid();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    let mut metadata = replacement_metadata(&config, pid, std::env::current_exe().unwrap());
+    metadata.control_protocol_version = crate::DAEMON_CONTROL_PROTOCOL_VERSION;
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    drop(listener);
+
+    let err = ensure_serve_preflight(&config).await.unwrap_err();
+    assert!(
+        err.to_string().contains("runtime is already running"),
+        "unexpected preflight error: {err}"
+    );
+    assert!(paths.metadata_path.exists());
+    assert!(config.socket_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serve_preflight_accepts_clean_state_without_run_files() {
+    // #4468 non-goal: with no residual run files the preflight decision is
+    // unchanged and still succeeds without creating lifecycle state.
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    ensure_serve_preflight(&config).await.unwrap();
+    assert!(!paths.pid_path.exists());
+    assert!(!paths.metadata_path.exists());
+    assert!(!config.socket_path.exists());
+}
+
 #[test]
 fn daemon_paths_use_run_dir_convention() {
     let config = test_config();
@@ -603,11 +719,12 @@ async fn daemon_status_reports_old_live_metadata_as_version_mismatch() {
     let config = test_config();
     let paths = daemon_paths(&config);
     fs::create_dir_all(config.run_dir()).unwrap();
-    fs::write(&paths.pid_path, format!("{}\n", std::process::id())).unwrap();
+    let pid = live_foreign_pid();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
     fs::write(
         &paths.metadata_path,
         serde_json::to_vec(&serde_json::json!({
-            "pid": std::process::id(),
+            "pid": pid,
             "home_dir": config.home_dir,
             "socket_path": config.socket_path,
             "http_addr": config.http_addr,
@@ -630,11 +747,11 @@ async fn daemon_status_accepts_different_product_build_with_compatible_protocol(
     let config = test_config();
     let paths = daemon_paths(&config);
     fs::create_dir_all(config.run_dir()).unwrap();
-    fs::write(&paths.pid_path, format!("{}\n", std::process::id())).unwrap();
+    fs::write(&paths.pid_path, format!("{}\n", live_foreign_pid())).unwrap();
     fs::write(
         &paths.metadata_path,
         serde_json::to_vec(&RuntimeServiceMetadata {
-            pid: std::process::id(),
+            pid: live_foreign_pid(),
             home_dir: config.home_dir.clone(),
             socket_path: config.socket_path.clone(),
             http_addr: config.http_addr.clone(),
@@ -1157,9 +1274,10 @@ async fn daemon_status_reports_read_error_for_unreadable_persisted_failure_file(
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn daemon_status_bounds_tcp_fallback_when_socket_missing_and_pid_alive() {
-    // Socket missing, metadata records a live PID (this process), and the TCP
+    // Socket missing, metadata records a different live PID, and the TCP
     // fallback target accepts connections but never responds. The shared
     // probe budget must bound the whole status call.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1174,7 +1292,7 @@ async fn daemon_status_bounds_tcp_fallback_when_socket_missing_and_pid_alive() {
     fs::create_dir_all(config.run_dir()).unwrap();
     let mut metadata = replacement_metadata(
         &config,
-        std::process::id(),
+        live_foreign_pid(),
         std::env::current_exe().unwrap(),
     );
     // The helper's defaults describe an incompatible daemon; this fallback
@@ -1305,8 +1423,8 @@ async fn probe_runtime_reports_running_when_socket_missing_but_pid_alive() {
     let config = test_config();
     let paths = daemon_paths(&config);
     fs::create_dir_all(config.run_dir()).unwrap();
-    // Use the current process PID — guaranteed alive.
-    let pid = std::process::id();
+    // Record a different, live PID so the metadata fallback stays authoritative.
+    let pid = live_foreign_pid();
     fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
     // Use metadata paths that differ from current config to verify the
     // fallback returns persisted metadata, not caller config.
@@ -1346,7 +1464,7 @@ async fn daemon_start_reusing_live_process_does_not_claim_creation() {
     let config = test_config();
     let paths = daemon_paths(&config);
     fs::create_dir_all(config.run_dir()).unwrap();
-    let pid = std::process::id();
+    let pid = live_foreign_pid();
     let metadata = RuntimeServiceMetadata {
         pid,
         home_dir: config.home_dir.clone(),
@@ -1383,8 +1501,8 @@ async fn probe_runtime_reports_running_when_socket_refuses_but_pid_alive() {
     let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
     drop(listener);
 
-    // Use the current process PID — guaranteed alive.
-    let pid = std::process::id();
+    // Record a different, live PID so the metadata fallback stays authoritative.
+    let pid = live_foreign_pid();
     let metadata = RuntimeServiceMetadata {
         pid,
         home_dir: config.home_dir.clone(),
