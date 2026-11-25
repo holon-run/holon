@@ -1,18 +1,19 @@
 use crate::http::{
-    AgentDeletionResponse, AgentDeletionStatusResponse, BatchGetBriefsRequest,
-    BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
-    CompleteWorkItemRequest, ControlPromptRequest, ConversationActivityResponse,
-    ConversationLocateRequest, ConversationLocateResponse, ConversationReadQuery,
-    ConversationShadowQuery, ConversationStreamMessage, ConversationSummaryResponse,
-    CreateContentReportRequest, CreateContentReportResponse, CreateTimerRequest,
-    CurrentUserResponse, DeleteAgentRequest, DesktopCapabilities, EnqueueResponse,
-    HandshakeResponse, MarkBriefReadRequest, MemoryGetRequest, ModelConfigMigrationRequest,
-    NativeSessionResponse, PairingIssueResponse, PairingRedeemRequest, PickWorkItemRequest,
-    PickWorkItemResponse, ResolveFileReferencesRequest, ResolveFileReferencesResponse,
-    RevealFileRequest, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
-    RuntimeConfigUpdateResponse, RuntimeDecisionTestRequest, RuntimeDecisionTestResponse,
-    SearchRequest, SearchResponse, SessionExchangeRequest, SessionResponse, TailscaleServeStatus,
-    UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
+    AgentDeletionResolveResponse, AgentDeletionResponse, AgentDeletionStatusResponse,
+    BatchGetBriefsRequest, BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest,
+    CancelTimerRequest, CompleteWorkItemRequest, ControlPromptRequest,
+    ConversationActivityResponse, ConversationLocateRequest, ConversationLocateResponse,
+    ConversationReadQuery, ConversationShadowQuery, ConversationStreamMessage,
+    ConversationSummaryResponse, CreateContentReportRequest, CreateContentReportResponse,
+    CreateTimerRequest, CurrentUserResponse, DeleteAgentRequest, DesktopCapabilities,
+    EnqueueResponse, HandshakeResponse, MarkBriefReadRequest, MemoryGetRequest,
+    ModelConfigMigrationRequest, NativeSessionResponse, PairingIssueResponse, PairingRedeemRequest,
+    PickWorkItemRequest, PickWorkItemResponse, ResolveAgentDeletionRequest,
+    ResolveFileReferencesRequest, ResolveFileReferencesResponse, RevealFileRequest,
+    RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
+    RuntimeDecisionTestRequest, RuntimeDecisionTestResponse, SearchRequest, SearchResponse,
+    SessionExchangeRequest, SessionResponse, TailscaleServeStatus, UpdateWorkItemRequest,
+    CONVERSATION_SHADOW_DEFAULT_LIMIT,
 };
 use holon_server::openapi::{
     component_schema, component_schema_with_refs, error_response_schema, ConversationShadowLimits,
@@ -372,6 +373,14 @@ fn component_schemas() -> Map<String, Value> {
     schemas.insert(
         "AgentDeletionStatusResponse".into(),
         component_schema::<AgentDeletionStatusResponse>(),
+    );
+    schemas.insert(
+        "ResolveAgentDeletionRequest".into(),
+        component_schema::<ResolveAgentDeletionRequest>(),
+    );
+    schemas.insert(
+        "AgentDeletionResolveResponse".into(),
+        component_schema::<AgentDeletionResolveResponse>(),
     );
     schemas.insert(
         "AgentDetail".into(),

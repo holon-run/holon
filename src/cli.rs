@@ -68,6 +68,13 @@ pub enum AgentDetailArg {
     Full,
 }
 
+/// Explicit operator decision for a stopped agent-deletion job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DeletionResolveDecision {
+    /// Give up on the stopped deletion and return the identity to active.
+    Abandon,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum TimerCommands {
     Create {
@@ -1194,6 +1201,9 @@ pub enum AgentCommands {
         /// Timeout in seconds for --wait (default: 300)
         #[arg(long)]
         timeout: Option<u64>,
+        /// Explicitly resolve a stopped deletion instead of starting a new one
+        #[arg(long, value_enum, value_name = "DECISION")]
+        resolve: Option<DeletionResolveDecision>,
         /// Output structured JSON
         #[arg(long)]
         json: bool,

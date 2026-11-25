@@ -61,9 +61,9 @@ use holon::{
     storage::AppStorage,
     tui::run_tui,
     types::{
-        AgentDeletionPhase, AgentDeletionStatus, AgentInvocationContext, AgentRegistryStatus,
-        AuditEvent, AuthorityClass, ControlAction, TimerStatus, TodoItem, WorkItemPlanStatus,
-        HOLON_CALLER_AUTHORITY_CLASS_ENV,
+        AgentDeletionPhase, AgentDeletionResolution, AgentDeletionStatus, AgentInvocationContext,
+        AgentRegistryStatus, AuditEvent, AuthorityClass, ControlAction, TimerStatus, TodoItem,
+        WorkItemPlanStatus, HOLON_CALLER_AUTHORITY_CLASS_ENV,
     },
 };
 use tokio::net::TcpListener;
@@ -74,8 +74,8 @@ use holon::cli::{
     AgentCommands, AgentDetailArg, AgentModelCommands, Cli, Commands, ConfigCommands,
     ConfigCredentialCommands, ConfigModelCommands, ConfigProviderCommands,
     ConfigProviderHeaderCommands, ControlCommandAction, DaemonCommands, DebugCommands,
-    EventsCommands, MemoryIndexCommands, ModelsDevCommands, ServeAccess, ServeOptions,
-    SkillsCommands, TaskCommands, TemplateCommands, TimerCommands, TimerCreateArgs,
+    DeletionResolveDecision, EventsCommands, MemoryIndexCommands, ModelsDevCommands, ServeAccess,
+    ServeOptions, SkillsCommands, TaskCommands, TemplateCommands, TimerCommands, TimerCreateArgs,
     WorkItemCommands, WorkspaceCommands,
 };
 
@@ -7490,6 +7490,7 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
             archive,
             wait,
             timeout,
+            resolve,
             json,
         }) => {
             handle_agent_delete(
@@ -7500,6 +7501,7 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                 archive,
                 wait,
                 timeout,
+                resolve,
                 json,
             )
             .await
@@ -7652,8 +7654,12 @@ async fn handle_agent_delete(
     archive: bool,
     wait: bool,
     timeout: Option<u64>,
+    resolve: Option<DeletionResolveDecision>,
     json: bool,
 ) -> Result<()> {
+    if let Some(decision) = resolve {
+        return handle_agent_deletion_resolution(config, agent_id, decision, json).await;
+    }
     let client = LocalClient::new(config.clone())?;
 
     // Confirmation
@@ -7723,6 +7729,39 @@ async fn handle_agent_delete(
     Ok(())
 }
 
+async fn handle_agent_deletion_resolution(
+    config: &AppConfig,
+    agent_id: &str,
+    decision: DeletionResolveDecision,
+    json: bool,
+) -> Result<()> {
+    let client = LocalClient::new(config.clone())?;
+    let decision = match decision {
+        DeletionResolveDecision::Abandon => AgentDeletionResolution::Abandon,
+    };
+    let response = client.resolve_agent_deletion(agent_id, decision).await?;
+    if json {
+        return print_json(&serde_json::to_value(&response)?);
+    }
+    eprintln!(
+        "Abandoned deletion job \"{}\" for agent \"{agent_id}\".",
+        response.job.deletion_id
+    );
+    if response.cleanup.private_history_cleared {
+        eprintln!("Cleanup verified: private history is already cleared.");
+    } else {
+        eprintln!("Residual private history remains on disk.");
+    }
+    if response.cleanup.retained_lineage_children > 0 {
+        eprintln!(
+            "Retained lineage children: {}",
+            response.cleanup.retained_lineage_children
+        );
+    }
+    eprintln!("Agent \"{agent_id}\" is active again.");
+    Ok(())
+}
+
 async fn wait_for_deletion(client: &LocalClient, agent_id: &str, timeout_secs: u64) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
@@ -7751,11 +7790,23 @@ async fn wait_for_deletion(client: &LocalClient, agent_id: &str, timeout_secs: u
                     return Ok(());
                 }
                 AgentDeletionStatus::NeedsAttention => {
+                    let reason = job.last_error.as_deref().unwrap_or("unknown error");
+                    let required_input = job
+                        .required_input
+                        .map(|input| format!("{input:?}"))
+                        .unwrap_or_else(|| "unspecified".into());
                     anyhow::bail!(
-                        "deletion stopped and needs attention: {}\n\
-                         Check progress: holon agent status {agent_id}",
-                        job.last_error.as_deref().unwrap_or("unknown error")
+                        "deletion stopped and needs attention: {reason}\n\
+                         Required operator input: {required_input}\n\
+                         Next action: holon agent delete {agent_id} --resolve abandon\n\
+                         Inspect: holon agent status {agent_id}"
                     );
+                }
+                AgentDeletionStatus::Abandoned => {
+                    eprintln!(
+                        "Deletion for agent \"{agent_id}\" was abandoned; the agent is active again."
+                    );
+                    return Ok(());
                 }
                 AgentDeletionStatus::Pending | AgentDeletionStatus::Running => {}
             }

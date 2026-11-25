@@ -123,19 +123,20 @@ use crate::{
         AgentBootstrapInitialMessage, AgentBootstrapRecord, AgentBootstrapStatus,
         AgentBootstrapStep, AgentBootstrapStepStatus, AgentBootstrapSummary,
         AgentBootstrapWorkspaceState, AgentCanonicalDurability, AgentCreateReceipt,
-        AgentCreateResult, AgentCreateStage, AgentDeletionJob, AgentDeletionStatus, AgentDetail,
-        AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
-        AgentListEntry, AgentMessageCallerContext, AgentMessageDeliveryOutcome,
-        AgentMessageDeliveryReceipt, AgentMessageDeliveryRejectionCode, AgentMessageDeliveryState,
-        AgentMessagePrincipalKind, AgentMessageSendRequest, AgentModelResolution,
-        AgentModelResolutionStatus, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-        AgentState, AgentStatus, AgentSummary, AgentSupervisionState, AgentTokenUsageSummary,
-        AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary,
-        CreateAgentRequest, ExternalTriggerRecord, LoadedAgentsMdView, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary, TaskRecord,
-        TaskStatus, TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitConditionStatus,
-        WaitConditionSummary, WakeSource, WorkspaceEntry, WorkspaceOccupancyRecord,
+        AgentCreateResult, AgentCreateStage, AgentDeletionAbandonCleanup, AgentDeletionJob,
+        AgentDeletionResolution, AgentDeletionStatus, AgentDetail, AgentDurability,
+        AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
+        AgentMessageCallerContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryReceipt,
+        AgentMessageDeliveryRejectionCode, AgentMessageDeliveryState, AgentMessagePrincipalKind,
+        AgentMessageSendRequest, AgentModelResolution, AgentModelResolutionStatus, AgentOwnership,
+        AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary,
+        AgentSupervisionState, AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection,
+        AgentVisibility, AuthorityClass, ChildAgentSummary, CreateAgentRequest,
+        ExternalTriggerRecord, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
+        QueueEntryStatus, RuntimeFailureSummary, TaskRecord, TaskStatus, TokenUsage,
+        TranscriptEntry, TranscriptEntryKind, WaitConditionStatus, WaitConditionSummary,
+        WakeSource, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -5347,6 +5348,131 @@ impl RuntimeHost {
             .latest_for_agent(agent_id)
             .map_err(PublicAgentError::Runtime)?;
         Ok((identity, job))
+    }
+
+    /// Operator-scoped deletion status read.
+    ///
+    /// Unlike [`Self::public_agent_deletion_status`], this does not require
+    /// the identity to have an operator *delete* surface. It exists so a stuck
+    /// job stays readable after the agent stopped being a supervised child,
+    /// which is exactly when the abandon entry point must remain reachable.
+    pub fn operator_agent_deletion_status(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<(AgentIdentityRecord, Option<AgentDeletionJob>), PublicAgentError>
+    {
+        self.validate_agent_id(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let identity = self
+            .agent_identity_record(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .ok_or_else(|| PublicAgentError::NotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        let job = self
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        Ok((identity, job))
+    }
+
+    /// Operator-scoped explicit resolution for a stopped deletion job.
+    ///
+    /// Only a `NeedsAttention` job is resolvable. Abandoning returns the
+    /// identity to `Active`, moves the job to `Abandoned`, and reports the
+    /// cleanup scope that remains. Agents have no self-service path here.
+    pub async fn resolve_agent_deletion(
+        &self,
+        agent_id: &str,
+        resolution: AgentDeletionResolution,
+        requested_by: &str,
+    ) -> std::result::Result<
+        (
+            AgentIdentityRecord,
+            AgentDeletionJob,
+            AgentDeletionAbandonCleanup,
+        ),
+        PublicAgentError,
+    > {
+        let host = self.clone();
+        let agent_id = agent_id.to_string();
+        let requested_by = requested_by.to_string();
+        self.run_owned_external_mutation(async move {
+            Ok(host
+                .resolve_agent_deletion_owned(&agent_id, resolution, &requested_by)
+                .await)
+        })
+        .await
+        .map_err(PublicAgentError::Runtime)?
+    }
+
+    async fn resolve_agent_deletion_owned(
+        &self,
+        agent_id: &str,
+        resolution: AgentDeletionResolution,
+        requested_by: &str,
+    ) -> std::result::Result<
+        (
+            AgentIdentityRecord,
+            AgentDeletionJob,
+            AgentDeletionAbandonCleanup,
+        ),
+        PublicAgentError,
+    > {
+        self.validate_agent_id(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let AgentDeletionResolution::Abandon = resolution;
+        let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
+        let _bootstrap_guard = bootstrap_lock.lock().await;
+        let mut reservations = self
+            .reserve_agent_mutations(&[agent_id.to_string()])
+            .await
+            .map_err(PublicAgentError::Runtime)?;
+        let identity = self
+            .agent_identity_record(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .ok_or_else(|| PublicAgentError::NotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if identity.status != AgentRegistryStatus::Deleting {
+            return Err(PublicAgentError::DeleteForbidden {
+                agent_id: agent_id.to_string(),
+                reason: format!(
+                    "agent is {:?}, not deleting; only a stopped deletion can be resolved",
+                    identity.status
+                ),
+            });
+        }
+        let mut facts = self
+            .external_identity_facts(&reservations)
+            .map_err(PublicAgentError::Runtime)?;
+        let mut acknowledged = None;
+        let committed = self
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let abandoned = self
+                    .runtime_db()
+                    .agent_deletions()
+                    .abandon(agent_id, requested_by)?;
+                for fact in &mut facts {
+                    fact.identity = Some(Arc::new(abandoned.0.clone()));
+                }
+                acknowledged = Some(abandoned.clone());
+                Ok((abandoned, facts))
+            })
+            .await;
+        match committed {
+            Ok(abandoned) => Ok(abandoned),
+            Err(error) => {
+                let Some(abandoned) = acknowledged else {
+                    return Err(PublicAgentError::Runtime(error));
+                };
+                self.reconcile_external_mutations(&mut reservations)
+                    .await
+                    .map_err(PublicAgentError::Runtime)?;
+                Ok(abandoned)
+            }
+        }
     }
 
     pub fn public_agent_detail(
@@ -26894,6 +27020,10 @@ mod tests {
             stopped.failure_kind,
             Some(crate::types::AgentDeletionFailureKind::TerminalInvariant)
         );
+        assert_eq!(
+            stopped.required_input,
+            Some(crate::types::AgentDeletionRequiredInput::OwnershipResolution)
+        );
         assert!(stopped.next_attempt_at.is_none());
         assert_eq!(stopped.attempts, 1);
         // F6: one actionable layer plus the root cause, never a repeated prefix.
@@ -26980,6 +27110,10 @@ mod tests {
             stopped.failure_kind,
             Some(crate::types::AgentDeletionFailureKind::RetryBudgetExhausted)
         );
+        assert_eq!(
+            stopped.required_input,
+            Some(crate::types::AgentDeletionRequiredInput::AbandonDecision)
+        );
         assert!(stopped.next_attempt_at.is_none());
         assert_eq!(stopped.attempts, crate::deletion::DELETION_MAX_ATTEMPTS);
 
@@ -26995,6 +27129,91 @@ mod tests {
         assert_eq!(after.status, AgentDeletionStatus::NeedsAttention);
 
         blocker.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn operator_abandon_resolves_needs_attention_and_admits_fresh_delete() {
+        let (_home, host) = test_host();
+        let agent = AgentIdentityRecord::new(
+            "delete-abandon",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+        let (fenced, job, created) = host
+            .begin_public_agent_deletion("delete-abandon", false, "operator")
+            .await
+            .unwrap();
+        assert!(created);
+
+        // Ambiguous shared-history ownership makes another attempt pointless.
+        host.runtime_db()
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO work_item_delegations
+                     (delegation_id, parent_agent_id, parent_work_item_id,
+                      child_agent_id, child_work_item_id, state,
+                      created_at, updated_at, payload_json)
+                     VALUES ('delegation-abandon', 'foreign-parent', 'work-1',
+                             ?1, 'work-2', 'open', ?2, ?2, '{}')",
+                    rusqlite::params![job.agent_id, Utc::now().to_rfc3339()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        host.execute_deletion_job(job).await.unwrap_err();
+        let stopped = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-abandon")
+            .unwrap()
+            .expect("stopped job should exist");
+        assert_eq!(stopped.status, AgentDeletionStatus::NeedsAttention);
+        assert_eq!(
+            stopped.required_input,
+            Some(crate::types::AgentDeletionRequiredInput::OwnershipResolution)
+        );
+
+        let (identity, abandoned, cleanup) = host
+            .resolve_agent_deletion(
+                "delete-abandon",
+                crate::types::AgentDeletionResolution::Abandon,
+                "operator",
+            )
+            .await
+            .unwrap();
+        assert_eq!(identity.status, AgentRegistryStatus::Active);
+        assert_eq!(identity.revision, fenced.revision.saturating_add(1));
+        assert_eq!(abandoned.status, AgentDeletionStatus::Abandoned);
+        assert_eq!(abandoned.deletion_id, stopped.deletion_id);
+        assert!(abandoned.required_input.is_none());
+        assert!(abandoned.next_attempt_at.is_none());
+        assert_eq!(abandoned.abandon_cleanup.as_ref(), Some(&cleanup));
+
+        // The terminal abandoned row must not block a fresh admission.
+        let visible = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-abandon")
+            .unwrap()
+            .expect("abandoned job should stay observable");
+        assert!(visible.status.is_terminal());
+        let (refenced, fresh, created) = host
+            .begin_public_agent_deletion("delete-abandon", false, "operator")
+            .await
+            .unwrap();
+        assert!(created, "a terminal abandoned job must not block re-delete");
+        assert_ne!(fresh.deletion_id, stopped.deletion_id);
+        assert_eq!(fresh.attempts, 0);
+        assert_eq!(fresh.status, AgentDeletionStatus::Pending);
+        assert_eq!(refenced.status, AgentRegistryStatus::Deleting);
+        assert_eq!(refenced.revision, identity.revision.saturating_add(1));
     }
 
     #[cfg(holon_lib_test_shard = "d")]
