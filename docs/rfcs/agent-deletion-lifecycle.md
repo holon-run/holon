@@ -127,9 +127,9 @@ The scanner may create a job only for these proven shapes:
    replaces that old generation once with `cleanup_repair`, because legacy
    completion is not proof that current outbox and shared-index phases ran.
 
-Existing `Pending`, `Running`, or `RetryableFailed` jobs remain coordinator
-owned and are never duplicated. A completed `cleanup_repair` generation is
-terminal and is not replaced on every scan.
+Existing `Pending`, `Running`, `RetryableFailed`, or `NeedsAttention` jobs
+remain coordinator owned and are never duplicated. A completed
+`cleanup_repair` generation is terminal and is not replaced on every scan.
 
 Missing or conflicting relations, task ownership, task kind, or lifecycle
 evidence never authorize deletion. The scanner emits a structured
@@ -153,6 +153,8 @@ Persisted status has one owner interpretation:
   ordinary due queries;
 - `RetryableFailed` is eligible only when `next_attempt_at` is absent for
   legacy compatibility or has elapsed;
+- `NeedsAttention` is terminal and never scheduled again: the failure class says
+  another attempt cannot make progress;
 - `Completed` is terminal.
 
 At daemon startup, before ordinary draining begins, persisted `Running` jobs
@@ -163,7 +165,24 @@ is stale.
 Transient phase failure persists a capped exponential retry deadline with
 deterministic per-job jitter. The coordinator wakes for the earliest deadline
 or a periodic safety sweep. This bounds lock-error amplification while keeping
-retry state crash-recoverable. A future multi-process runtime sharing one
+retry state crash-recoverable.
+
+Only explicitly retryable failures take that path. The layer that detects a
+data-condition invariant marks the error with a shared typed class, and the job
+state machine reads that class instead of matching error text. Marked failures
+settle in `NeedsAttention` on the first attempt with `failure_kind =
+terminal_invariant`; a retryable failure that reaches
+`DELETION_MAX_ATTEMPTS` also settles there with `failure_kind =
+retry_budget_exhausted`. Both leave `next_attempt_at` empty and keep
+`last_error` to one actionable layer plus the root cause, without repeating a
+context that nested assertion layers already added.
+
+Dirty, foreign, or shared worktrees and a workspace root held by another agent
+carry the same marker: the Workspace phase cannot clear them by retrying, so
+they settle in `NeedsAttention` too. A failed `git worktree remove` stays
+retryable because it can be a transient lock.
+
+A future multi-process runtime sharing one
 database would require explicit owner leases and fenced updates; that contract
 is not implied by the current single-daemon model.
 
@@ -212,8 +231,8 @@ restore an old AgentState or make old execution bindings valid.
 - Historical evidence (deletion jobs, audit events) is retained and stays
   distinguishable from the new incarnation via the incarnation counter and
   the `agent_recreated` boundary.
-- If the latest deletion job is not `Completed` (in-flight, pending, or
-  `retryable_failed`), create fails closed with `409 Conflict`,
+- If the latest deletion job is not `Completed` (in-flight, pending,
+  `retryable_failed`, or `needs_attention`), create fails closed with `409 Conflict`,
   `deletion_incomplete`, including job status/phase/last_error details.
 - Release only happens after a canonical deletion job completes. Admission is
   either operator-authenticated or the persisted terminal disposition of the

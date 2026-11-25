@@ -936,6 +936,12 @@ pub fn is_retryable_db_error(error: &anyhow::Error) -> bool {
     if persistence_certainty(error) == Some(PersistenceCertainty::Indeterminate) {
         return false;
     }
+    // A data-condition invariant that needs an explicit ownership decision can
+    // never succeed on a later attempt; the deletion job layer reads the same
+    // marker instead of guessing from text.
+    if holon_domain::deletion_failure::is_ownership_unresolved(error) {
+        return false;
+    }
     is_retryable_state_transition_conflict(error) || is_retryable_transaction_error(error)
 }
 

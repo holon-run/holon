@@ -862,3 +862,13 @@ fn sqlite_busy_classification_is_unchanged() {
     assert!(!is_reader_reprepare_requested(&busy));
     assert!(!is_retryable_db_error(&anyhow!("probe business failure")));
 }
+
+#[test]
+fn ownership_unresolved_marker_overrides_retryable_classification() {
+    // The write callback reads the same typed marker as the deletion job state
+    // machine, so a failed ownership invariant is never reported as retryable.
+    let unresolved = holon_domain::deletion_failure::mark_ownership_unresolved(anyhow::anyhow!(
+        "shared history requires explicit ownership resolution"
+    ));
+    assert!(!is_retryable_db_error(&unresolved));
+}

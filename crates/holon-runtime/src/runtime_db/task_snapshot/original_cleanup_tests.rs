@@ -672,6 +672,7 @@ fn original_task_cleanup_cannot_bypass_parent_cleanup_admission_fence() -> Resul
                 cascade_private_children: false,
                 attempts: 0,
                 last_error: None,
+                failure_kind: None,
                 next_attempt_at: None,
                 created_at: id.updated_at,
                 updated_at: id.updated_at,

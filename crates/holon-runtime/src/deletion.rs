@@ -4,7 +4,8 @@
 //! `Finalize`. Each phase is idempotent: re-running a phase that has already
 //! been completed is a safe no-op. On transient failure the job is marked
 //! `RetryableFailed` with an actionable `last_error` and persisted retry
-//! deadline; a subsequent retry resumes from the failed phase.
+//! deadline; a subsequent retry resumes from the failed phase. Failures that a
+//! retry cannot resolve stop in the `NeedsAttention` terminal state instead.
 //!
 //! The coordinator is triggered:
 //! - by a coalesced wake after deletion admission;
@@ -21,6 +22,8 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
 use crate::host::RuntimeHost;
+use crate::types::deletion_failure::{classify_deletion_failure, deletion_failure_message};
+use crate::types::deletion_failure::{mark_ownership_unresolved, DeletionFailureClass};
 use crate::types::*;
 
 #[path = "deletion_archive.rs"]
@@ -51,6 +54,10 @@ const DELETION_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const DELETION_BATCH_LIMIT: usize = 16;
 const DELETION_RETRY_BASE: Duration = Duration::from_millis(250);
 const DELETION_RETRY_CAP: Duration = Duration::from_secs(30);
+/// Retry budget for failures that stay retryable. With the 30s cap this is
+/// roughly half an hour of retrying before the job turns terminal, so a
+/// persistent non-transient failure cannot re-run every 30s forever.
+pub(crate) const DELETION_MAX_ATTEMPTS: u32 = 50;
 const DELETION_COORDINATOR_ERROR_DELAY: Duration = Duration::from_secs(1);
 pub(crate) const LEGACY_DELETION_REPAIR_BATCH_LIMIT: usize = 16;
 
@@ -460,6 +467,7 @@ impl RuntimeHost {
                     AgentDeletionStatus::Pending
                         | AgentDeletionStatus::Running
                         | AgentDeletionStatus::RetryableFailed
+                        | AgentDeletionStatus::NeedsAttention
                 )
             }) {
                 continue;
@@ -972,6 +980,7 @@ impl RuntimeHost {
         job.status = AgentDeletionStatus::Running;
         job.attempts = job.attempts.saturating_add(1);
         job.last_error = None;
+        job.failure_kind = None;
         job.next_attempt_at = None;
         let claim_at = Utc::now();
         job.updated_at = claim_at;
@@ -1023,7 +1032,12 @@ impl RuntimeHost {
                         if let Err(checkpoint_error) = self
                             .runtime_db()
                             .agent_deletions()
-                            .requeue_metadata_pending(&job, &format!("{err:#}"), now, deadline)
+                            .requeue_metadata_pending(
+                                &job,
+                                &deletion_failure_message(&err),
+                                now,
+                                deadline,
+                            )
                         {
                             return Err(err.context(format!(
                                 "could not requeue pending deletion metadata checkpoint: {checkpoint_error:#}"
@@ -1031,19 +1045,14 @@ impl RuntimeHost {
                         }
                         return Err(err);
                     }
-                    let error_msg = format!("{err:#}");
+                    let error_msg = deletion_failure_message(&err);
                     warn!(
                         agent_id = %agent_id,
                         phase = ?phase,
                         error = %error_msg,
                         "deletion phase failed"
                     );
-                    job.status = AgentDeletionStatus::RetryableFailed;
-                    job.last_error = Some(error_msg);
-                    let now = Utc::now();
-                    let retry_delay = deletion_retry_delay(&job);
-                    job.next_attempt_at = Some(now + chrono::Duration::from_std(retry_delay)?);
-                    job.updated_at = now;
+                    settle_deletion_failure(&mut job, &err, error_msg, Utc::now())?;
                     self.runtime_db().agent_deletions().update(&job)?;
                     return Err(anyhow!(
                         "deletion job for {agent_id} failed at phase {phase:?}: {err}"
@@ -1441,18 +1450,22 @@ impl RuntimeHost {
             {
                 continue;
             }
-            anyhow::ensure!(
-                worktree.registered_by_agent_id.as_deref() == Some(agent_id)
-                    && worktree.provenance == WorktreeProvenance::RuntimeCreated,
-                "agent_cleanup_blocked: foreign_or_unowned_worktree"
-            );
-            anyhow::ensure!(
-                !worktree
-                    .authorized_agent_ids
-                    .iter()
-                    .any(|id| id != agent_id),
-                "agent_cleanup_blocked: shared_worktree"
-            );
+            if !(worktree.registered_by_agent_id.as_deref() == Some(agent_id)
+                && worktree.provenance == WorktreeProvenance::RuntimeCreated)
+            {
+                return Err(mark_ownership_unresolved(anyhow::anyhow!(
+                    "agent_cleanup_blocked: foreign_or_unowned_worktree"
+                )));
+            }
+            if worktree
+                .authorized_agent_ids
+                .iter()
+                .any(|id| id != agent_id)
+            {
+                return Err(mark_ownership_unresolved(anyhow::anyhow!(
+                    "agent_cleanup_blocked: shared_worktree"
+                )));
+            }
             let _lease = self.acquire_workspace_cleanup_lease(&root.execution_root_id)?;
             if root.filesystem_path.exists() {
                 let path = root.filesystem_path.clone();
@@ -1461,10 +1474,11 @@ impl RuntimeHost {
                         .args(["status", "--porcelain", "--untracked-files=all"])
                         .current_dir(&path)
                         .output()?;
-                    anyhow::ensure!(
-                        status.status.success() && status.stdout.is_empty(),
-                        "agent_cleanup_blocked: dirty_or_unknown_worktree"
-                    );
+                    if !(status.status.success() && status.stdout.is_empty()) {
+                        return Err(mark_ownership_unresolved(anyhow::anyhow!(
+                            "agent_cleanup_blocked: dirty_or_unknown_worktree"
+                        )));
+                    }
                     if !remove {
                         return Ok(());
                     }
@@ -1780,6 +1794,39 @@ fn legacy_task_deletes_child_on_terminal(task: &TaskRecord) -> bool {
         }
         _ => false,
     }
+}
+
+/// Settle one failed attempt into either a retry deadline or a terminal state.
+///
+/// Only an explicitly retryable failure may schedule another attempt; a
+/// data-condition invariant or an exhausted retry budget stops scheduling so
+/// the operator can inspect and resolve it.
+fn settle_deletion_failure(
+    job: &mut AgentDeletionJob,
+    error: &anyhow::Error,
+    message: String,
+    now: chrono::DateTime<Utc>,
+) -> Result<()> {
+    job.last_error = Some(message);
+    job.updated_at = now;
+    match classify_deletion_failure(error) {
+        DeletionFailureClass::NeedsOwnershipResolution => {
+            job.status = AgentDeletionStatus::NeedsAttention;
+            job.failure_kind = Some(AgentDeletionFailureKind::TerminalInvariant);
+            job.next_attempt_at = None;
+        }
+        DeletionFailureClass::Retryable if job.attempts >= DELETION_MAX_ATTEMPTS => {
+            job.status = AgentDeletionStatus::NeedsAttention;
+            job.failure_kind = Some(AgentDeletionFailureKind::RetryBudgetExhausted);
+            job.next_attempt_at = None;
+        }
+        DeletionFailureClass::Retryable => {
+            job.status = AgentDeletionStatus::RetryableFailed;
+            let retry_delay = deletion_retry_delay(job);
+            job.next_attempt_at = Some(now + chrono::Duration::from_std(retry_delay)?);
+        }
+    }
+    Ok(())
 }
 
 fn deletion_retry_delay(job: &AgentDeletionJob) -> Duration {
@@ -2776,6 +2823,7 @@ mod tests {
             archive_path: None,
             attempts,
             last_error: Some("database is locked".into()),
+            failure_kind: None,
             next_attempt_at: None,
             created_at: now,
             updated_at: now,

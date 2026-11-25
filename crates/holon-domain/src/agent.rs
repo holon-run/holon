@@ -702,7 +702,20 @@ pub enum AgentDeletionStatus {
     Pending,
     Running,
     RetryableFailed,
+    /// Terminal failure that retrying cannot resolve: the persisted state needs
+    /// an explicit ownership or cleanup decision from the operator.
+    NeedsAttention,
     Completed,
+}
+
+/// Why a deletion job stopped in the `NeedsAttention` terminal state.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDeletionFailureKind {
+    /// A data-condition invariant failed; another attempt cannot make progress.
+    TerminalInvariant,
+    /// The retry budget was exhausted while the failure stayed retryable.
+    RetryBudgetExhausted,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -769,6 +782,8 @@ pub struct AgentDeletionJob {
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<AgentDeletionFailureKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,

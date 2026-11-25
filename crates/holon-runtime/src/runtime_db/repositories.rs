@@ -1922,6 +1922,7 @@ fn ensure_agent_deletion_inner_tx(
         archive_path: None,
         attempts: 0,
         last_error: None,
+        failure_kind: None,
         next_attempt_at: None,
         created_at: now,
         updated_at: now,

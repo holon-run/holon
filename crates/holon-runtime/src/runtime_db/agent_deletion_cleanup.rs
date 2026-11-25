@@ -16,6 +16,7 @@ use super::{
     transitions::execution_protocol_repository::retire_agent_execution_tx,
     RuntimeDb,
 };
+use crate::types::deletion_failure::mark_ownership_unresolved;
 use crate::types::{
     AgentIdentityRecord, AgentRegistryStatus, AgentState, AgentStatus, QueueEntryRecord,
     QueueEntryStatus, TurnNoBriefReason, TurnRecord, TurnTerminalKind, TurnTerminalSummary,
@@ -849,6 +850,24 @@ fn quoted(identifier: &str) -> String {
 }
 
 fn assert_safe_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
+    assert_safe_ownership_inner(tx, agent_id).map_err(mark_ownership_assert)
+}
+
+/// Mark an ownership invariant violation, but keep a storage/IO failure on the
+/// retryable path: a busy lock is not an ownership decision.
+fn mark_ownership_assert(error: anyhow::Error) -> anyhow::Error {
+    let storage_failure = error.chain().any(|cause| {
+        cause.downcast_ref::<rusqlite::Error>().is_some()
+            || cause.downcast_ref::<std::io::Error>().is_some()
+    });
+    if storage_failure {
+        error
+    } else {
+        mark_ownership_unresolved(error)
+    }
+}
+
+fn assert_safe_ownership_inner(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
     assert_command_ownership_tx(tx, agent_id)?;
     // These records belong jointly to another principal, not just to this agent.
     for sql in [
@@ -1364,6 +1383,10 @@ fn assert_command_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<(
 // private evidence; their cancellation is settled by the normal task protocol.
 
 fn assert_payload_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
+    assert_payload_ownership_inner(tx, agent_id).map_err(mark_ownership_assert)
+}
+
+fn assert_payload_ownership_inner(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
     for (table, owner) in PRIVATE_TABLES {
         if !table_exists(tx, table)? || !columns(tx, table)?.iter().any(|c| c == "payload_json") {
             continue;
@@ -1391,6 +1414,10 @@ fn assert_payload_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<(
 }
 
 fn assert_search_schema_tx(tx: &Transaction<'_>) -> Result<()> {
+    assert_search_schema_inner(tx).map_err(mark_ownership_assert)
+}
+
+fn assert_search_schema_inner(tx: &Transaction<'_>) -> Result<()> {
     for table in ["memory_documents_fts", "memory_documents_fts_rows"] {
         if !table_exists(tx, table)? {
             continue;
