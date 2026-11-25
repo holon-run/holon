@@ -419,7 +419,7 @@ export interface RuntimeStoreState {
   syncTemplateRemoteSources: () => Promise<boolean>;
   dismissTemplateDiagnostics: () => void;
   dismissTemplateError: () => void;
-  createAgentFromTemplate: (agentId: string, template: string, name?: string, initialResponseLanguage?: string) => Promise<AgentCreationResult>;
+  createAgentFromTemplate: (agentId: string, template: string | undefined, name?: string, initialResponseLanguage?: string) => Promise<AgentCreationResult>;
   lookupCreatedAgent: (agentId: string) => Promise<AgentCreationLookup>;
   refreshAgentCreation: (agentId: string) => Promise<void>;
   dismissAgentCreation: (agentId: string) => void;

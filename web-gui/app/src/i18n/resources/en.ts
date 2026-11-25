@@ -220,6 +220,7 @@ const en = {
     agentId: "Agent ID",
     template: "Template",
     chooseTemplate: "Choose a template…",
+    blankAgentTemplate: "No template (blank agent)",
     createAgentTitle: "Create agent from template",
     needAttention: "need attention",
     allClear: "all clear",

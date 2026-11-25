@@ -2,6 +2,7 @@ import { connectionLocation } from "../runtime/connection-location";
 import { agentAvatarResources } from "../runtime/agent-avatar-resources";
 import type { AgentCreationResult } from "../runtime/agent-creation";
 import { shouldDismissAgentCreation } from "../runtime/agent-creation-dismiss";
+import { BLANK_AGENT_TEMPLATE, canSubmitCreateAgent, resolveCreateAgentTemplate } from "./create-agent-template";
 import { AgentCreationError, AgentCreationStatus } from "../features/agent/AgentCreationFeedback";
 import { useCopyText } from "../components/ClipboardProvider";
 import { NotificationCenter } from "../features/notifications/NotificationCenter";
@@ -515,8 +516,14 @@ export function App() {
 
   async function handleCreateAgentSubmit(): Promise<void> {
     const id = createAgentId.trim();
-    const tmpl = createAgentTemplate.trim();
-    if (!id || !tmpl || createAgentSubmitting.current || createAgentError?.kind === "uncertain") return;
+    const canSubmit = canSubmitCreateAgent({
+      agentId: id,
+      templateSelection: createAgentTemplate,
+      busy: createAgentBusy,
+      uncertain: createAgentError?.kind === "uncertain",
+    });
+    if (!canSubmit || createAgentSubmitting.current) return;
+    const tmpl = resolveCreateAgentTemplate(createAgentTemplate);
     createAgentSubmitting.current = true;
     setCreateAgentBusy(true);
     setCreateAgentError(undefined);
@@ -565,7 +572,7 @@ export function App() {
     }
   }
 
-  async function createTemplateAgent(agentId: string, template: string, name?: string): Promise<AgentCreationResult> {
+  async function createTemplateAgent(agentId: string, template: string | undefined, name?: string): Promise<AgentCreationResult> {
     // One-time hint so the new agent's first default reply follows the UI
     // language selected at creation time.
     const result = await createAgentFromTemplate(agentId, template, name, initialResponseLanguage(languageMode));
@@ -1216,6 +1223,7 @@ export function App() {
                   disabled={createAgentBusy}
                 >
                   <option value="">{t("app.chooseTemplate")}</option>
+                  <option value={BLANK_AGENT_TEMPLATE}>{t("app.blankAgentTemplate")}</option>
                   {templateCatalog.catalog.map((t) => (
                     <option key={t.catalogId} value={t.template}>
                       {t.name} ({t.source})
@@ -1230,7 +1238,7 @@ export function App() {
                 <Button type="button" variant="outline" disabled={createAgentBusy} onClick={() => setShowCreateAgentModal(false)}>
                   {t("common.cancel")}
                 </Button>
-                <Button type="submit" variant="accent" disabled={createAgentBusy || createAgentError?.kind === "uncertain" || !createAgentId.trim() || !createAgentTemplate.trim()}>
+                <Button type="submit" variant="accent" disabled={!canSubmitCreateAgent({ agentId: createAgentId, templateSelection: createAgentTemplate, busy: createAgentBusy, uncertain: createAgentError?.kind === "uncertain" })}>
                   {createAgentBusy ? t("common.creating") : t("common.create")}
                 </Button>
               </div>
