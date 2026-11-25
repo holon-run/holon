@@ -85,6 +85,26 @@ impl AcpClient {
         }
     }
 
+    /// Build a client from a separate reader and writer.
+    ///
+    /// Managed harness processes expose stdin and stdout as two distinct
+    /// handles, so callers that supervise a child process cannot always
+    /// provide one duplex stream.
+    pub fn from_split<R, W>(reader: R, writer: W, handler: Arc<dyn AcpClientHandler>) -> Self
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        let (connection, updates) = AcpConnection::spawn_split(reader, writer, handler);
+        Self {
+            connection,
+            handshake: RwLock::new(None),
+            updates: Mutex::new(updates),
+            cancel_settle_timeout: DEFAULT_CANCEL_SETTLE_TIMEOUT,
+            request_timeout: None,
+        }
+    }
+
     /// Build a client that cancels every permission request.
     pub fn with_deny_all<S>(stream: S) -> Self
     where

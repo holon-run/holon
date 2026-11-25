@@ -1625,12 +1625,21 @@ impl OriginalChildTaskProducer {
             .store(count, Ordering::SeqCst);
     }
     pub(crate) fn take_original_terminal_conflict(&self) -> bool {
-        let taken = self
-            .terminal_conflicts_remaining
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok();
+        let taken = loop {
+            let remaining = self.terminal_conflicts_remaining.load(Ordering::SeqCst);
+            let Some(next) = remaining.checked_sub(1) else {
+                break false;
+            };
+            match self.terminal_conflicts_remaining.compare_exchange_weak(
+                remaining,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break true,
+                Err(_) => continue,
+            }
+        };
         if taken {
             self.terminal_conflict_attempts
                 .fetch_add(1, Ordering::SeqCst);

@@ -183,6 +183,14 @@ impl AgentInvocationService<'_> {
         &'a self,
         request: InvokeAgentRequest,
     ) -> Pin<Box<dyn Future<Output = Result<AgentInvocationReceipt>> + Send + 'a>> {
+        self.invoke_with_execution_driver(request, None)
+    }
+
+    pub fn invoke_with_execution_driver<'a>(
+        &'a self,
+        request: InvokeAgentRequest,
+        execution_driver: Option<crate::types::AgentExecutionDriver>,
+    ) -> Pin<Box<dyn Future<Output = Result<AgentInvocationReceipt>> + Send + 'a>> {
         Box::pin(async move {
             let _admission = self.runtime.execution_admission_lease()?;
             let message = request.message;
@@ -283,7 +291,7 @@ impl AgentInvocationService<'_> {
                     model_resolution,
                 } => {
                     let model_resolution = required_model_resolution(model_resolution)?;
-                    let task = self
+                    let mut task = self
                         .runtime
                         .create_agent_invocation_task(
                             summary,
@@ -294,6 +302,28 @@ impl AgentInvocationService<'_> {
                             workspace_mode,
                         )
                         .await?;
+                    let driver = match execution_driver.clone() {
+                        Some(driver) => Some(driver),
+                        None => match template.as_deref() {
+                            Some(template) => {
+                                let home = self.runtime.user_home();
+                                let catalog = self.runtime.agent_home();
+                                crate::agent_template::execution_driver_for_template(
+                                    home.as_deref(),
+                                    &catalog,
+                                    template,
+                                )
+                                .await?
+                            }
+                            None => None,
+                        },
+                    };
+                    if let Some(driver) = driver {
+                        let mut detail =
+                            task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+                        detail["execution_driver"] = serde_json::to_value(&driver)?;
+                        task.detail = Some(detail);
+                    }
                     let mut admitted = match bridge
                         .spawn_child_task(
                             self.runtime.clone(),

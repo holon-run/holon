@@ -26,6 +26,7 @@ decision-local-onnx = { version = "0.1.0", path = "../decision-local-onnx", opti
 holon-agent-templates = { version = "0.1.0", path = "../holon-agent-templates" }
 holon-client = { version = "0.1.0", path = "../holon-client" }
 holon-config = { version = "0.1.0", path = "../holon-config" }
+holon-acp = { version = "0.1.0", path = "../holon-acp" }
 holon-context = { version = "0.1.0", path = "../holon-context" }
 holon-daemon = { version = "0.1.0", path = "../holon-daemon" }
 holon-domain = { version = "0.1.0", path = "../holon-domain", features = ["error-sanitization"] }

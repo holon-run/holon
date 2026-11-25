@@ -529,6 +529,33 @@ pub async fn initialize_agent_home_from_template_with_catalog(
     .await
 }
 
+/// Execution driver declared by a template's `[execution]` section, if any.
+pub async fn execution_driver_for_template(
+    home_dir: Option<&Path>,
+    catalog_agent_home: &Path,
+    template: &str,
+) -> Result<Option<crate::types::AgentExecutionDriver>> {
+    let Some(home_dir) = home_dir else {
+        return Ok(None);
+    };
+    let binding =
+        package::template_execution_binding(TEMPLATES, template, home_dir, catalog_agent_home)
+            .await?;
+    let Some(binding) = binding else {
+        return Ok(None);
+    };
+    let kind = match binding.driver.as_deref() {
+        None | Some("native") => crate::types::AgentExecutionDriverKind::Native,
+        Some("acp") => crate::types::AgentExecutionDriverKind::Acp,
+        Some(other) => bail!("unknown template execution driver `{other}`"),
+    };
+    Ok(Some(crate::types::AgentExecutionDriver {
+        kind,
+        harness_profile: binding.harness_profile,
+        role: binding.role,
+    }))
+}
+
 pub async fn initialize_agent_home_without_template(
     agent_home: &Path,
 ) -> Result<TemplateProvenanceRecord> {

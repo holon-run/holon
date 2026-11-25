@@ -1626,6 +1626,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "holon-acp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "holon-agent-templates"
 version = "0.1.0"
 dependencies = [
@@ -1893,6 +1904,7 @@ dependencies = [
  "decision-openai-decisions",
  "flate2",
  "futures-util",
+ "holon-acp",
  "holon-agent-templates",
  "holon-client",
  "holon-config",

@@ -227,6 +227,8 @@ pub struct AgentState {
     #[serde(default)]
     pub execution_profile: ExecutionProfile,
     #[serde(default)]
+    pub execution_driver: AgentExecutionDriver,
+    #[serde(default)]
     pub pending_wake_hint: Option<PendingWakeHint>,
     #[serde(default)]
     pub attached_workspaces: Vec<String>,
@@ -499,6 +501,7 @@ impl AgentState {
             last_turn_token_usage: None,
             tool_latency: Vec::new(),
             execution_profile: ExecutionProfile::default(),
+            execution_driver: AgentExecutionDriver::default(),
             pending_wake_hint: None,
             attached_workspaces: Vec::new(),
             active_workspace_entry: None,
@@ -523,6 +526,57 @@ impl AgentState {
             turn_budget: None,
             provider_cooldown_wait: None,
         }
+    }
+}
+
+/// Which execution engine owns an agent's inner turn loop.
+///
+/// `native` keeps Holon's own provider turn. `acp` hands the inner loop to an
+/// external ACP harness process that the runtime supervises.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentExecutionDriverKind {
+    #[default]
+    Native,
+    Acp,
+}
+
+impl AgentExecutionDriverKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Acp => "acp",
+        }
+    }
+
+    pub fn from_id(value: &str) -> Option<Self> {
+        match value {
+            "native" => Some(Self::Native),
+            "acp" => Some(Self::Acp),
+            _ => None,
+        }
+    }
+}
+
+/// Driver selection and its ACP harness binding.
+///
+/// Driver selection is configuration, not protocol: callers never address a
+/// harness session or process directly.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentExecutionDriver {
+    #[serde(default)]
+    pub kind: AgentExecutionDriverKind,
+    /// ACP harness profile name; falls back to the runtime default profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_profile: Option<String>,
+    /// Role text delivered through the negotiated persona channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+impl AgentExecutionDriver {
+    pub fn is_native(&self) -> bool {
+        self.kind == AgentExecutionDriverKind::Native
     }
 }
 

@@ -25,7 +25,20 @@ pub enum InvokeAgentToolTarget {
         #[serde(default)]
         workspace_mode: ChildAgentWorkspaceMode,
         model: Option<AgentModelRequest>,
+        /// Selects the child's inner turn loop. Absent keeps the native driver.
+        #[serde(default)]
+        execution_driver: Option<InvokeAgentExecutionDriver>,
     },
+}
+
+/// Execution-driver selection for a newly created subagent.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InvokeAgentExecutionDriver {
+    pub kind: String,
+    #[serde(default)]
+    pub harness_profile: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
