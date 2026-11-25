@@ -73,10 +73,23 @@ final class ConversationImageTests: XCTestCase {
             XCTFail("Started a duplicate request for the same message")
             return oldMessage
         }
+        let firstCancelled = expectation(description: "Reader cancels before the shared request returns")
+        first.cancel()
+        let observer = Task {
+            do {
+                _ = try await first.value
+                XCTFail("Cancelled reader received a message")
+            } catch is CancellationError {
+                firstCancelled.fulfill()
+            } catch {
+                XCTFail("Expected cancellation, got \(error)")
+            }
+        }
+        let earlyCancellation = await XCTWaiter.fulfillment(of: [firstCancelled], timeout: 2)
         held.removeValue(forKey: "first")?.resume(returning: oldMessage)
-        let firstResult = try await first.value
+        await observer.value
+        XCTAssertEqual(earlyCancellation, .completed)
         let duplicateResult = try await duplicate.value
-        XCTAssertEqual(firstResult.text, "old")
         XCTAssertEqual(duplicateResult.text, "old")
 
         var previous: [Task<OperatorInputPresentation.Message, any Error>] = []

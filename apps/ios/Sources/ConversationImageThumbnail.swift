@@ -140,59 +140,81 @@ final class ConversationImageDetails {
     private static let activeLimit = 2
     private static let waitingLimit = 8
     private let slots = ConversationImageSlots(active: activeLimit, waiting: waitingLimit)
+    private typealias Message = OperatorInputPresentation.Message
+    private typealias Reader = CheckedContinuation<Message, any Error>
     private struct Job {
         let id: UUID
-        let task: Task<OperatorInputPresentation.Message, any Error>
-        var readers: Set<UUID> = []
+        let task: Task<Void, Never>
+        var readers: [UUID: Reader]
     }
     private var jobs: [String: Job] = [:]
 
     func load(_ id: String, operation: @escaping @MainActor () async throws -> OperatorInputPresentation.Message)
         async throws -> OperatorInputPresentation.Message {
         try Task.checkCancellation()
-        if jobs[id] == nil {
-            guard jobs.count < Self.activeLimit + Self.waitingLimit else { throw ConversationPreviewDeferred() }
-            let jobID = UUID()
-            let task = Task {
-                defer { if self.jobs[id]?.id == jobID { self.jobs.removeValue(forKey: id) } }
-                try await self.slots.acquire()
-                defer { self.slots.release() }
-                try Task.checkCancellation()
-                let message = try await operation()
-                try Task.checkCancellation()
-                return message
-            }
-            jobs[id] = Job(id: jobID, task: task)
-        }
-        guard var job = jobs[id] else { throw CancellationError() }
         let reader = UUID()
-        job.readers.insert(reader)
-        jobs[id] = job
-        let jobID = job.id, task = job.task
-        return try await withTaskCancellationHandler {
-            let message = try await task.value
-            try Task.checkCancellation()
-            return message
+        let message = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: Reader) in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                if jobs[id] != nil {
+                    jobs[id]?.readers[reader] = continuation
+                    return
+                }
+                guard jobs.count < Self.activeLimit + Self.waitingLimit else {
+                    continuation.resume(throwing: ConversationPreviewDeferred())
+                    return
+                }
+                let jobID = UUID()
+                let task = Task {
+                    let result: Result<Message, any Error>
+                    do {
+                        try await self.slots.acquire()
+                        defer { self.slots.release() }
+                        try Task.checkCancellation()
+                        let message = try await operation()
+                        try Task.checkCancellation()
+                        result = .success(message)
+                    } catch {
+                        result = .failure(error)
+                    }
+                    self.finish(id, jobID: jobID, with: result)
+                }
+                jobs[id] = Job(id: jobID, task: task, readers: [reader: continuation])
+            }
         } onCancel: {
-            Task { @MainActor in self.removeReader(reader, from: id, jobID: jobID) }
+            Task { @MainActor in self.removeReader(reader, from: id) }
         }
+        try Task.checkCancellation()
+        return message
     }
 
-    private func removeReader(_ reader: UUID, from id: String, jobID: UUID) {
-        guard var job = jobs[id], job.id == jobID else { return }
-        job.readers.remove(reader)
+    private func removeReader(_ reader: UUID, from id: String) {
+        guard var job = jobs[id], let continuation = job.readers.removeValue(forKey: reader) else { return }
         if job.readers.isEmpty {
             jobs.removeValue(forKey: id)
             job.task.cancel()
         } else {
             jobs[id] = job
         }
+        continuation.resume(throwing: CancellationError())
+    }
+
+    private func finish(_ id: String, jobID: UUID, with result: Result<Message, any Error>) {
+        guard jobs[id]?.id == jobID, let job = jobs.removeValue(forKey: id) else { return }
+        for reader in job.readers.values { reader.resume(with: result) }
     }
 
     func cancelAll() {
-        for job in jobs.values { job.task.cancel() }
+        let cancelled = jobs.values
         jobs.removeAll()
         slots.cancelWaiting()
+        for job in cancelled {
+            job.task.cancel()
+            for reader in job.readers.values { reader.resume(throwing: CancellationError()) }
+        }
     }
 }
 
