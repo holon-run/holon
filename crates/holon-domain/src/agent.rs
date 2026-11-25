@@ -288,6 +288,14 @@ pub struct AgentBootstrapDesiredState {
     /// invent initialization turns.
     #[serde(default, skip_serializing_if = "is_default_initial_message_unset")]
     pub default_initial_message: bool,
+    /// One-time hint for the language of the default bootstrap initialization
+    /// reply. It is runtime-owned bootstrap metadata: it only shapes the
+    /// synthesized bootstrap instruction and never becomes an agent
+    /// preference, an identity field, or persisted communication guidance.
+    /// Only the default (no explicit `initial_message`) creation path reads
+    /// it, and it is ignored once an explicit initial message exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_response_language: Option<String>,
 }
 
 fn is_default_initial_message_unset(value: &bool) -> bool {
@@ -441,6 +449,7 @@ impl AgentBootstrapRecord {
                 model_resolution: None,
                 initial_message: None,
                 default_initial_message: false,
+                initial_response_language: None,
             },
             template: AgentBootstrapStep::succeeded(now),
             runtime: AgentBootstrapStep::succeeded(now),

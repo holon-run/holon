@@ -836,20 +836,40 @@ fn default_agent_bootstrap_initial_message(
 ) -> AgentBootstrapInitialMessage {
     AgentBootstrapInitialMessage {
         message_id: bootstrap.initial_message_id(),
-        text: default_agent_bootstrap_initial_message_text().to_string(),
+        text: default_agent_bootstrap_initial_message_text(
+            bootstrap.desired.initial_response_language.as_deref(),
+        ),
         authority_class: AuthorityClass::RuntimeInstruction,
         creator_agent_id: String::new(),
     }
 }
 
-fn default_agent_bootstrap_initial_message_text() -> &'static str {
+/// Shared body of the default bootstrap initialization turn.
+const DEFAULT_AGENT_BOOTSTRAP_INITIAL_MESSAGE_BODY: &str =
     "This agent was just created without an initial message. Perform a one-time \
      initialization turn: read your AGENTS.md and template contract, note your \
      installed skills and workspaces, then briefly introduce yourself to the user — \
      your role, what you can do, and a few starter actions. Keep it friendly and \
-     concise; do not invent tasks or modify files. Choose the user's most likely \
+     concise; do not invent tasks or modify files.";
+
+/// Language guidance used when the creator supplied no response-language hint.
+const DEFAULT_AGENT_BOOTSTRAP_LANGUAGE_GUIDANCE: &str = " Choose the user's most likely \
      language from trusted preferences and environment hints such as locale or \
-     timezone; adapt if the user replies in another language."
+     timezone; adapt if the user replies in another language.";
+
+/// Default bootstrap initialization instruction, optionally shaped by the
+/// one-time response-language hint supplied at creation time. The hint only
+/// applies to this first reply; it never becomes an agent preference.
+fn default_agent_bootstrap_initial_message_text(language: Option<&str>) -> String {
+    match language {
+        Some(language) => format!(
+            "{DEFAULT_AGENT_BOOTSTRAP_INITIAL_MESSAGE_BODY} Respond in {language} for this \
+             first reply; adapt if the user replies in another language."
+        ),
+        None => format!(
+            "{DEFAULT_AGENT_BOOTSTRAP_INITIAL_MESSAGE_BODY}{DEFAULT_AGENT_BOOTSTRAP_LANGUAGE_GUIDANCE}"
+        ),
+    }
 }
 
 fn named_agent_already_exists_error(agent_id: &str) -> anyhow::Error {
@@ -5756,6 +5776,7 @@ impl RuntimeHost {
             model_resolution: None,
             initial_message: None,
             default_initial_message: false,
+            initial_response_language: None,
         };
         let (identity, created) = self
             .ensure_named_agent(
@@ -5811,10 +5832,47 @@ impl RuntimeHost {
             model_resolution: None,
             initial_message: None,
             default_initial_message,
+            initial_response_language: None,
         };
         self.create_public_named_agent_with_bootstrap(
             agent_id,
             lineage_parent_agent_id,
+            requested_name,
+            desired,
+            execution,
+        )
+        .await
+    }
+
+    /// Control-plane creation entrypoint for user-initiated agent creation
+    /// without an explicit initial message.
+    ///
+    /// `initial_response_language` is a one-time hint that only shapes the
+    /// default bootstrap initialization reply. It is normalized here and kept
+    /// as runtime-owned bootstrap metadata so a background bootstrap or a
+    /// repair retry reproduces the same instruction. It never becomes an
+    /// agent preference, identity field, or communication guidance.
+    pub async fn create_public_named_agent_for_user(
+        &self,
+        agent_id: &str,
+        template: Option<&str>,
+        requested_name: Option<&str>,
+        execution: AgentBootstrapExecution,
+        initial_response_language: Option<&str>,
+    ) -> Result<AgentCreateResult> {
+        let desired = AgentBootstrapDesiredState {
+            template: template.map(ToString::to_string),
+            catalog_agent_home: None,
+            workspace: None,
+            model_resolution: None,
+            initial_message: None,
+            default_initial_message: true,
+            initial_response_language: initial_response_language
+                .and_then(crate::types::normalize_initial_response_language),
+        };
+        self.create_public_named_agent_with_bootstrap(
+            agent_id,
+            None,
             requested_name,
             desired,
             execution,
@@ -6066,6 +6124,7 @@ impl RuntimeHost {
             model_resolution: request.model_resolution,
             initial_message,
             default_initial_message,
+            initial_response_language: None,
         };
         self.create_public_named_agent_with_bootstrap(
             &request.agent_id,
@@ -9564,6 +9623,7 @@ impl RuntimeHost {
                 creator_agent_id: parent_state.id,
             }),
             default_initial_message,
+            initial_response_language: None,
         };
         self.create_public_named_agent_with_bootstrap(
             agent_id,
@@ -14079,6 +14139,7 @@ mod tests {
                 model_resolution: None,
                 initial_message: None,
                 default_initial_message: false,
+                initial_response_language: None,
             },
         )
         .await
@@ -20350,8 +20411,163 @@ mod tests {
         assert_eq!(
             bootstrap.body,
             MessageBody::Text {
-                text: default_agent_bootstrap_initial_message_text().to_string()
+                text: default_agent_bootstrap_initial_message_text(None)
             }
+        );
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn default_bootstrap_message_follows_the_creation_time_language_hint() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+        let agent_id = "language-hint-agent".to_string();
+
+        host.create_public_named_agent_for_user(
+            &agent_id,
+            None,
+            Some("Language Hint Agent"),
+            AgentBootstrapExecution::Inline,
+            Some("zh-CN"),
+        )
+        .await
+        .unwrap();
+
+        let runtime = host.get_public_agent(&agent_id).await.unwrap();
+        let messages = runtime.storage().read_recent_messages(10).unwrap();
+        let bootstrap = messages
+            .iter()
+            .find(|message| message.id == format!("agent_bootstrap_message:{agent_id}:1"))
+            .expect("default bootstrap should enqueue one initialization message");
+        let MessageBody::Text { text } = &bootstrap.body else {
+            panic!("bootstrap message must carry text");
+        };
+        assert!(
+            text.contains("Respond in zh-CN for this first reply"),
+            "bootstrap instruction should follow the creation-time language hint: {text}"
+        );
+        assert!(
+            !text.contains("Choose the user's most likely language"),
+            "the fallback language guidance must yield to the explicit hint: {text}"
+        );
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn unmapped_creation_time_language_hint_keeps_the_default_guidance() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+        let agent_id = "language-hint-invalid".to_string();
+
+        host.create_public_named_agent_for_user(
+            &agent_id,
+            None,
+            Some("Language Hint Invalid"),
+            AgentBootstrapExecution::Inline,
+            Some("not a language tag"),
+        )
+        .await
+        .unwrap();
+
+        let runtime = host.get_public_agent(&agent_id).await.unwrap();
+        let messages = runtime.storage().read_recent_messages(10).unwrap();
+        let bootstrap = messages
+            .iter()
+            .find(|message| message.id == format!("agent_bootstrap_message:{agent_id}:1"))
+            .expect("default bootstrap should enqueue one initialization message");
+        assert_eq!(
+            bootstrap.body,
+            MessageBody::Text {
+                text: default_agent_bootstrap_initial_message_text(None)
+            }
+        );
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn creation_time_language_hint_stays_bootstrap_local() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+        let agent_id = "language-hint-guard".to_string();
+
+        host.create_public_named_agent_for_user(
+            &agent_id,
+            None,
+            Some("Language Hint Guard"),
+            AgentBootstrapExecution::Inline,
+            Some("zh-CN"),
+        )
+        .await
+        .unwrap();
+
+        let detail = host.operator_agent_detail(&agent_id).unwrap();
+        let identity = serde_json::to_string(&detail.identity).unwrap();
+        assert!(
+            !identity.contains("zh-CN"),
+            "the response-language hint must not become an identity field: {identity}"
+        );
+
+        let runtime = host.get_public_agent(&agent_id).await.unwrap();
+        let agent_home = runtime.agent_home();
+        for relative in ["AGENTS.md", "memory/operator.md", "memory/self.md"] {
+            let path = agent_home.join(relative);
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            assert!(
+                !content.contains("zh-CN"),
+                "the response-language hint must not reach agent file {relative}: {content}"
+            );
+        }
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn response_language_hint_survives_bootstrap_repair() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+        let agent_id = "language-hint-repair".to_string();
+
+        host.create_public_named_agent_for_user(
+            &agent_id,
+            None,
+            Some("Language Hint Repair"),
+            AgentBootstrapExecution::Inline,
+            Some("zh-CN"),
+        )
+        .await
+        .unwrap();
+
+        let message_id = format!("agent_bootstrap_message:{agent_id}:1");
+        let mut bootstrap_record = host
+            .runtime_db()
+            .agent_bootstraps()
+            .latest(&agent_id)
+            .unwrap()
+            .unwrap();
+        bootstrap_record.initial_message.status = AgentBootstrapStepStatus::Failed;
+        bootstrap_record.initial_message.last_error = Some("injected retry".into());
+        bootstrap_record.revision = bootstrap_record.revision.saturating_add(1);
+        bootstrap_record.updated_at = Utc::now();
+        host.runtime_db()
+            .agent_bootstraps()
+            .upsert(&bootstrap_record)
+            .unwrap();
+
+        host.repair_public_agent(&agent_id).await.unwrap();
+
+        let runtime = host.get_public_agent(&agent_id).await.unwrap();
+        let messages = runtime.storage().read_recent_messages(10).unwrap();
+        let bootstrap = messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .expect("repair should re-enqueue the bootstrap message");
+        let MessageBody::Text { text } = &bootstrap.body else {
+            panic!("bootstrap message must carry text");
+        };
+        assert!(
+            text.contains("Respond in zh-CN for this first reply"),
+            "bootstrap retry must reuse the persisted one-time hint: {text}"
         );
     }
 

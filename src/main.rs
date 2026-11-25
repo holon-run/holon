@@ -7460,6 +7460,9 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                     authority_class: Some(AuthorityClass::OperatorInstruction),
                     name: None,
                     template,
+                    // One-time hint so the new agent's first default reply
+                    // follows the creator's locale.
+                    initial_response_language: holon::agent_locale::detect_response_language(),
                 },
             )
             .await

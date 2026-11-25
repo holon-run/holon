@@ -52,6 +52,7 @@ CreateAgentRequest {
   requested_agent_id?: string
   requested_name?: string       // Phase 2; validation contract only in Phase 0
   initial_message?: string
+  initial_response_language?: string  // one-time bootstrap reply hint
   template?: template reference
   workspace_mode?: inherit | worktree
   model?: model request
@@ -80,6 +81,7 @@ remain the input boundary until the canonical service is introduced.
 | `preset` | optional, defaults to `private_child` | required when selecting public creation | Unknown values reject |
 | `agent_id` | reject | required, non-empty, valid technical id | Never silently generate or reinterpret a supplied id |
 | `initial_message` | required and non-empty for tool delegation | optional at request shape, but never delivered to an existing identity | No duplicate-create injection |
+| `initial_response_language` | reject | optional; only shapes the default bootstrap instruction | One-time hint, never an agent preference; ignored when `initial_message` is present or absent on private delegation |
 | `template` | supported subject to capability/authorization | supported subject to capability/authorization | Resolution is after reservation |
 | `workspace_mode=inherit` | supported | supported | Default |
 | `workspace_mode=worktree` | supported | reject as unsupported | Public identity cannot select an isolated child worktree |
@@ -91,6 +93,15 @@ Whitespace-only optional strings normalize to absent before validation.
 Technical ids are validated by the existing `validate_agent_id_format`
 contract. Normalization must not cause two distinct supplied ids to become the
 same identity without returning an explicit conflict.
+
+`initial_response_language` is normalized to a strict language tag (BCP-47
+style, or a POSIX locale mapped to one). Values that cannot be mapped to a
+language tag are dropped rather than rejected so creation never fails on an
+unrecognized locale. The normalized hint is stored as runtime-owned bootstrap
+metadata and only shapes the synthesized default initialization instruction: it
+never becomes an identity field, an agent file, operator memory, or a lasting
+response-language preference, and it does not change the stable
+`response_language` priority rules.
 
 ## 4. Creation state machine
 
