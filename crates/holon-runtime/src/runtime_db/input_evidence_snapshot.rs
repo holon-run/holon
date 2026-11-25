@@ -1653,7 +1653,7 @@ fn observe_input_qualification_tx(
     }
     let canonical = payload
         .as_ref()
-        .map(|payload| decode_canonical(key, payload, Some(&fingerprint.revision_marker)))
+        .map(|payload| decode_canonical_on(tx, &scope.agent_id, key, payload))
         .transpose()?;
     let attempt_turn_proof = match canonical.as_ref() {
         Some(CanonicalInputEvidence::Attempt(attempt)) => {
@@ -3786,18 +3786,36 @@ fn decode_canonical_on(
     key: &Key,
     payload: &str,
 ) -> Result<CanonicalInputEvidence> {
-    let marker = if key.family == Family::WorkExecution {
-        Some(
-            fingerprint_on(tx, agent, key)?
-                .context("WorkExecution metadata disappeared")?
-                .revision_marker,
-        )
-    } else {
-        None
-    };
-    decode_canonical(key, payload, marker.as_deref())
+    if key.family != Family::WorkExecution {
+        return decode_canonical(key, payload, None);
+    }
+    let marker = fingerprint_on(tx, agent, key)?
+        .context("WorkExecution metadata disappeared")?
+        .revision_marker;
+    let mut decode_timer = crate::diagnostics::attribution::INPUT_PREPARE_DECODE.start();
+    decode_timer.rows(payload.len());
+    let (record, legacy_projection) = holon_storage::execution::project_legacy_in_flight_work_item(
+        tx, agent, &key.id, payload, &marker,
+    )?;
+    if let Some(evidence) = legacy_projection {
+        tracing::info!(
+            agent_id = %evidence.agent_id,
+            work_item_id = %evidence.work_item_id,
+            lifecycle = %evidence.original_lifecycle,
+            attempt_id = %evidence.attempt_id,
+            matching_open_attempt = evidence.matching_open_attempt,
+            wait_source = ?evidence.wait_source,
+            wait_id = evidence.wait_id.as_deref(),
+            generation_before = evidence.generation_before,
+            generation_after = evidence.generation_after,
+            "projected legacy in_flight work item from a pre-migration database"
+        );
+    }
+    Ok(CanonicalInputEvidence::WorkExecution {
+        work_item_id: key.id.clone(),
+        record,
+    })
 }
-
 fn decode_canonical(
     key: &Key,
     payload: &str,
@@ -3817,13 +3835,15 @@ fn decode_canonical(
         Family::Outcome => CanonicalInputEvidence::Outcome(
             crate::runtime_db::outcome_reads::decode_outcome_payload(payload)?,
         ),
-        Family::WorkExecution => CanonicalInputEvidence::WorkExecution {
-            work_item_id: key.id.clone(),
-            record: holon_storage::execution::decode_work_item_record_with_migration(
-                payload,
-                marker.context("WorkExecution decode requires a revision marker")?,
-            )?,
-        },
+        Family::WorkExecution => {
+            let marker = marker.context("WorkExecution decode requires a revision marker")?;
+            CanonicalInputEvidence::WorkExecution {
+                work_item_id: key.id.clone(),
+                record: holon_storage::execution::decode_work_item_record_with_migration(
+                    payload, marker,
+                )?,
+            }
+        }
     })
 }
 fn prepare_record_on(

@@ -64,7 +64,7 @@ pub(crate) fn qualified_dispatch_briefs_tx(
             tx,
             &scope.agent_id,
             &key,
-            Some(decode_canonical(&key, &payload, None)?),
+            Some(decode_canonical_on(tx, &scope.agent_id, &key, &payload)?),
         )?;
         let PreparedInputEvidence::Brief(brief) = record else {
             anyhow::bail!("dispatch Brief selector returned another family")

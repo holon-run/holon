@@ -256,3 +256,466 @@ fn reopening_with_retired_work_execution_rebinds_only_matching_scoped_proofs() -
     }
     Ok(())
 }
+
+fn legacy_in_flight_payload(attempt_id: &str, generation: u64) -> String {
+    serde_json::json!({
+        "source_revision": 9,
+        "state": {"state": "in_flight", "generation": generation, "attempt_id": attempt_id},
+    })
+    .to_string()
+}
+
+fn legacy_attempt(
+    agent: &str,
+    attempt_id: &str,
+    work_item_id: &str,
+    state: holon_domain::execution_protocol::ExecutionAttemptState,
+    identity: holon_domain::execution_protocol::ExecutionSourceIdentity,
+    generation: u64,
+) -> holon_domain::execution_protocol::ExecutionAttempt {
+    use holon_domain::execution_protocol::{
+        AdmittedFences, ExecutionAttempt, ExecutionBinding, ExecutionOrigin, ExecutionPriority,
+        ExecutionProvenance, ExecutionSource, ExecutionTrust,
+    };
+    ExecutionAttempt {
+        attempt_id: attempt_id.to_owned(),
+        agent_id: agent.to_owned(),
+        source_message_id: None,
+        input_projection: None,
+        source: ExecutionSource {
+            identity,
+            generation: 1,
+        },
+        binding: ExecutionBinding::WorkItem {
+            work_item_id: work_item_id.to_owned(),
+        },
+        provenance: ExecutionProvenance {
+            origin: ExecutionOrigin::Operator,
+            trust: ExecutionTrust::OperatorInstruction,
+            priority: ExecutionPriority::Normal,
+            correlation_id: None,
+            causation_id: None,
+        },
+        admitted_fences: AdmittedFences {
+            source_revision: 9,
+            work_item_source_revision: Some(9),
+            work_item_generation: Some(generation),
+            rejoin: None,
+            agent_control_revision: 1,
+            host_registry_revision: 1,
+        },
+        state,
+        run_id: None,
+        turn_id: None,
+        recovery_of_attempt_id: None,
+        terminal_outcome_id: None,
+        admitted_at: "2026-11-25T00:00:00Z".to_owned(),
+        terminal_at: None,
+    }
+}
+
+fn open_legacy_database(path: &std::path::Path) -> Result<Connection> {
+    let db = Connection::open(path)?;
+    ensure_migration_table(&db)?;
+    for version in [6, 41, 113] {
+        db.execute_batch(
+            MIGRATIONS
+                .iter()
+                .find(|migration| migration.version == version)
+                .unwrap()
+                .sql,
+        )?;
+    }
+    Ok(db)
+}
+
+/// The pre-migration reader must reproduce exactly what migration 119 writes,
+/// because the interrupted-upgrade recovery report decodes the database with
+/// the candidate binary before that migration runs.
+#[test]
+fn pre_migration_projection_matches_retirement_canonical_rows() -> Result<()> {
+    use crate::execution::{project_legacy_in_flight_work_item, LegacyWaitSource};
+    use holon_domain::execution_protocol::{
+        ExecutionAttemptState, ExecutionSourceIdentity, WorkItemExecutionState,
+    };
+
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("runtime.sqlite3");
+    {
+        let db = open_legacy_database(&path)?;
+        for (agent, work, attempt_id) in [
+            ("ordinary", "w1", "open-ordinary"),
+            ("exact", "w2", "open-exact"),
+            ("recovery", "w3", "open-recovery"),
+            ("settled", "w4", "settled"),
+            ("missing", "w5", "missing"),
+            ("drifted", "w7", "open-drifted"),
+        ] {
+            db.execute(
+                "INSERT INTO execution_protocol_work_items VALUES (?1, ?2, 9, 7, 'in_flight', ?3)",
+                params![agent, work, legacy_in_flight_payload(attempt_id, 7)],
+            )?;
+        }
+        db.execute(
+            "INSERT INTO execution_protocol_work_items VALUES ('unrelated', 'w6', 9, 7, 'paused', ?1)",
+            [r#"{"source_revision":9,"state":{"state":"paused","generation":7,"reason":"manual"}}"#],
+        )?;
+        for (agent, lifecycle, attempt) in [
+            (
+                "ordinary",
+                "open",
+                legacy_attempt(
+                    "ordinary",
+                    "open-ordinary",
+                    "w1",
+                    ExecutionAttemptState::Open,
+                    ExecutionSourceIdentity::WorkItemContinuation {
+                        work_item_id: "w1".into(),
+                    },
+                    7,
+                ),
+            ),
+            (
+                "exact",
+                "open",
+                legacy_attempt(
+                    "exact",
+                    "open-exact",
+                    "w2",
+                    ExecutionAttemptState::Open,
+                    ExecutionSourceIdentity::TriggeredWait {
+                        wait_id: "resolved".into(),
+                        trigger_message_id: "m".into(),
+                        ingress: None,
+                    },
+                    7,
+                ),
+            ),
+            (
+                "recovery",
+                "open",
+                legacy_attempt(
+                    "recovery",
+                    "open-recovery",
+                    "w3",
+                    ExecutionAttemptState::Open,
+                    ExecutionSourceIdentity::TriggeredWait {
+                        wait_id: "stale".into(),
+                        trigger_message_id: "m".into(),
+                        ingress: None,
+                    },
+                    7,
+                ),
+            ),
+            (
+                "settled",
+                "settled",
+                legacy_attempt(
+                    "settled",
+                    "settled",
+                    "w4",
+                    ExecutionAttemptState::Settled,
+                    ExecutionSourceIdentity::WorkItemContinuation {
+                        work_item_id: "w4".into(),
+                    },
+                    7,
+                ),
+            ),
+        ] {
+            db.execute(
+                "INSERT INTO execution_protocol_attempts (
+                     agent_id, attempt_id, lifecycle_state, source_identity_json,
+                     source_generation, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+                params![
+                    agent,
+                    attempt.attempt_id,
+                    lifecycle,
+                    serde_json::to_string(&attempt.source.identity)?,
+                    serde_json::to_string(&attempt)?,
+                ],
+            )?;
+        }
+        // The attempt payload and its persisted `source_identity_json` column
+        // are written separately, so they can drift. Migration 119 reads the
+        // column; the projection must follow it rather than the payload.
+        let drifted_attempt = legacy_attempt(
+            "drifted",
+            "open-drifted",
+            "w7",
+            ExecutionAttemptState::Open,
+            ExecutionSourceIdentity::WorkItemContinuation {
+                work_item_id: "w7".into(),
+            },
+            7,
+        );
+        db.execute(
+            "INSERT INTO execution_protocol_attempts (
+                 agent_id, attempt_id, lifecycle_state, source_identity_json,
+                 source_generation, payload_json
+             ) VALUES (?1, ?2, 'open', ?3, 1, ?4)",
+            params![
+                "drifted",
+                drifted_attempt.attempt_id,
+                serde_json::to_string(&ExecutionSourceIdentity::TriggeredWait {
+                    wait_id: "drift-resolved".into(),
+                    trigger_message_id: "m".into(),
+                    ingress: None,
+                })?,
+                serde_json::to_string(&drifted_attempt)?,
+            ],
+        )?;
+        db.execute_batch(
+            "INSERT INTO wait_conditions (
+                 wait_condition_id, agent_id, work_item_id, status, kind, waiting_for,
+                 created_at, updated_at, payload_json
+             ) VALUES
+                 ('resolved', 'exact', 'w2', 'resolved', 'timer', 'timer', 'a', 'a', '{}'),
+                 ('active', 'recovery', 'w3', 'active', 'timer', 'timer', 'a', 'a', '{}'),
+                 ('drift-resolved', 'drifted', 'w7', 'resolved', 'timer', 'timer', 'a', 'a', '{}'),
+                 ('other', 'stranger', 'w1', 'active', 'timer', 'timer', 'a', 'a', '{}');",
+        )?;
+    }
+
+    let projected = {
+        let db = Connection::open(&path)?;
+        let mut projected = std::collections::BTreeMap::new();
+        for (agent, work) in [
+            ("ordinary", "w1"),
+            ("exact", "w2"),
+            ("recovery", "w3"),
+            ("settled", "w4"),
+            ("missing", "w5"),
+            ("unrelated", "w6"),
+            ("drifted", "w7"),
+        ] {
+            let (payload, marker): (String, String) = db.query_row(
+                "SELECT payload_json, source_revision||':'||generation||':'||lifecycle_state
+                 FROM execution_protocol_work_items WHERE agent_id = ?1 AND work_item_id = ?2",
+                params![agent, work],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let (record, evidence) =
+                project_legacy_in_flight_work_item(&db, agent, work, &payload, &marker)?;
+            projected.insert(work.to_owned(), (record, evidence));
+        }
+        projected
+    };
+
+    // The projection itself: one case per retired-shape branch.
+    let expected: [(&str, u64, &str, Option<&str>, LegacyWaitSource, bool); 6] = [
+        (
+            "w1",
+            7,
+            "runnable",
+            None::<&str>,
+            LegacyWaitSource::None,
+            true,
+        ),
+        (
+            "w2",
+            7,
+            "waiting",
+            Some("resolved"),
+            LegacyWaitSource::ExactAttemptWait,
+            true,
+        ),
+        (
+            "w3",
+            7,
+            "waiting",
+            Some("active"),
+            LegacyWaitSource::LatestOwnerWait,
+            true,
+        ),
+        ("w4", 8, "runnable", None, LegacyWaitSource::None, false),
+        ("w5", 8, "runnable", None, LegacyWaitSource::None, false),
+        (
+            "w7",
+            7,
+            "waiting",
+            Some("drift-resolved"),
+            LegacyWaitSource::ExactAttemptWait,
+            true,
+        ),
+    ];
+    for (work, generation, lifecycle, wait_id, wait_source, matched) in expected {
+        let (record, evidence) = projected.get(work).unwrap();
+        assert_eq!(record.source_revision, 9, "{work}");
+        assert_eq!(record.generation(), generation, "{work}");
+        let evidence = evidence.as_ref().expect("legacy row must carry evidence");
+        assert_eq!(evidence.original_lifecycle, "in_flight", "{work}");
+        assert_eq!(evidence.matching_open_attempt, matched, "{work}");
+        assert_eq!(evidence.wait_source, wait_source, "{work}");
+        assert_eq!(evidence.wait_id.as_deref(), wait_id, "{work}");
+        assert_eq!(evidence.generation_before, 7, "{work}");
+        assert_eq!(evidence.generation_after, generation, "{work}");
+        match (&record.state, lifecycle) {
+            (WorkItemExecutionState::Waiting { wait, .. }, "waiting") => {
+                assert_eq!(Some(wait.wait_id.as_str()), wait_id, "{work}")
+            }
+            (WorkItemExecutionState::Runnable { recovery_ref, .. }, "runnable") => {
+                assert_eq!(recovery_ref, &None, "{work}")
+            }
+            (state, _) => panic!("unexpected projected state for {work}: {state:?}"),
+        }
+    }
+    let (paused, evidence) = projected.get("w6").unwrap();
+    assert!(evidence.is_none());
+    assert!(matches!(
+        paused.state,
+        WorkItemExecutionState::Paused { ref reason, .. } if reason == "manual"
+    ));
+
+    // Canonical rows written by migration 119 must agree with the projection.
+    let mut db = Connection::open(&path)?;
+    apply_migration(
+        &mut db,
+        MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 119)
+            .unwrap(),
+        unexpected_runtime_backfill,
+    )?;
+    let canonical_rows: [(&str, u64, &str, Option<&str>); 7] = [
+        ("w1", 7, "runnable", None),
+        ("w2", 7, "waiting", Some("resolved")),
+        ("w3", 7, "waiting", Some("active")),
+        ("w4", 8, "runnable", None),
+        ("w5", 8, "runnable", None),
+        ("w6", 7, "paused", None),
+        ("w7", 7, "waiting", Some("drift-resolved")),
+    ];
+    for (work, generation, lifecycle, wait_id) in canonical_rows {
+        let (indexed_generation, indexed_lifecycle, payload): (u64, String, String) = db
+            .query_row(
+                "SELECT generation, lifecycle_state, payload_json
+             FROM execution_protocol_work_items WHERE work_item_id = ?1",
+                [work],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        assert_eq!(indexed_generation, generation, "{work}");
+        assert_eq!(indexed_lifecycle, lifecycle, "{work}");
+        let canonical: WorkItemExecutionRecord = serde_json::from_str(&payload)?;
+        let (projected_record, _) = projected.get(work).unwrap();
+        assert_eq!(
+            projected_record, &canonical,
+            "projection disagrees with migration 119 canonical row for {work}"
+        );
+        if let WorkItemExecutionState::Waiting { wait, .. } = &canonical.state {
+            assert_eq!(Some(wait.wait_id.as_str()), wait_id, "{work}");
+        }
+    }
+    Ok(())
+}
+
+/// Anything the projection cannot reconcile must fail the agent's report
+/// instead of being silently legalized.
+#[test]
+fn pre_migration_projection_fails_closed_on_damaged_legacy_rows() -> Result<()> {
+    use crate::execution::project_legacy_in_flight_work_item;
+
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("runtime.sqlite3");
+    {
+        let db = open_legacy_database(&path)?;
+        for (agent, work, generation, payload) in [
+            ("malformed", "w1", 7, "not json".to_owned()),
+            (
+                "unknown",
+                "w2",
+                7,
+                r#"{"source_revision":9,"state":{"state":"mystery","generation":7,"attempt_id":"a"}}"#
+                    .to_owned(),
+            ),
+            (
+                "missing-key",
+                "w3",
+                7,
+                r#"{"source_revision":9,"state":{"state":"in_flight","generation":7}}"#.to_owned(),
+            ),
+            (
+                "drifted",
+                "w4",
+                7,
+                r#"{"source_revision":9,"state":{"state":"in_flight","generation":8,"attempt_id":"a"}}"#
+                    .to_owned(),
+            ),
+            ("overflow", "w5", i64::MAX, legacy_in_flight_payload("a", i64::MAX as u64)),
+            (
+                "damaged-attempt",
+                "w6",
+                7,
+                legacy_in_flight_payload("broken", 7),
+            ),
+            (
+                "bad-identity-column",
+                "w7",
+                7,
+                legacy_in_flight_payload("open-bad-identity", 7),
+            ),
+        ] {
+            db.execute(
+                "INSERT INTO execution_protocol_work_items VALUES (?1, ?2, 9, ?3, 'in_flight', ?4)",
+                params![agent, work, generation, payload],
+            )?;
+        }
+        db.execute(
+            "INSERT INTO execution_protocol_attempts (
+                 agent_id, attempt_id, lifecycle_state, source_identity_json,
+                 source_generation, payload_json
+             ) VALUES ('damaged-attempt', 'broken', 'open', '{}', 1, '{}')",
+            [],
+        )?;
+        // A source identity column that is not JSON cannot be projected like
+        // migration 119's `json_extract`, so it fails closed instead of
+        // silently falling back to an owner wait.
+        let bad_identity_attempt = legacy_attempt(
+            "bad-identity-column",
+            "open-bad-identity",
+            "w7",
+            ExecutionAttemptState::Open,
+            ExecutionSourceIdentity::WorkItemContinuation {
+                work_item_id: "w7".into(),
+            },
+            7,
+        );
+        db.execute(
+            "INSERT INTO execution_protocol_attempts (
+                 agent_id, attempt_id, lifecycle_state, source_identity_json,
+                 source_generation, payload_json
+             ) VALUES (?1, ?2, 'open', 'not json', 1, ?3)",
+            params![
+                "bad-identity-column",
+                bad_identity_attempt.attempt_id,
+                serde_json::to_string(&bad_identity_attempt)?,
+            ],
+        )?;
+    }
+
+    let db = Connection::open(&path)?;
+    for (agent, work, marker) in [
+        ("malformed", "w1", "9:7:in_flight"),
+        ("unknown", "w2", "9:7:in_flight"),
+        ("missing-key", "w3", "9:7:in_flight"),
+        ("drifted", "w4", "9:7:in_flight"),
+        ("overflow", "w5", "9:9223372036854775807:in_flight"),
+        ("damaged-attempt", "w6", "9:7:in_flight"),
+        ("bad-identity-column", "w7", "9:7:in_flight"),
+        ("malformed", "w1", "not-a-marker"),
+    ] {
+        let payload: String = db.query_row(
+            "SELECT payload_json FROM execution_protocol_work_items
+             WHERE agent_id = ?1 AND work_item_id = ?2",
+            params![agent, work],
+            |row| row.get(0),
+        )?;
+        let error = project_legacy_in_flight_work_item(&db, agent, work, &payload, marker)
+            .expect_err("damaged legacy row must fail closed");
+        assert!(
+            !format!("{error:#}").is_empty(),
+            "{agent}/{work} must explain the failure"
+        );
+    }
+    Ok(())
+}

@@ -1985,6 +1985,11 @@ pub(crate) fn load_state_unchecked_tx(
 /// The pre-v47 offline fallback can open a database before schema migrations.
 /// Project its retired rows as Runnable only for the repair's before-image;
 /// the fallback itself advances those generations when it writes the repair.
+///
+/// The revision marker is rewritten together with the payload: a row projected
+/// to a canonical `runnable` record must not still claim the retired
+/// `in_flight` lifecycle, or the shared pre-migration decoder sees a marker and
+/// payload that disagree (#4571).
 pub(crate) fn load_retired_scheduler_state_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -1997,7 +2002,9 @@ pub(crate) fn load_retired_scheduler_state_tx(
                      THEN json_set(payload_json, '$.state', json_object(
                           'state', 'runnable', 'generation', generation))
                      ELSE payload_json END,
-                source_revision||':'||generation||':'||lifecycle_state
+                source_revision||':'||generation||':'||
+                CASE WHEN lifecycle_state = 'in_flight'
+                     THEN 'runnable' ELSE lifecycle_state END
          FROM execution_protocol_work_items WHERE agent_id = ?1",
     )
 }
@@ -2985,9 +2992,25 @@ fn load_work_items_with_migration(
         let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?.to_owned();
         let payload = crate::runtime_db::repositories::borrowed_sql_text(row, 1)?;
         let marker = crate::runtime_db::repositories::borrowed_sql_text(row, 2)?;
-        let record =
-            holon_storage::execution::decode_work_item_record_with_migration(payload, marker)
-                .with_context(|| format!("decoding execution protocol record {}", id))?;
+        let (record, legacy_projection) =
+            holon_storage::execution::project_legacy_in_flight_work_item(
+                tx, agent_id, &id, payload, marker,
+            )
+            .with_context(|| format!("decoding execution protocol record {}", id))?;
+        if let Some(evidence) = legacy_projection {
+            tracing::info!(
+                agent_id = %evidence.agent_id,
+                work_item_id = %evidence.work_item_id,
+                lifecycle = %evidence.original_lifecycle,
+                attempt_id = %evidence.attempt_id,
+                matching_open_attempt = evidence.matching_open_attempt,
+                wait_source = ?evidence.wait_source,
+                wait_id = evidence.wait_id.as_deref(),
+                generation_before = evidence.generation_before,
+                generation_after = evidence.generation_after,
+                "projected legacy in_flight work item from a pre-migration database"
+            );
+        }
         records.insert(id, record);
     }
     Ok(records)
