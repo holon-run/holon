@@ -6164,3 +6164,288 @@ async fn runtime_failure_artifacts_create_terminal_turn_record_when_missing() {
     );
     assert_eq!(turns[0].produced_brief_ids, vec![failure_brief.id.clone()]);
 }
+
+fn provider_event_of<'a>(events: &'a [AuditEvent], kind: &str) -> Vec<&'a AuditEvent> {
+    events.iter().filter(|event| event.kind == kind).collect()
+}
+
+fn turn_event_attempt(
+    provider: &str,
+    model_ref: &str,
+    outcome: ProviderAttemptOutcome,
+    advanced_to_fallback: bool,
+    failure_kind: Option<&str>,
+) -> ProviderAttemptRecord {
+    ProviderAttemptRecord {
+        provider: provider.into(),
+        model_ref: model_ref.into(),
+        attempt: 1,
+        max_attempts: 3,
+        started_at: None,
+        completed_at: None,
+        duration_ms: Some(120),
+        failure_kind: failure_kind.map(str::to_string),
+        disposition: Some("fail_fast".into()),
+        outcome,
+        advanced_to_fallback,
+        backoff_ms: None,
+        backoff_source: None,
+        token_usage: None,
+        cache_usage: None,
+        provider_message_id: None,
+        provider_request_id: None,
+        provider_http_trace_id: None,
+        transport_diagnostics: None,
+        transport_timeline: None,
+    }
+}
+
+fn turn_event_response(text: &str) -> ProviderTurnResponse {
+    ProviderTurnResponse {
+        material: Default::default(),
+        blocks: vec![ModelBlock::Text { text: text.into() }],
+        stop_reason: Some("end_turn".into()),
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_usage: None,
+        provider_message_id: None,
+        provider_request_id: None,
+        request_diagnostics: None,
+    }
+}
+
+struct InTurnFallbackProvider;
+
+#[async_trait]
+impl AgentProvider for InTurnFallbackProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        Ok(turn_event_response("Recovered on the fallback route."))
+    }
+
+    async fn complete_turn_with_diagnostics(
+        &self,
+        _request: ProviderTurnRequest,
+    ) -> Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)> {
+        Ok((
+            turn_event_response("Recovered on the fallback route."),
+            Some(ProviderAttemptTimeline {
+                attempts: vec![
+                    turn_event_attempt(
+                        "primary",
+                        "primary@default/primary-model",
+                        ProviderAttemptOutcome::FailFastAborted,
+                        true,
+                        Some("rate_limited"),
+                    ),
+                    turn_event_attempt(
+                        "fallback",
+                        "fallback@default/fallback-model",
+                        ProviderAttemptOutcome::Succeeded,
+                        false,
+                        None,
+                    ),
+                ],
+                requested_model_ref: "primary@default/primary-model".into(),
+                active_model_ref: Some("fallback@default/fallback-model".into()),
+                winning_model_ref: Some("fallback@default/fallback-model".into()),
+                pending_fallback_model_ref: None,
+                pending_fallback_disposition: None,
+                aggregated_token_usage: None,
+            }),
+        ))
+    }
+}
+
+struct FailingDispatchProvider;
+
+#[async_trait]
+impl AgentProvider for FailingDispatchProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        Err(provider_turn_error(
+            "primary route rejected credentials",
+            ProviderAttemptTimeline {
+                attempts: vec![turn_event_attempt(
+                    "primary",
+                    "primary@default/primary-model",
+                    ProviderAttemptOutcome::RetriesExhausted,
+                    false,
+                    Some("auth_error"),
+                )],
+                requested_model_ref: "primary@default/primary-model".into(),
+                active_model_ref: None,
+                winning_model_ref: None,
+                pending_fallback_model_ref: None,
+                pending_fallback_disposition: None,
+                aggregated_token_usage: None,
+            },
+            anyhow::anyhow!("auth failed"),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn in_turn_fallback_publishes_one_switch_and_paired_request_events() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(InTurnFallbackProvider),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let events = runtime.storage().read_recent_events(64).unwrap();
+    let switches = provider_event_of(&events, "provider_switch");
+    let started = provider_event_of(&events, "provider_request_started");
+    let finished = provider_event_of(&events, "provider_request_finished");
+
+    assert_eq!(switches.len(), 1, "one runtime-driven switch expected");
+    assert_eq!(started.len(), 1, "one dispatch expected for a text round");
+    assert_eq!(finished.len(), 1, "one completed dispatch expected");
+
+    let started = started[0];
+    let finished = finished[0];
+    let switch = switches[0];
+
+    assert_eq!(started.data["round"], 1);
+    assert_eq!(started.data["dispatch_reason"], "initial");
+    assert_eq!(finished.data["request_id"], started.data["request_id"]);
+    assert_eq!(finished.data["outcome"], "succeeded");
+    assert_eq!(finished.data["route_known"], true);
+    assert_eq!(
+        finished.data["model_ref"],
+        "fallback@default/fallback-model"
+    );
+    assert!(finished.data["duration_ms"].as_u64().unwrap() < 60_000);
+
+    assert_eq!(switch.data["switch_ordinal"], 1);
+    assert_eq!(switch.data["from_model_ref"], started.data["model_ref"]);
+    assert_eq!(switch.data["to_model_ref"], finished.data["model_ref"]);
+    assert_eq!(switch.data["reason_category"], "rate_limited");
+    assert_eq!(switch.data["round"], 1);
+
+    for event in [started, finished, switch] {
+        assert_eq!(event.payload_schema_version, 1);
+        assert_eq!(
+            event.contract_version,
+            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION
+        );
+        assert_eq!(
+            crate::runtime_event::projection_effect_of(
+                &event.kind,
+                event.contract_version,
+                &event.payload_schema,
+                event.payload_schema_version,
+            ),
+            crate::runtime_event::ProjectionEffect::None
+        );
+    }
+}
+
+#[tokio::test]
+async fn primary_route_success_publishes_no_switch_event() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("Primary route answered.")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let events = runtime.storage().read_recent_events(64).unwrap();
+    assert!(provider_event_of(&events, "provider_switch").is_empty());
+
+    let started = provider_event_of(&events, "provider_request_started");
+    let finished = provider_event_of(&events, "provider_request_finished");
+    assert_eq!(started.len(), 1);
+    assert_eq!(finished.len(), 1);
+    assert_eq!(
+        finished[0].data["request_id"],
+        started[0].data["request_id"]
+    );
+    assert_eq!(finished[0].data["outcome"], "succeeded");
+    // The stub provider returns no attempt timeline, so the frozen contract
+    // (`winning_model_ref`/`active_model_ref` missing) falls back to the
+    // started route and marks the actual route unknown.
+    assert_eq!(finished[0].data["route_known"], false);
+    assert_eq!(finished[0].data["model_ref"], started[0].data["model_ref"]);
+}
+
+#[tokio::test]
+async fn failed_dispatch_publishes_failed_finish_without_success() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(FailingDispatchProvider),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let _ = runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await;
+
+    let events = runtime.storage().read_recent_events(64).unwrap();
+    let started = provider_event_of(&events, "provider_request_started");
+    let finished = provider_event_of(&events, "provider_request_finished");
+    assert!(!started.is_empty());
+    assert_eq!(finished.len(), started.len());
+
+    let started_ids: std::collections::HashSet<_> = started
+        .iter()
+        .map(|event| event.data["request_id"].as_str().unwrap().to_string())
+        .collect();
+    for event in &finished {
+        let request_id = event.data["request_id"].as_str().unwrap();
+        assert!(started_ids.contains(request_id));
+        assert_ne!(event.data["outcome"], "succeeded");
+    }
+    assert!(finished
+        .iter()
+        .any(|event| event.data["failure_kind"] == "auth_error"));
+}

@@ -2,6 +2,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::decision_telemetry::{DecisionAdvisoryCompletedEvent, DecisionOutcomeRecordedEvent};
+use crate::provider_events::{
+    ProviderRequestFinishedEvent, ProviderRequestStartedEvent, ProviderSwitchEvent,
+};
 use crate::{
     AgentStateChangedEvent, BriefCreatedAuditEvent, MessageLifecycleAuditEvent,
     SchedulerDiagnosticAuditEvent, TaskLifecycleAuditEvent, WorkItemLifecycleAuditEvent,
@@ -68,6 +71,9 @@ pub const ALL_RUNTIME_EVENT_KINDS: &[RuntimeEventKind] = &[
     RuntimeEventKind::SchedulerDiagnostic,
     RuntimeEventKind::DecisionAdvisoryCompleted,
     RuntimeEventKind::DecisionOutcomeRecorded,
+    RuntimeEventKind::ProviderSwitch,
+    RuntimeEventKind::ProviderRequestStarted,
+    RuntimeEventKind::ProviderRequestFinished,
 ];
 
 /// Wire names in the public typed-event matrix. Events outside this set stay
@@ -84,6 +90,9 @@ pub const PUBLIC_TYPED_RUNTIME_EVENT_WIRE_NAMES: &[&str] = &[
     "scheduler_diagnostic",
     "decision_advisory_completed",
     "decision_outcome_recorded",
+    "provider_switch",
+    "provider_request_started",
+    "provider_request_finished",
 ];
 
 pub fn legacy_contract_version() -> u32 {
@@ -107,6 +116,7 @@ pub enum RuntimeEventDisplayFamily {
     WorkItem,
     AgentState,
     Scheduler,
+    Model,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -123,6 +133,9 @@ pub enum RuntimeEventKind {
     SchedulerDiagnostic,
     DecisionAdvisoryCompleted,
     DecisionOutcomeRecorded,
+    ProviderSwitch,
+    ProviderRequestStarted,
+    ProviderRequestFinished,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
@@ -172,6 +185,18 @@ impl RuntimeEventPayload for DecisionAdvisoryCompletedEvent {
 
 impl RuntimeEventPayload for DecisionOutcomeRecordedEvent {
     const SCHEMA_ID: &'static str = "holon.runtime_event.decision_outcome_recorded";
+}
+
+impl RuntimeEventPayload for ProviderSwitchEvent {
+    const SCHEMA_ID: &'static str = "holon.runtime_event.provider_switch";
+}
+
+impl RuntimeEventPayload for ProviderRequestStartedEvent {
+    const SCHEMA_ID: &'static str = "holon.runtime_event.provider_request_started";
+}
+
+impl RuntimeEventPayload for ProviderRequestFinishedEvent {
+    const SCHEMA_ID: &'static str = "holon.runtime_event.provider_request_finished";
 }
 
 const REGISTRY: &[RuntimeEventDescriptor] = &[
@@ -273,6 +298,33 @@ const REGISTRY: &[RuntimeEventDescriptor] = &[
         payload_schema_version: DecisionOutcomeRecordedEvent::SCHEMA_VERSION,
         display_family: RuntimeEventDisplayFamily::Scheduler,
         fixture_json: r#"{"decision_id":"decision_fixture","agent_id":"default","task_id":"task_fixture","task_status":"completed","recorded_at":"2026-01-01T00:00:00Z"}"#,
+    },
+    RuntimeEventDescriptor {
+        kind: RuntimeEventKind::ProviderSwitch,
+        wire_name: "provider_switch",
+        projection_effect: ProjectionEffect::None,
+        payload_schema: ProviderSwitchEvent::SCHEMA_ID,
+        payload_schema_version: ProviderSwitchEvent::SCHEMA_VERSION,
+        display_family: RuntimeEventDisplayFamily::Model,
+        fixture_json: r#"{"turn_id":"turn_fixture","turn_index":0,"round":1,"switch_ordinal":1,"from_provider":"fixture","from_model_ref":"fixture@default/primary-model","to_provider":"fixture","to_model_ref":"fixture@default/fallback-model","reason_category":"rate_limited","occurred_at":"2026-01-01T00:00:00Z"}"#,
+    },
+    RuntimeEventDescriptor {
+        kind: RuntimeEventKind::ProviderRequestStarted,
+        wire_name: "provider_request_started",
+        projection_effect: ProjectionEffect::None,
+        payload_schema: ProviderRequestStartedEvent::SCHEMA_ID,
+        payload_schema_version: ProviderRequestStartedEvent::SCHEMA_VERSION,
+        display_family: RuntimeEventDisplayFamily::Model,
+        fixture_json: r#"{"request_id":"turn_fixture:1:1","turn_id":"turn_fixture","turn_index":0,"round":1,"provider":"fixture","model_ref":"fixture@default/primary-model","started_at":"2026-01-01T00:00:00Z","dispatch_reason":"initial"}"#,
+    },
+    RuntimeEventDescriptor {
+        kind: RuntimeEventKind::ProviderRequestFinished,
+        wire_name: "provider_request_finished",
+        projection_effect: ProjectionEffect::None,
+        payload_schema: ProviderRequestFinishedEvent::SCHEMA_ID,
+        payload_schema_version: ProviderRequestFinishedEvent::SCHEMA_VERSION,
+        display_family: RuntimeEventDisplayFamily::Model,
+        fixture_json: r#"{"request_id":"turn_fixture:1:1","outcome":"succeeded","provider":"fixture","model_ref":"fixture@default/primary-model","completed_at":"2026-01-01T00:00:01Z","duration_ms":1000,"route_known":true}"#,
     },
 ];
 

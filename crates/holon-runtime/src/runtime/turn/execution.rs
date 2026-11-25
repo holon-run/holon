@@ -25,14 +25,17 @@ use crate::runtime::provider_turn::{
     append_inference_time, build_continuation_request,
     build_initial_provider_turn_request_with_material, build_provider_prompt_frame,
 };
+use crate::runtime_event::RuntimeEventKind;
 use crate::storage::to_json_value;
 use crate::tool::{ToolCall, ToolError, ToolSpec};
 use crate::types::{
     AdmissionContext, AssistantRoundPurpose, AuditEvent, AuthorityClass, Citation, MessageBody,
     MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-    QueueEntryRecord, QueueEntryStatus, TokenUsage, ToolExecutionAuditEvent, ToolExecutionRecord,
+    ProviderDispatchReason, ProviderRequestFinishedEvent, ProviderRequestOutcome,
+    ProviderRequestStartedEvent, ProviderSwitchEvent, ProviderSwitchReason, QueueEntryRecord,
+    QueueEntryStatus, TokenUsage, ToolExecutionAuditEvent, ToolExecutionRecord,
     ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnNoBriefReason, TurnTerminalKind,
-    TurnTerminalRecord, WorkItemExecutionBinding,
+    TurnTerminalRecord, WorkItemExecutionBinding, PUBLIC_PROVIDER_FAILURE_KINDS,
 };
 #[cfg(test)]
 use crate::types::{BriefKind, BriefRecord};
@@ -170,6 +173,86 @@ struct CoolingInputBoundary<'a> {
     prompt: &'a EffectivePrompt,
     rounds: &'a mut [TurnRoundRecord],
     tools: &'a [ToolSpec],
+}
+
+/// Last typed failure kind in a provider attempt timeline. Used only for the
+/// whitelisted `failure_kind`/`reason_category` fields; never for matching or
+/// recovery decisions.
+fn provider_timeline_failure_kind(timeline: &ProviderAttemptTimeline) -> Option<&str> {
+    timeline
+        .attempts
+        .iter()
+        .rev()
+        .find(|attempt| attempt.outcome != ProviderAttemptOutcome::Succeeded)
+        .and_then(|attempt| attempt.failure_kind.as_deref())
+}
+
+/// Provider part of a `provider@endpoint/model` route. Falls back to the raw
+/// route when the value is not a parseable route.
+fn provider_name_of_model_ref(model_ref: &str) -> String {
+    let route = model_ref
+        .split_once('/')
+        .map(|(route, _)| route)
+        .unwrap_or(model_ref);
+    route
+        .split_once('@')
+        .map(|(provider, _)| provider)
+        .unwrap_or(route)
+        .to_string()
+}
+
+/// Derives the model switch a completed dispatch actually performed: the
+/// winning/active route differs from the route the runtime dispatched to.
+fn provider_switch_from_fallback(
+    dispatched_model_ref: &str,
+    timeline: &ProviderAttemptTimeline,
+) -> Option<(String, String, ProviderSwitchReason)> {
+    // A switch fact means the runtime moved off the dispatched route after it
+    // failed. A provider may report a model ref that differs from the
+    // configured effective route without any fallback; that is not a switch.
+    let fell_back = timeline
+        .attempts
+        .iter()
+        .any(|attempt| attempt.advanced_to_fallback);
+    if !fell_back {
+        return None;
+    }
+    let to_model_ref = timeline
+        .winning_model_ref
+        .as_deref()
+        .or(timeline.active_model_ref.as_deref())?;
+    if to_model_ref == dispatched_model_ref {
+        return None;
+    }
+    let to_provider = timeline
+        .attempts
+        .iter()
+        .find(|attempt| attempt.model_ref == to_model_ref)
+        .map(|attempt| attempt.provider.clone())
+        .unwrap_or_else(|| provider_name_of_model_ref(to_model_ref));
+    let reason = ProviderSwitchReason::from_failure_kind(
+        timeline
+            .attempts
+            .iter()
+            .find(|attempt| attempt.advanced_to_fallback)
+            .and_then(|attempt| attempt.failure_kind.as_deref()),
+    );
+    Some((to_provider, to_model_ref.to_string(), reason))
+}
+
+/// `provider_switch` fact derived from one dispatch result. Only a completed
+/// dispatch can carry an implicit fallback; a reselection publishes its own
+/// switch fact and an interjection abandoned the dispatch.
+fn fallback_switch(
+    dispatch: &ProviderRoundDispatch,
+    dispatched_model_ref: &str,
+    timeline: Option<&ProviderAttemptTimeline>,
+) -> Option<(String, String, ProviderSwitchReason)> {
+    match dispatch {
+        ProviderRoundDispatch::Completed(_) => timeline
+            .and_then(|timeline| provider_switch_from_fallback(dispatched_model_ref, timeline)),
+        ProviderRoundDispatch::Reselect(..) | ProviderRoundDispatch::Interjected(_) => None,
+    }
 }
 
 fn tool_capability_projection_fingerprint(tools: &[ToolSpec]) -> String {
@@ -1001,6 +1084,126 @@ impl RuntimeHandle {
             .await?;
         }
         Ok(())
+    }
+
+    /// Publishes the whitelisted `provider_switch` fact: the runtime moved the
+    /// turn to a different model route. It reports the switch only; it makes
+    /// no claim about success, degradation confirmation, or cross-turn state.
+    #[allow(clippy::too_many_arguments)]
+    async fn append_provider_switch_event(
+        &self,
+        turn_id: &str,
+        turn_index: u64,
+        round: usize,
+        switch_ordinal: u64,
+        from_provider: &str,
+        from_model_ref: &str,
+        to_provider: &str,
+        to_model_ref: &str,
+        reason: ProviderSwitchReason,
+    ) -> Result<()> {
+        let event = AuditEvent::typed(
+            RuntimeEventKind::ProviderSwitch,
+            &ProviderSwitchEvent {
+                turn_id: turn_id.to_string(),
+                turn_index,
+                round,
+                switch_ordinal,
+                from_provider: from_provider.to_string(),
+                from_model_ref: from_model_ref.to_string(),
+                to_provider: to_provider.to_string(),
+                to_model_ref: to_model_ref.to_string(),
+                reason_category: reason,
+                occurred_at: self.now(),
+            },
+        )?;
+        self.append_original_audit_event(event).await
+    }
+
+    /// Publishes `provider_request_started` before the dispatch call so the
+    /// event order matches the causal order.
+    #[allow(clippy::too_many_arguments)]
+    async fn append_provider_request_started_event(
+        &self,
+        request_id: &str,
+        turn_id: &str,
+        turn_index: u64,
+        round: usize,
+        provider: &str,
+        model_ref: &str,
+        started_at: DateTime<Utc>,
+        dispatch_reason: ProviderDispatchReason,
+    ) -> Result<()> {
+        let event = AuditEvent::typed(
+            RuntimeEventKind::ProviderRequestStarted,
+            &ProviderRequestStartedEvent {
+                request_id: request_id.to_string(),
+                turn_id: turn_id.to_string(),
+                turn_index,
+                round,
+                provider: provider.to_string(),
+                model_ref: model_ref.to_string(),
+                started_at,
+                dispatch_reason,
+            },
+        )?;
+        self.append_original_audit_event(event).await
+    }
+
+    /// Publishes `provider_request_finished` for the dispatch identified by
+    /// `request_id`. A started request without a finished counterpart stays
+    /// unpaired on purpose; this helper never fabricates a success.
+    #[allow(clippy::too_many_arguments)]
+    async fn append_provider_request_finished_event(
+        &self,
+        request_id: &str,
+        started_provider: &str,
+        started_model_ref: &str,
+        outcome: ProviderRequestOutcome,
+        timeline: Option<&ProviderAttemptTimeline>,
+        completed_at: DateTime<Utc>,
+        duration_ms: u64,
+    ) -> Result<()> {
+        let actual_model_ref = timeline.and_then(|timeline| {
+            timeline
+                .winning_model_ref
+                .as_deref()
+                .or(timeline.active_model_ref.as_deref())
+        });
+        let route_known = actual_model_ref.is_some();
+        let model_ref = actual_model_ref.unwrap_or(started_model_ref);
+        let provider = timeline
+            .and_then(|timeline| {
+                timeline
+                    .attempts
+                    .iter()
+                    .rev()
+                    .find(|attempt| attempt.model_ref == model_ref)
+            })
+            .map(|attempt| attempt.provider.clone())
+            .unwrap_or_else(|| started_provider.to_string());
+        let failure_kind = if outcome == ProviderRequestOutcome::Succeeded {
+            None
+        } else {
+            timeline
+                .and_then(provider_timeline_failure_kind)
+                .filter(|kind| PUBLIC_PROVIDER_FAILURE_KINDS.contains(kind))
+                .map(str::to_string)
+        };
+        let event = AuditEvent::typed(
+            RuntimeEventKind::ProviderRequestFinished,
+            &ProviderRequestFinishedEvent {
+                request_id: request_id.to_string(),
+                outcome,
+                provider,
+                model_ref: model_ref.to_string(),
+                completed_at,
+                duration_ms,
+                failure_kind,
+                route_known,
+            },
+        )?;
+        self.append_original_audit_event(event).await
     }
 
     pub(super) async fn complete_turn_with_abort(
@@ -4751,6 +4954,7 @@ impl<'a> TurnExecution<'a> {
         let mut pending_completion_report: Option<PendingCompletionReport> = None;
         let mut pending_wait_report: Option<PendingWaitReport> = None;
         let mut round = 0usize;
+        let mut provider_switch_ordinal: u64 = 0;
         let mut truncated_text_history = Vec::new();
         let mut truncated_citation_history = Vec::<Citation>::new();
         let mut last_assistant_message: Option<String> = None;
@@ -5010,6 +5214,20 @@ impl<'a> TurnExecution<'a> {
             let mut excluded_candidates = std::collections::BTreeSet::new();
             let mut reselected_attempts = None;
             let provider_round = match boxed_provider_round(|| async {
+                let (turn_id, turn_index) = {
+                    let guard = runtime.inner.agent.lock().await;
+                    (
+                        guard
+                            .state
+                            .current_turn_id
+                            .clone()
+                            .filter(|turn_id| !turn_id.trim().is_empty())
+                            .unwrap_or_else(crate::ids::turn_id),
+                        guard.state.turn_index,
+                    )
+                };
+                let mut dispatch_ordinal: u64 = 0;
+                let mut next_dispatch_reason = ProviderDispatchReason::Initial;
                 'provider_round: loop {
                 let context_build_started = Instant::now();
                 let context_build_started_at = chrono::Utc::now();
@@ -5074,6 +5292,24 @@ impl<'a> TurnExecution<'a> {
                             ))
                         })
                         .await?;
+                    let dispatch_started_at = Utc::now();
+                    dispatch_ordinal += 1;
+                    let request_id = format!("{turn_id}:{round}:{dispatch_ordinal}");
+                    let dispatch_provider =
+                        turn_model.model.effective_model.provider.as_str().to_string();
+                    let dispatch_model_ref = turn_model.model.effective_model.as_string();
+                    runtime
+                        .append_provider_request_started_event(
+                            &request_id,
+                            &turn_id,
+                            turn_index,
+                            round,
+                            &dispatch_provider,
+                            &dispatch_model_ref,
+                            dispatch_started_at,
+                            next_dispatch_reason,
+                        )
+                        .await?;
                     let (result, provider_started_at, provider_completed_at, provider_round_ms) =
                         Box::pin(runtime.complete_turn_with_cooling_recovery(
                             provider.clone(), request,
@@ -5085,14 +5321,78 @@ impl<'a> TurnExecution<'a> {
                                 rounds: &mut completed_rounds, tools: &available_tools,
                             },
                         )).await;
+                    let dispatch_timeline = match &result {
+                        ProviderRoundDispatch::Completed(Ok((_, timeline)))
+                        | ProviderRoundDispatch::Reselect(_, timeline)
+                        | ProviderRoundDispatch::Interjected(timeline) => timeline.clone(),
+                        ProviderRoundDispatch::Completed(Err(error)) => {
+                            provider_attempt_timeline(error).cloned()
+                        }
+                    };
+                    let dispatch_outcome = match &result {
+                        ProviderRoundDispatch::Completed(Ok(_)) => {
+                            ProviderRequestOutcome::Succeeded
+                        }
+                        ProviderRoundDispatch::Completed(Err(error))
+                            if super::super::provider_admission::is_continuation_input_changed(
+                                error,
+                            ) =>
+                        {
+                            ProviderRequestOutcome::Aborted
+                        }
+                        ProviderRoundDispatch::Completed(Err(_)) => {
+                            ProviderRequestOutcome::Failed
+                        }
+                        // A reselection happens because the dispatch failed on
+                        // the route it was sent to.
+                        ProviderRoundDispatch::Reselect(..) => ProviderRequestOutcome::Failed,
+                        // The runtime abandoned this dispatch to apply pending
+                        // operator input; the response is discarded.
+                        ProviderRoundDispatch::Interjected(_) => ProviderRequestOutcome::Aborted,
+                    };
+                    runtime
+                        .append_provider_request_finished_event(
+                            &request_id,
+                            &dispatch_provider,
+                            &dispatch_model_ref,
+                            dispatch_outcome,
+                            dispatch_timeline.as_ref(),
+                            provider_completed_at,
+                            provider_round_ms,
+                        )
+                        .await?;
+                    // Only an implicit fallback inside one dispatch is reported
+                    // here; an explicit reselection has its own switch branch.
+                    if let Some((to_provider, to_model_ref, reason)) = fallback_switch(
+                        &result,
+                        &dispatch_model_ref,
+                        dispatch_timeline.as_ref(),
+                    ) {
+                        provider_switch_ordinal += 1;
+                        runtime
+                            .append_provider_switch_event(
+                                &turn_id,
+                                turn_index,
+                                round,
+                                provider_switch_ordinal,
+                                &dispatch_provider,
+                                &dispatch_model_ref,
+                                &to_provider,
+                                &to_model_ref,
+                                reason,
+                            )
+                            .await?;
+                    }
                     let result = match result {
                         ProviderRoundDispatch::Completed(result) => result,
                         ProviderRoundDispatch::Interjected(timeline) => {
                             reselected_attempts = timeline;
+                            next_dispatch_reason = ProviderDispatchReason::AfterInterjection;
                             continue 'provider_round;
                         }
                         ProviderRoundDispatch::Reselect(model, timeline) => {
                             reselected_attempts = timeline;
+                            let from_model = turn_model.model.effective_model.clone();
                             runtime.reconfigure_provider_for_turn(Some(&model)).await?;
                             (provider, available_tools, _, native_web_search, _) = runtime
                                 .provider_tool_selection_for_turn(Some(&model)).await?;
@@ -5106,6 +5406,25 @@ impl<'a> TurnExecution<'a> {
                             projection_fallback_reason = provider_projection_fallback_reason(
                                 provider.as_ref(), projection_selector,
                             );
+                            provider_switch_ordinal += 1;
+                            runtime
+                                .append_provider_switch_event(
+                                    &turn_id,
+                                    turn_index,
+                                    round,
+                                    provider_switch_ordinal,
+                                    from_model.provider.as_str(),
+                                    &from_model.as_string(),
+                                    model.provider.as_str(),
+                                    &model.as_string(),
+                                    ProviderSwitchReason::from_failure_kind(
+                                        reselected_attempts
+                                            .as_ref()
+                                            .and_then(provider_timeline_failure_kind),
+                                    ),
+                                )
+                                .await?;
+                            next_dispatch_reason = ProviderDispatchReason::AfterSwitch;
                             continue 'provider_round;
                         }
                     };
@@ -5197,6 +5516,7 @@ impl<'a> TurnExecution<'a> {
                             ).await? {
                                 effective_prompt = recovered_prompt;
                                 context_length_recovery_attempts += 1;
+                                next_dispatch_reason = ProviderDispatchReason::Retry;
                                 continue 'provider_round;
                             }
                             if let Some(timeline) = provider_attempt_timeline(&err) {
@@ -5566,6 +5886,24 @@ impl<'a> TurnExecution<'a> {
                             return Ok(ProviderRoundResult::Terminal(outcome));
                         }
                     };
+                    let dispatch_started_at = Utc::now();
+                    dispatch_ordinal += 1;
+                    let request_id = format!("{turn_id}:{round}:{dispatch_ordinal}");
+                    let dispatch_provider =
+                        turn_model.model.effective_model.provider.as_str().to_string();
+                    let dispatch_model_ref = turn_model.model.effective_model.as_string();
+                    runtime
+                        .append_provider_request_started_event(
+                            &request_id,
+                            &turn_id,
+                            turn_index,
+                            round,
+                            &dispatch_provider,
+                            &dispatch_model_ref,
+                            dispatch_started_at,
+                            next_dispatch_reason,
+                        )
+                        .await?;
                     let (result, provider_started_at, provider_completed_at, provider_round_ms) =
                         Box::pin(runtime.complete_turn_with_cooling_recovery(
                             provider.clone(), request,
@@ -5577,14 +5915,78 @@ impl<'a> TurnExecution<'a> {
                                 rounds: &mut completed_rounds, tools: &available_tools,
                             },
                         )).await;
+                    let dispatch_timeline = match &result {
+                        ProviderRoundDispatch::Completed(Ok((_, timeline)))
+                        | ProviderRoundDispatch::Reselect(_, timeline)
+                        | ProviderRoundDispatch::Interjected(timeline) => timeline.clone(),
+                        ProviderRoundDispatch::Completed(Err(error)) => {
+                            provider_attempt_timeline(error).cloned()
+                        }
+                    };
+                    let dispatch_outcome = match &result {
+                        ProviderRoundDispatch::Completed(Ok(_)) => {
+                            ProviderRequestOutcome::Succeeded
+                        }
+                        ProviderRoundDispatch::Completed(Err(error))
+                            if super::super::provider_admission::is_continuation_input_changed(
+                                error,
+                            ) =>
+                        {
+                            ProviderRequestOutcome::Aborted
+                        }
+                        ProviderRoundDispatch::Completed(Err(_)) => {
+                            ProviderRequestOutcome::Failed
+                        }
+                        // A reselection happens because the dispatch failed on
+                        // the route it was sent to.
+                        ProviderRoundDispatch::Reselect(..) => ProviderRequestOutcome::Failed,
+                        // The runtime abandoned this dispatch to apply pending
+                        // operator input; the response is discarded.
+                        ProviderRoundDispatch::Interjected(_) => ProviderRequestOutcome::Aborted,
+                    };
+                    runtime
+                        .append_provider_request_finished_event(
+                            &request_id,
+                            &dispatch_provider,
+                            &dispatch_model_ref,
+                            dispatch_outcome,
+                            dispatch_timeline.as_ref(),
+                            provider_completed_at,
+                            provider_round_ms,
+                        )
+                        .await?;
+                    // Only an implicit fallback inside one dispatch is reported
+                    // here; an explicit reselection has its own switch branch.
+                    if let Some((to_provider, to_model_ref, reason)) = fallback_switch(
+                        &result,
+                        &dispatch_model_ref,
+                        dispatch_timeline.as_ref(),
+                    ) {
+                        provider_switch_ordinal += 1;
+                        runtime
+                            .append_provider_switch_event(
+                                &turn_id,
+                                turn_index,
+                                round,
+                                provider_switch_ordinal,
+                                &dispatch_provider,
+                                &dispatch_model_ref,
+                                &to_provider,
+                                &to_model_ref,
+                                reason,
+                            )
+                            .await?;
+                    }
                     let result = match result {
                         ProviderRoundDispatch::Completed(result) => result,
                         ProviderRoundDispatch::Interjected(timeline) => {
                             reselected_attempts = timeline;
+                            next_dispatch_reason = ProviderDispatchReason::AfterInterjection;
                             continue 'provider_round;
                         }
                         ProviderRoundDispatch::Reselect(model, timeline) => {
                             reselected_attempts = timeline;
+                            let from_model = turn_model.model.effective_model.clone();
                             runtime.reconfigure_provider_for_turn(Some(&model)).await?;
                             (provider, available_tools, _, native_web_search, _) = runtime
                                 .provider_tool_selection_for_turn(Some(&model)).await?;
@@ -5598,6 +6000,25 @@ impl<'a> TurnExecution<'a> {
                             projection_fallback_reason = provider_projection_fallback_reason(
                                 provider.as_ref(), projection_selector,
                             );
+                            provider_switch_ordinal += 1;
+                            runtime
+                                .append_provider_switch_event(
+                                    &turn_id,
+                                    turn_index,
+                                    round,
+                                    provider_switch_ordinal,
+                                    from_model.provider.as_str(),
+                                    &from_model.as_string(),
+                                    model.provider.as_str(),
+                                    &model.as_string(),
+                                    ProviderSwitchReason::from_failure_kind(
+                                        reselected_attempts
+                                            .as_ref()
+                                            .and_then(provider_timeline_failure_kind),
+                                    ),
+                                )
+                                .await?;
+                            next_dispatch_reason = ProviderDispatchReason::AfterSwitch;
                             continue 'provider_round;
                         }
                     };
@@ -5656,6 +6077,7 @@ impl<'a> TurnExecution<'a> {
                             ).await? {
                                 effective_prompt = recovered_prompt;
                                 context_length_recovery_attempts += 1;
+                                next_dispatch_reason = ProviderDispatchReason::Retry;
                                 continue 'provider_round;
                             }
                             if let Some(timeline) = provider_attempt_timeline(&err) {
