@@ -5,6 +5,7 @@ pub use holon_runtime::*;
 
 pub mod avatar;
 pub mod cli;
+pub mod daemon_cli;
 pub mod onboarding_tui;
 pub mod tail;
 pub mod tui;

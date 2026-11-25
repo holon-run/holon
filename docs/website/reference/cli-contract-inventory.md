@@ -60,11 +60,15 @@ support policy behind these labels.
 | Command | Args | Options | Output | Initial stability | Notes |
 |---|---|---|---|---:|---|
 | `holon serve` | none | `--access <local\|tunnel\|lan\|tailnet>` default `local`; `--host <HOST>`; `--listen <LISTEN>`; `--port <PORT>`; `--advertise <ADVERTISE>`; `--token <TOKEN>`; `--token-file <TOKEN_FILE>` | long-running server; startup summaries on stdout; logs/tracing on stderr | `experimental` | Non-loopback/tailnet/lan access requires control token via flag, file, or `HOLON_CONTROL_TOKEN`. |
-| `holon daemon start` | none | same `ServeOptions` as `serve` | JSON daemon lifecycle response | `stable` candidate | Inline token is passed to child process via env, not argv. |
-| `holon daemon stop` | none | none | JSON daemon lifecycle response | `stable` candidate | Uses local daemon lifecycle helper. |
-| `holon daemon status` | none | none | JSON daemon status response | `stable` candidate | Important local inspection surface. |
-| `holon daemon restart` | none | same `ServeOptions` as `serve` | JSON daemon lifecycle response | `stable` candidate | Same access/token validation as `serve`. |
-| `holon daemon logs` | none | `--tail <TAIL>` default `80` | JSON daemon log response | `stable` candidate | `daemon logs` is documented as a local troubleshooting surface. |
+| `holon daemon start` | none | `--json`; same `ServeOptions` as `serve` | daemon envelope (`--json`) or bounded human summary | `stable` candidate | Inline token is passed to child process via env, not argv. |
+| `holon daemon stop` | none | `--json` | daemon envelope (`--json`) or bounded human summary | `stable` candidate | Uses local daemon lifecycle helper. |
+| `holon daemon status` | none | `--json` | daemon envelope (`--json`) or bounded human summary | `stable` candidate | Important local inspection surface. |
+| `holon daemon restart` | none | `--json`; same `ServeOptions` as `serve` | daemon envelope (`--json`) or bounded human summary | `stable` candidate | Same access/token validation as `serve`. |
+| `holon daemon logs` | none | `--json`; `--tail <TAIL>` default `80` | daemon envelope (`--json`) or bounded human summary | `stable` candidate | `daemon logs` is documented as a local troubleshooting surface. |
+
+All daemon subcommands share one `{ schema_version, command, status, data,
+error }` envelope and the `0/1/20/21/22` exit-code mapping; see
+[CLI exit codes](./cli-exit-codes.md).
 
 ### Offline configuration
 

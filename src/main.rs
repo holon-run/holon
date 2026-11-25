@@ -107,7 +107,9 @@ fn main() -> std::process::ExitCode {
     let code = match &result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            if let Some(error) = error.downcast_ref::<clap::Error>() {
+            if let Some(status) = error.downcast_ref::<holon::daemon_cli::DaemonExitStatus>() {
+                std::process::ExitCode::from(status.exit_code())
+            } else if let Some(error) = error.downcast_ref::<clap::Error>() {
                 let _ = error.print();
                 std::process::ExitCode::from(error.exit_code() as u8)
             } else {
@@ -123,12 +125,49 @@ fn main() -> std::process::ExitCode {
 fn run_main() -> Result<()> {
     init_tracing();
     let policy = apply_startup_policy(allocator_label());
-    let cli = Cli::try_parse()?;
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let cli = match Cli::try_parse_from(argv.iter().cloned()) {
+        Ok(cli) => cli,
+        Err(error) => {
+            use clap::error::ErrorKind;
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) {
+                return Err(error.into());
+            }
+            if let Some(invocation) = holon::daemon_cli::probe_daemon_invocation(&argv) {
+                return render_daemon_usage_error(invocation, &error);
+            }
+            return Err(error.into());
+        }
+    };
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(policy.tokio_worker_threads)
         .enable_all()
         .build()?
         .block_on(run(cli))
+}
+
+/// Parse failures are part of the daemon contract: render the envelope (or the
+/// bounded human equivalent) instead of clap's default stderr + exit 2.
+fn render_daemon_usage_error(
+    invocation: holon::daemon_cli::DaemonInvocation,
+    error: &clap::Error,
+) -> Result<()> {
+    let code = holon::daemon_cli::usage_code(error.kind());
+    let message = error
+        .to_string()
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("invalid daemon command arguments")
+        .trim()
+        .trim_start_matches("error: ")
+        .to_string();
+    let envelope =
+        holon::daemon_cli::DaemonEnvelope::usage(&invocation.command_path, code, message);
+    holon::daemon_cli::emit(&envelope, invocation.json_mode)?;
+    Err(holon::daemon_cli::DaemonExitStatus(envelope.exit_code()).into())
 }
 
 async fn run(cli: Cli) -> Result<()> {
@@ -266,7 +305,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         }
         Commands::Commands => print_json(&serde_json::to_value(holon::cli::collect_snapshot())?),
         Commands::Serve { options } => serve(config, options).await,
-        Commands::Daemon { command } => handle_daemon_command(config, command).await,
+        Commands::Daemon { json, command } => handle_daemon_command(config, json, command).await,
         Commands::Prompt { text, agent } => {
             let client = LocalClient::new(config)?;
             let agent = resolve_agent_id(&client, agent).await?;
@@ -2260,6 +2299,34 @@ mod tests {
         ));
     }
 
+    /// The legacy-metadata rejection is the daemon contract's expected domain
+    /// failure: it must become `domain` with exit code 20 in the shared
+    /// envelope, and the published message stays curated rather than echoing
+    /// the recorded arguments.
+    #[test]
+    fn legacy_metadata_rejection_maps_to_domain_envelope() {
+        let config = test_config();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec!["--desktop-integration-if-unconfigured"],
+            false,
+        );
+        let error = resolve_recorded_daemon_serve_plan(&config, &metadata)
+            .err()
+            .unwrap();
+        let envelope = holon::daemon_cli::DaemonEnvelope::from_anyhow("daemon.start", &error);
+        assert_eq!(
+            envelope.exit_code(),
+            holon::daemon_cli::exit_codes::DOMAIN_FAILURE
+        );
+        let failure = envelope.error.expect("domain failure carries an error");
+        assert_eq!(failure.kind, holon::daemon_cli::DaemonErrorKind::Domain);
+        assert_eq!(failure.code, "invalid_legacy_daemon_metadata");
+        assert!(!failure
+            .message
+            .contains("desktop-integration-if-unconfigured"));
+    }
+
     #[test]
     fn serve_profile_desktop_hint_is_request_only() {
         for command in [
@@ -2277,6 +2344,7 @@ mod tests {
             let options = match cli.command {
                 Commands::Serve { options }
                 | Commands::Daemon {
+                    json: _,
                     command:
                         DaemonCommands::Start { options, .. } | DaemonCommands::Restart { options, .. },
                 } => options,
@@ -2485,6 +2553,7 @@ mod tests {
             "/tmp/holon.token",
         ]);
         let Commands::Daemon {
+            json: _,
             command: DaemonCommands::Start { options, .. },
         } = cli.command
         else {
@@ -6792,12 +6861,64 @@ fn format_duration_ms(duration_ms: u64) -> String {
     }
 }
 
-async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Result<()> {
-    let value = match command {
+async fn handle_daemon_command(
+    config: AppConfig,
+    json_mode: bool,
+    command: DaemonCommands,
+) -> Result<()> {
+    let command_path = daemon_command_path(&command);
+    let envelope = match run_daemon_command(config, command).await {
+        Ok(DaemonCommandPayload::Data(data)) => {
+            holon::daemon_cli::DaemonEnvelope::ok(command_path, data)
+        }
+        Ok(DaemonCommandPayload::Blocked(error)) => {
+            holon::daemon_cli::DaemonEnvelope::blocked(command_path, error)
+        }
+        Err(error) => {
+            tracing::error!(
+                command = command_path,
+                error = %format!("{error:#}"),
+                "holon daemon command failed"
+            );
+            holon::daemon_cli::DaemonEnvelope::from_anyhow(command_path, &error)
+        }
+    };
+    holon::daemon_cli::emit(&envelope, json_mode)?;
+    let code = envelope.exit_code();
+    if code == holon::daemon_cli::exit_codes::OK {
+        Ok(())
+    } else {
+        Err(holon::daemon_cli::DaemonExitStatus(code).into())
+    }
+}
+
+/// One daemon command payload before the shared renderer attaches the envelope.
+enum DaemonCommandPayload {
+    Data(serde_json::Value),
+    Blocked(holon::daemon_cli::DaemonError),
+}
+
+fn daemon_command_path(command: &DaemonCommands) -> &'static str {
+    match command {
+        DaemonCommands::Start { .. } => "daemon.start",
+        DaemonCommands::Stop => "daemon.stop",
+        DaemonCommands::PrepareUpdate => "daemon.prepare-update",
+        DaemonCommands::Status => "daemon.status",
+        DaemonCommands::Quarantine => "daemon.quarantine",
+        DaemonCommands::Restart { .. } => "daemon.restart",
+        DaemonCommands::Logs { .. } => "daemon.logs",
+    }
+}
+
+async fn run_daemon_command(
+    config: AppConfig,
+    command: DaemonCommands,
+) -> Result<DaemonCommandPayload> {
+    Ok(match command {
         DaemonCommands::Start {
             options,
             start_timeout,
-        } => serde_json::to_value(
+        } => DaemonCommandPayload::Data(serde_json::to_value(
             daemon_launch_with_profile(
                 &config,
                 false,
@@ -6809,19 +6930,27 @@ async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Re
                 resolve_recorded_daemon_serve_plan,
             )
             .await?,
-        )?,
-        DaemonCommands::Stop => serde_json::to_value(daemon_stop(&config).await?)?,
+        )?),
+        DaemonCommands::Stop => {
+            DaemonCommandPayload::Data(serde_json::to_value(daemon_stop(&config).await?)?)
+        }
         DaemonCommands::PrepareUpdate => {
-            serde_json::to_value(daemon_prepare_update(&config).await?)?
+            DaemonCommandPayload::Data(serde_json::to_value(daemon_prepare_update(&config).await?)?)
         }
-        DaemonCommands::Status => serde_json::to_value(daemon_status(&config).await?)?,
-        DaemonCommands::Quarantine => {
-            serde_json::to_value(holon::daemon::read_quarantine_report(&config))?
+        DaemonCommands::Status => {
+            let view = daemon_status(&config).await?;
+            match daemon_status_blocker(&view) {
+                Some(error) => DaemonCommandPayload::Blocked(error),
+                None => DaemonCommandPayload::Data(serde_json::to_value(&view)?),
+            }
         }
+        DaemonCommands::Quarantine => DaemonCommandPayload::Data(serde_json::to_value(
+            holon::daemon::read_quarantine_report(&config),
+        )?),
         DaemonCommands::Restart {
             options,
             start_timeout,
-        } => serde_json::to_value(
+        } => DaemonCommandPayload::Data(serde_json::to_value(
             daemon_launch_with_profile(
                 &config,
                 true,
@@ -6833,10 +6962,58 @@ async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Re
                 resolve_recorded_daemon_serve_plan,
             )
             .await?,
-        )?,
-        DaemonCommands::Logs { tail } => serde_json::to_value(daemon_logs(&config, tail)?)?,
+        )?),
+        DaemonCommands::Logs { tail } => {
+            DaemonCommandPayload::Data(serde_json::to_value(daemon_logs(&config, tail)?)?)
+        }
+    })
+}
+
+/// `status` answers with a lifecycle view, so most states stay a successful
+/// payload. Only a runtime the operator expects to be healthy becomes blocked:
+/// a requested runtime that is gone, unresponsive, or on an incompatible
+/// contract. Leftover metadata after an explicit stop stays an ordinary
+/// `stale` view, which is what the migration and menu-hint flows report on.
+fn daemon_status_blocker(
+    view: &holon::daemon::DaemonStatusView,
+) -> Option<holon::daemon_cli::DaemonError> {
+    use holon::daemon::DaemonLifecycleState;
+    use holon::daemon_cli::{DaemonError, DaemonErrorKind};
+
+    // `DaemonStatusView::ok` only reports that the status probe itself
+    // produced a view; it stays true for every lifecycle state. The machine
+    // outcome therefore follows the lifecycle state, not that flag.
+    let (kind, code, retryable, message) = match view.state {
+        DaemonLifecycleState::Stopped | DaemonLifecycleState::Stale if !view.desired_running => {
+            return None;
+        }
+        DaemonLifecycleState::Stopped => (
+            DaemonErrorKind::DaemonUnavailable,
+            "daemon_not_running",
+            true,
+            "the daemon should be running but is not; start it with `holon daemon start`",
+        ),
+        DaemonLifecycleState::Stale => (
+            DaemonErrorKind::Precondition,
+            "daemon_stale_state",
+            false,
+            "the daemon left stale state files behind; inspect them before clearing",
+        ),
+        DaemonLifecycleState::Unresponsive => (
+            DaemonErrorKind::DaemonUnavailable,
+            "daemon_unresponsive",
+            true,
+            "the daemon is running but its control surface is unresponsive",
+        ),
+        DaemonLifecycleState::VersionMismatch => (
+            DaemonErrorKind::Precondition,
+            "daemon_contract_incompatible",
+            false,
+            "the running runtime uses an incompatible daemon lifecycle contract; restart it",
+        ),
+        DaemonLifecycleState::Running | DaemonLifecycleState::Degraded => return None,
     };
-    print_json(&value)
+    Some(DaemonError::new(kind, code, message, retryable))
 }
 
 async fn handle_workspace_command(config: &AppConfig, command: WorkspaceCommands) -> Result<()> {
