@@ -9,7 +9,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from scripts.ci_rust_selection import plan_outputs
+from scripts.ci_rust_selection import SKIP_STANDALONE, crate_manifests, plan_outputs
 from scripts.ci_test_shards import CLI_SHARD, LIB_COMPILE_GROUPS, RUNTIME_MANIFEST
 
 
@@ -258,6 +258,10 @@ class CiEventMatrixTests(unittest.TestCase):
 
     def test_independent_crates_check_on_push_and_test_elsewhere(self):
         step = steps("rust-build")["Check or test independent Rust crates"]
+        expected_manifests = {
+            f"crates/{name}/Cargo.toml"
+            for name in set(crate_manifests()) - SKIP_STANDALONE
+        }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log = root / "commands.jsonl"
@@ -270,9 +274,9 @@ class CiEventMatrixTests(unittest.TestCase):
                 result = self.run_shell(command(step), ROOT, env)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = [json.loads(line)[1][1:] for line in log.read_text().splitlines()]
-                self.assertEqual(len(calls), 24)
                 manifests = {call[2] for call in calls}
-                self.assertEqual(len(manifests), 24)
+                self.assertEqual(len(calls), len(expected_manifests))
+                self.assertEqual(manifests, expected_manifests)
                 domain_manifest = "crates/holon-domain/Cargo.toml"
                 self.assertIn(domain_manifest, manifests)
                 self.assertIn("crates/holon-web-retrieval/Cargo.toml", manifests)
