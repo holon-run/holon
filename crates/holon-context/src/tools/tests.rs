@@ -381,6 +381,36 @@ fn holon_cli_guidance_uses_managed_skill_lifecycle() {
 }
 
 #[test]
+fn holon_cli_guidance_prefers_native_delete_agent() {
+    let tools = vec![ToolSpec {
+        name: "ExecCommand".into(),
+        description: String::new(),
+        input_schema: json!({}),
+        freeform_grammar: None,
+    }];
+    let section = tool_sections(&tools)
+        .into_iter()
+        .find(|section| section.name == "holon_cli_contract")
+        .expect("holon cli contract section");
+
+    assert!(section
+        .content
+        .contains("prefer the native `DeleteAgent` tool"));
+    assert!(section
+        .content
+        .contains("DeleteAgent(agent_id, incarnation)"));
+    assert!(section
+        .content
+        .contains("Only when no native `DeleteAgent` tool is available"));
+    assert!(section
+        .content
+        .contains("may discard child home data or cancel accepted"));
+    assert!(section.content.contains("--cascade-private-children"));
+    // Guard the regression: the CLI must not be the unconditional default.
+    assert!(!section.content.contains("remove only that owned child"));
+}
+
+#[test]
 fn test_work_item_write_section_emitted_when_available() {
     let tools = vec![ToolSpec {
         name: "CreateWorkItem".into(),
