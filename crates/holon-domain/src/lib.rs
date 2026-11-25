@@ -49,6 +49,7 @@ mod trace;
 mod transcript;
 mod turn;
 mod wake;
+pub mod wake_matching;
 mod wire;
 pub mod work_item;
 pub mod work_item_scheduling;

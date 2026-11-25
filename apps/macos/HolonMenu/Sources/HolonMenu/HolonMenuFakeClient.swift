@@ -13,6 +13,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
         case launchAtLoginEnabled
         case setLaunchAtLoginEnabled(Bool)
         case installCommandLineTool
+        case controlTokenFilePath
+        case setControlTokenFilePath(String)
         case tailscaleStatus
         case enableTailscaleServe
         case disableTailscaleServe
@@ -25,6 +27,9 @@ actor FakeHolonClient: HolonDesiredStateClient {
     private var currentStatus: HolonDaemonStatus
     private var launchAtLoginEnabledValue: Bool
     private var tailscaleStatusValue: HolonTailscaleStatus
+    private var controlTokenFilePathValue: String?
+    private var startError: Error?
+    private var statusError: Error?
     private var enableLANError: Error?
     private var enableTailscaleServeError: Error?
     private var tailscaleStatusError: Error?
@@ -33,8 +38,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
     init(
         currentStatus: HolonDaemonStatus = HolonDaemonStatus(
             ok: true,
-            state: .stopped,
-            healthy: false,
+            state: .running,
+            healthy: true,
             homeDir: "/Users/holon/.holon",
             socketPath: "/tmp/holon.sock",
             httpAddr: "127.0.0.1:7878",
@@ -43,14 +48,16 @@ actor FakeHolonClient: HolonDesiredStateClient {
             controlProtocolVersion: 1,
             lifecycleOwner: "standalone",
             executablePath: "/Applications/Holon.app/Contents/Resources/bin/holon",
-            desiredRunning: false,
-            pid: nil,
-            controlConnectivity: false,
+            desiredRunning: true,
+            pid: 42,
+            controlConnectivity: true,
             runtimeConfigFingerprint: nil,
             configFingerprintMatch: nil,
-            message: "Holon runtime is stopped."
+            message: "Holon runtime is running."
         ),
         launchAtLoginEnabled: Bool = false,
+        startError: Error? = nil,
+        statusError: Error? = nil,
         enableLANError: Error? = nil,
         enableTailscaleServeError: Error? = nil,
         tailscaleStatusError: Error? = nil,
@@ -67,6 +74,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
     ) {
         self.currentStatus = currentStatus
         self.launchAtLoginEnabledValue = launchAtLoginEnabled
+        self.startError = startError
+        self.statusError = statusError
         self.tailscaleStatusValue = tailscaleStatus
         self.enableLANError = enableLANError
         self.enableTailscaleServeError = enableTailscaleServeError
@@ -76,15 +85,19 @@ actor FakeHolonClient: HolonDesiredStateClient {
 
     func status() async throws -> HolonDaemonStatus {
         commands.append(.status)
+        if let statusError { throw statusError }
         return currentStatus
     }
 
     func start() async throws -> HolonDaemonStatus {
         commands.append(.start)
+        if let startError { throw startError }
         currentStatus.state = .running
         currentStatus.healthy = true
         currentStatus.ok = true
         currentStatus.desiredRunning = true
+        currentStatus.controlConnectivity = true
+        currentStatus.pid = currentStatus.pid ?? 42
         currentStatus.message = "Holon runtime is running."
         return currentStatus
     }
@@ -95,6 +108,7 @@ actor FakeHolonClient: HolonDesiredStateClient {
         currentStatus.healthy = false
         currentStatus.ok = true
         currentStatus.desiredRunning = false
+        currentStatus.controlConnectivity = false
         currentStatus.message = "Holon runtime is stopped."
         return currentStatus
     }
@@ -105,6 +119,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
         currentStatus.healthy = true
         currentStatus.ok = true
         currentStatus.desiredRunning = true
+        currentStatus.controlConnectivity = true
+        currentStatus.pid = currentStatus.pid ?? 42
         currentStatus.message = "Holon runtime restarted."
         return currentStatus
     }
@@ -145,6 +161,24 @@ actor FakeHolonClient: HolonDesiredStateClient {
     func installCommandLineTool() async throws -> URL {
         commands.append(.installCommandLineTool)
         return URL(fileURLWithPath: "/Users/holon/.local/bin/holon")
+    }
+
+    func controlTokenFilePath() async throws -> String? {
+        commands.append(.controlTokenFilePath)
+        return controlTokenFilePathValue
+    }
+
+    func setControlTokenFilePath(_ path: String) async throws {
+        commands.append(.setControlTokenFilePath(path))
+        controlTokenFilePathValue = path
+    }
+
+    func setStartError(_ error: Error?) {
+        startError = error
+    }
+
+    func setCurrentStatus(_ status: HolonDaemonStatus) {
+        currentStatus = status
     }
 
     func tailscaleStatus() async throws -> HolonTailscaleStatus {

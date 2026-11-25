@@ -132,6 +132,20 @@ impl DaemonEnvelope {
         }
     }
 
+    /// A blocked outcome that still carries the command payload.
+    ///
+    /// `daemon status` uses this so machine consumers can read the lifecycle
+    /// view even when the CLI reports a blocked exit code.
+    pub fn blocked_with_data(command: &str, data: Value, error: DaemonError) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            command: command.to_string(),
+            status: DaemonStatus::Blocked,
+            data: Some(data),
+            error: Some(error),
+        }
+    }
+
     /// A command whose own report is the payload even when it did not pass.
     ///
     /// `daemon validate-startup` keeps its phases, database/agent/quarantine
@@ -647,6 +661,10 @@ pub fn emit(envelope: &DaemonEnvelope, json_mode: bool) -> anyhow::Result<()> {
 /// Human mode: bounded, secret-safe text. Not a machine contract.
 pub fn write_human<W: Write>(envelope: &DaemonEnvelope, out: &mut W) -> std::io::Result<()> {
     writeln!(out, "status: {}", envelope.status.as_str())?;
+    if let Some(error) = &envelope.error {
+        writeln!(out, "error: {} (code: {})", error.message, error.code)?;
+        writeln!(out, "next: {}", next_action(error))?;
+    }
     match (&envelope.data, &envelope.error) {
         (Some(data), error) => {
             for line in human_detail_lines(&envelope.command, data) {
@@ -657,11 +675,7 @@ pub fn write_human<W: Write>(envelope: &DaemonEnvelope, out: &mut W) -> std::io:
                 writeln!(out, "next: {}", next_action(error))?;
             }
         }
-        (None, Some(error)) => {
-            writeln!(out, "error: {} (code: {})", error.message, error.code)?;
-            writeln!(out, "next: {}", next_action(error))?;
-        }
-        (None, None) => {}
+        (None, _) => {}
     }
     Ok(())
 }

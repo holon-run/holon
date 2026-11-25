@@ -14,7 +14,7 @@ commands use that isolated root; do not run mdorigin directly on the source tree
 ## Documentation layout
 
 `../mdorigin.config.json` keeps shared site settings. The code entry point,
-`../mdorigin.config.mjs`, adds the public mdorigin 0.7 `renderPage` plugin from
+`../mdorigin.config.mjs`, adds the public mdorigin 0.9 `renderPage` plugin from
 `../.theme/docs-layout.mjs`. It wraps the rendered body and calls `next(page)`;
 mdorigin still owns routes, metadata, search, the header, language switching,
 the footer, and Markdown negotiation. No mdorigin fork is needed.
@@ -41,6 +41,29 @@ navigation, section indexes, Blog, alias redirects, and Markdown negotiation.
 Browser checks should also cover 1440px, 1024px, 390px, and 320px viewports,
 keyboard disclosure controls, heading jumps, and scroll highlighting.
 
+## Image weight
+
+`../assets/` is published byte-for-byte, so an oversized export is an oversized
+page. `python3 optimize-assets.py` re-encodes covers (WebP, quality 82, width
+capped), screenshots (lossless WebP, width capped), and the logo in place, and
+skips files that would not shrink by 10%. It also derives `assets/logo.webp`
+from `assets/logo.png`: the page header loads the WebP on every page view, while
+the PNG stays for structured data and social crawlers that expect a raster icon.
+Run it after adding or replacing an image, and use
+`python3 optimize-assets.py --check` to see remaining work without writing.
+
+Keep screenshots lossless: they contain UI text, and lossy WebP blurs it.
+
+## Static asset caching
+
+`build:cloudflare` uses `--binary-mode external`, which stages images, PDFs, and
+other binaries into `dist/cloudflare/assets` and emits an assets `_headers` rule
+(`public, max-age=86400, stale-while-revalidate=604800`). The Worker then carries
+text content only. Inline mode instead base64-embeds every binary in the Worker,
+serves it with `content-type` alone — no `cache-control`, no `etag`, no edge
+cache — so every visit re-downloads every image. Keep the flag; the assets
+directory must also stay in `../wrangler.jsonc`.
+
 ## Local native-search limitation
 
 If indexbind's native addon cannot load on an older Linux host, do not report
@@ -54,6 +77,7 @@ npm run check:blog
 npm run check:directories
 ./node_modules/.bin/mdorigin build cloudflare \
   --root ./dist/content --config ./dist/content/mdorigin.config.mjs \
+  --binary-mode external \
   --out ./dist/cloudflare
 npm run check:docs-layout
 ```

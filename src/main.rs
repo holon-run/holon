@@ -6871,8 +6871,8 @@ async fn handle_daemon_command(
         Ok(DaemonCommandPayload::Data(data)) => {
             holon::daemon_cli::DaemonEnvelope::ok(command_path, data)
         }
-        Ok(DaemonCommandPayload::Blocked(error)) => {
-            holon::daemon_cli::DaemonEnvelope::blocked(command_path, error)
+        Ok(DaemonCommandPayload::BlockedWithData(data, error)) => {
+            holon::daemon_cli::DaemonEnvelope::blocked_with_data(command_path, data, error)
         }
         Ok(DaemonCommandPayload::Report {
             status,
@@ -6900,12 +6900,12 @@ async fn handle_daemon_command(
 /// One daemon command payload before the shared renderer attaches the envelope.
 enum DaemonCommandPayload {
     Data(serde_json::Value),
-    Blocked(holon::daemon_cli::DaemonError),
     Report {
         status: holon::daemon_cli::DaemonStatus,
         data: serde_json::Value,
         error: Option<holon::daemon_cli::DaemonError>,
     },
+    BlockedWithData(serde_json::Value, holon::daemon_cli::DaemonError),
 }
 
 fn daemon_command_path(command: &DaemonCommands) -> &'static str {
@@ -6951,7 +6951,9 @@ async fn run_daemon_command(
         DaemonCommands::Status => {
             let view = daemon_status(&config).await?;
             match daemon_status_blocker(&view) {
-                Some(error) => DaemonCommandPayload::Blocked(error),
+                Some(error) => {
+                    DaemonCommandPayload::BlockedWithData(serde_json::to_value(&view)?, error)
+                }
                 None => DaemonCommandPayload::Data(serde_json::to_value(&view)?),
             }
         }

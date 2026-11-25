@@ -6115,6 +6115,39 @@ fn retiring_audit_identity(
     }
 }
 
+// Advisory de-duplication inspects at most the 64 most recent events of the
+// queried scope; only those payloads are JSON-decoded.
+
+/// Host-scope candidate read. The explicit `agent_id IS NULL` predicate lets the
+/// planner order by host `event_seq` instead of scanning every agent's events.
+pub(crate) const SCHEDULING_ADVISORY_HOST_CANDIDATES_SQL: &str = "\
+SELECT json_extract(data_json, '$.created_at') FROM (
+    SELECT kind, created_at, data_json FROM audit_events
+    WHERE agent_id IS NULL
+    ORDER BY event_seq DESC, created_at DESC LIMIT 64
+) AS recent
+WHERE kind = 'scheduling_advisory'
+  AND json_type(data_json, '$.data.evidence') = 'array'
+  AND EXISTS (
+      SELECT 1 FROM json_each(recent.data_json, '$.data.evidence')
+      WHERE type = 'text' AND value = ?1
+  )";
+
+/// Per-agent candidate read, kept separate from the host path so neither scope
+/// is expressed through a nullable predicate branch.
+pub(crate) const SCHEDULING_ADVISORY_AGENT_CANDIDATES_SQL: &str = "\
+SELECT json_extract(data_json, '$.created_at') FROM (
+    SELECT kind, created_at, data_json FROM audit_events
+    WHERE agent_id = ?2
+    ORDER BY event_seq DESC, created_at DESC LIMIT 64
+) AS recent
+WHERE kind = 'scheduling_advisory'
+  AND json_type(data_json, '$.data.evidence') = 'array'
+  AND EXISTS (
+      SELECT 1 FROM json_each(recent.data_json, '$.data.evidence')
+      WHERE type = 'text' AND value = ?1
+  )";
+
 impl AuditEventSink<'_> {
     /// Retirement observations do not admit commands or qualify event bodies.
     pub(crate) fn append_retiring_observation(
@@ -6204,6 +6237,9 @@ impl AuditEventSink<'_> {
     }
 
     /// Rate-limit one advisory without decoding unrelated event payloads.
+    ///
+    /// Host and per-agent scopes use separate SQL so the host path can use the
+    /// host `event_seq` ordering instead of scanning every agent's events (#4491).
     pub(crate) fn has_recent_scheduling_advisory(
         &self,
         agent_id: Option<&str>,
@@ -6211,20 +6247,14 @@ impl AuditEventSink<'_> {
         since: DateTime<Utc>,
     ) -> Result<bool> {
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT json_extract(data_json, '$.created_at') FROM (
-                    SELECT kind, created_at, data_json FROM audit_events
-                    WHERE (?1 IS NULL OR agent_id = ?1)
-                    ORDER BY event_seq DESC, created_at DESC LIMIT 64
-                 ) AS recent
-                 WHERE kind = 'scheduling_advisory'
-                   AND json_type(data_json, '$.data.evidence') = 'array'
-                   AND EXISTS (
-                       SELECT 1 FROM json_each(recent.data_json, '$.data.evidence')
-                       WHERE type = 'text' AND value = ?2
-                   )",
-            )?;
-            let mut rows = statement.query(params![agent_id, evidence])?;
+            let mut statement = connection.prepare(match agent_id {
+                Some(_) => SCHEDULING_ADVISORY_AGENT_CANDIDATES_SQL,
+                None => SCHEDULING_ADVISORY_HOST_CANDIDATES_SQL,
+            })?;
+            let mut rows = match agent_id {
+                Some(agent_id) => statement.query(params![evidence, agent_id])?,
+                None => statement.query(params![evidence])?,
+            };
             while let Some(row) = rows.next()? {
                 crate::diagnostics::resource_io::charge_owned_metadata(0, 1)?;
                 if parse_timestamp(borrowed_sql_text(row, 0)?)? > since {

@@ -7,10 +7,11 @@ final class HolonMenuServeProfileTests: XCTestCase {
         HolonProcessResult(
             terminationStatus: 0,
             stdout: Data("""
+                {"schema_version":1,"command":"daemon.status","status":"ok","error":null,"data":
                 {"ok":true,"state":"stopped","healthy":false,"home_dir":"/tmp/holon",
                 "socket_path":"/tmp/holon.sock","http_addr":"0.0.0.0:9000",
                 "desired_running":false,"control_connectivity":false,"message":"Stopped"
-                \(fields)}
+                \(fields)}}
                 """.utf8),
             stderr: Data()
         )
@@ -59,7 +60,7 @@ final class HolonMenuServeProfileTests: XCTestCase {
                 let calls = await launcher.invocations()
                 XCTAssertEqual(
                     calls.last?.arguments,
-                    ["daemon", action] + (item.requestsHint ? ["--desktop-integration-if-unconfigured"] : []),
+                    ["daemon", action, "--json"] + (item.requestsHint ? ["--desktop-integration-if-unconfigured"] : []),
                     item.fields
                 )
                 XCTAssertFalse(calls.contains { $0.arguments.first == "getifaddr" })
@@ -76,7 +77,7 @@ final class HolonMenuServeProfileTests: XCTestCase {
         )
         _ = try await client.start()
         var calls = await launcher.invocations()
-        XCTAssertEqual(calls.last?.arguments, ["daemon", "start", "--desktop-integration-if-unconfigured"])
+        XCTAssertEqual(calls.last?.arguments, ["daemon", "start", "--json", "--desktop-integration-if-unconfigured"])
 
         for desktop in [true, false] {
             await launcher.replaceResult(statusResult(
@@ -84,11 +85,11 @@ final class HolonMenuServeProfileTests: XCTestCase {
             ))
             _ = try await client.restart()
             calls = await launcher.invocations()
-            XCTAssertEqual(calls.last?.arguments, ["daemon", "restart"])
+            XCTAssertEqual(calls.last?.arguments, ["daemon", "restart", "--json"])
         }
     }
 
-    func testExplicitDesktopSettingSkipsConditionalHintAndStatusProbe() async throws {
+    func testExplicitDesktopSettingSkipsConditionalHintButReadsAuthenticationProfile() async throws {
         for desktop in [true, false] {
             for action in ["start", "restart"] {
                 let launcher = RecordingProcessLauncher(result: .success(statusResult(
@@ -104,9 +105,13 @@ final class HolonMenuServeProfileTests: XCTestCase {
                     _ = try await client.restart()
                 }
                 let calls = await launcher.invocations()
-                XCTAssertEqual(calls.map(\.arguments), [[
-                    "daemon", action, desktop ? "--desktop-integration" : "--desktop-integration=false",
-                ]])
+                XCTAssertEqual(calls.map(\.arguments), [
+                    ["daemon", "status", "--json"],
+                    [
+                        "daemon", action, "--json",
+                        desktop ? "--desktop-integration" : "--desktop-integration=false",
+                    ],
+                ])
             }
         }
     }
@@ -130,8 +135,8 @@ final class HolonMenuServeProfileTests: XCTestCase {
             }
             let calls = await launcher.invocations()
             XCTAssertEqual(calls, [
-                ["daemon", "status"],
-                ["daemon", action, "--desktop-integration-if-unconfigured"],
+                ["daemon", "status", "--json"],
+                ["daemon", action, "--json", "--desktop-integration-if-unconfigured"],
             ])
             XCTAssertEqual(started.desiredServe?.source, "profile")
             XCTAssertEqual(started.desiredServe?.desktopIntegration, false)
@@ -152,7 +157,7 @@ private actor HistoryAppearingProcessLauncher: HolonProcessLaunching {
 
     func run(executableURL: URL, arguments: [String]) async throws -> HolonProcessResult {
         recordedInvocations.append(arguments)
-        if arguments == ["daemon", "status"], !historyExists {
+        if arguments == ["daemon", "status", "--json"], !historyExists {
             // Another operation saves desktop=false after this snapshot is read.
             historyExists = true
             return defaultsSnapshot

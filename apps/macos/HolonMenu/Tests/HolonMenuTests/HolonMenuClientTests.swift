@@ -53,16 +53,12 @@ final class HolonMenuClientTests: XCTestCase {
                              "/tmp/holon.sock", "--request", "POST",
                              "http://localhost/api/auth/pairing/issue"]
         let launcher = RecordingProcessLauncher(
-            result: .success(HolonProcessResult(
-                terminationStatus: 0,
-                stdout: Data("""
+            result: .success(daemonResult("""
                     {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
                     "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
                     "web_url":"http://127.0.0.1:7878","desired_running":true,
                     "control_connectivity":true,"message":"Running"}
-                    """.utf8),
-                stderr: Data()
-            )),
+                    """)),
             responses: [curlArguments.joined(separator: " "): #"{"ticket":"one-time-code"}"#]
         )
         let client = HolonCLIClient(
@@ -130,22 +126,44 @@ final class HolonMenuClientTests: XCTestCase {
         return URLSession(configuration: configuration)
     }
 
+    private func daemonEnvelope(
+        _ data: String,
+        command: String = "daemon.status",
+        status: String = "ok",
+        error: String? = nil
+    ) -> String {
+        let errorJSON = error.map {
+            ",\"error\":{\"kind\":\"precondition\",\"code\":\"daemon_stale_state\",\"message\":\"\($0)\",\"retryable\":false}"
+        } ?? ",\"error\":null"
+        return "{\"schema_version\":1,\"command\":\"\(command)\",\"status\":\"\(status)\",\"data\":\(data)\(errorJSON)}"
+    }
+
+    private func daemonResult(
+        _ data: String,
+        command: String = "daemon.status",
+        status: String = "ok",
+        error: String? = nil,
+        terminationStatus: Int32 = 0
+    ) -> HolonProcessResult {
+        HolonProcessResult(
+            terminationStatus: terminationStatus,
+            stdout: Data(daemonEnvelope(data, command: command, status: status, error: error).utf8),
+            stderr: Data()
+        )
+    }
+
     func testOIDCConnectionUsesNormalLoginWithoutIssuingTicket() async throws {
         ServeURLProtocol.lock.withLock {
             ServeURLProtocol.authMode = "oidc"
             ServeURLProtocol.responseCode = 200
         }
         defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authMode = "local" } }
-        let launcher = RecordingProcessLauncher(result: .success(HolonProcessResult(
-            terminationStatus: 0,
-            stdout: Data("""
+        let launcher = RecordingProcessLauncher(result: .success(daemonResult("""
                 {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
                  "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
                  "web_url":"http://127.0.0.1:7878","desired_running":true,
                  "control_connectivity":true,"message":"Running"}
-                """.utf8),
-            stderr: Data()
-        )))
+                """)))
         let client = HolonCLIClient(
             executableURL: URL(fileURLWithPath: "/opt/holon"),
             launcher: launcher, networkSession: serveSession()
@@ -166,25 +184,23 @@ final class HolonMenuClientTests: XCTestCase {
         lanAddress: String? = nil,
         desktopIntegration: Bool? = nil,
         processCreated: Bool? = nil,
-        preferences: UserDefaults = .standard
+        preferences: UserDefaults = .standard,
+        environment: [String: String] = [:]
     ) -> (HolonCLIClient, RecordingProcessLauncher) {
-        let launcher = RecordingProcessLauncher(result: .success(HolonProcessResult(
-            terminationStatus: 0,
-            stdout: Data("""
+        let launcher = RecordingProcessLauncher(result: .success(daemonResult("""
                 {"ok":true,"state":"running","healthy":true,"home_dir":"\(home)",
                 "socket_path":"/tmp/holon.sock","http_addr":"\(address)",
                 "web_url":"http://127.0.0.1:7878","desired_running":true,
                 "control_connectivity":true,"executable_path":"\(daemonExecutable)","pid":99,"message":"Running"
                 \(processCreated.map { ",\"process_created\":\($0)" } ?? "")}
-                """.utf8),
-            stderr: Data()
-        )), address: lanAddress)
+                """)), address: lanAddress)
         return (HolonCLIClient(
             executableURL: URL(fileURLWithPath: "/opt/holon"),
             launcher: launcher,
             launchOptions: HolonDaemonLaunchOptions(token: token, desktopIntegration: desktopIntegration),
             networkSession: serveSession(),
-            preferences: preferences
+            preferences: preferences,
+            environment: environment
         ), launcher)
     }
     func testParsesConnectedAndServingTailscaleStatus() {
@@ -395,13 +411,7 @@ final class HolonMenuClientTests: XCTestCase {
         """
 
         let launcher = RecordingProcessLauncher(
-            result: .success(
-                HolonProcessResult(
-                    terminationStatus: 0,
-                    stdout: Data(statusJSON.utf8),
-                    stderr: Data()
-                )
-            )
+            result: .success(daemonResult(statusJSON))
         )
 
         let client = HolonCLIClient(
@@ -416,20 +426,20 @@ final class HolonMenuClientTests: XCTestCase {
         XCTAssertEqual(status.webUrl, "http://127.0.0.1:7878")
         XCTAssertEqual(status.webURL?.absoluteString, "http://127.0.0.1:7878")
         let statusInvocations = await launcher.invocations()
-        XCTAssertEqual(statusInvocations.first?.arguments, ["daemon", "status"])
+        XCTAssertEqual(statusInvocations.first?.arguments, ["daemon", "status", "--json"])
 
         _ = try await client.start()
         let startInvocations = await launcher.invocations()
         XCTAssertEqual(
             startInvocations.last?.arguments,
-            ["daemon", "start", "--access", "local", "--port", "7878"]
+            ["daemon", "start", "--json", "--access", "local", "--port", "7878"]
         )
 
         _ = try await client.restart()
         let restartInvocations = await launcher.invocations()
         XCTAssertEqual(
             restartInvocations.last?.arguments,
-            ["daemon", "restart", "--access", "local", "--port", "7878"]
+            ["daemon", "restart", "--json", "--access", "local", "--port", "7878"]
         )
     }
 
@@ -454,15 +464,14 @@ final class HolonMenuClientTests: XCTestCase {
         "control_connectivity":true,"message":"Running"}
         """
         let launcher = RecordingProcessLauncher(
-            result: .success(HolonProcessResult(
-                terminationStatus: 0, stdout: Data(statusJSON.utf8), stderr: Data()
-            )),
+            result: .success(daemonResult(statusJSON)),
             address: "192.168.1.20\n"
         )
         let client = HolonCLIClient(
             executableURL: URL(fileURLWithPath: "/opt/holon"),
             launcher: launcher,
-            networkSession: serveSession()
+            networkSession: serveSession(),
+            environment: [:]
         )
         let webURL = try await client.webURL()
         XCTAssertEqual(webURL.absoluteString, "http://192.168.1.20:7878")
@@ -482,24 +491,24 @@ final class HolonMenuClientTests: XCTestCase {
         )
         XCTAssertEqual(
             invocations.last?.arguments,
-            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--listen", "0.0.0.0:7878",
+            ["daemon", "restart", "--json", "--access", "lan", "--host", "192.168.1.20", "--listen", "0.0.0.0:7878",
              "--token-file", tokenPath]
         )
         _ = try await client.restart()
         invocations = await launcher.invocations()
-        XCTAssertEqual(invocations.last?.arguments, ["daemon", "restart"])
+        XCTAssertEqual(invocations.last?.arguments, ["daemon", "restart", "--json"])
         _ = try await client.disableLAN()
         invocations = await launcher.invocations()
         XCTAssertEqual(
             invocations.last?.arguments,
-            ["daemon", "restart", "--access", "local", "--listen", "127.0.0.1:7878",
+            ["daemon", "restart", "--json", "--access", "local", "--listen", "127.0.0.1:7878",
              "--token-file", tokenPath]
         )
         _ = try await client.enableLAN()
         invocations = await launcher.invocations()
         XCTAssertEqual(
             invocations.last?.arguments,
-            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--listen", "0.0.0.0:7878",
+            ["daemon", "restart", "--json", "--access", "lan", "--host", "192.168.1.20", "--listen", "0.0.0.0:7878",
              "--token-file", tokenPath]
         )
         XCTAssertEqual(try String(contentsOfFile: tokenPath, encoding: .utf8), token)
@@ -520,12 +529,14 @@ final class HolonMenuClientTests: XCTestCase {
         "desired_running":true,"control_connectivity":true,"message":"Running"}
         """
         let launcher = RecordingProcessLauncher(
-            result: .success(HolonProcessResult(
-                terminationStatus: 0, stdout: Data(statusJSON.utf8), stderr: Data()
-            )),
+            result: .success(daemonResult(statusJSON)),
             address: "192.168.1.20\n"
         )
-        let client = HolonCLIClient(executableURL: URL(fileURLWithPath: "/opt/holon"), launcher: launcher)
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            environment: [:]
+        )
         do {
             _ = try await client.enableLAN()
             XCTFail("Expected insecure token file to be rejected")
@@ -547,7 +558,7 @@ final class HolonMenuClientTests: XCTestCase {
         _ = try await client.enableLAN()
         let invocations = await launcher.invocations()
         XCTAssertEqual(invocations.last?.arguments, [
-            "daemon", "restart", "--access", "lan", "--host", "192.168.1.20",
+            "daemon", "restart", "--json", "--access", "lan", "--host", "192.168.1.20",
             "--listen", "0.0.0.0:7878", "--desktop-integration=false",
         ])
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("control.token").path))
@@ -562,7 +573,7 @@ final class HolonMenuClientTests: XCTestCase {
         _ = try await client.restart()
         let invocations = await launcher.invocations()
         XCTAssertEqual(invocations.last?.arguments, [
-            "daemon", "restart", "--desktop-integration=false",
+            "daemon", "restart", "--json", "--desktop-integration=false",
         ])
         XCTAssertFalse(invocations.contains { $0.arguments.first == "getifaddr" })
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("control.token").path))
@@ -604,7 +615,7 @@ final class HolonMenuClientTests: XCTestCase {
             let lifecycle = calls.map(\.arguments).filter {
                 $0.starts(with: ["daemon", "start"]) || $0.starts(with: ["daemon", "restart"])
             }
-            XCTAssertEqual(lifecycle, [["daemon", "start"], ["daemon", "restart"]])
+            XCTAssertEqual(lifecycle, [["daemon", "start", "--json"], ["daemon", "restart", "--json"]])
             XCTAssertFalse(calls.contains { $0.arguments.first == "getifaddr" })
             XCTAssertEqual(preferences.string(forKey: approvalKey), approvedPath)
             XCTAssertFalse(FileManager.default.fileExists(atPath: home.path))
@@ -682,7 +693,7 @@ final class HolonMenuClientTests: XCTestCase {
             _ = try await client.enableTailscaleServe()
             let calls = await launcher.invocations()
             XCTAssertEqual(calls.first { $0.arguments.contains("restart") }?.arguments, [
-                "daemon", "restart",
+                "daemon", "restart", "--json",
                 "--token-file", home.appendingPathComponent("control.token").path,
             ])
             let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
@@ -706,16 +717,12 @@ final class HolonMenuClientTests: XCTestCase {
         defer { ServeURLProtocol.lock.withLock { ServeURLProtocol.authenticationAvailable = true } }
         let (client, launcher) = serveClient(home: home.path, token: nil, processCreated: true)
         _ = try await client.start()
-        await launcher.replaceResult(HolonProcessResult(
-            terminationStatus: 0,
-            stdout: Data("""
+        await launcher.replaceResult(daemonResult("""
                 {"ok":true,"state":"running","healthy":true,"home_dir":"\(home.path)",
                 "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
                 "desired_running":true,"control_connectivity":true,
                 "executable_path":"/opt/holon","pid":100,"message":"Replaced"}
-                """.utf8),
-            stderr: Data()
-        ))
+                """))
         do {
             _ = try await client.enableTailscaleServe()
             XCTFail("Expired process provenance must fail closed")
@@ -849,7 +856,7 @@ final class HolonMenuClientTests: XCTestCase {
         ])
         XCTAssertTrue(requests.allSatisfy { $0.2 == "Bearer test-token" })
         let invocations = await launcher.invocations()
-        XCTAssertTrue(invocations.allSatisfy { $0.arguments == ["daemon", "status"] })
+        XCTAssertTrue(invocations.allSatisfy { $0.arguments == ["daemon", "status", "--json"] })
     }
 
     func testServeControlUsesLoopbackWhenDaemonReportsStaleLANAddress() async throws {
@@ -911,5 +918,368 @@ final class HolonMenuClientTests: XCTestCase {
         let invocations = await launcher.invocations()
         XCTAssertFalse(invocations.contains { $0.arguments.contains("off") })
         XCTAssertFalse(invocations.contains { $0.arguments.contains("--bg") })
+    }
+
+    private func externalRequiredStatus(home: String) -> HolonProcessResult {
+        daemonResult(
+            """
+                {"ok":true,"state":"stale","healthy":false,"home_dir":"\(home)",
+                 "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
+                 "web_url":"http://127.0.0.1:7878","desired_running":true,"pid":42,
+                 "control_connectivity":false,"message":"stale daemon state detected",
+                 "desired_serve":{"source":"profile","schema_version":1,"access":"local",
+                   "listen":"127.0.0.1:7878","desktop_integration":true,
+                   "authentication":{"mode":"external_required"},
+                   "control_auth_mode":"auto"}}
+                """,
+            status: "blocked",
+            error: "the daemon left stale state files behind; inspect them before clearing",
+            terminationStatus: 21
+        )
+    }
+
+    private func approvedTokenFile(in home: URL) throws -> URL {
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let path = home.appendingPathComponent("approved.token")
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: path.path, contents: Data("approved-control-token".utf8),
+            attributes: [.posixPermissions: 0o600]
+        ))
+        return path
+    }
+
+    func testExternalRequiredStartUsesHistoricApprovedTokenFile() async throws {
+        let suite = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let tokenFile = try approvedTokenFile(in: home)
+        preferences.set(
+            tokenFile.path,
+            forKey: "HolonMenu.remoteAuthenticationApproved.\(home.path)"
+        )
+        let launcher = RecordingProcessLauncher(
+            result: .success(externalRequiredStatus(home: home.path))
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            preferences: preferences,
+            environment: [:]
+        )
+
+        let status = try await client.start()
+
+        XCTAssertEqual(status.desiredServe?.requiresExternalAuthentication, true)
+        let invocations = await launcher.invocations()
+        XCTAssertEqual(invocations.last?.arguments, [
+            "daemon", "start", "--json", "--token-file", tokenFile.path,
+        ])
+        XCTAssertEqual(
+            preferences.string(forKey: "HolonMenu.remoteAuthenticationApproved.\(home.path)"),
+            tokenFile.path
+        )
+    }
+
+    func testEnvironmentControlTokenWinsOverApprovedTokenFileForStart() async throws {
+        let suite = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let tokenFile = try approvedTokenFile(in: home)
+        preferences.set(
+            tokenFile.path,
+            forKey: "HolonMenu.remoteAuthenticationApproved.\(home.path)"
+        )
+        let launcher = RecordingProcessLauncher(
+            result: .success(externalRequiredStatus(home: home.path))
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            preferences: preferences,
+            environment: ["HOLON_CONTROL_TOKEN": "env-token"]
+        )
+
+        let status = try await client.start()
+
+        XCTAssertEqual(status.desiredServe?.requiresExternalAuthentication, true)
+        let invocations = await launcher.invocations()
+        // The menu's HTTP control requests use the environment token, so the
+        // daemon must not be started with a competing --token-file.
+        XCTAssertEqual(invocations.last?.arguments, ["daemon", "start", "--json"])
+    }
+
+    func testEnvironmentControlTokenWinsOverApprovedTokenFileForLAN() async throws {
+        let suite = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let tokenFile = try approvedTokenFile(in: home)
+        preferences.set(
+            tokenFile.path,
+            forKey: "HolonMenu.remoteAuthenticationApproved.\(home.path)"
+        )
+        preferences.set("99", forKey: "HolonMenu.managedDaemonPID.\(home.path)")
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.authenticationAvailable = false
+            ServeURLProtocol.authenticateBearer = true
+        }
+        defer {
+            ServeURLProtocol.lock.withLock {
+                ServeURLProtocol.authenticationAvailable = true
+                ServeURLProtocol.authenticateBearer = false
+            }
+        }
+        let (client, launcher) = serveClient(
+            home: home.path, token: nil, lanAddress: "192.168.1.20",
+            desktopIntegration: false, preferences: preferences,
+            environment: ["HOLON_CONTROL_TOKEN": "env-token"]
+        )
+
+        _ = try await client.enableLAN()
+        var invocations = await launcher.invocations()
+        // The restarted daemon inherits the environment token, so replaying the
+        // approved file would split daemon and menu authentication.
+        XCTAssertEqual(invocations.last?.arguments, [
+            "daemon", "restart", "--json", "--access", "lan", "--host", "192.168.1.20",
+            "--listen", "0.0.0.0:7878", "--desktop-integration=false",
+        ])
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: home.appendingPathComponent("control.token").path
+        ))
+
+        // A stored approval for a daemon this menu owns must not override the
+        // environment credential either.
+        ServeURLProtocol.lock.withLock { ServeURLProtocol.authenticationAvailable = true }
+        _ = try await client.disableLAN()
+        invocations = await launcher.invocations()
+        XCTAssertEqual(invocations.last?.arguments, [
+            "daemon", "restart", "--json", "--access", "local",
+            "--listen", "127.0.0.1:7878", "--desktop-integration=false",
+        ])
+        XCTAssertFalse(invocations.contains { $0.arguments.contains("--token-file") })
+    }
+
+    func testStartRejectsInsecureApprovedTokenFile() async throws {
+        let suite = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let tokenFile = try approvedTokenFile(in: home)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644], ofItemAtPath: tokenFile.path
+        )
+        preferences.set(
+            tokenFile.path,
+            forKey: "HolonMenu.remoteAuthenticationApproved.\(home.path)"
+        )
+        let launcher = RecordingProcessLauncher(
+            result: .success(externalRequiredStatus(home: home.path))
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            preferences: preferences,
+            environment: [:]
+        )
+
+        do {
+            _ = try await client.start()
+            XCTFail("An approved token file readable by other users must not be replayed")
+        } catch HolonCLIError.invalidLANTokenFile {
+            // Expected: the approval is revalidated before every use.
+        }
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.arguments.contains("--token-file") })
+    }
+
+    func testExternalRequiredStartWithoutApprovedCredentialFailsClearly() async throws {
+        let suite = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let launcher = RecordingProcessLauncher(
+            result: .success(externalRequiredStatus(home: home.path))
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            preferences: preferences,
+            environment: [:]
+        )
+
+        do {
+            _ = try await client.start()
+            XCTFail("A daemon that requires external credentials must not start implicitly")
+        } catch HolonCLIError.controlCredentialsRequired {
+            // Expected: the operator must supply a token file.
+        }
+        let invocations = await launcher.invocations()
+        XCTAssertEqual(invocations.map(\.arguments), [["daemon", "status", "--json"]])
+    }
+
+    func testSavedControlTokenFileDrivesExternalRequiredStart() async throws {
+        let suite = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let tokenFile = try approvedTokenFile(in: home)
+        let launcher = RecordingProcessLauncher(
+            result: .success(externalRequiredStatus(home: home.path))
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            preferences: preferences,
+            environment: [:]
+        )
+
+        try await client.setControlTokenFilePath(tokenFile.path)
+        let saved = try await client.controlTokenFilePath()
+        XCTAssertEqual(saved, tokenFile.path)
+
+        _ = try await client.start()
+        let invocations = await launcher.invocations()
+        XCTAssertEqual(invocations.last?.arguments, [
+            "daemon", "start", "--json", "--token-file", tokenFile.path,
+        ])
+    }
+
+    func testBlockedStatusEnvelopeStillDecodesLifecycleView() async throws {
+        let launcher = RecordingProcessLauncher(
+            result: .success(externalRequiredStatus(home: "/tmp/holon-stale"))
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher
+        )
+
+        let status = try await client.status()
+
+        XCTAssertEqual(status.state, .stale)
+        XCTAssertEqual(status.desiredRunning, true)
+        XCTAssertEqual(status.desiredServe?.requiresExternalAuthentication, true)
+    }
+
+    func testBlockedStatusWithoutDataSurfacesEnvelopeError() async throws {
+        let launcher = RecordingProcessLauncher(result: .success(HolonProcessResult(
+            terminationStatus: 21,
+            stdout: Data("""
+                {"schema_version":1,"command":"daemon.status","status":"blocked","data":null,
+                 "error":{"kind":"daemon_unavailable","code":"daemon_unresponsive",
+                   "message":"the daemon is running but its control surface is unresponsive",
+                   "retryable":true}}
+                """.utf8),
+            stderr: Data()
+        )))
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher
+        )
+
+        do {
+            _ = try await client.status()
+            XCTFail("A blocked status without a view must fail")
+        } catch HolonCLIError.commandFailed(let code, let message) {
+            XCTAssertEqual(code, "daemon_unresponsive")
+            XCTAssertEqual(message, "the daemon is running but its control surface is unresponsive")
+        }
+    }
+
+    func testApprovalFromAnotherDaemonHomeIsNotReplayed() async throws {
+        let suite = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let otherHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            try? FileManager.default.removeItem(at: home)
+            try? FileManager.default.removeItem(at: otherHome)
+        }
+        let tokenFile = try approvedTokenFile(in: otherHome)
+        preferences.set(
+            tokenFile.path,
+            forKey: "HolonMenu.remoteAuthenticationApproved.\(otherHome.path)"
+        )
+        let launcher = RecordingProcessLauncher(
+            result: .success(externalRequiredStatus(home: home.path))
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            preferences: preferences,
+            environment: [:]
+        )
+
+        do {
+            _ = try await client.start()
+            XCTFail("An approval for another daemon home must not be replayed")
+        } catch HolonCLIError.controlCredentialsRequired {
+            // Expected: the approval is scoped to the reporting daemon home.
+        }
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.arguments.contains("--token-file") })
+    }
+
+    func testControlTokenFilePathRequiresAbsolutePathAndClearsApproval() async throws {
+        let suite = UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let tokenFile = try approvedTokenFile(in: home)
+        let launcher = RecordingProcessLauncher(
+            result: .success(externalRequiredStatus(home: home.path))
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            preferences: preferences
+        )
+        let approvalKey = "HolonMenu.remoteAuthenticationApproved.\(home.path)"
+
+        do {
+            try await client.setControlTokenFilePath("relative.token")
+            XCTFail("A relative token file path must be rejected")
+        } catch HolonCLIError.invalidControlTokenPath {
+            // Expected: the CLI resolves paths from its own working directory.
+        }
+
+        try await client.setControlTokenFilePath(tokenFile.path)
+        XCTAssertEqual(preferences.string(forKey: approvalKey), tokenFile.path)
+
+        try await client.setControlTokenFilePath("")
+        XCTAssertNil(preferences.string(forKey: approvalKey))
+    }
+
+    func testEnvironmentControlTokenAuthenticatesServeControl() async throws {
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.authenticationAvailable = false
+            ServeURLProtocol.authenticateBearer = true
+        }
+        defer {
+            ServeURLProtocol.lock.withLock {
+                ServeURLProtocol.requests = []
+                ServeURLProtocol.authenticationAvailable = true
+                ServeURLProtocol.authenticateBearer = false
+            }
+        }
+        let (client, _) = serveClient(
+            token: nil, environment: ["HOLON_CONTROL_TOKEN": "env-token"]
+        )
+
+        _ = try await client.tailscaleStatus()
+
+        let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
+        XCTAssertEqual(requests.last?.2, "Bearer env-token")
     }
 }

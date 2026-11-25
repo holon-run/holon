@@ -154,6 +154,8 @@ struct GeminiCandidate {
 struct GeminiUsageMetadata {
     prompt_token_count: Option<u64>,
     candidates_token_count: Option<u64>,
+    cached_content_token_count: Option<u64>,
+    thoughts_token_count: Option<u64>,
 }
 
 impl GeminiProvider {
@@ -895,18 +897,31 @@ fn gemini_response_to_provider_turn_response(
     url: Option<&str>,
     trace: Option<&ProviderHttpTraceRequest>,
 ) -> Result<ProviderTurnResponse> {
+    // `promptTokenCount` already includes cached content tokens, so gemini input
+    // usage is the full prompt size. That differs from anthropic, whose
+    // `input_tokens` excludes cache reads and creations.
+    // `toolUsePromptTokenCount` is not part of `promptTokenCount`; folding it in
+    // is out of scope here.
+    let usage_metadata = parsed.usage_metadata.as_ref();
     let usage = TokenUsage::new(
-        parsed
-            .usage_metadata
-            .as_ref()
+        usage_metadata
             .and_then(|usage| usage.prompt_token_count)
             .unwrap_or(0),
-        parsed
-            .usage_metadata
-            .as_ref()
-            .and_then(|usage| usage.candidates_token_count)
+        // `candidatesTokenCount` and `thoughtsTokenCount` are sibling addends in
+        // gemini's `totalTokenCount`, so thinking tokens are not already counted.
+        usage_metadata
+            .map(|usage| {
+                usage.candidates_token_count.unwrap_or(0) + usage.thoughts_token_count.unwrap_or(0)
+            })
             .unwrap_or(0),
     );
+    // The outer `Option` is the only "was usage observed" gate: gemini reports
+    // no cache-write counter, so `creation_input_tokens` is a structural zero
+    // rather than a measured value.
+    let cache_usage = usage_metadata.map(|usage| ProviderCacheUsage {
+        read_input_tokens: usage.cached_content_token_count.unwrap_or(0),
+        creation_input_tokens: 0,
+    });
     let candidate = parsed.candidates.into_iter().next();
     let prompt_block = parsed
         .prompt_feedback
@@ -1002,10 +1017,7 @@ fn gemini_response_to_provider_turn_response(
         stop_reason,
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
-        cache_usage: Some(ProviderCacheUsage {
-            read_input_tokens: 0,
-            creation_input_tokens: 0,
-        }),
+        cache_usage,
         provider_message_id: None,
         provider_request_id: None,
         request_diagnostics: Some(ProviderRequestDiagnostics {

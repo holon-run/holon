@@ -5,10 +5,12 @@ on:
     paths:
       - '.github/workflows/**'
       - 'action.yml'
+      - 'scripts/beta_train_ci_gate*.sh'
   push:
     paths:
       - '.github/workflows/**'
       - 'action.yml'
+      - 'scripts/beta_train_ci_gate*.sh'
   workflow_dispatch:
 
 permissions:
@@ -26,3 +28,13 @@ jobs:
         uses: rhysd/actionlint@v1.7.9
         with:
           args: -shellcheck=
+
+  beta-train-ci-gate:
+    name: beta-train CI gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run beta-train CI gate tests
+        run: bash scripts/beta_train_ci_gate_test.sh

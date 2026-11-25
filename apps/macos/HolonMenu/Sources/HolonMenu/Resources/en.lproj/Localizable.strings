@@ -117,3 +117,16 @@
 "Tailscale error details" = "Tailscale error details";
 "CLI not found (optional)" = "CLI not found (optional)";
 "Status unknown" = "Status unknown";
+"This Holon daemon requires an external control token. Set a control token file in Settings, or start it once with `holon daemon start --token-file <path>`." = "This Holon daemon requires an external control token. Set a control token file in Settings, or start it once with `holon daemon start --token-file <path>`.";
+"The control token file path must be absolute: %@" = "The control token file path must be absolute: %@";
+"Cleared the saved control token file approval." = "Cleared the saved control token file approval.";
+"Use an absolute path. Saving an empty field clears the saved approval." = "Use an absolute path. Saving an empty field clears the saved approval.";
+"Saved. This daemon will use the token file at the next start or restart." = "Saved. This daemon will use the token file at the next start or restart.";
+"Waiting for Holon to start" = "Waiting for Holon to start";
+"Tailscale status is available after the Holon daemon starts." = "Tailscale status is available after the Holon daemon starts.";
+"Dismiss error" = "Dismiss error";
+"Daemon credentials" = "Daemon credentials";
+"Control token file (optional)" = "Control token file (optional)";
+"Path to an owner-only control token file" = "Path to an owner-only control token file";
+"Save token file" = "Save token file";
+"Used only when the daemon requires externally managed authentication. Only the file path is saved; the token content is never stored." = "Used only when the daemon requires externally managed authentication. Only the file path is saved; the token content is never stored.";

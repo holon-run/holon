@@ -146,6 +146,8 @@ fn gemini_response_preserves_empty_blocks_with_finish_reason_and_usage() {
             usage_metadata: Some(GeminiUsageMetadata {
                 prompt_token_count: Some(11),
                 candidates_token_count: Some(7),
+                cached_content_token_count: None,
+                thoughts_token_count: None,
             }),
             prompt_feedback: None,
         },
@@ -159,6 +161,14 @@ fn gemini_response_preserves_empty_blocks_with_finish_reason_and_usage() {
     assert_eq!(response.stop_reason.as_deref(), Some("MAX_TOKENS"));
     assert_eq!(response.input_tokens, 11);
     assert_eq!(response.output_tokens, 7);
+    assert_eq!(
+        response.cache_usage,
+        Some(ProviderCacheUsage {
+            read_input_tokens: 0,
+            creation_input_tokens: 0,
+        }),
+        "reported usage without cache counters is a measured zero, not unobserved"
+    );
 }
 
 #[test]
@@ -576,4 +586,57 @@ fn gemini_native_search_output_requires_grounding_evidence() {
     let outcome = parse_gemini_native_web_search_output(&response);
     assert!(!outcome.search_executed);
     assert!(outcome.citations.is_empty());
+}
+
+#[test]
+fn gemini_usage_reports_cached_and_thinking_tokens() {
+    let parsed: GenerateContentResponse = serde_json::from_value(json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "ok" }] },
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 1200,
+            "cachedContentTokenCount": 800,
+            "candidatesTokenCount": 40,
+            "thoughtsTokenCount": 60
+        }
+    }))
+    .expect("Gemini usage metadata should deserialize");
+
+    let response = gemini_response_to_provider_turn_response(parsed, None, None, None)
+        .expect("text response with usage should be valid");
+
+    // `promptTokenCount` already includes the cached content tokens.
+    assert_eq!(response.input_tokens, 1200);
+    // `thoughtsTokenCount` is a sibling addend of `candidatesTokenCount`.
+    assert_eq!(response.output_tokens, 100);
+    assert_eq!(
+        response.cache_usage,
+        Some(ProviderCacheUsage {
+            read_input_tokens: 800,
+            creation_input_tokens: 0,
+        })
+    );
+}
+
+#[test]
+fn gemini_usage_without_metadata_stays_unobserved() {
+    let parsed: GenerateContentResponse = serde_json::from_value(json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": "ok" }] },
+            "finishReason": "STOP"
+        }]
+    }))
+    .expect("response without usage metadata should deserialize");
+
+    let response = gemini_response_to_provider_turn_response(parsed, None, None, None)
+        .expect("text response without usage should be valid");
+
+    assert_eq!(response.input_tokens, 0);
+    assert_eq!(response.output_tokens, 0);
+    assert_eq!(
+        response.cache_usage, None,
+        "missing usageMetadata must stay unobserved instead of measured zero"
+    );
 }

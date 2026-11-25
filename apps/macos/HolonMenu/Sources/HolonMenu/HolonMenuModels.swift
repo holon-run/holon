@@ -53,6 +53,16 @@ struct HolonDaemonStatus: Codable, Equatable, Sendable {
 struct HolonDesiredServeProfile: Codable, Equatable, Sendable {
     var source: String?
     var desktopIntegration: Bool?
+    var authentication: HolonServeAuthentication?
+
+    var requiresExternalAuthentication: Bool {
+        authentication?.mode == "external_required"
+    }
+}
+
+// Authentication intent only; token contents never appear in daemon status.
+struct HolonServeAuthentication: Codable, Equatable, Sendable {
+    var mode: String
 }
 
 struct HolonDaemonLogs: Codable, Equatable, Sendable {
@@ -309,6 +319,8 @@ protocol HolonDesiredStateClient: Sendable {
     func launchAtLoginEnabled() async throws -> Bool
     func setLaunchAtLoginEnabled(_ enabled: Bool) async throws
     func installCommandLineTool() async throws -> URL
+    func controlTokenFilePath() async throws -> String?
+    func setControlTokenFilePath(_ path: String) async throws
     func tailscaleStatus() async throws -> HolonTailscaleStatus
     func enableTailscaleServe() async throws -> HolonTailscaleStatus
     func disableTailscaleServe() async throws -> HolonTailscaleStatus
