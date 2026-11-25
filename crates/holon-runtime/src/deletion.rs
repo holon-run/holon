@@ -5,7 +5,8 @@
 //! been completed is a safe no-op. On transient failure the job is marked
 //! `RetryableFailed` with an actionable `last_error` and persisted retry
 //! deadline; a subsequent retry resumes from the failed phase. Failures that a
-//! retry cannot resolve stop in the `NeedsAttention` terminal state instead.
+//! retry cannot resolve stop in the `NeedsAttention` state, which requires an
+//! operator decision instead.
 //!
 //! The coordinator is triggered:
 //! - by a coalesced wake after deletion admission;

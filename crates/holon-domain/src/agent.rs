@@ -702,8 +702,8 @@ pub enum AgentDeletionStatus {
     Pending,
     Running,
     RetryableFailed,
-    /// Terminal failure that retrying cannot resolve: the persisted state needs
-    /// an explicit ownership or cleanup decision from the operator.
+    /// Failure that retrying cannot resolve: the persisted state needs an
+    /// explicit ownership or cleanup decision from the operator.
     NeedsAttention,
     Completed,
     /// Terminal state reached when an operator explicitly gives up on a
@@ -719,7 +719,7 @@ impl AgentDeletionStatus {
     }
 }
 
-/// Why a deletion job stopped in the `NeedsAttention` terminal state.
+/// Why a deletion job stopped in the `NeedsAttention` state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentDeletionFailureKind {
