@@ -88,10 +88,17 @@ actor SendingClientTransport: SendingTransport {
             prompt = try HolonPromptRequest(clientRequestID: requestID.uuidString, text: payload.text,
                                            attachments: attachments)
         } catch { throw SendingFailure.rejected("Invalid prompt or attachment body exceeds the server limit.") }
+        try Task.checkCancellation()
         if let model = payload.modelID {
             let selection = try HolonAgentModelRequest(model: model)
-            _ = try await request(sharing: true) { try await $0.setAgentModel(agentID: agentID, request: selection) }
+            // Leaving a conversation cancels delivery, not an already confirmed model write.
+            // Wait for the HTTP result so the coordinator does not unlock a stale model read.
+            let write = Task {
+                try await request(sharing: true) { try await $0.setAgentModel(agentID: agentID, request: selection) }
+            }
+            _ = try await write.value
         }
+        try Task.checkCancellation()
         let receipt = try await request(sharing: true) { try await $0.sendOperatorPrompt(agentID: agentID, request: prompt) }
         guard receipt.isAccepted else { throw HolonClientError.malformedResponse }
         return receipt.messageID

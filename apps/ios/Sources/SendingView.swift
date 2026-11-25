@@ -147,11 +147,9 @@ private struct AgentModelSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("sending.close") { dismiss() }
                         .accessibilityIdentifier("sending.model.close")
-                        .disabled(sender.isUpdatingAgentModel)
                 }
             }
         }
-        .interactiveDismissDisabled(sender.isUpdatingAgentModel)
         .onChange(of: key.revision) { _, _ in applyError = false }
         .task(id: key) { await load(key) }
     }
