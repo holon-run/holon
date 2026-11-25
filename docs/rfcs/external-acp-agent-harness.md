@@ -143,6 +143,7 @@ acp_session_state
   profile                 # harness profile, e.g. antigravity
   resume_session_id?      # opaque, rotatable ACP session identifier
   bound_execution_root    # execution root or worktree the session was created in
+  bound_additional_dirs   # attached workspace directories bound at session start
   capability_snapshot     # what this client advertised for this connection
   session_grants          # session-scoped permission grants (§4.3)
 ```
@@ -200,13 +201,13 @@ create agent with driver=acp
             |                                       v
             |                                   Retired
             |                                       |
-            |                          next work: session/resume
+            |                     next work: resume / drained load
             |                                       v
             |                                   Resuming
-            |                                    /      \
-            |                             resume ok    -32002
-            |                               |             |
-            |                            Active      Rebuild (session/new)
+            |                                  /        \
+            |                    resume/load ok    -32002 or unsupported
+            |                              |                  |
+            |                           Active        Rebuild (session/new)
             |
             +-- handshake or auth failure --> Failed (structured RuntimeError)
 ```
@@ -215,34 +216,42 @@ create agent with driver=acp
 | --- | --- | --- | --- |
 | Uninitialized -> Ready | First admitted turn | Profile resolves to a launchable command | Spawn process, `initialize`, record capability snapshot |
 | Ready -> Active | First prompt | Bound execution root exists and policy permits execution | `session/new`, persist `resume_session_id`, `session/prompt` |
-| Active -> Active | Subsequent prompt | Session still bound to the same root | `session/prompt` on the existing session |
+| Active -> Active | Subsequent prompt | Session still bound to the same root and additional dirs | `session/prompt` on the existing session |
 | Active -> Idle | Turn settled | No in-flight prompt, process still healthy | Keep process resident while reuse is expected |
 | Idle -> Retired | Idle retirement policy | No owned execution, no active wake obligation | Exit process, keep identity and durable session state |
-| Retired -> Resuming | New work arrives | Same agent incarnation and same bound root | Spawn process, `initialize`, then `session/resume` |
-| Resuming -> Active | Resume accepted | Harness supports resume | Continue on the same logical session |
-| Resuming -> Rebuild | `-32002` (unknown session) | None | Discard credential, `session/new`, replay only task-level handoff content |
+| Retired -> Resuming | New work arrives | Same agent incarnation and same bound workspace set | Spawn process, `initialize`, then attempt `session/resume` (or `session/load` if resume is undeclared) |
+| Resuming -> Active | Resume or drained load accepted | Peer declared `session/resume`, or declared `loadSession` and replay stream was drained | Continue on the same logical session |
+| Resuming -> Rebuild | `-32002` (unknown session) or neither `resume` nor `loadSession` declared (`UnsupportedByPeer`) | None | Discard credential, `session/new`, include bounded task-level handoff summary |
 | Resuming -> Failed | Auth (`-32000`) or repeated transport failure | None | Structured `RuntimeError` with recovery hint; no silent model fallback |
 | Active -> Failed | Process crash or protocol violation | None | Mark session retired after process reaping; next turn re-enters Resuming |
 | Any -> Deleted | Agent deletion | Lifecycle fences satisfied | Terminate process, discard credential, retain only required evidence |
 
 Rules for rebuild and recovery:
 
-- `session/resume` is preferred over `session/load`. Resume restores the harness
-  session without Holon re-supplying conversation state; load requires replaying
-  prior conversation and risks duplicating context or leaking internal framing.
-- A profile may declare load support, but load is used only when resume is
-  unavailable, only with task-level conversation content that Holon would
-  already send as clean handoff, and never with the internal context envelope.
-- `-32002` is an expected recovery signal, not a task failure: it triggers one
-  rebuild attempt. Rebuild failure becomes a structured turn error.
+- `session/resume` is preferred over `session/load`. In ACP wire v1, `session/resume`
+  restores the peer's persisted session without streaming historical updates,
+  whereas `session/load` causes the peer to stream historical `session/update`
+  notifications back to the client before returning.
+- `session/load` is used only when `session/resume` is undeclared and `loadSession`
+  is declared. While `session/load` runs (and before the next `session/prompt`
+  starts), the client must drain and discard all replayed `session/update`
+  notifications so historical blocks are never re-appended to Holon's ledger or
+  mistaken for updates of the next turn.
+- If the peer declares neither `session/resume` nor `loadSession`, or if resume/load
+  returns `-32002` (session not found), the runtime treats it as an expected
+  recovery signal rather than a task failure: it discards `resume_session_id`,
+  calls `session/new`, and supplies bounded task-level handoff summary content
+  (never the internal context envelope). A failure of that rebuild attempt
+  surfaces as a structured turn error.
 - Idle retirement follows
   [Subagent Residency And Reclamation](./subagent-residency-and-reclamation.md):
   the retired instance keeps identity, supervision, conversation, workspace, and
   artifacts; retirement never deletes the agent. A new invocation loads an
   instance, read-only inspection does not.
-- Changing the agent's workspace does not silently rebind an existing session.
-  The session must be retired and rebuilt against the new execution root, or the
-  runtime rejects the turn with a binding conflict.
+- Changing the agent's bound execution root or `attached_workspaces` set does not
+  silently rebind an existing session. The session must be retired and rebuilt
+  against the new workspace binding, or the runtime rejects the turn with a
+  binding conflict.
 
 ## 3. Handshake Capability Trimming And Prompt Layering
 
@@ -289,18 +298,24 @@ are execution-host absolute paths inside the bound root.
 
 ### 3.3 Persona injection precedence
 
-Choose exactly one channel:
+Choose at most one dedicated persona channel:
 
-1. Managed `--agent <role>` / `agent.md`, when the profile supports it and the
-   runtime owns the instruction file. This is preferred because the harness
-   loads and layers it consistently with its own prompt.
-2. Negotiated `systemPrompt (append)` during handshake, when the harness exposes
-   append semantics and the runtime can verify it will not replace the base
-   prompt.
+1. Negotiated `systemPrompt (append)` over the wire (`session/new` /
+   `session/resume`), when the peer declares
+   `agentCapabilities.sessionCapabilities.systemPrompt` with append semantics
+   verified not to replace the harness base prompt. This is preferred for
+   runtime-supplied role instructions because it creates no filesystem or Git
+   worktree side effects.
+2. Pre-existing `--agent <role>`, when the profile or template references a named
+   agent already configured in the workspace or on the host. The runtime must
+   never materialize temporary `agent.md` files inside a target Git workspace or
+   managed worktree (which would pollute `detect_changed_files`, block clean
+   `RemoveWorktree`, or risk accidental commits) and must never mutate
+   host-global user directories such as `~/.gemini/config/agents/`.
 3. Neither available: express role expectations as ordinary handoff prose in the
    first prompt. Do not fall back to sending a Holon system prompt.
 
-Never use both 1 and 2 for the same agent. Never send a full replacement system
+Never combine 1 and 2 for the same session. Never send a full replacement system
 prompt.
 
 ## 4. Event Projection, Permission Gating, And Cancellation
@@ -318,6 +333,7 @@ They never trigger local tool dispatch.
 | Tool call | `ModelBlock::ProviderToolUse` with `provider_data.format = "acp_v1"` | Append | No | Never |
 | Tool call update | `ModelBlock::ProviderToolResult` for terminal status, or a status update on the existing provider tool block | Append, referencing the same `tool_call_id` | No | Never |
 | Plan update | No model block; typed plan snapshot evidence | Append | No | No |
+| Usage update (`usage_update`) | No model block; session context-window occupancy (`used` / `size`) and optional cost evidence | Append | No | No |
 | Available commands update | No model block; capability evidence | Append | No | No |
 | Unknown or future variant | No model block; opaque evidence carrying `format = "acp_v1"` | Append | No | No |
 
@@ -332,8 +348,11 @@ Projection rules:
   tool calls in Holon round accounting.
 - Per-turn block order follows arrival order. Settlement finalizes exactly one
   canonical `Text` block for the turn, which is what replay and briefing use.
-- Usage reported by the prompt response maps to the turn's token accounting.
-  Absent usage is recorded as absent, never as zero.
+- `usage_update` reports session-level context-window occupancy (`used` / `size`)
+  and optional cumulative `cost`; it is recorded as context/cost telemetry and
+  must not be summed as per-turn `input_tokens` / `output_tokens` deltas. Per-turn
+  token counts are recorded only when explicitly reported by the peer; absent
+  counts remain absent (`None`), never flattened to zero.
 - ACP `stopReason` maps to existing settlement categories: normal completion,
   truncation evidence, refusal evidence, cancellation, or structured runtime
   error.
@@ -411,10 +430,11 @@ Additional rules:
 | Field | Contract |
 | --- | --- |
 | Launch | `agy acp` over `stdio`, one process per session |
-| Role injection | Managed `--agent <role>` when configured; otherwise negotiated `systemPrompt (append)` |
+| Role injection | Negotiated `systemPrompt (append)` for runtime-supplied role text; `--agent <role>` only for pre-existing named agents (§3.3); never write temporary `agent.md` files into target worktrees or `~/.gemini/config` |
 | Working directory | The bound execution root or worktree; never the Holon process cwd by default |
+| Additional directories | Map `EffectiveExecution.attached_workspaces` to repeated `--add-dir <path>` flags; changing the attached set requires retiring and rebuilding the session (§2.4) |
 | Sandbox | Map execution policy to the profile's `--sandbox` mode; when no sandbox mode is available, the runtime must not claim confinement |
-| Authentication | Reuse the host's existing `agy acp --login` state or explicitly injected environment credentials such as `GEMINI_API_KEY` / ADC |
+| Authentication | Reuse the host's existing `agy acp --login` state or explicitly configured/allowlisted environment credentials (`GEMINI_API_KEY`, `GOOGLE_API_KEY`, and for Vertex/Enterprise `agent-platform` ADC: `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `AGY_ADC_AUTH`) |
 | Credential files | Never parse, copy, or scrape private harness session files |
 | `-32000` authentication required | Structured `RuntimeError` with a recovery hint (log in or provide credentials); no retry loop, no fallback model |
 | `-32002` session not found | Rebuild the session per §2.4 |
