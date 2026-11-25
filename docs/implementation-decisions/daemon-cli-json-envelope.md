@@ -7,8 +7,11 @@ Decision:
   to stdout per invocation, including parse/usage failures.
 - The same outcome drives both renderers: `ok -> 0`, usage/internal -> `1`,
   expected domain failure -> `20`, blocked precondition or daemon-unavailable
-  -> `21`, and `22` is reserved for `daemon validate-startup` reporting
+  -> `21`, and `22` for `daemon validate-startup` read-only mode reporting
   `migration_required`.
+- A command may keep its own report in `data` for a non-`ok` outcome.
+  `daemon validate-startup` does this so phases, failures, and warnings stay
+  machine-readable; its terminal code is repeated in `error.code`.
 - Human output is the default and is bounded: `status: ...`, a few
   command-relevant fields, and one next action on failure.
 - There is no compatibility layer for the previous unwrapped daemon JSON.

@@ -91,7 +91,7 @@ Both modes share one exit-code mapping:
 | `1` | usage/parse error or unexpected internal error |
 | `20` | expected domain failure |
 | `21` | blocked or retryable daemon/precondition state (`daemon_unavailable`, `daemon_running`, `daemon_lease_held`, stale or unresponsive runtimes) |
-| `22` | reserved for `daemon validate-startup` reporting `migration_required` |
+| `22` | `daemon validate-startup` read-only mode reporting `migration_required` |
 
 `daemon status` therefore exits `21` when a runtime was supposed to be running
 but is not reachable; an explicitly stopped daemon stays a successful `0`.

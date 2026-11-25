@@ -132,6 +132,26 @@ impl DaemonEnvelope {
         }
     }
 
+    /// A command whose own report is the payload even when it did not pass.
+    ///
+    /// `daemon validate-startup` keeps its phases, database/agent/quarantine
+    /// summaries, warnings, and failures in `data`; `error` carries the
+    /// terminal machine code so the shared exit-code mapping still applies.
+    pub fn report(
+        command: &str,
+        status: DaemonStatus,
+        data: Value,
+        error: Option<DaemonError>,
+    ) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            command: command.to_string(),
+            status,
+            data: Some(data),
+            error,
+        }
+    }
+
     /// Usage failures happen before or outside the command body, so they carry
     /// their own kind instead of going through [`classify_error`].
     pub fn usage(command: &str, code: &str, message: impl Into<String>) -> Self {
@@ -165,7 +185,19 @@ impl DaemonEnvelope {
             DaemonStatus::Ok => exit_codes::OK,
             DaemonStatus::Blocked => exit_codes::BLOCKED,
             DaemonStatus::Failed => match self.error.as_ref().map(|error| error.kind) {
-                Some(DaemonErrorKind::Domain) => exit_codes::DOMAIN_FAILURE,
+                Some(DaemonErrorKind::Domain) => {
+                    // `migration_required` is the one domain outcome that is not
+                    // a validation failure: read-only mode could not proceed.
+                    if self
+                        .error
+                        .as_ref()
+                        .is_some_and(|error| error.code == "migration_required")
+                    {
+                        exit_codes::MIGRATION_REQUIRED
+                    } else {
+                        exit_codes::DOMAIN_FAILURE
+                    }
+                }
                 Some(DaemonErrorKind::DaemonUnavailable) | Some(DaemonErrorKind::Precondition) => {
                     exit_codes::BLOCKED
                 }
@@ -616,9 +648,13 @@ pub fn emit(envelope: &DaemonEnvelope, json_mode: bool) -> anyhow::Result<()> {
 pub fn write_human<W: Write>(envelope: &DaemonEnvelope, out: &mut W) -> std::io::Result<()> {
     writeln!(out, "status: {}", envelope.status.as_str())?;
     match (&envelope.data, &envelope.error) {
-        (Some(data), _) => {
+        (Some(data), error) => {
             for line in human_detail_lines(&envelope.command, data) {
                 writeln!(out, "{line}")?;
+            }
+            if let Some(error) = error {
+                writeln!(out, "error: {} (code: {})", error.message, error.code)?;
+                writeln!(out, "next: {}", next_action(error))?;
             }
         }
         (None, Some(error)) => {
@@ -660,6 +696,14 @@ fn next_action(error: &DaemonError) -> &'static str {
         | "missing_argument" | "invalid_arguments" => {
             "run `holon daemon --help` for the accepted syntax"
         }
+        "db_missing" => "point HOLON_HOME at the right library, or start holon once to create the runtime database",
+        "db_not_readable" => "stop the daemon cleanly so the WAL is checkpointed, then re-run validation",
+        "migration_required" => "re-run with `--migrate` against an explicit copy or maintenance window",
+        "migration_failed" | "backfill_resource_exhausted" => "inspect the migration metadata and logs; do not retry against live state",
+        "schema_newer_than_binary" => "use a binary at least as new as this library",
+        "migration_name_mismatch" => "verify the library provenance; do not migrate a foreign or hand-edited database",
+        "storage_domain_missing" => "restore a complete runtime library snapshot",
+        "config_invalid" | "paths_unresolved" => "check HOLON_HOME, the data directory, and the control socket configuration",
         _ => "run `holon daemon status` for the current state",
     }
 }
@@ -667,6 +711,60 @@ fn next_action(error: &DaemonError) -> &'static str {
 fn human_detail_lines(command: &str, data: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     match command {
+        "daemon.validate-startup" => {
+            push_scalar(&mut lines, data, "mode");
+            if let Some(db) = data.get("db") {
+                let max_known = db.get("max_known").and_then(Value::as_i64).unwrap_or(0);
+                match db.get("schema_version").and_then(Value::as_i64) {
+                    Some(version) => {
+                        lines.push(format!("schema: {version} (max known {max_known})"))
+                    }
+                    None => lines.push(format!("schema: unavailable (max known {max_known})")),
+                }
+            }
+            if let Some(agents) = data.get("agents") {
+                let total = agents.get("total").and_then(Value::as_u64).unwrap_or(0);
+                let resolution = agents
+                    .get("default_resolution")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                lines.push(format!("agents: {total} (default {resolution})"));
+            }
+            for (label, section, key) in [
+                ("quarantine", "quarantine", "status"),
+                ("eligibility snapshot", "eligibility", "snapshot"),
+            ] {
+                if let Some(value) = data
+                    .get(section)
+                    .and_then(|value| value.get(key))
+                    .and_then(Value::as_str)
+                {
+                    lines.push(format!("{label}: {value}"));
+                }
+            }
+            if let Some(phases) = data.get("phases").and_then(Value::as_array) {
+                let count = |status: &str| {
+                    phases
+                        .iter()
+                        .filter(|phase| phase.get("status").and_then(Value::as_str) == Some(status))
+                        .count()
+                };
+                lines.push(format!(
+                    "phases: {} ok, {} failed, {} skipped",
+                    count("ok"),
+                    count("failed"),
+                    count("skipped")
+                ));
+            }
+            if let Some(warnings) = data.get("warnings").and_then(Value::as_array) {
+                for code in warnings
+                    .iter()
+                    .filter_map(|warning| warning.get("code").and_then(Value::as_str))
+                {
+                    lines.push(format!("warning: {code}"));
+                }
+            }
+        }
         "daemon.status" => {
             for key in ["state", "healthy", "pid", "http_addr", "web_url", "message"] {
                 push_scalar(&mut lines, data, key);

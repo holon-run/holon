@@ -6874,6 +6874,11 @@ async fn handle_daemon_command(
         Ok(DaemonCommandPayload::Blocked(error)) => {
             holon::daemon_cli::DaemonEnvelope::blocked(command_path, error)
         }
+        Ok(DaemonCommandPayload::Report {
+            status,
+            data,
+            error,
+        }) => holon::daemon_cli::DaemonEnvelope::report(command_path, status, data, error),
         Err(error) => {
             tracing::error!(
                 command = command_path,
@@ -6896,6 +6901,11 @@ async fn handle_daemon_command(
 enum DaemonCommandPayload {
     Data(serde_json::Value),
     Blocked(holon::daemon_cli::DaemonError),
+    Report {
+        status: holon::daemon_cli::DaemonStatus,
+        data: serde_json::Value,
+        error: Option<holon::daemon_cli::DaemonError>,
+    },
 }
 
 fn daemon_command_path(command: &DaemonCommands) -> &'static str {
@@ -6905,6 +6915,7 @@ fn daemon_command_path(command: &DaemonCommands) -> &'static str {
         DaemonCommands::PrepareUpdate => "daemon.prepare-update",
         DaemonCommands::Status => "daemon.status",
         DaemonCommands::Quarantine => "daemon.quarantine",
+        DaemonCommands::ValidateStartup { .. } => "daemon.validate-startup",
         DaemonCommands::Restart { .. } => "daemon.restart",
         DaemonCommands::Logs { .. } => "daemon.logs",
     }
@@ -6947,6 +6958,45 @@ async fn run_daemon_command(
         DaemonCommands::Quarantine => DaemonCommandPayload::Data(serde_json::to_value(
             holon::daemon::read_quarantine_report(&config),
         )?),
+        DaemonCommands::ValidateStartup { migrate } => {
+            use holon::startup_validation::{ReportStatus, StartupValidationMode};
+            let mode = if migrate {
+                StartupValidationMode::Migrate
+            } else {
+                StartupValidationMode::ReadOnly
+            };
+            let report = holon::startup_validation::validate_startup(&config, mode);
+            let data = serde_json::to_value(&report)?;
+            if report.status == ReportStatus::Ok {
+                DaemonCommandPayload::Data(data)
+            } else {
+                let (status, kind) = match report.status {
+                    ReportStatus::Blocked => (
+                        holon::daemon_cli::DaemonStatus::Blocked,
+                        holon::daemon_cli::DaemonErrorKind::Precondition,
+                    ),
+                    _ => (
+                        holon::daemon_cli::DaemonStatus::Failed,
+                        holon::daemon_cli::DaemonErrorKind::Domain,
+                    ),
+                };
+                let failure = report
+                    .failures
+                    .last()
+                    .expect("a non-ok validation report carries a failure");
+                let error = holon::daemon_cli::DaemonError::new(
+                    kind,
+                    failure.code.as_str(),
+                    failure.operator_message.clone(),
+                    failure.retryable,
+                );
+                DaemonCommandPayload::Report {
+                    status,
+                    data,
+                    error: Some(error),
+                }
+            }
+        }
         DaemonCommands::Restart {
             options,
             start_timeout,

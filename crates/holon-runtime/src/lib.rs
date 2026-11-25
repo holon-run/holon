@@ -24,6 +24,7 @@ pub mod authentication;
 pub mod callbacks;
 pub mod ids;
 pub mod startup;
+pub mod startup_validation;
 
 pub mod brief;
 pub mod calendar;
