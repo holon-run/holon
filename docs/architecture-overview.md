@@ -132,6 +132,7 @@ runtime protocols; adapters implement provider behavior.
 Canonical RFCs:
 
 - [External Trigger Capability And Providerless Ingress](./rfcs/external-trigger-capability.md)
+- [External ACP Agent Harness Integration](./rfcs/external-acp-agent-harness.md)
 - [Remote Operator Transport and Delivery](./rfcs/remote-operator-transport-and-delivery.md)
 - [Operator Notification and Intervention](./rfcs/operator-wait-and-intervention.md)
 - [Waiting Plane And Reactivation](./rfcs/waiting-plane-and-reactivation.md)
