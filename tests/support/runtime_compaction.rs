@@ -974,7 +974,7 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
         requests.len()
     );
 
-    let events = runtime.recent_events(80).await?;
+    let events = runtime.recent_events(usize::MAX).await?;
     let compaction_events: Vec<_> = events
         .iter()
         .filter(|event| event.kind == "turn_local_compaction_applied")
