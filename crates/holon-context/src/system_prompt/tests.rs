@@ -554,8 +554,15 @@ fn identity_skeleton_and_scoped_workspace_preserve_default_context_contract() {
     assert_eq!(identity.layout, crate::PromptLayout::SharedPrefix);
     assert_eq!(
         identity.content,
-        "You are Holon, a headless coding-oriented runtime assistant."
+        "You are a Holon agent: a long-lived, general-purpose assistant. Understand the operator's goal, use the available tools and context to carry work through, and report clear results."
     );
+    let identity_lower = identity.content.to_ascii_lowercase();
+    for implementation_attribute in ["headless", "event-driven", "coding-oriented"] {
+        assert!(
+            !identity_lower.contains(implementation_attribute),
+            "identity must not prescribe the {implementation_attribute} implementation attribute"
+        );
+    }
     let section = sections
         .iter()
         .find(|section| section.name == "workspace_context")
