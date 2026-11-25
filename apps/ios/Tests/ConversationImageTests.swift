@@ -1,4 +1,6 @@
+import ImageIO
 import HolonClient
+import UniformTypeIdentifiers
 import XCTest
 @testable import Holon
 
@@ -15,6 +17,101 @@ final class ConversationImageTests: XCTestCase {
         XCTAssertTrue(admitted)
         slots.release()
         slots.release()
+    }
+
+    @MainActor
+    func testImageWaitListIsBoundedAndClearedWhenScopeChanges() async throws {
+        let slots = ConversationImageSlots(active: 1, waiting: 1)
+        try await slots.acquire()
+        let old = await queued(on: slots) { XCTFail("Previous scope waiter was admitted") }
+        do {
+            try await slots.acquire()
+            XCTFail("Accepted a request beyond the waiting limit")
+        } catch is ConversationPreviewDeferred {}
+
+        slots.cancelWaiting()
+        do {
+            try await old.value
+            XCTFail("Expected previous scope cancellation")
+        } catch is CancellationError {}
+        var loaded = false
+        let current = await queued(on: slots) { loaded = true }
+        XCTAssertFalse(loaded)
+        slots.release()
+        try await current.value
+        XCTAssertTrue(loaded)
+    }
+
+    @MainActor
+    func testInlineMessageChecksAreCoalescedAndBoundedAcrossScopes() async throws {
+        let details = ConversationImageDetails()
+        let (started, signal) = AsyncStream<String>.makeStream()
+        var requests = started.makeAsyncIterator()
+        var held: [String: CheckedContinuation<OperatorInputPresentation.Message, Never>] = [:]
+        var queuedRequests = 0
+        let oldMessage = OperatorInputPresentation.Message(text: "old", uploadedImages: [])
+        let newMessage = OperatorInputPresentation.Message(text: "new", uploadedImages: [])
+
+        func request(_ id: String, operation: @escaping @MainActor () async throws -> OperatorInputPresentation.Message)
+            async -> Task<OperatorInputPresentation.Message, any Error> {
+            let (entered, ready) = AsyncStream<Void>.makeStream()
+            let task = Task { @MainActor in
+                ready.yield(())
+                ready.finish()
+                return try await details.load(id, operation: operation)
+            }
+            for await _ in entered { break }
+            return task
+        }
+
+        let first = await request("first") {
+            await withCheckedContinuation { held["first"] = $0; signal.yield("first") }
+        }
+        let firstAdmission = await requests.next()
+        XCTAssertEqual(firstAdmission, "first")
+        let duplicate = await request("first") {
+            XCTFail("Started a duplicate request for the same message")
+            return oldMessage
+        }
+        held.removeValue(forKey: "first")?.resume(returning: oldMessage)
+        let firstResult = try await first.value
+        let duplicateResult = try await duplicate.value
+        XCTAssertEqual(firstResult.text, "old")
+        XCTAssertEqual(duplicateResult.text, "old")
+
+        var previous: [Task<OperatorInputPresentation.Message, any Error>] = []
+        for index in 0..<10 {
+            previous.append(await request("\(index)") {
+                if index < 2 {
+                    return await withCheckedContinuation { held["\(index)"] = $0; signal.yield("\(index)") }
+                }
+                queuedRequests += 1
+                return oldMessage
+            })
+            if index < 2 {
+                let admitted = await requests.next()
+                XCTAssertEqual(admitted, "\(index)")
+            }
+        }
+        do {
+            _ = try await details.load("overflow") { XCTFail("Exceeded waiting limit"); return oldMessage }
+            XCTFail("Expected overflow to defer")
+        } catch is ConversationPreviewDeferred {}
+
+        details.cancelAll()
+        let current = await request("0") { newMessage }
+        for continuation in held.values { continuation.resume(returning: oldMessage) }
+        held.removeAll()
+        for task in previous {
+            do {
+                _ = try await task.value
+                XCTFail("Previous scope request settled successfully")
+            } catch is CancellationError {}
+        }
+        let currentResult = try await current.value
+        XCTAssertEqual(currentResult.text, "new")
+        XCTAssertEqual(queuedRequests, 0)
+        signal.finish()
     }
 
     @MainActor
@@ -114,10 +211,31 @@ final class ConversationImageTests: XCTestCase {
     func testThumbnailRejectsInvalidDataAndNonImageTypes() throws {
         let png = try XCTUnwrap(Data(base64Encoded:
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNQKDgAAAIEAVHqHS4xAAAAAElFTkSuQmCC"))
-        let thumbnail = try XCTUnwrap(ConversationImageThumbnail.decode(png, mediaType: "image/png"))
+        let thumbnail = try ConversationImageThumbnail.decode(png, mediaType: "image/png")
         XCTAssertEqual(thumbnail.width, 1)
         XCTAssertEqual(thumbnail.height, 1)
-        XCTAssertNil(ConversationImageThumbnail.decode(png, mediaType: "text/plain"))
-        XCTAssertNil(ConversationImageThumbnail.decode(Data("not an image".utf8), mediaType: "image/png"))
+        XCTAssertThrowsError(try ConversationImageThumbnail.decode(png, mediaType: "text/plain")) {
+            XCTAssertEqual($0 as? FilesFailure, .invalidReference)
+        }
+        XCTAssertThrowsError(try ConversationImageThumbnail.decode(Data("not an image".utf8), mediaType: "image/png")) {
+            XCTAssertEqual($0 as? FilesFailure, .invalidReference)
+        }
+    }
+
+    func testValidPNGExceedingPixelDimensionsIsTooLargeEvenBelowByteLimit() throws {
+        let canvas = try XCTUnwrap(CGContext(data: nil, width: 16_385, height: 4, bitsPerComponent: 8,
+                                             bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
+                                             bitmapInfo: CGImageAlphaInfo.none.rawValue))
+        canvas.setFillColor(gray: 0.5, alpha: 1)
+        canvas.fill(CGRect(x: 0, y: 0, width: 16_385, height: 4))
+        let image = try XCTUnwrap(canvas.makeImage())
+        let png = NSMutableData()
+        let encoder = try XCTUnwrap(CGImageDestinationCreateWithData(png as CFMutableData, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(encoder, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(encoder))
+        XCTAssertLessThan(png.length, ConversationImageThumbnail.maximumBytes)
+        XCTAssertThrowsError(try ConversationImageThumbnail.decode(png as Data, mediaType: "image/png")) {
+            XCTAssertEqual($0 as? FilesFailure, .tooLarge)
+        }
     }
 }

@@ -55,7 +55,7 @@ final class FilesCoordinator {
     func disconnect() {
         let previous = transport
         revision &+= 1
-        conversationImageRevision &+= 1
+        resetConversationImages()
         cancelOperation()
         transport = nil
         identity = nil
@@ -74,7 +74,7 @@ final class FilesCoordinator {
         guard foreground != value else { return }
         foreground = value
         revision &+= 1
-        conversationImageRevision &+= 1
+        resetConversationImages()
         cancelOperation()
         if let directory { folder = (directory.workspace, directory.path) }
         directory = nil
@@ -120,7 +120,7 @@ final class FilesCoordinator {
     }
 
     func selectAgent(_ agentID: String?) {
-        if selectedAgentID != agentID { conversationImageRevision &+= 1 }
+        if selectedAgentID != agentID { resetConversationImages() }
         cancelOperation()
         selectedAgentID = agentID
         request = nil; pins.removeAll(); positions.removeAll(); folder = nil; directoryPosition = nil
@@ -197,6 +197,11 @@ final class FilesCoordinator {
         return accepts(agentID) ? revision : nil
     }
 
+    private func resetConversationImages() {
+        conversationImageRevision &+= 1
+        conversationImageSlots.cancelWaiting()
+    }
+
     func loadConversationImage(_ reference: String, agentID: String, scope: Int) async throws -> CGImage {
         try Task.checkCancellation()
         guard conversationImageScope(agentID: agentID) == scope else { throw CancellationError() }
@@ -208,13 +213,12 @@ final class FilesCoordinator {
                                                      maximumBytes: ConversationImageThumbnail.maximumBytes)
         try Task.checkCancellation()
         guard conversationImageScope(agentID: agentID) == scope else { throw CancellationError() }
-        let image = await Task.detached(priority: .utility) {
-            ConversationImageThumbnail.decode(download.data, mediaType: download.mediaType)
+        let decoded = await Task.detached(priority: .utility) {
+            Result { try ConversationImageThumbnail.decode(download.data, mediaType: download.mediaType) }
         }.value
         try Task.checkCancellation()
         guard conversationImageScope(agentID: agentID) == scope else { throw CancellationError() }
-        guard let image else { throw FilesFailure.invalidReference }
-        return image
+        return try decoded.get()
     }
 
     private func string(_ value: JSONValue?) -> String? {

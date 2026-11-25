@@ -714,7 +714,10 @@ private struct ReadingOperatorInlineImages: View {
     let messageID: String
     let text: String
     @Environment(\.holonConversationImageAccess) private var imageAccess
-    @State private var resolved: (Request, OperatorInputPresentation.Message?)?
+    private enum Resolution {
+        case message(OperatorInputPresentation.Message), deferred, failed
+    }
+    @State private var resolved: (Request, Resolution)?
     @State private var attempt = 0
 
     var body: some View {
@@ -723,10 +726,14 @@ private struct ReadingOperatorInlineImages: View {
             let request = Request(scope: scope, agentID: agentID, messageID: messageID, attempt: attempt)
             Group {
                 if let resolved, resolved.0 == request {
-                    if let message = resolved.1 {
+                    switch resolved.1 {
+                    case .message(let message):
                         ReadingOperatorImages(message: message)
                             .id(messageID)
-                    } else {
+                    case .deferred:
+                        Button("reading.imageLoadPreview") { attempt &+= 1 }
+                            .font(.callout)
+                    case .failed:
                         Button("reading.retry") { attempt &+= 1 }
                             .font(.callout)
                     }
@@ -736,12 +743,13 @@ private struct ReadingOperatorInlineImages: View {
             }
             .task(id: request) {
                 do {
-                    let message = try await reader.loadOperatorMessage(messageID, agentID: agentID)
+                    let message = try await reader.loadInlineImageMessage(messageID, agentID: agentID)
                     try Task.checkCancellation()
-                    resolved = (request, message)
+                    resolved = (request, .message(message))
                 } catch {
                     guard !Task.isCancelled else { return }
-                    resolved = (request, nil)
+                    let deferred = error is ConversationPreviewDeferred || error is CancellationError
+                    resolved = (request, deferred ? .deferred : .failed)
                 }
             }
         }

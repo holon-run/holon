@@ -95,7 +95,7 @@ enum OperatorInputPresentation {
         let isTruncated: Bool
     }
 
-    struct Message {
+    struct Message: Sendable {
         let text: String
         // nil means legacy or unrelated provenance; [] is an authoritative absence.
         let uploadedImages: [ConversationImageReference]?

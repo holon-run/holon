@@ -3,7 +3,7 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct ConversationImageReference: Hashable {
+struct ConversationImageReference: Hashable, Sendable {
     let reference: String
     let label: String
 
@@ -89,8 +89,14 @@ struct ConversationImagePreviews: View {
 
 @MainActor
 final class ConversationImageSlots {
-    private var available = 3
+    private var available: Int
+    private let maximumWaiting: Int
     private var waiters: [(UUID, CheckedContinuation<Void, any Error>)] = []
+
+    init(active: Int = 3, waiting: Int = 12) {
+        available = active
+        maximumWaiting = waiting
+    }
 
     func acquire() async throws {
         try Task.checkCancellation()
@@ -102,6 +108,7 @@ final class ConversationImageSlots {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, any Error>) in
                 if Task.isCancelled { waiter.resume(throwing: CancellationError()) }
+                else if waiters.count >= maximumWaiting { waiter.resume(throwing: ConversationPreviewDeferred()) }
                 else { waiters.append((id, waiter)) }
             }
         } onCancel: {
@@ -117,6 +124,76 @@ final class ConversationImageSlots {
         if waiters.isEmpty { available += 1 }
         else { waiters.removeFirst().1.resume() }
     }
+
+    func cancelWaiting() {
+        let cancelled = waiters
+        waiters.removeAll()
+        for (_, waiter) in cancelled { waiter.resume(throwing: CancellationError()) }
+    }
+}
+
+struct ConversationPreviewDeferred: Error {}
+
+/// Coalesce only in-flight automatic checks; don't retain full message bodies.
+@MainActor
+final class ConversationImageDetails {
+    private static let activeLimit = 2
+    private static let waitingLimit = 8
+    private let slots = ConversationImageSlots(active: activeLimit, waiting: waitingLimit)
+    private struct Job {
+        let id: UUID
+        let task: Task<OperatorInputPresentation.Message, any Error>
+        var readers: Set<UUID> = []
+    }
+    private var jobs: [String: Job] = [:]
+
+    func load(_ id: String, operation: @escaping @MainActor () async throws -> OperatorInputPresentation.Message)
+        async throws -> OperatorInputPresentation.Message {
+        try Task.checkCancellation()
+        if jobs[id] == nil {
+            guard jobs.count < Self.activeLimit + Self.waitingLimit else { throw ConversationPreviewDeferred() }
+            let jobID = UUID()
+            let task = Task {
+                defer { if self.jobs[id]?.id == jobID { self.jobs.removeValue(forKey: id) } }
+                try await self.slots.acquire()
+                defer { self.slots.release() }
+                try Task.checkCancellation()
+                let message = try await operation()
+                try Task.checkCancellation()
+                return message
+            }
+            jobs[id] = Job(id: jobID, task: task)
+        }
+        guard var job = jobs[id] else { throw CancellationError() }
+        let reader = UUID()
+        job.readers.insert(reader)
+        jobs[id] = job
+        let jobID = job.id, task = job.task
+        return try await withTaskCancellationHandler {
+            let message = try await task.value
+            try Task.checkCancellation()
+            return message
+        } onCancel: {
+            Task { @MainActor in self.removeReader(reader, from: id, jobID: jobID) }
+        }
+    }
+
+    private func removeReader(_ reader: UUID, from id: String, jobID: UUID) {
+        guard var job = jobs[id], job.id == jobID else { return }
+        job.readers.remove(reader)
+        if job.readers.isEmpty {
+            jobs.removeValue(forKey: id)
+            job.task.cancel()
+        } else {
+            jobs[id] = job
+        }
+    }
+
+    func cancelAll() {
+        for job in jobs.values { job.task.cancel() }
+        jobs.removeAll()
+        slots.cancelWaiting()
+    }
 }
 
 private struct ConversationImagePreview: View {
@@ -125,7 +202,7 @@ private struct ConversationImagePreview: View {
         let reference: ConversationImageReference
         let retry: Int
     }
-    private enum Result { case image(CGImage), tooLarge, unavailable }
+    private enum Result { case image(CGImage), tooLarge, unavailable, deferred }
 
     let reference: ConversationImageReference
     @Environment(\.holonConversationImageAccess) private var access
@@ -154,6 +231,9 @@ private struct ConversationImagePreview: View {
                 Button("reading.imageUnavailable", systemImage: "photo.badge.exclamationmark") { retry &+= 1 }
                     .font(.callout).multilineTextAlignment(.center)
                     .accessibilityIdentifier("conversation.image.unavailable")
+            case .deferred:
+                Button("reading.imageLoadPreview", systemImage: "photo") { retry &+= 1 }
+                    .font(.callout).multilineTextAlignment(.center)
             case nil:
                 if request.scope == nil {
                     Label("reading.imageOffline", systemImage: "photo")
@@ -174,8 +254,10 @@ private struct ConversationImagePreview: View {
                 try Task.checkCancellation()
                 response = (request, .image(image))
             } catch {
-                guard !Task.isCancelled else { return }
-                response = (request, (error as? FilesFailure) == .tooLarge ? .tooLarge : .unavailable)
+                guard !Task.isCancelled, !(error is CancellationError) else { return }
+                let result: Result = error is ConversationPreviewDeferred ? .deferred :
+                    ((error as? FilesFailure) == .tooLarge ? .tooLarge : .unavailable)
+                response = (request, result)
             }
         }
     }
@@ -185,25 +267,30 @@ enum ConversationImageThumbnail {
     static let maximumBytes = 5 * 1_024 * 1_024
     static let maximumPixelSize = 768
 
-    static func decode(_ data: Data, mediaType: String?) -> CGImage? {
-        guard !data.isEmpty, data.count <= maximumBytes else { return nil }
+    static func decode(_ data: Data, mediaType: String?) throws -> CGImage {
+        guard data.count <= maximumBytes else { throw FilesFailure.tooLarge }
+        guard !data.isEmpty else { throw FilesFailure.invalidReference }
         if let type = mediaType?.split(separator: ";").first?.lowercased(),
-           !type.hasPrefix("image/"), type != "application/octet-stream" { return nil }
+           !type.hasPrefix("image/"), type != "application/octet-stream" { throw FilesFailure.invalidReference }
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions),
               let identifier = CGImageSourceGetType(source) as String?,
               let type = UTType(identifier),
               [.png, .jpeg, .gif, .heic, .heif, .webP].contains(type),
+              CGImageSourceGetStatus(source) == .statusComplete,
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              (1...16_384).contains(width), (1...16_384).contains(height),
-              width * height <= 48_000_000 else { return nil }
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+              width > 0, height > 0 else { throw FilesFailure.invalidReference }
+        guard width <= 16_384, height <= 16_384, width * height <= 48_000_000 else {
+            throw FilesFailure.tooLarge
+        }
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize
-        ] as CFDictionary)
+        ] as CFDictionary) else { throw FilesFailure.invalidReference }
+        return image
     }
 }

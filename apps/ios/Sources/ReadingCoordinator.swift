@@ -69,6 +69,7 @@ final class ReadingCoordinator {
     @ObservationIgnored private var reportDrafts: [ContentReportKey: ContentReportDraft] = [:]
     private var foreground = true
     @ObservationIgnored private var revision = 0
+    @ObservationIgnored private let conversationImageDetails = ConversationImageDetails()
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var streams: [UUID: ReadingStream] = [:]
     @ObservationIgnored private var reducer: HolonConversationReducer?
@@ -351,6 +352,7 @@ final class ReadingCoordinator {
         previewTask = nil
         previewedAgentIDs = []
         revision += 1
+        conversationImageDetails.cancelAll()
         isRosterCurrent = false
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
@@ -853,6 +855,17 @@ final class ReadingCoordinator {
             }
         }
         await task.value
+    }
+
+    func loadInlineImageMessage(_ messageID: String, agentID: String) async throws -> OperatorInputPresentation.Message {
+        let token = revision
+        guard current(token), status == .live, selectedAgentID == agentID else { throw ConversationPreviewDeferred() }
+        let message = try await conversationImageDetails.load(messageID) {
+            guard self.current(token), self.selectedAgentID == agentID else { throw CancellationError() }
+            return try await self.loadOperatorMessage(messageID, agentID: agentID)
+        }
+        guard current(token), status == .live, selectedAgentID == agentID else { throw CancellationError() }
+        return message
     }
 
     func loadOperatorMessage(_ messageID: String, agentID: String) async throws -> OperatorInputPresentation.Message {

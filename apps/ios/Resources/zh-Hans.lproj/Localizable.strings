@@ -122,6 +122,7 @@
 "reading.fullMessageUnavailable" = "无法读取完整消息。";
 "reading.image" = "图片";
 "reading.imageLoading" = "正在加载图片…";
+"reading.imageLoadPreview" = "加载图片预览";
 "reading.imageOffline" = "重新连接后加载图片";
 "reading.imageUnavailable" = "图片不可用 · 重试";
 "reading.imageTooLarge" = "图片过大，无法预览";

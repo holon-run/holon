@@ -111,6 +111,7 @@
 "reading.fullMessageUnavailable" = "The full message could not be loaded.";
 "reading.image" = "Image";
 "reading.imageLoading" = "Loading image…";
+"reading.imageLoadPreview" = "Load image preview";
 "reading.imageOffline" = "Reconnect to load image";
 "reading.imageUnavailable" = "Image unavailable · Retry";
 "reading.imageTooLarge" = "Image is too large to preview";
