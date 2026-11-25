@@ -1429,6 +1429,24 @@ impl RuntimeMutation {
     }
 
     pub(super) async fn append_original_audit_event(&mut self, event: AuditEvent) -> Result<()> {
+        self.append_audit_event(event, true).await
+    }
+
+    /// Append a pure observation event.
+    ///
+    /// Observation appends never consume a pending transition-fault fixture.
+    /// The fixture targets the next state transition, and an independent Audit
+    /// transition cannot honor every armed fault point, so consuming the fault
+    /// here would silently drop a point that belongs to a later transition.
+    pub(super) async fn append_observation_audit_event(&mut self, event: AuditEvent) -> Result<()> {
+        self.append_audit_event(event, false).await
+    }
+
+    async fn append_audit_event(
+        &mut self,
+        event: AuditEvent,
+        consumes_transition_fault: bool,
+    ) -> Result<()> {
         self.runtime.inner.storage.event_log().ensure_writable()?;
         anyhow::ensure!(
             &self.state == self.committed_state(),
@@ -1454,12 +1472,17 @@ impl RuntimeMutation {
             }
             return Ok(());
         }
+        let fault = if consumes_transition_fault {
+            self.runtime.take_transition_fault()
+        } else {
+            None
+        };
         let prepared = crate::runtime_db::transitions::PreparedInputTransition::audit(
             scope,
             event.id.clone(),
             Utc::now(),
             event,
-            self.runtime.take_transition_fault(),
+            fault,
         )?;
         let commit = self.commit_prepared_input_transition(prepared).await?;
         self.runtime.apply_transition_commit(commit).await;

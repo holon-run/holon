@@ -1117,7 +1117,7 @@ impl RuntimeHandle {
                 occurred_at: self.now(),
             },
         )?;
-        self.append_original_audit_event(event).await
+        self.append_observation_audit_event(event).await
     }
 
     /// Publishes `provider_request_started` before the dispatch call so the
@@ -1147,7 +1147,7 @@ impl RuntimeHandle {
                 dispatch_reason,
             },
         )?;
-        self.append_original_audit_event(event).await
+        self.append_observation_audit_event(event).await
     }
 
     /// Publishes `provider_request_finished` for the dispatch identified by
@@ -1203,7 +1203,7 @@ impl RuntimeHandle {
                 route_known,
             },
         )?;
-        self.append_original_audit_event(event).await
+        self.append_observation_audit_event(event).await
     }
 
     pub(super) async fn complete_turn_with_abort(

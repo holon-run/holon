@@ -5635,6 +5635,20 @@ impl RuntimeHandle {
         })
     }
 
+    /// Append an observation-only Audit event. It never consumes a pending
+    /// transition-fault fixture, so fixtures keep targeting the next state
+    /// transition instead of an observation write.
+    pub(crate) fn append_observation_audit_event(
+        &self,
+        event: AuditEvent,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            self.inner.storage.event_log().ensure_writable()?;
+            let mut mutation = self.begin_mutation().await?;
+            mutation.append_observation_audit_event(event).await
+        })
+    }
+
     pub(crate) async fn append_decision_advisory_event(
         &self,
         event: &crate::decision_telemetry::DecisionAdvisoryCompletedEvent,
