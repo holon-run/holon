@@ -338,9 +338,9 @@ envelope to stdout and nothing else, with `status` equal to `ok`, `failed`, or
 `blocked`. Without `--json`, the same result renders as bounded, redacted human
 text. Both modes share daemon exit codes `0`, `1`, `20`, `21`, and the reserved
 `22`; see [CLI exit codes](./cli-exit-codes.md) and
-[local operator troubleshooting](../../local-operator-troubleshooting.md) for
-the full contract. There is no compatibility mode for the previous unwrapped
-daemon JSON output: scripts must switch to `--json` and read `data`.
+[agent troubleshooting](../guides/troubleshooting.md) for daemon diagnostics.
+There is no compatibility mode for the previous unwrapped daemon JSON output:
+scripts must switch to `--json` and read `data`.
 
 Lifecycle command JSON includes `process_created`: true only when the command
 created the returned daemon process. An idempotent Start that reuses an existing
