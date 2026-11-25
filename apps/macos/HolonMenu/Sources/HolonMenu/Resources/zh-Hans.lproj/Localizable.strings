@@ -117,3 +117,16 @@
 "Tailscale error details" = "Tailscale 错误详情";
 "CLI not found (optional)" = "未找到 CLI（可选）";
 "Status unknown" = "状态未知";
+"This Holon daemon requires an external control token. Set a control token file in Settings, or start it once with `holon daemon start --token-file <path>`." = "此 Holon 守护进程需要外部提供的控制令牌。请在设置中指定控制令牌文件，或先用 `holon daemon start --token-file <路径>` 启动一次。";
+"The control token file path must be absolute: %@" = "控制令牌文件路径必须是绝对路径：%@";
+"Cleared the saved control token file approval." = "已清除保存的控制令牌文件授权。";
+"Use an absolute path. Saving an empty field clears the saved approval." = "请使用绝对路径；保存空内容会清除已保存的授权。";
+"Saved. This daemon will use the token file at the next start or restart." = "已保存。此守护进程将在下次启动或重启时使用该令牌文件。";
+"Waiting for Holon to start" = "等待 Holon 启动";
+"Tailscale status is available after the Holon daemon starts." = "Holon 守护进程启动后可查看 Tailscale 状态。";
+"Dismiss error" = "关闭错误提示";
+"Daemon credentials" = "守护进程凭据";
+"Control token file (optional)" = "控制令牌文件（可选）";
+"Path to an owner-only control token file" = "仅所有者可读的控制令牌文件路径";
+"Save token file" = "保存令牌文件";
+"Used only when the daemon requires externally managed authentication. Only the file path is saved; the token content is never stored." = "仅在守护进程要求外部管理认证时使用。只保存文件路径，绝不保存令牌内容。";

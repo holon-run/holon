@@ -56,7 +56,7 @@ final class HolonMenuStatusController: NSObject {
             window = settingsWindow
         } else {
             window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 440, height: 180),
+                contentRect: NSRect(x: 0, y: 0, width: 440, height: 420),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false

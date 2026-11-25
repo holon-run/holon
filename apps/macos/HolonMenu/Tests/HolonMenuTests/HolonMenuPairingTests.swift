@@ -40,14 +40,15 @@ final class HolonMenuPairingTests: XCTestCase {
         configuration.protocolClasses = [AuthMethodURLProtocol.self]
         let socket = home.appendingPathComponent("control.sock").path
         let status = """
+            {"schema_version":1,"command":"daemon.status","status":"ok","error":null,"data":
             {"ok":true,"state":"running","healthy":true,"home_dir":"\(home.path)",
              "socket_path":"\(socket)","http_addr":"127.0.0.1:7878",
              "web_url":"http://127.0.0.1:7878","desired_running":true,
-             "control_connectivity":true,"message":"Running"}
+             "control_connectivity":true,"message":"Running"}}
             """
         let launcher = RecordingProcessLauncher(
             result: .success(result),
-            responses: ["daemon status": status]
+            responses: ["daemon status --json": status]
         )
         return (HolonCLIClient(
             executableURL: URL(fileURLWithPath: "/opt/holon"),
@@ -93,7 +94,7 @@ final class HolonMenuPairingTests: XCTestCase {
                 )
                 let invocations = await launcher.invocations()
                 XCTAssertEqual(invocations.count, 2)
-                XCTAssertEqual(invocations.first?.arguments, ["daemon", "status"])
+                XCTAssertEqual(invocations.first?.arguments, ["daemon", "status", "--json"])
                 XCTAssertEqual(invocations.last?.executableURL.path, "/usr/bin/curl")
                 XCTAssertEqual(invocations.last?.arguments, curlArguments(socket: socket))
                 let requests = AuthMethodURLProtocol.lock.withLock { AuthMethodURLProtocol.requests }
