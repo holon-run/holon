@@ -349,6 +349,7 @@ fn pre_migration_projection_matches_retirement_canonical_rows() -> Result<()> {
             ("recovery", "w3", "open-recovery"),
             ("settled", "w4", "settled"),
             ("missing", "w5", "missing"),
+            ("drifted", "w7", "open-drifted"),
         ] {
             db.execute(
                 "INSERT INTO execution_protocol_work_items VALUES (?1, ?2, 9, 7, 'in_flight', ?3)",
@@ -435,6 +436,35 @@ fn pre_migration_projection_matches_retirement_canonical_rows() -> Result<()> {
                 ],
             )?;
         }
+        // The attempt payload and its persisted `source_identity_json` column
+        // are written separately, so they can drift. Migration 119 reads the
+        // column; the projection must follow it rather than the payload.
+        let drifted_attempt = legacy_attempt(
+            "drifted",
+            "open-drifted",
+            "w7",
+            ExecutionAttemptState::Open,
+            ExecutionSourceIdentity::WorkItemContinuation {
+                work_item_id: "w7".into(),
+            },
+            7,
+        );
+        db.execute(
+            "INSERT INTO execution_protocol_attempts (
+                 agent_id, attempt_id, lifecycle_state, source_identity_json,
+                 source_generation, payload_json
+             ) VALUES (?1, ?2, 'open', ?3, 1, ?4)",
+            params![
+                "drifted",
+                drifted_attempt.attempt_id,
+                serde_json::to_string(&ExecutionSourceIdentity::TriggeredWait {
+                    wait_id: "drift-resolved".into(),
+                    trigger_message_id: "m".into(),
+                    ingress: None,
+                })?,
+                serde_json::to_string(&drifted_attempt)?,
+            ],
+        )?;
         db.execute_batch(
             "INSERT INTO wait_conditions (
                  wait_condition_id, agent_id, work_item_id, status, kind, waiting_for,
@@ -442,6 +472,7 @@ fn pre_migration_projection_matches_retirement_canonical_rows() -> Result<()> {
              ) VALUES
                  ('resolved', 'exact', 'w2', 'resolved', 'timer', 'timer', 'a', 'a', '{}'),
                  ('active', 'recovery', 'w3', 'active', 'timer', 'timer', 'a', 'a', '{}'),
+                 ('drift-resolved', 'drifted', 'w7', 'resolved', 'timer', 'timer', 'a', 'a', '{}'),
                  ('other', 'stranger', 'w1', 'active', 'timer', 'timer', 'a', 'a', '{}');",
         )?;
     }
@@ -456,6 +487,7 @@ fn pre_migration_projection_matches_retirement_canonical_rows() -> Result<()> {
             ("settled", "w4"),
             ("missing", "w5"),
             ("unrelated", "w6"),
+            ("drifted", "w7"),
         ] {
             let (payload, marker): (String, String) = db.query_row(
                 "SELECT payload_json, source_revision||':'||generation||':'||lifecycle_state
@@ -471,7 +503,7 @@ fn pre_migration_projection_matches_retirement_canonical_rows() -> Result<()> {
     };
 
     // The projection itself: one case per retired-shape branch.
-    let expected: [(&str, u64, &str, Option<&str>, LegacyWaitSource, bool); 5] = [
+    let expected: [(&str, u64, &str, Option<&str>, LegacyWaitSource, bool); 6] = [
         (
             "w1",
             7,
@@ -498,6 +530,14 @@ fn pre_migration_projection_matches_retirement_canonical_rows() -> Result<()> {
         ),
         ("w4", 8, "runnable", None, LegacyWaitSource::None, false),
         ("w5", 8, "runnable", None, LegacyWaitSource::None, false),
+        (
+            "w7",
+            7,
+            "waiting",
+            Some("drift-resolved"),
+            LegacyWaitSource::ExactAttemptWait,
+            true,
+        ),
     ];
     for (work, generation, lifecycle, wait_id, wait_source, matched) in expected {
         let (record, evidence) = projected.get(work).unwrap();
@@ -537,13 +577,14 @@ fn pre_migration_projection_matches_retirement_canonical_rows() -> Result<()> {
             .unwrap(),
         unexpected_runtime_backfill,
     )?;
-    let canonical_rows: [(&str, u64, &str, Option<&str>); 6] = [
+    let canonical_rows: [(&str, u64, &str, Option<&str>); 7] = [
         ("w1", 7, "runnable", None),
         ("w2", 7, "waiting", Some("resolved")),
         ("w3", 7, "waiting", Some("active")),
         ("w4", 8, "runnable", None),
         ("w5", 8, "runnable", None),
         ("w6", 7, "paused", None),
+        ("w7", 7, "waiting", Some("drift-resolved")),
     ];
     for (work, generation, lifecycle, wait_id) in canonical_rows {
         let (indexed_generation, indexed_lifecycle, payload): (u64, String, String) = db
@@ -607,6 +648,12 @@ fn pre_migration_projection_fails_closed_on_damaged_legacy_rows() -> Result<()> 
                 7,
                 legacy_in_flight_payload("broken", 7),
             ),
+            (
+                "bad-identity-column",
+                "w7",
+                7,
+                legacy_in_flight_payload("open-bad-identity", 7),
+            ),
         ] {
             db.execute(
                 "INSERT INTO execution_protocol_work_items VALUES (?1, ?2, 9, ?3, 'in_flight', ?4)",
@@ -620,6 +667,30 @@ fn pre_migration_projection_fails_closed_on_damaged_legacy_rows() -> Result<()> 
              ) VALUES ('damaged-attempt', 'broken', 'open', '{}', 1, '{}')",
             [],
         )?;
+        // A source identity column that is not JSON cannot be projected like
+        // migration 119's `json_extract`, so it fails closed instead of
+        // silently falling back to an owner wait.
+        let bad_identity_attempt = legacy_attempt(
+            "bad-identity-column",
+            "open-bad-identity",
+            "w7",
+            ExecutionAttemptState::Open,
+            ExecutionSourceIdentity::WorkItemContinuation {
+                work_item_id: "w7".into(),
+            },
+            7,
+        );
+        db.execute(
+            "INSERT INTO execution_protocol_attempts (
+                 agent_id, attempt_id, lifecycle_state, source_identity_json,
+                 source_generation, payload_json
+             ) VALUES (?1, ?2, 'open', 'not json', 1, ?3)",
+            params![
+                "bad-identity-column",
+                bad_identity_attempt.attempt_id,
+                serde_json::to_string(&bad_identity_attempt)?,
+            ],
+        )?;
     }
 
     let db = Connection::open(&path)?;
@@ -630,6 +701,7 @@ fn pre_migration_projection_fails_closed_on_damaged_legacy_rows() -> Result<()> 
         ("drifted", "w4", "9:7:in_flight"),
         ("overflow", "w5", "9:9223372036854775807:in_flight"),
         ("damaged-attempt", "w6", "9:7:in_flight"),
+        ("bad-identity-column", "w7", "9:7:in_flight"),
         ("malformed", "w1", "not-a-marker"),
     ] {
         let payload: String = db.query_row(

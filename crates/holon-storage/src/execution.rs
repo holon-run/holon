@@ -417,17 +417,23 @@ fn matching_open_attempt(
     work_item_id: &str,
     attempt_id: &str,
     generation: u64,
-) -> Result<Option<execution_protocol::ExecutionAttempt>> {
+) -> Result<Option<LegacyMatchingAttempt>> {
     let row = connection
         .query_row(
-            "SELECT lifecycle_state, payload_json
+            "SELECT lifecycle_state, payload_json, source_identity_json
              FROM execution_protocol_attempts
              WHERE agent_id = ?1 AND attempt_id = ?2",
             params![agent_id, attempt_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((lifecycle_state, payload)) = row else {
+    let Some((lifecycle_state, payload, source_identity_json)) = row else {
         return Ok(None);
     };
     let attempt: execution_protocol::ExecutionAttempt = serde_json::from_str(&payload)
@@ -456,21 +462,31 @@ fn matching_open_attempt(
             if bound == work_item_id
     );
     let generation_matches = attempt.admitted_fences.work_item_generation == Some(generation);
-    Ok((binding_matches && generation_matches).then_some(attempt))
+    Ok(
+        (binding_matches && generation_matches).then_some(LegacyMatchingAttempt {
+            source_identity_json,
+        }),
+    )
+}
+
+/// Migration 119 selects the exact wait from the persisted
+/// `source_identity_json` column, which is written separately from the attempt
+/// payload. Carry the column text so the projection follows the column rather
+/// than the payload when the two drifted.
+struct LegacyMatchingAttempt {
+    source_identity_json: String,
 }
 
 fn select_legacy_wait(
     connection: &rusqlite::Connection,
     agent_id: &str,
     work_item_id: &str,
-    attempt: &execution_protocol::ExecutionAttempt,
+    matching: &LegacyMatchingAttempt,
 ) -> Result<(LegacyWaitSource, Option<String>)> {
     if !table_exists(connection, "wait_conditions")? {
         return Ok((LegacyWaitSource::None, None));
     }
-    if let execution_protocol::ExecutionSourceIdentity::TriggeredWait { wait_id, .. } =
-        &attempt.source.identity
-    {
+    if let Some(wait_id) = exact_wait_id_from_source_identity(&matching.source_identity_json)? {
         let exact = connection
             .query_row(
                 "SELECT wait_condition_id FROM wait_conditions
@@ -499,6 +515,23 @@ fn select_legacy_wait(
         Some(wait_id) => (LegacyWaitSource::LatestOwnerWait, Some(wait_id)),
         None => (LegacyWaitSource::None, None),
     })
+}
+
+/// Mirrors migration 119's `json_extract(source_identity_json, '$.kind')` /
+/// `'$.wait_id'` lookups, so a row whose payload identity disagrees with the
+/// column still projects exactly like the migration.
+fn exact_wait_id_from_source_identity(source_identity_json: &str) -> Result<Option<String>> {
+    let identity: serde_json::Value =
+        serde_json::from_str(source_identity_json).with_context(|| {
+            format!("decoding attempt source identity {source_identity_json} from a legacy upgrade")
+        })?;
+    if identity.get("kind").and_then(serde_json::Value::as_str) != Some("triggered_wait") {
+        return Ok(None);
+    }
+    Ok(identity
+        .get("wait_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned))
 }
 
 fn table_exists(connection: &rusqlite::Connection, table: &str) -> Result<bool> {
