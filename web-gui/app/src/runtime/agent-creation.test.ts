@@ -58,13 +58,19 @@ afterEach(async () => {
 describe("agent creation boundaries", () => {
   it("returns accepted before polling and preserves identity/name and catalog diagnostics", async () => {
     expect(await create()).toMatchObject({ kind: "accepted", creation: { identity } });
-    expect(mocks.create).toHaveBeenCalledWith("new-agent", "template", "Display name");
+    expect(mocks.create).toHaveBeenCalledWith("new-agent", "template", "Display name", undefined);
     expect(mocks.job).not.toHaveBeenCalled();
     expect(progress().status).toBe("initializing");
     expect(useRuntimeStore.getState().templateCatalogError).toBe("catalog-only");
     await vi.advanceTimersByTimeAsync(1000);
     expect(progress().status).toBe("ready");
     expect(mocks.detail).toHaveBeenCalledWith("new-agent");
+  });
+
+  it("forwards the one-time response language hint to the client", async () => {
+    expect(await useRuntimeStore.getState().createAgentFromTemplate("new-agent", "template", "Display name", "zh-CN"))
+      .toMatchObject({ kind: "accepted" });
+    expect(mocks.create).toHaveBeenCalledWith("new-agent", "template", "Display name", "zh-CN");
   });
 
   it("accepts degraded receipts without throwing or suggesting another POST", async () => {

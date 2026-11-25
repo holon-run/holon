@@ -130,8 +130,8 @@ Keep project files and outputs in separate workspaces. Agents work in the backgr
 
 </div>
 <figure class="home-workbench-preview">
-<a href="/assets/lite-paper/web-gui-review-en.png" aria-label="View the full-size web workbench screenshot">
-<img src="/assets/lite-paper/web-gui-review-en.png" width="3000" height="1880" alt="Holon web workbench: agents organized by role on the left, review progress and next steps in the center, and the current task, pending results, and checklist on the right." loading="lazy" decoding="async">
+<a href="/assets/lite-paper/web-gui-review-en.webp" aria-label="View the web workbench screenshot at full size">
+<img src="/assets/lite-paper/web-gui-review-en.webp" width="1600" height="1003" alt="Holon web workbench: agents organized by role on the left, review progress and next steps in the center, and the current task, pending results, and checklist on the right." loading="lazy" decoding="async">
 </a>
 <figcaption>See what’s done, what’s pending, and what happens next. Screenshot uses demo data. Click to enlarge.</figcaption>
 </figure>

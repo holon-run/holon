@@ -11,6 +11,9 @@ Decision:
   `migration_required`.
 - Human output is the default and is bounded: `status: ...`, a few
   command-relevant fields, and one next action on failure.
+- `daemon status` keeps its lifecycle view in `data` even when the outcome is
+  `blocked` (exit `21`), so GUI consumers can reconcile state while scripts
+  still see the blocked exit code.
 - There is no compatibility layer for the previous unwrapped daemon JSON.
 
 Reason:
@@ -47,5 +50,5 @@ Integration point:
 The shared renderer and exit-code mapping live in `src/daemon_cli.rs`, and
 `daemon_command_path` in `src/main.rs` is the single place that maps a
 `DaemonCommands` variant to its dot path. Adding `validate-startup` means
-adding that variant plus a `DaemonCommandPayload::Data`/`Blocked` result; it
+adding that variant plus a `DaemonCommandPayload::Data`/`BlockedWithData` result; it
 must not add a second JSON shape.

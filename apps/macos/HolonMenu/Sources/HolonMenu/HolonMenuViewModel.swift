@@ -26,6 +26,7 @@ final class HolonMenuViewModel: ObservableObject {
     @Published private(set) var lanError: String?
     @Published private(set) var pairingURL: URL?
     @Published private(set) var pairingError: String?
+    @Published private(set) var statusError: String?
     @Published var customPairingOrigin = "" {
         didSet { if oldValue != customPairingOrigin { hidePairingCode() } }
     }
@@ -36,6 +37,9 @@ final class HolonMenuViewModel: ObservableObject {
     @Published var showLANConfirmation = false
     @Published var launchAtLoginEnabled = false
     @Published var lastError: String?
+    @Published var controlTokenFilePath = ""
+    @Published private(set) var controlTokenFileMessage: String?
+    @Published private(set) var controlTokenFileError: String?
     @Published var commandLineToolMessage: String?
 
     private let client: any HolonDesiredStateClient
@@ -44,6 +48,16 @@ final class HolonMenuViewModel: ObservableObject {
     private var pollingTask: Task<Void, Never>?
     private var pairingExpiryTask: Task<Void, Never>?
     private var pairingRevision: UInt64 = 0
+    private var lastErrorSource: LastErrorSource?
+
+    private enum LastErrorSource {
+        case start
+        case stop
+        case restart
+        case logs
+        case launchAtLogin
+        case commandLineTool
+    }
 
     init(
         client: some HolonDesiredStateClient,
@@ -64,7 +78,7 @@ final class HolonMenuViewModel: ObservableObject {
         await refresh()
         if status?.desiredRunning == true {
             switch status?.state {
-            case .stopped:
+            case .stopped, .stale:
                 await start()
             case .versionMismatch:
                 await restart()
@@ -80,28 +94,42 @@ final class HolonMenuViewModel: ObservableObject {
         let previousConnection = connectionURL
         let previousNetwork = tailscaleStatus
         let previousLAN = lanURL
+        var probeErrors: [String] = []
         do {
             status = try await client.status()
-            lastError = nil
         } catch {
             status = nil
-            lastError = error.localizedDescription
+            probeErrors.append(error.localizedDescription)
         }
-        do {
-            tailscaleStatus = try await client.tailscaleStatus()
-            tailscaleProbeError = nil
-        } catch {
+        if status?.controlConnectivity == true {
+            do {
+                tailscaleStatus = try await client.tailscaleStatus()
+                tailscaleProbeError = nil
+            } catch {
+                tailscaleStatus = nil
+                tailscaleProbeError = error.localizedDescription
+            }
+        } else {
+            // Tailscale Serve control lives behind the daemon control surface.
+            // Probing it while the daemon is stopped only reports connection errors.
             tailscaleStatus = nil
-            tailscaleProbeError = error.localizedDescription
+            tailscaleProbeError = nil
         }
         if tailscaleStatus?.canEnableServe != true {
             showTailscaleServeConfirmation = false
         }
-        do {
-            lanURL = try await client.lanURL()
-        } catch {
+        if status != nil {
+            do {
+                lanURL = try await client.lanURL()
+            } catch {
+                lanURL = nil
+                lanError = error.localizedDescription
+            }
+        } else {
+            // The LAN address lookup also needs the daemon status; repeating it
+            // after a failed probe only duplicates the connection error, while
+            // an unresolved LAN operation error stays visible until retried.
             lanURL = nil
-            lanError = error.localizedDescription
         }
         if previousStatus?.pid != status?.pid || previousStatus?.httpAddr != status?.httpAddr
             || previousStatus?.state != status?.state || previousConnection != connectionURL
@@ -111,20 +139,21 @@ final class HolonMenuViewModel: ObservableObject {
         do {
             launchAtLoginEnabled = try await client.launchAtLoginEnabled()
         } catch {
-            lastError = error.localizedDescription
+            probeErrors.append(error.localizedDescription)
         }
+        statusError = probeErrors.isEmpty ? nil : probeErrors.joined(separator: "\n")
     }
 
     func start() async {
-        await runOperation { try await self.client.start() }
+        await runOperation(source: .start) { try await self.client.start() }
     }
 
     func stop() async {
-        await runOperation { try await self.client.stop() }
+        await runOperation(source: .stop) { try await self.client.stop() }
     }
 
     func restart() async {
-        await runOperation { try await self.client.restart() }
+        await runOperation(source: .restart) { try await self.client.restart() }
     }
 
     func requestTailscaleServe() {
@@ -144,7 +173,6 @@ final class HolonMenuViewModel: ObservableObject {
         do {
             lanURL = try await client.enableLAN()
             status = try await client.status()
-            lastError = nil
         } catch {
             lanError = error.localizedDescription
         }
@@ -158,7 +186,6 @@ final class HolonMenuViewModel: ObservableObject {
         do {
             status = try await client.disableLAN()
             lanURL = nil
-            lastError = nil
         } catch {
             lanError = error.localizedDescription
         }
@@ -173,7 +200,6 @@ final class HolonMenuViewModel: ObservableObject {
         defer { activeOperation = nil }
         do {
             tailscaleStatus = try await client.enableTailscaleServe()
-            lastError = nil
         } catch {
             tailscaleOperationError = error.localizedDescription
         }
@@ -186,7 +212,6 @@ final class HolonMenuViewModel: ObservableObject {
         defer { activeOperation = nil }
         do {
             tailscaleStatus = try await client.disableTailscaleServe()
-            lastError = nil
         } catch {
             tailscaleOperationError = error.localizedDescription
         }
@@ -197,7 +222,6 @@ final class HolonMenuViewModel: ObservableObject {
         do {
             let url = try await client.authenticatedWebURL()
             opener.open(url)
-            lastError = nil
         } catch {
             pairingError = error.localizedDescription
         }
@@ -213,7 +237,6 @@ final class HolonMenuViewModel: ObservableObject {
             guard destination == connectionURL, revision == pairingRevision else { return }
             pairingExpiryTask?.cancel()
             pairingURL = url
-            lastError = nil
             let lifetime = pairingLifetime
             pairingExpiryTask = Task { [weak self] in
                 try? await Task.sleep(for: lifetime)
@@ -236,7 +259,7 @@ final class HolonMenuViewModel: ObservableObject {
             let url = try await client.logsURL()
             opener.open(url)
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error.localizedDescription, source: .logs)
         }
     }
 
@@ -244,9 +267,9 @@ final class HolonMenuViewModel: ObservableObject {
         do {
             try await client.setLaunchAtLoginEnabled(enabled)
             launchAtLoginEnabled = try await client.launchAtLoginEnabled()
-            lastError = nil
+            clearLastError(source: .launchAtLogin)
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error.localizedDescription, source: .launchAtLogin)
         }
     }
 
@@ -255,9 +278,32 @@ final class HolonMenuViewModel: ObservableObject {
             let destination = try await client.installCommandLineTool()
             commandLineToolMessage =
                 L10n.format("Installed at %@. Add ~/.local/bin to PATH if needed.", destination.path)
-            lastError = nil
+            clearLastError(source: .commandLineTool)
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error.localizedDescription, source: .commandLineTool)
+        }
+    }
+
+    func saveControlTokenFilePath() async {
+        controlTokenFileMessage = nil
+        controlTokenFileError = nil
+        do {
+            try await client.setControlTokenFilePath(controlTokenFilePath)
+            let cleared = controlTokenFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            controlTokenFileMessage = cleared
+                ? L10n.text("Cleared the saved control token file approval.")
+                : L10n.text("Saved. This daemon will use the token file at the next start or restart.")
+        } catch {
+            controlTokenFileError = error.localizedDescription
+        }
+    }
+
+    func loadControlTokenFilePath() async {
+        do {
+            controlTokenFilePath = try await client.controlTokenFilePath() ?? ""
+            controlTokenFileError = nil
+        } catch {
+            controlTokenFileError = error.localizedDescription
         }
     }
 
@@ -285,6 +331,24 @@ final class HolonMenuViewModel: ObservableObject {
 
     var statusMessage: String {
         status.map { L10n.text($0.message) } ?? L10n.text("Waiting for Holon status.")
+    }
+
+    var isDaemonControlAvailable: Bool {
+        status?.controlConnectivity == true
+    }
+
+    var tailscaleTitle: String {
+        if let tailscaleStatus { return tailscaleStatus.title }
+        return isDaemonControlAvailable
+            ? L10n.text("Checking…")
+            : L10n.text("Waiting for Holon to start")
+    }
+
+    var tailscaleMessage: String {
+        if let tailscaleStatus { return L10n.text(tailscaleStatus.message) }
+        return isDaemonControlAvailable
+            ? L10n.text("Checking Tailscale status.")
+            : L10n.text("Tailscale status is available after the Holon daemon starts.")
     }
 
     var webAddressText: String {
@@ -335,16 +399,35 @@ final class HolonMenuViewModel: ObservableObject {
         activeOperation != nil
     }
 
-    private func runOperation(_ operation: @escaping () async throws -> HolonDaemonStatus) async {
+    func dismissLastError() {
+        lastError = nil
+        lastErrorSource = nil
+    }
+
+    private func runOperation(
+        source: LastErrorSource,
+        _ operation: @escaping () async throws -> HolonDaemonStatus
+    ) async {
         hidePairingCode()
         activeOperation = L10n.text("Updating Holon…")
         defer { activeOperation = nil }
         do {
             let updated = try await operation()
             status = updated
-            lastError = nil
+            clearLastError(source: source)
         } catch {
-            lastError = error.localizedDescription
+            setLastError(error.localizedDescription, source: source)
         }
+    }
+
+    private func setLastError(_ message: String, source: LastErrorSource) {
+        lastError = message
+        lastErrorSource = source
+    }
+
+    private func clearLastError(source: LastErrorSource) {
+        guard lastErrorSource == source else { return }
+        lastError = nil
+        lastErrorSource = nil
     }
 }

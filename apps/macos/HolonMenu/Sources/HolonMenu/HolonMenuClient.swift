@@ -10,9 +10,12 @@ enum HolonCLIError: LocalizedError {
     case invalidJSON(String)
     case invalidWebAddress(String)
     case invalidLANTokenFile(String)
+    case invalidControlTokenPath(String)
+    case commandFailed(code: String, message: String)
     case loginItem(Error)
     case commandLineToolConflict(String)
     case tailscaleServeConflict(String)
+    case controlCredentialsRequired
     case pairingFailed(String)
 
     var errorDescription: String? {
@@ -33,12 +36,18 @@ enum HolonCLIError: LocalizedError {
             return L10n.format("holon returned an invalid web address: %@", address)
         case let .invalidLANTokenFile(path):
             return L10n.format("The control token file must be a nonempty, owner-only regular file: %@", path)
+        case let .invalidControlTokenPath(path):
+            return L10n.format("The control token file path must be absolute: %@", path)
+        case let .commandFailed(_, message):
+            return message
         case let .loginItem(error):
             return L10n.format("Failed to update the login item: %@", error.localizedDescription)
         case let .commandLineToolConflict(path):
             return L10n.format("A different holon command already exists at %@. It was not replaced.", path)
         case let .tailscaleServeConflict(reason):
             return reason
+        case .controlCredentialsRequired:
+            return L10n.text("This Holon daemon requires an external control token. Set a control token file in Settings, or start it once with `holon daemon start --token-file <path>`.")
         case let .pairingFailed(reason):
             return reason
         }
@@ -133,12 +142,13 @@ enum TailscaleBinaryLocator {
     }
 }
 
-// UserDefaults supports concurrent access. Store only non-secret approval flags.
+// UserDefaults supports concurrent access. Store only non-secret approval paths.
 private final class HolonAuthenticationPreferences: @unchecked Sendable {
     private let defaults: UserDefaults
     init(_ defaults: UserDefaults) { self.defaults = defaults }
     func string(forKey key: String) -> String? { defaults.string(forKey: key) }
     func set(_ value: String, forKey key: String) { defaults.set(value, forKey: key) }
+    func remove(forKey key: String) { defaults.removeObject(forKey: key) }
 }
 
 private final class HolonCreatedDaemonProvenance: @unchecked Sendable {
@@ -164,6 +174,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
     private let decoder: JSONDecoder
     private let networkSession: URLSession
     private let preferences: HolonAuthenticationPreferences
+    private let environment: [String: String]
     // Session-local provenance; persisted PIDs never authorize authentication changes.
     private let createdDaemon = HolonCreatedDaemonProvenance()
 
@@ -173,7 +184,8 @@ final class HolonCLIClient: HolonDesiredStateClient {
         launchOptions: HolonDaemonLaunchOptions = .default,
         tailscaleExecutableURL: URL? = nil,
         networkSession: URLSession = .shared,
-        preferences: UserDefaults = .standard
+        preferences: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.executableURL = executableURL
         self.tailscaleExecutableURL = tailscaleExecutableURL
@@ -181,6 +193,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
         self.launchOptions = launchOptions
         self.networkSession = networkSession
         self.preferences = HolonAuthenticationPreferences(preferences)
+        self.environment = environment
 
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -188,12 +201,14 @@ final class HolonCLIClient: HolonDesiredStateClient {
     }
 
     func status() async throws -> HolonDaemonStatus {
-        try await run(["daemon", "status"], as: HolonDaemonStatus.self)
+        try await run(["daemon", "status", "--json"], as: HolonDaemonStatus.self)
     }
 
     func start() async throws -> HolonDaemonStatus {
         createdDaemon.set(nil)
-        let started = try await run(["daemon", "start"] + launchArguments(), as: HolonDaemonStatus.self)
+        let started = try await run(
+            ["daemon", "start", "--json"] + launchArguments(), as: HolonDaemonStatus.self
+        )
         // Older CLIs and reused processes do not grant ownership.
         if started.processCreated == true {
             recordManagedDaemon(started)
@@ -203,27 +218,50 @@ final class HolonCLIClient: HolonDesiredStateClient {
 
     func stop() async throws -> HolonDaemonStatus {
         createdDaemon.set(nil)
-        return try await run(["daemon", "stop"], as: HolonDaemonStatus.self)
+        return try await run(["daemon", "stop", "--json"], as: HolonDaemonStatus.self)
     }
 
     func restart() async throws -> HolonDaemonStatus {
         createdDaemon.set(nil)
-        let restarted = try await run(["daemon", "restart"] + launchArguments(), as: HolonDaemonStatus.self)
+        let restarted = try await run(
+            ["daemon", "restart", "--json"] + launchArguments(), as: HolonDaemonStatus.self
+        )
         recordManagedDaemon(restarted)
         return restarted
     }
 
     private func launchArguments() async throws -> [String] {
-        var arguments = launchOptions.arguments()
-        if launchOptions.desktopIntegration == nil {
-            let daemon = try await status()
-            // The daemon rechecks configuration under its lifecycle lock.
-            // Missing fields on older CLIs do not prove support for this hint.
-            if daemon.desiredServe?.source == "defaults" {
-                arguments.append("--desktop-integration-if-unconfigured")
+        var options = launchOptions
+        var arguments: [String] = []
+        let daemon = try await status()
+        // The daemon rechecks configuration under its lifecycle lock.
+        // Missing fields on older CLIs do not prove support for this hint.
+        if options.desktopIntegration == nil, daemon.desiredServe?.source == "defaults" {
+            arguments.append("--desktop-integration-if-unconfigured")
+        }
+        // Only a persisted external-authentication requirement justifies
+        // replaying a previously approved token file. Other profiles keep
+        // their stored or configured credentials untouched.
+        // The menu sends HTTP control requests with `HOLON_CONTROL_TOKEN` when
+        // it is set, so the daemon must use that same credential. An explicit
+        // --token-file would override the environment inside the CLI and split
+        // daemon and menu authentication.
+        if options.token == nil, options.tokenFilePath == nil,
+           daemon.desiredServe?.requiresExternalAuthentication == true {
+            if hasEnvironmentControlToken {
+                // The CLI inherits the environment credential.
+            } else if try loadApprovedAuthentication(&options, homeDir: daemon.homeDir) {
+                // options.arguments() now carries --token-file.
+            } else {
+                throw HolonCLIError.controlCredentialsRequired
             }
         }
-        return arguments
+        return options.arguments() + arguments
+    }
+
+    private var hasEnvironmentControlToken: Bool {
+        environment["HOLON_CONTROL_TOKEN"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     func webURL() async throws -> URL {
@@ -303,7 +341,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
     }
 
     func logsURL() async throws -> URL {
-        let logs = try await run(["daemon", "logs", "--tail", "1"], as: HolonDaemonLogs.self)
+        let logs = try await run(["daemon", "logs", "--json", "--tail", "1"], as: HolonDaemonLogs.self)
         return logs.fileURL
     }
 
@@ -380,7 +418,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
             recordAuthenticationApproval(options, homeDir: daemon.homeDir)
             createdDaemon.set(nil)
             let restarted = try await run(
-                ["daemon", "restart"] + options.arguments(), as: HolonDaemonStatus.self
+                ["daemon", "restart", "--json"] + options.arguments(), as: HolonDaemonStatus.self
             )
             recordManagedDaemon(restarted)
             guard restarted.processCreated == true,
@@ -502,7 +540,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
             try loadApprovedAuthentication(&options, homeDir: currentStatus.homeDir)
         }
         let restarted = try await run(
-            ["daemon", "restart"] + options.arguments(),
+            ["daemon", "restart", "--json"] + options.arguments(),
             as: HolonDaemonStatus.self
         )
         recordManagedDaemon(restarted)
@@ -513,6 +551,13 @@ final class HolonCLIClient: HolonDesiredStateClient {
     }
 
     private func prepareRemoteAuthentication(_ options: inout HolonDaemonLaunchOptions, homeDir: String) throws {
+        // The daemon inherits `HOLON_CONTROL_TOKEN` on restart and the menu
+        // sends HTTP control requests with that same credential. An explicit
+        // --token-file would override the environment inside the CLI and split
+        // daemon and menu authentication.
+        if hasEnvironmentControlToken {
+            return
+        }
         if let token = options.token {
             guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw HolonCLIError.invalidLANTokenFile("configured token is empty")
@@ -574,6 +619,10 @@ final class HolonCLIClient: HolonDesiredStateClient {
         if let token = launchOptions.token {
             return token.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        if let token = environment["HOLON_CONTROL_TOKEN"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
+            return token
+        }
         let path = launchOptions.tokenFilePath
             ?? preferences.string(forKey: authenticationApprovalKey(homeDir))
             ?? URL(fileURLWithPath: homeDir).appendingPathComponent("control.token").path
@@ -594,7 +643,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
             try loadApprovedAuthentication(&options, homeDir: currentStatus.homeDir)
         }
         let restarted = try await run(
-            ["daemon", "restart"] + options.arguments(),
+            ["daemon", "restart", "--json"] + options.arguments(),
             as: HolonDaemonStatus.self
         )
         recordManagedDaemon(restarted)
@@ -620,16 +669,46 @@ final class HolonCLIClient: HolonDesiredStateClient {
         "HolonMenu.remoteAuthenticationApproved.\(homeDir)"
     }
 
+    func controlTokenFilePath() async throws -> String? {
+        let daemon = try await status()
+        return preferences.string(forKey: authenticationApprovalKey(daemon.homeDir))
+    }
+
+    func setControlTokenFilePath(_ path: String) async throws {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let daemon = try await status()
+        let key = authenticationApprovalKey(daemon.homeDir)
+        if trimmed.isEmpty {
+            // Clearing the field removes the approval for this daemon home.
+            preferences.remove(forKey: key)
+            return
+        }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        guard (expanded as NSString).isAbsolutePath else {
+            throw HolonCLIError.invalidControlTokenPath(trimmed)
+        }
+        // Validate before recording approval; only the path is persisted.
+        try validateRemoteTokenFile(expanded)
+        preferences.set(expanded, forKey: key)
+    }
+
     private func recordAuthenticationApproval(_ options: HolonDaemonLaunchOptions, homeDir: String) {
         guard let path = options.tokenFilePath else { return }
         preferences.set(path, forKey: authenticationApprovalKey(homeDir))
     }
 
-    private func loadApprovedAuthentication(_ options: inout HolonDaemonLaunchOptions, homeDir: String) throws {
-        guard options.token == nil, options.tokenFilePath == nil,
-              let path = preferences.string(forKey: authenticationApprovalKey(homeDir)) else { return }
+    @discardableResult
+    private func loadApprovedAuthentication(_ options: inout HolonDaemonLaunchOptions, homeDir: String) throws -> Bool {
+        guard options.token == nil, options.tokenFilePath == nil else { return false }
+        // A stored approval must not override the credential the menu already
+        // uses for HTTP control requests.
+        guard !hasEnvironmentControlToken else { return false }
+        guard let path = preferences.string(forKey: authenticationApprovalKey(homeDir)) else {
+            return false
+        }
         try validateRemoteTokenFile(path)
         options.tokenFilePath = path
+        return true
     }
 
     private func localNetworkHost() async throws -> String {
@@ -672,22 +751,50 @@ final class HolonCLIClient: HolonDesiredStateClient {
         let executable = try executableURL ?? HolonBinaryLocator.resolve()
         let result = try await launcher.run(executableURL: executable, arguments: arguments)
 
-        guard result.terminationStatus == 0 else {
-            throw HolonCLIError.processFailed(
-                command: [executable.path] + arguments,
-                terminationStatus: result.terminationStatus,
-                stderr: String(data: result.stderr, encoding: .utf8) ?? ""
-            )
-        }
-
+        let envelope: HolonDaemonEnvelope<T>
         do {
-            return try decoder.decode(T.self, from: result.stdout)
+            envelope = try decoder.decode(HolonDaemonEnvelope<T>.self, from: result.stdout)
         } catch {
+            if result.terminationStatus != 0 {
+                throw HolonCLIError.processFailed(
+                    command: [executable.path] + arguments,
+                    terminationStatus: result.terminationStatus,
+                    stderr: String(data: result.stderr, encoding: .utf8) ?? ""
+                )
+            }
             throw HolonCLIError.invalidJSON(
                 String(data: result.stdout, encoding: .utf8) ?? "<non-utf8 output>"
             )
         }
+
+        // `daemon status` can be blocked while still carrying the lifecycle
+        // view. The exit code still marks the blocked outcome for scripts, but
+        // the menu needs the view to decide whether to recover the daemon.
+        if let data = envelope.data {
+            return data
+        }
+        if let error = envelope.error {
+            throw HolonCLIError.commandFailed(code: error.code, message: error.message)
+        }
+        throw HolonCLIError.invalidJSON(
+            String(data: result.stdout, encoding: .utf8) ?? "<non-utf8 output>"
+        )
     }
+}
+
+private struct HolonDaemonEnvelope<Payload: Decodable>: Decodable {
+    let schemaVersion: UInt32
+    let command: String
+    let status: String
+    let data: Payload?
+    let error: HolonDaemonEnvelopeError?
+}
+
+private struct HolonDaemonEnvelopeError: Decodable {
+    let kind: String
+    let code: String
+    let message: String
+    let retryable: Bool
 }
 
 private struct HolonTailscaleServeResponse: Decodable {

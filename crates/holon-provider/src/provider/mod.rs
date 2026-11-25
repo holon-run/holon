@@ -212,6 +212,16 @@ pub struct ProviderPromptCache {
     pub compression_epoch: u64,
 }
 
+/// Provider-reported prompt cache accounting for one turn.
+///
+/// `None` on a provider turn response means the response carried no usage block
+/// at all, so cache accounting was not observed. It must not be flattened into a
+/// measured zero: `Some` says the provider reported usage, and a `0` field then
+/// means the provider reported zero.
+///
+/// `creation_input_tokens` is a structural `0` for providers without a
+/// cache-write counter (gemini, openai). Whether a route can cache at all belongs
+/// to route capability or request diagnostics, not to these token counts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderCacheUsage {
     #[serde(default)]

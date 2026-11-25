@@ -419,7 +419,7 @@ export interface RuntimeStoreState {
   syncTemplateRemoteSources: () => Promise<boolean>;
   dismissTemplateDiagnostics: () => void;
   dismissTemplateError: () => void;
-  createAgentFromTemplate: (agentId: string, template: string, name?: string) => Promise<AgentCreationResult>;
+  createAgentFromTemplate: (agentId: string, template: string, name?: string, initialResponseLanguage?: string) => Promise<AgentCreationResult>;
   lookupCreatedAgent: (agentId: string) => Promise<AgentCreationLookup>;
   refreshAgentCreation: (agentId: string) => Promise<void>;
   dismissAgentCreation: (agentId: string) => void;
@@ -2663,11 +2663,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  createAgentFromTemplate: async (agentId, template, name) => {
+  createAgentFromTemplate: async (agentId, template, name, initialResponseLanguage) => {
     const request = captureAgentCreationRequest(get);
     let created;
     try {
-      created = await request.client.createAgentFromTemplate(agentId, template, name);
+      created = await request.client.createAgentFromTemplate(agentId, template, name, initialResponseLanguage);
     } catch (error) {
       if (!isCurrentAgentCreationRequest(get, request)) return { kind: "stale" };
       if (!(error instanceof RuntimeHttpError)) return { kind: "uncertain" };

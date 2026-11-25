@@ -2889,6 +2889,7 @@ INSERT INTO storage_domains (
                     model_resolution: None,
                     initial_message: None,
                     default_initial_message: false,
+                    initial_response_language: None,
                 },
             );
             db.agent_identities()
@@ -8119,6 +8120,7 @@ CREATE TABLE working_memory_deltas (
                             model_resolution: None,
                             initial_message: None,
                             default_initial_message: false,
+                            initial_response_language: None,
                         },
                     );
                     let relations =
@@ -8256,6 +8258,7 @@ CREATE TABLE working_memory_deltas (
                 model_resolution: None,
                 initial_message: None,
                 default_initial_message: false,
+                initial_response_language: None,
             },
         );
         let relations = crate::runtime_db::agent_relations::independent_creation_records(
@@ -8479,6 +8482,7 @@ CREATE TABLE working_memory_deltas (
                                 model_resolution: None,
                                 initial_message: None,
                                 default_initial_message: false,
+                                initial_response_language: None,
                             },
                         ),
                         Default::default(),
@@ -8515,6 +8519,7 @@ CREATE TABLE working_memory_deltas (
                                 model_resolution: None,
                                 initial_message: None,
                                 default_initial_message: false,
+                                initial_response_language: None,
                             },
                         ),
                         Default::default(),
@@ -8557,6 +8562,7 @@ CREATE TABLE working_memory_deltas (
                                 model_resolution: None,
                                 initial_message: None,
                                 default_initial_message: false,
+                                initial_response_language: None,
                             },
                         ),
                         Default::default(),
@@ -8612,6 +8618,7 @@ CREATE TABLE working_memory_deltas (
                                 model_resolution: None,
                                 initial_message: None,
                                 default_initial_message: false,
+                                initial_response_language: None,
                             },
                         ),
                         Default::default(),

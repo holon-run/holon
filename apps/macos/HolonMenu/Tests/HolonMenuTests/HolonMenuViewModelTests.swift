@@ -249,10 +249,240 @@ final class HolonMenuViewModelTests: XCTestCase {
 
         let commands = await client.recordedCommands()
         XCTAssertEqual(
-            Array(commands.prefix(4)),
-            [.status, .tailscaleStatus, .lanURL, .launchAtLoginEnabled]
+            Array(commands.prefix(3)),
+            [.status, .lanURL, .launchAtLoginEnabled]
         )
         XCTAssertEqual(commands.last, .restart)
         XCTAssertEqual(viewModel.status?.state, .running)
+    }
+
+    private func daemonStatus(
+        _ state: HolonDaemonLifecycleState,
+        controlConnectivity: Bool,
+        desiredRunning: Bool = true
+    ) -> HolonDaemonStatus {
+        HolonDaemonStatus(
+            ok: true,
+            state: state,
+            healthy: state == .running || state == .degraded,
+            homeDir: "/Users/holon/.holon",
+            socketPath: "/tmp/holon.sock",
+            httpAddr: "127.0.0.1:7878",
+            webUrl: "http://127.0.0.1:7878",
+            productVersion: "test",
+            controlProtocolVersion: 1,
+            lifecycleOwner: "standalone",
+            executablePath: "/Applications/Holon.app/Contents/Resources/bin/holon",
+            desiredRunning: desiredRunning,
+            pid: 42,
+            controlConnectivity: controlConnectivity,
+            runtimeConfigFingerprint: nil,
+            configFingerprintMatch: nil,
+            message: state.title
+        )
+    }
+
+    func testBootstrapStartsStaleDaemonWhenDesiredRunning() async {
+        let client = FakeHolonClient(
+            currentStatus: daemonStatus(.stale, controlConnectivity: false)
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+
+        await viewModel.bootstrap()
+        viewModel.stopPolling()
+
+        let commands = await client.recordedCommands()
+        XCTAssertTrue(commands.contains(.start))
+        XCTAssertFalse(commands.contains(.restart))
+        XCTAssertEqual(viewModel.status?.state, .running)
+        XCTAssertNil(viewModel.lastError)
+    }
+
+    func testStaleDaemonWithoutDesiredRunningIsNotAutoStarted() async {
+        let client = FakeHolonClient(
+            currentStatus: daemonStatus(
+                .stale,
+                controlConnectivity: false,
+                desiredRunning: false
+            )
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+
+        await viewModel.bootstrap()
+        viewModel.stopPolling()
+
+        let commands = await client.recordedCommands()
+        XCTAssertFalse(commands.contains(.start))
+        XCTAssertFalse(commands.contains(.restart))
+    }
+
+    func testDaemonControlUnavailableSkipsTailscaleProbeAndShowsWaitingState() async {
+        for state in [HolonDaemonLifecycleState.stopped, .stale] {
+            let client = FakeHolonClient(
+                currentStatus: daemonStatus(state, controlConnectivity: false)
+            )
+            let viewModel = HolonMenuViewModel(client: client)
+
+            await viewModel.refresh()
+
+            XCTAssertNil(viewModel.tailscaleStatus, state.rawValue)
+            XCTAssertNil(viewModel.tailscaleError, state.rawValue)
+            XCTAssertEqual(viewModel.tailscaleTitle, L10n.text("Waiting for Holon to start"))
+            XCTAssertEqual(
+                viewModel.tailscaleMessage,
+                L10n.text("Tailscale status is available after the Holon daemon starts.")
+            )
+            let commands = await client.recordedCommands()
+            XCTAssertFalse(commands.contains(.tailscaleStatus), state.rawValue)
+            viewModel.stopPolling()
+        }
+    }
+
+    func testTailscaleProbeResumesAndReportsFailuresAfterDaemonStarts() async {
+        let client = FakeHolonClient(
+            currentStatus: daemonStatus(.stopped, controlConnectivity: false)
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.refresh()
+        XCTAssertNil(viewModel.tailscaleStatus)
+
+        await client.setCurrentStatus(daemonStatus(.running, controlConnectivity: true))
+        await client.setTailscaleStatusError(HolonCLIError.tailscaleServeConflict("Probe failed"))
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.tailscaleError, "Probe failed")
+        XCTAssertNil(viewModel.tailscaleStatus)
+        XCTAssertEqual(viewModel.tailscaleTitle, L10n.text("Checking…"))
+        let commands = await client.recordedCommands()
+        XCTAssertTrue(commands.contains(.tailscaleStatus))
+    }
+
+    func testStartFailurePersistsAcrossRefreshesAndClearsOnSuccessfulRetry() async {
+        let client = FakeHolonClient(
+            currentStatus: daemonStatus(.stale, controlConnectivity: false),
+            startError: NSError(
+                domain: "Start test",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Missing control token"]
+            )
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+
+        await viewModel.start()
+        XCTAssertEqual(viewModel.lastError, "Missing control token")
+
+        for _ in 0..<3 {
+            await viewModel.refresh()
+            XCTAssertEqual(viewModel.lastError, "Missing control token")
+            XCTAssertEqual(viewModel.status?.state, .stale)
+        }
+
+        await client.setStartError(nil)
+        await viewModel.start()
+        XCTAssertNil(viewModel.lastError)
+        XCTAssertEqual(viewModel.status?.state, .running)
+    }
+
+    func testStartFailureCanBeDismissedWithoutAStatusChange() async {
+        let client = FakeHolonClient(
+            startError: NSError(
+                domain: "Start test",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Missing control token"]
+            )
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.start()
+        XCTAssertEqual(viewModel.lastError, "Missing control token")
+
+        await viewModel.refresh()
+        XCTAssertEqual(viewModel.lastError, "Missing control token")
+
+        viewModel.dismissLastError()
+        XCTAssertNil(viewModel.lastError)
+    }
+
+    func testSuccessfulStopKeepsUnresolvedStartError() async {
+        let client = FakeHolonClient(
+            startError: NSError(
+                domain: "Start test",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Missing control token"]
+            )
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+
+        await viewModel.start()
+        XCTAssertEqual(viewModel.lastError, "Missing control token")
+
+        await viewModel.stop()
+        XCTAssertEqual(viewModel.lastError, "Missing control token")
+
+        viewModel.dismissLastError()
+        XCTAssertNil(viewModel.lastError)
+    }
+
+    func testProbeErrorsStayIndependentFromOperationErrors() async {
+        let client = FakeHolonClient(
+            startError: NSError(
+                domain: "Start test",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Start failed"]
+            ),
+            statusError: NSError(
+                domain: "Status test",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Status probe failed"]
+            )
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.start()
+        XCTAssertEqual(viewModel.lastError, "Start failed")
+
+        await viewModel.refresh()
+        XCTAssertEqual(viewModel.statusError, "Status probe failed")
+        XCTAssertEqual(viewModel.lastError, "Start failed")
+        XCTAssertNil(viewModel.tailscaleStatus)
+    }
+
+    func testControlTokenFileCanBeSavedAndReloaded() async {
+        let client = FakeHolonClient()
+        let viewModel = HolonMenuViewModel(client: client)
+        viewModel.controlTokenFilePath = "/tmp/holon-control.token"
+
+        await viewModel.saveControlTokenFilePath()
+
+        XCTAssertNil(viewModel.controlTokenFileError)
+        XCTAssertEqual(
+            viewModel.controlTokenFileMessage,
+            L10n.text("Saved. This daemon will use the token file at the next start or restart.")
+        )
+        let commands = await client.recordedCommands()
+        XCTAssertEqual(commands.last, .setControlTokenFilePath("/tmp/holon-control.token"))
+
+        await viewModel.loadControlTokenFilePath()
+        XCTAssertEqual(viewModel.controlTokenFilePath, "/tmp/holon-control.token")
+    }
+
+    func testUnrelatedSuccessKeepsUnresolvedDaemonOperationError() async {
+        let client = FakeHolonClient(
+            startError: NSError(
+                domain: "Start test",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Missing control token"]
+            )
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+
+        await viewModel.start()
+        XCTAssertEqual(viewModel.lastError, "Missing control token")
+
+        // An unrelated successful operation must not clear the unresolved
+        // daemon lifecycle error.
+        await viewModel.setLaunchAtLogin(true)
+        XCTAssertEqual(viewModel.lastError, "Missing control token")
+
+        viewModel.dismissLastError()
+        XCTAssertNil(viewModel.lastError)
     }
 }

@@ -1211,16 +1211,15 @@ pub async fn create_agent(
     let provided_trust = request.authority_class;
     let mut created = state
         .host
-        .create_public_named_agent_with_name(
+        .create_public_named_agent_for_user(
             &agent_id,
             request.template.as_deref(),
-            None,
-            None,
             request.name.as_deref(),
-            crate::host::AgentBootstrapExecution::Background,
             // User-initiated creation without an initial_message field:
             // request the default bootstrap initialization turn (#2795).
-            true,
+            crate::host::AgentBootstrapExecution::Background,
+            // One-time hint for the language of that first default reply.
+            request.initial_response_language.as_deref(),
         )
         .await
         .map_err(error_response)?;

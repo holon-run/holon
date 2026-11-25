@@ -74,7 +74,7 @@
   "socialImage": "/assets/social-card.png",
   "stylesheet": "./assets/site.css",
   "logo": {
-    "src": "/assets/logo.png",
+    "src": "/assets/logo.webp",
     "alt": "Holon"
   },
   "topNav": [

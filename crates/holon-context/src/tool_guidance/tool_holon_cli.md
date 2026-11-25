@@ -62,8 +62,16 @@ Agent lifecycle and child visibility:
   It is useful for public named agents, but it is not a replacement for
   `active_children` and does not enumerate private supervised children.
 - If you created a disposable child and have confirmed that it is no longer
-  needed, remove only that owned child with
-  `holon agent delete <AGENT_ID> --yes --wait`. Use
+  needed, prefer the native `DeleteAgent` tool when it is available: call
+  `DeleteAgent(agent_id, incarnation)` with an identity just read from
+  `GetAgent` or `ListSubagents`, and follow that tool's description for the
+  full lifecycle constraints. It uses the safe deletion policy: the end of one
+  invocation or task does not by itself make a child deletable, and user
+  deliverables and in-flight work are preserved.
+- Only when no native `DeleteAgent` tool is available, use
+  `holon agent delete <AGENT_ID> --yes --wait`. That is an explicit destructive
+  cleanup whose deletion policy may discard child home data or cancel accepted
+  work, so use it only for cleanup the operator explicitly intends. Use
   `--cascade-private-children` only when you intentionally want to remove its
   private descendants as well. Do not delete shared or long-lived agents just
   because their current task is terminal.

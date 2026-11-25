@@ -16,6 +16,12 @@ struct HolonMenuView: View {
                 Text(viewModel.statusMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let statusError = viewModel.statusError {
+                    Text(statusError)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let activeOperation = viewModel.activeOperation {
                     ProgressView(activeOperation)
                         .controlSize(.small)
@@ -82,7 +88,7 @@ struct HolonMenuView: View {
 
             GroupBox("Tailscale") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.tailscaleStatus?.title ?? L10n.text("Checking…"))
+                    Text(viewModel.tailscaleTitle)
                         .font(.headline)
                     if let status = viewModel.tailscaleStatus,
                        status.state == .connected || status.state == .serving {
@@ -91,7 +97,7 @@ struct HolonMenuView: View {
                         Text(status.actualTitle)
                             .font(.caption)
                     }
-                    Text(viewModel.tailscaleStatus.map { L10n.text($0.message) } ?? L10n.text("Checking Tailscale status."))
+                    Text(viewModel.tailscaleMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if let serveURL = viewModel.tailscaleStatus?.serveURL {
@@ -262,6 +268,9 @@ struct HolonMenuView: View {
                     .font(.caption2)
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
+                Button(L10n.text("Dismiss error")) {
+                    viewModel.dismissLastError()
+                }
             }
 
             Divider()

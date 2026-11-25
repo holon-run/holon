@@ -50,6 +50,15 @@ Two operator-set gates (2026-11-24) apply to every daily beta:
    fixes) before the next train is dispatched; only a proven infrastructure
    flake unblocks the train without a code fix.
 
+**Docs-only HEAD inherits the last green main CI.** `ci.yml` triggers on a
+positive paths whitelist, so a docs-only commit on `main` produces no CI run at
+all. The preflight therefore classifies four main-CI states separately
+(`success`, `pending`, `blocked`, `missing`) and only lets `missing` through
+when `scripts/beta_train_ci_gate.sh` proves that every file changed since the
+last green main CI is outside `ci.yml`'s push paths. Inheritance replaces only
+that one evidence point; attestation, tagging, and the Release handoff are
+unchanged.
+
 ## Demo canary on Railway
 
 `demo.holon.run` is the always-on trial environment: a Railway service built

@@ -1,24 +1,29 @@
-//! Shared WorkItem scheduling projection and queue read model.
+//! Runtime assembly of WorkItem scheduling projections within read budgets.
 
-use std::{
-    borrow::{Borrow, Cow},
-    collections::BTreeMap,
+use std::borrow::Borrow;
+
+use chrono::{DateTime, Utc};
+
+use crate::types::{WaitConditionRecord, WaitConditionSummary, WorkItemRecord};
+use holon_domain::work_item_scheduling::{
+    compare_wait_condition_order, current_todo_ref, project_work_item_with_wait_summaries,
+    WorkItemWaitFacts,
 };
 
 mod context_queue;
 pub(crate) use context_queue::ContextWorkQueue;
 
-use chrono::{DateTime, Utc};
-
-use crate::types::{
-    TodoItem, TodoItemState, WaitConditionKind, WaitConditionRecord, WaitConditionSummary,
-    WakeSource, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState, WorkItemState,
-};
-
-pub(crate) use holon_domain::work_item_scheduling::WorkItemPostureReason;
+pub use holon_domain::work_item::readiness_for_scheduling_state;
+#[cfg(test)]
+pub(crate) use holon_domain::work_item_scheduling::project_work_item_scheduling as derive_owned_work_item_scheduling;
 pub use holon_domain::work_item_scheduling::{
-    WorkItemCandidateClass, WorkItemFocus, WorkItemSchedulingProjection,
+    candidate_class_rank, compare_queue_display_order, compare_scheduling_projection_order,
+    current_todo, derive_work_item_scheduling, readiness_from_facts, record_only_readiness,
+    WorkItemCandidateClass, WorkItemFocus, WorkItemSchedulingFacts, WorkItemSchedulingProjection,
     WorkItemSchedulingReasonCode,
+};
+pub(crate) use holon_domain::work_item_scheduling::{
+    compare_queue_work_rank, queue_work_rank, QueueWorkRank, WorkItemPostureReason,
 };
 
 #[derive(Debug, Clone)]
@@ -54,116 +59,6 @@ impl<W> Default for WorkQueueReadModel<W> {
     }
 }
 
-pub struct WorkItemSchedulingFacts<'a> {
-    pub work_item: &'a WorkItemRecord,
-    pub is_current: bool,
-    pub is_yielded: bool,
-    pub active_wait_conditions: &'a [WaitConditionRecord],
-    pub trigger_delivery_by_id: &'a BTreeMap<String, DateTime<Utc>>,
-}
-
-#[derive(Debug, Default)]
-struct ActiveWaitConditionStates {
-    task: bool,
-    external: bool,
-    operator: bool,
-    timer: bool,
-    system: bool,
-    last_triggered_at: Option<DateTime<Utc>>,
-}
-
-impl ActiveWaitConditionStates {
-    fn record(
-        &mut self,
-        condition: &WaitConditionRecord,
-        trigger_delivery: &impl Fn(&str) -> Option<DateTime<Utc>>,
-    ) {
-        self.record_kind(&condition.kind);
-        for wake_source in &condition.wake_sources {
-            let WakeSource::ExternalIngress {
-                external_trigger_id: Some(external_trigger_id),
-            } = wake_source
-            else {
-                continue;
-            };
-            if let Some(delivered_at) = trigger_delivery(external_trigger_id) {
-                self.last_triggered_at = Some(
-                    self.last_triggered_at
-                        .map_or(delivered_at, |current| current.max(delivered_at)),
-                );
-            }
-        }
-    }
-
-    fn record_kind(&mut self, kind: &WaitConditionKind) {
-        match kind {
-            WaitConditionKind::Task => self.task = true,
-            WaitConditionKind::External => self.external = true,
-            WaitConditionKind::Operator => self.operator = true,
-            WaitConditionKind::Timer => self.timer = true,
-            WaitConditionKind::System => self.system = true,
-        }
-    }
-
-    fn scheduling_state(&self) -> Option<WorkItemSchedulingState> {
-        if self.task {
-            Some(WorkItemSchedulingState::WaitingTask)
-        } else if self.operator {
-            Some(WorkItemSchedulingState::WaitingOperator)
-        } else if self.timer {
-            Some(WorkItemSchedulingState::WaitingTimer)
-        } else if self.external {
-            Some(WorkItemSchedulingState::WaitingExternal)
-        } else if self.system {
-            Some(WorkItemSchedulingState::WaitingSystem)
-        } else {
-            None
-        }
-    }
-
-    fn kind_count(&self) -> usize {
-        [
-            self.task,
-            self.operator,
-            self.timer,
-            self.external,
-            self.system,
-        ]
-        .into_iter()
-        .filter(|present| *present)
-        .count()
-    }
-}
-
-pub fn derive_work_item_scheduling(
-    facts: WorkItemSchedulingFacts<'_>,
-) -> WorkItemSchedulingProjection {
-    derive_work_item_scheduling_with_record(
-        Cow::Borrowed(facts.work_item),
-        facts.is_current,
-        facts.is_yielded,
-        facts.active_wait_conditions,
-        &|id| facts.trigger_delivery_by_id.get(id).copied(),
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn derive_owned_work_item_scheduling(
-    work_item: WorkItemRecord,
-    is_current: bool,
-    is_yielded: bool,
-    active_wait_conditions: &[WaitConditionRecord],
-    trigger_delivery: &impl Fn(&str) -> Option<DateTime<Utc>>,
-) -> WorkItemSchedulingProjection {
-    derive_work_item_scheduling_with_record(
-        Cow::Owned(work_item),
-        is_current,
-        is_yielded,
-        active_wait_conditions,
-        trigger_delivery,
-    )
-}
-
 pub(crate) fn derive_queue_work_item_scheduling(
     work_item: WorkItemRecord,
     is_current: bool,
@@ -194,17 +89,13 @@ pub(crate) fn derive_borrowed_queue_work_item_scheduling<'a, W: Borrow<WorkItemR
         crate::diagnostics::resource_io::admit_typed_cloned_value(todo)
             .context("queue current todo clone admission")?;
     }
-    let mut wait_states = ActiveWaitConditionStates::default();
-    let mut has_waits = false;
-    for wait in active_wait_conditions
-        .clone()
-        .filter(|wait| wait.work_item_id.as_deref() == Some(record.id.as_str()))
-    {
-        has_waits = true;
+    let active_wait_conditions = active_wait_conditions
+        .filter(|wait| wait.work_item_id.as_deref() == Some(record.id.as_str()));
+    let mut wait_states = WorkItemWaitFacts::default();
+    for wait in active_wait_conditions.clone() {
         wait_states.record_kind(&wait.kind);
     }
-    let messages =
-        scheduling_diagnostic_messages(record, is_current, is_yielded, has_waits, &wait_states);
+    let messages = wait_states.diagnostic_messages(record, is_current, is_yielded);
     let count = messages.iter().flatten().count();
     if count != 0 {
         // At most four static messages: one String slot and text allocation each.
@@ -217,9 +108,8 @@ pub(crate) fn derive_borrowed_queue_work_item_scheduling<'a, W: Borrow<WorkItemR
         crate::diagnostics::resource_io::charge_owned_metadata(bytes as u64, count * 2)
             .context("queue diagnostics admission")?;
     }
-    let (wait_states, summaries) =
-        queue_wait_summaries(&record.id, active_wait_conditions, trigger_delivery)?;
-    Ok(derive_scheduling_with_shared_record(
+    let (wait_states, summaries) = queue_wait_summaries(active_wait_conditions, trigger_delivery)?;
+    Ok(project_work_item_with_wait_summaries(
         work_item,
         is_current,
         is_yielded,
@@ -229,41 +119,29 @@ pub(crate) fn derive_borrowed_queue_work_item_scheduling<'a, W: Borrow<WorkItemR
 }
 
 fn queue_wait_summaries<'a>(
-    work_item_id: &str,
     conditions: impl Iterator<Item = &'a WaitConditionRecord> + Clone,
     trigger_delivery: &impl Fn(&str) -> Option<DateTime<Utc>>,
-) -> anyhow::Result<(ActiveWaitConditionStates, Vec<WaitConditionSummary>)> {
+) -> anyhow::Result<(WorkItemWaitFacts, Vec<WaitConditionSummary>)> {
     use anyhow::Context;
 
-    let count = conditions
-        .clone()
-        .filter(|wait| wait.work_item_id.as_deref() == Some(work_item_id))
-        .count();
+    let count = conditions.clone().count();
     let mut ordered = Vec::new();
     let mut summaries = Vec::new();
     if count == 0 {
-        return Ok((ActiveWaitConditionStates::default(), summaries));
+        return Ok((WorkItemWaitFacts::default(), summaries));
     }
     reserve_queue_wait_slots::<(usize, &WaitConditionRecord)>(
         &mut ordered,
         count,
         "queue wait references admission",
     )?;
-    for (ordinal, wait) in conditions.enumerate() {
-        if wait.work_item_id.as_deref() == Some(work_item_id) {
-            ordered.push((ordinal, wait));
-        }
-    }
+    ordered.extend(conditions.enumerate());
     // Input ordinal preserves the former stable sort even for equal keys.
     ordered.sort_unstable_by(|left, right| {
-        left.1
-            .created_at
-            .cmp(&right.1.created_at)
-            .then_with(|| left.1.id.cmp(&right.1.id))
-            .then_with(|| left.0.cmp(&right.0))
+        compare_wait_condition_order(left.1, right.1).then_with(|| left.0.cmp(&right.0))
     });
     reserve_queue_wait_slots(&mut summaries, count, "queue wait summary slots admission")?;
-    let mut states = ActiveWaitConditionStates::default();
+    let mut states = WorkItemWaitFacts::default();
     for (_, wait) in ordered {
         // Only the owning fields retained by the summary are cloned. Scalars
         // and dropped record-only fields need no material allocation.
@@ -299,598 +177,4 @@ fn reserve_queue_wait_slots<T>(
     rows.try_reserve_exact(count)
         .map_err(|_| std::io::Error::other("ResourceExhausted: queue wait allocation"))
         .context(context)
-}
-
-fn scheduling_diagnostic_messages(
-    work_item: &WorkItemRecord,
-    is_current: bool,
-    is_yielded: bool,
-    has_waits: bool,
-    wait_states: &ActiveWaitConditionStates,
-) -> [Option<&'static str>; 4] {
-    [
-        (work_item.state != WorkItemState::Open && is_current)
-            .then_some("terminalizing_work_item_marked_current"),
-        (is_yielded && is_current).then_some("yielded_work_item_marked_current"),
-        (work_item.state != WorkItemState::Open && has_waits)
-            .then_some("terminalizing_work_item_has_active_wait"),
-        (wait_states.kind_count() > 1).then_some("multiple_active_wait_kinds"),
-    ]
-}
-
-fn derive_work_item_scheduling_with_record(
-    work_item: Cow<'_, WorkItemRecord>,
-    is_current: bool,
-    is_yielded: bool,
-    active_wait_conditions: &[WaitConditionRecord],
-    trigger_delivery: &impl Fn(&str) -> Option<DateTime<Utc>>,
-) -> WorkItemSchedulingProjection {
-    let mut waits = active_wait_conditions
-        .iter()
-        .filter(|condition| condition.work_item_id.as_deref() == Some(work_item.id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    waits.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    let mut wait_states = ActiveWaitConditionStates::default();
-    for wait in &waits {
-        wait_states.record(wait, trigger_delivery);
-    }
-    let summaries = waits.into_iter().map(WaitConditionSummary::from).collect();
-    derive_work_item_scheduling_with_summaries(
-        work_item,
-        is_current,
-        is_yielded,
-        wait_states,
-        summaries,
-    )
-}
-
-fn derive_work_item_scheduling_with_summaries(
-    work_item: Cow<'_, WorkItemRecord>,
-    is_current: bool,
-    is_yielded: bool,
-    wait_states: ActiveWaitConditionStates,
-    summaries: Vec<WaitConditionSummary>,
-) -> WorkItemSchedulingProjection {
-    derive_scheduling_with_shared_record(
-        work_item.into_owned(),
-        is_current,
-        is_yielded,
-        wait_states,
-        summaries,
-    )
-}
-
-fn derive_scheduling_with_shared_record<W: Borrow<WorkItemRecord>>(
-    work_item: W,
-    is_current: bool,
-    is_yielded: bool,
-    wait_states: ActiveWaitConditionStates,
-    summaries: Vec<WaitConditionSummary>,
-) -> WorkItemSchedulingProjection<W> {
-    let record = work_item.borrow();
-    let messages = scheduling_diagnostic_messages(
-        record,
-        is_current,
-        is_yielded,
-        !summaries.is_empty(),
-        &wait_states,
-    );
-    let mut diagnostics = Vec::with_capacity(messages.iter().flatten().count());
-    diagnostics.extend(messages.into_iter().flatten().map(str::to_owned));
-
-    let SchedulingHeader {
-        scheduling_state,
-        reason_code,
-        readiness,
-        is_current,
-        focus,
-        has_triggered_waits,
-        candidate_class,
-    } = scheduling_header(record, is_current, is_yielded, &wait_states);
-
-    let current_todo = current_todo(record);
-    WorkItemSchedulingProjection {
-        current_todo,
-        work_item,
-        scheduling_state,
-        readiness,
-        candidate_class,
-        focus,
-        is_current,
-        is_runnable: readiness == WorkItemReadiness::Runnable,
-        has_active_waits: !summaries.is_empty(),
-        has_active_task_waits: wait_states.task,
-        has_triggered_waits,
-        last_triggered_at: wait_states.last_triggered_at,
-        active_wait_conditions: summaries,
-        reason_code,
-        diagnostics,
-    }
-}
-
-#[derive(Clone, Copy)]
-struct SchedulingHeader {
-    scheduling_state: WorkItemSchedulingState,
-    reason_code: WorkItemSchedulingReasonCode,
-    readiness: WorkItemReadiness,
-    is_current: bool,
-    focus: WorkItemFocus,
-    has_triggered_waits: bool,
-    candidate_class: WorkItemCandidateClass,
-}
-
-fn scheduling_header(
-    work_item: &WorkItemRecord,
-    is_current: bool,
-    is_yielded: bool,
-    wait_states: &ActiveWaitConditionStates,
-) -> SchedulingHeader {
-    let (scheduling_state, reason_code) = if work_item.state == WorkItemState::Completed {
-        (
-            WorkItemSchedulingState::Completed,
-            WorkItemSchedulingReasonCode::Completed,
-        )
-    } else if work_item.state == WorkItemState::Completing {
-        (
-            WorkItemSchedulingState::Completing,
-            WorkItemSchedulingReasonCode::Completing,
-        )
-    } else if is_yielded {
-        (
-            WorkItemSchedulingState::YieldedToWorkItem,
-            WorkItemSchedulingReasonCode::ContinuationYielded,
-        )
-    } else if let Some(wait_state) = wait_states.scheduling_state() {
-        let reason = match wait_state {
-            WorkItemSchedulingState::WaitingTask => WorkItemSchedulingReasonCode::ActiveTaskWait,
-            WorkItemSchedulingState::WaitingOperator => {
-                WorkItemSchedulingReasonCode::ActiveOperatorWait
-            }
-            WorkItemSchedulingState::WaitingTimer => WorkItemSchedulingReasonCode::ActiveTimerWait,
-            WorkItemSchedulingState::WaitingExternal => {
-                WorkItemSchedulingReasonCode::ActiveExternalWait
-            }
-            WorkItemSchedulingState::WaitingSystem => {
-                WorkItemSchedulingReasonCode::ActiveSystemWait
-            }
-            _ => unreachable!("active waits only project waiting states"),
-        };
-        (wait_state, reason)
-    } else {
-        let state = work_item.record_scheduling_state();
-        let reason = match state {
-            WorkItemSchedulingState::Blocked => WorkItemSchedulingReasonCode::ManualBlocker,
-            WorkItemSchedulingState::WaitingOperator => {
-                WorkItemSchedulingReasonCode::PlanNeedsInput
-            }
-            _ => WorkItemSchedulingReasonCode::Runnable,
-        };
-        (state, reason)
-    };
-    let readiness = readiness_for_scheduling_state(scheduling_state);
-    let is_current = is_current && work_item.state == WorkItemState::Open;
-    let focus = if work_item.state == WorkItemState::Completed {
-        WorkItemFocus::Completed
-    } else if work_item.state == WorkItemState::Completing {
-        WorkItemFocus::Completing
-    } else if is_current {
-        WorkItemFocus::Current
-    } else if is_yielded {
-        WorkItemFocus::Yielded
-    } else if work_item.blocked_by.is_some() {
-        WorkItemFocus::Blocked
-    } else {
-        WorkItemFocus::Queued
-    };
-    let has_triggered_waits = wait_states.last_triggered_at.is_some();
-    let candidate_class = if is_current && scheduling_state == WorkItemSchedulingState::Runnable {
-        WorkItemCandidateClass::CurrentRunnable
-    } else if work_item.state == WorkItemState::Completed {
-        WorkItemCandidateClass::CompletedRecent
-    } else if work_item.state == WorkItemState::Completing {
-        WorkItemCandidateClass::Completing
-    } else if has_triggered_waits && work_item.blocked_by.is_some() {
-        WorkItemCandidateClass::TriggeredBlocked
-    } else if scheduling_state == WorkItemSchedulingState::Runnable {
-        WorkItemCandidateClass::QueuedRunnable
-    } else if scheduling_state == WorkItemSchedulingState::YieldedToWorkItem {
-        WorkItemCandidateClass::Yielded
-    } else if scheduling_state == WorkItemSchedulingState::WaitingOperator {
-        WorkItemCandidateClass::WaitingForOperator
-    } else {
-        WorkItemCandidateClass::Blocked
-    };
-
-    SchedulingHeader {
-        scheduling_state,
-        reason_code,
-        readiness,
-        is_current,
-        focus,
-        has_triggered_waits,
-        candidate_class,
-    }
-}
-
-pub fn record_only_readiness(record: &WorkItemRecord) -> WorkItemReadiness {
-    record.readiness()
-}
-
-/// Derive readiness from the facts available to a transition or audit path.
-///
-/// Unlike [`WorkItemRecord::readiness`], this preserves active wait and
-/// continuation-yield context when the caller has an in-memory snapshot.
-pub fn readiness_from_facts(
-    record: &WorkItemRecord,
-    is_yielded: bool,
-    active_wait_conditions: &[WaitConditionRecord],
-) -> WorkItemReadiness {
-    derive_work_item_scheduling(WorkItemSchedulingFacts {
-        work_item: record,
-        is_current: false,
-        is_yielded,
-        active_wait_conditions,
-        trigger_delivery_by_id: &BTreeMap::new(),
-    })
-    .readiness
-}
-
-pub use holon_domain::work_item::readiness_for_scheduling_state;
-
-pub fn compare_scheduling_projection_order<W: Borrow<WorkItemRecord>>(
-    left: &WorkItemSchedulingProjection<W>,
-    right: &WorkItemSchedulingProjection<W>,
-) -> std::cmp::Ordering {
-    compare_queue_work_rank(
-        &QueueWorkRank {
-            work_item: left.work_item.borrow(),
-            candidate_class: left.candidate_class,
-            scheduling_state: left.scheduling_state,
-            has_active_waits: left.has_active_waits,
-            last_triggered_at: left.last_triggered_at,
-        },
-        &QueueWorkRank {
-            work_item: right.work_item.borrow(),
-            candidate_class: right.candidate_class,
-            scheduling_state: right.scheduling_state,
-            has_active_waits: right.has_active_waits,
-            last_triggered_at: right.last_triggered_at,
-        },
-    )
-}
-
-pub(crate) struct QueueWorkRank<'a> {
-    pub work_item: &'a WorkItemRecord,
-    pub candidate_class: WorkItemCandidateClass,
-    pub scheduling_state: WorkItemSchedulingState,
-    pub has_active_waits: bool,
-    pub last_triggered_at: Option<DateTime<Utc>>,
-}
-
-pub(crate) fn queue_work_rank<'a>(
-    work_item: &'a WorkItemRecord,
-    is_current: bool,
-    is_yielded: bool,
-    waits: impl Iterator<Item = &'a WaitConditionRecord>,
-    trigger_delivery: &impl Fn(&str) -> Option<DateTime<Utc>>,
-) -> QueueWorkRank<'a> {
-    let mut states = ActiveWaitConditionStates::default();
-    for wait in waits.filter(|wait| wait.work_item_id.as_deref() == Some(work_item.id.as_str())) {
-        states.record(wait, trigger_delivery);
-    }
-    let header = scheduling_header(work_item, is_current, is_yielded, &states);
-    QueueWorkRank {
-        work_item,
-        candidate_class: header.candidate_class,
-        scheduling_state: header.scheduling_state,
-        has_active_waits: states.scheduling_state().is_some(),
-        last_triggered_at: states.last_triggered_at,
-    }
-}
-
-pub(crate) fn compare_queue_work_rank(
-    left: &QueueWorkRank<'_>,
-    right: &QueueWorkRank<'_>,
-) -> std::cmp::Ordering {
-    candidate_class_rank(left.candidate_class)
-        .cmp(&candidate_class_rank(right.candidate_class))
-        .then_with(|| match left.candidate_class {
-            WorkItemCandidateClass::TriggeredBlocked => {
-                compare_timestamp_desc_option(left.last_triggered_at, right.last_triggered_at)
-                    .then_with(|| {
-                        compare_timestamp_desc(
-                            left.work_item.updated_at,
-                            right.work_item.updated_at,
-                        )
-                    })
-            }
-            WorkItemCandidateClass::QueuedRunnable => {
-                left.work_item.created_at.cmp(&right.work_item.created_at)
-            }
-            WorkItemCandidateClass::Yielded
-            | WorkItemCandidateClass::WaitingForOperator
-            | WorkItemCandidateClass::Blocked
-            | WorkItemCandidateClass::Completing
-            | WorkItemCandidateClass::CompletedRecent => {
-                compare_timestamp_desc(left.work_item.updated_at, right.work_item.updated_at)
-            }
-            WorkItemCandidateClass::CurrentRunnable => std::cmp::Ordering::Equal,
-        })
-        .then_with(|| left.work_item.id.cmp(&right.work_item.id))
-}
-
-pub fn compare_queue_display_order(
-    left: &WorkItemRecord,
-    right: &WorkItemRecord,
-) -> std::cmp::Ordering {
-    u8::from(left.blocked_by.is_some())
-        .cmp(&u8::from(right.blocked_by.is_some()))
-        .then_with(|| left.created_at.cmp(&right.created_at))
-        .then_with(|| left.updated_at.cmp(&right.updated_at))
-        .then_with(|| left.id.cmp(&right.id))
-}
-
-pub fn candidate_class_rank(class: WorkItemCandidateClass) -> u8 {
-    match class {
-        WorkItemCandidateClass::CurrentRunnable => 0,
-        WorkItemCandidateClass::TriggeredBlocked => 1,
-        WorkItemCandidateClass::QueuedRunnable => 2,
-        WorkItemCandidateClass::Yielded => 3,
-        WorkItemCandidateClass::WaitingForOperator => 4,
-        WorkItemCandidateClass::Blocked => 5,
-        WorkItemCandidateClass::Completing => 6,
-        WorkItemCandidateClass::CompletedRecent => 7,
-    }
-}
-
-fn compare_timestamp_desc(left: DateTime<Utc>, right: DateTime<Utc>) -> std::cmp::Ordering {
-    right.cmp(&left)
-}
-
-fn compare_timestamp_desc_option(
-    left: Option<DateTime<Utc>>,
-    right: Option<DateTime<Utc>>,
-) -> std::cmp::Ordering {
-    right.cmp(&left)
-}
-
-pub fn current_todo(record: &WorkItemRecord) -> Option<TodoItem> {
-    current_todo_ref(record).cloned()
-}
-
-fn current_todo_ref(record: &WorkItemRecord) -> Option<&TodoItem> {
-    record
-        .todo_list
-        .iter()
-        .find(|item| item.state == TodoItemState::InProgress)
-        .or_else(|| {
-            record
-                .todo_list
-                .iter()
-                .find(|item| item.state == TodoItemState::Pending)
-        })
-}
-
-#[cfg(holon_lib_test_shard = "d")]
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::{WaitConditionStatus, WakeSource, WorkItemPlanStatus};
-
-    fn wait(record: &WorkItemRecord, kind: WaitConditionKind) -> WaitConditionRecord {
-        let now = Utc::now();
-        WaitConditionRecord {
-            id: format!("wait-{kind:?}"),
-            agent_id: record.agent_id.clone(),
-            work_item_id: Some(record.id.clone()),
-            status: WaitConditionStatus::Active,
-            kind,
-            source: Some("test".into()),
-            subject_ref: None,
-            waiting_for: "test".into(),
-            wake_sources: vec![WakeSource::SystemTick],
-            continuation: None,
-            created_at: now,
-            updated_at: now,
-            expires_at: None,
-            resolved_at: None,
-            cancelled_at: None,
-            turn_id: None,
-            trigger_message_id: None,
-            triggered_at: None,
-        }
-    }
-
-    fn derive(
-        record: &WorkItemRecord,
-        waits: &[WaitConditionRecord],
-    ) -> WorkItemSchedulingProjection {
-        derive_work_item_scheduling(WorkItemSchedulingFacts {
-            work_item: record,
-            is_current: false,
-            is_yielded: false,
-            active_wait_conditions: waits,
-            trigger_delivery_by_id: &BTreeMap::new(),
-        })
-    }
-
-    #[test]
-    fn golden_precedence_active_wait_outranks_needs_input_and_blocker() {
-        let mut record = WorkItemRecord::new("agent", "work", WorkItemState::Open);
-        record.plan_status = WorkItemPlanStatus::NeedsInput;
-        record.blocked_by = Some("manual".into());
-        let waits = [wait(&record, WaitConditionKind::Task)];
-
-        let projection = derive(&record, &waits);
-
-        assert_eq!(
-            projection.scheduling_state,
-            WorkItemSchedulingState::WaitingTask
-        );
-        assert_eq!(
-            projection.reason_code,
-            WorkItemSchedulingReasonCode::ActiveTaskWait
-        );
-    }
-
-    #[test]
-    fn record_only_readiness_is_distinct_from_fact_backed_readiness() {
-        let mut record = WorkItemRecord::new("agent", "work", WorkItemState::Open);
-        record.blocked_by = Some("manual".into());
-
-        for (kind, expected) in [
-            (
-                WaitConditionKind::Operator,
-                WorkItemReadiness::WaitingForOperator,
-            ),
-            (WaitConditionKind::Task, WorkItemReadiness::Blocked),
-            (WaitConditionKind::Timer, WorkItemReadiness::Blocked),
-            (WaitConditionKind::External, WorkItemReadiness::Blocked),
-            (WaitConditionKind::System, WorkItemReadiness::Blocked),
-        ] {
-            let waits = [wait(&record, kind)];
-            assert_eq!(record.readiness(), WorkItemReadiness::Runnable);
-            assert_eq!(readiness_from_facts(&record, false, &waits), expected);
-        }
-    }
-
-    #[test]
-    fn golden_precedence_completed_is_terminal() {
-        let mut record = WorkItemRecord::new("agent", "work", WorkItemState::Completed);
-        record.plan_status = WorkItemPlanStatus::Ready;
-        let waits = [wait(&record, WaitConditionKind::Operator)];
-
-        let projection = derive(&record, &waits);
-
-        assert_eq!(
-            projection.scheduling_state,
-            WorkItemSchedulingState::Completed
-        );
-        assert_eq!(projection.readiness, WorkItemReadiness::Completed);
-        assert!(!projection.is_runnable);
-        assert!(projection
-            .diagnostics
-            .contains(&"terminalizing_work_item_has_active_wait".to_string()));
-    }
-
-    #[test]
-    fn multiple_wait_kinds_are_deterministic_and_diagnostic() {
-        let record = WorkItemRecord::new("agent", "work", WorkItemState::Open);
-        let waits = [
-            wait(&record, WaitConditionKind::External),
-            wait(&record, WaitConditionKind::Operator),
-            wait(&record, WaitConditionKind::Task),
-        ];
-
-        let projection = derive(&record, &waits);
-
-        assert_eq!(
-            projection.scheduling_state,
-            WorkItemSchedulingState::WaitingTask
-        );
-        assert!(projection
-            .diagnostics
-            .contains(&"multiple_active_wait_kinds".to_string()));
-    }
-
-    #[test]
-    fn yielded_is_never_queued_runnable() {
-        let record = WorkItemRecord::new("agent", "work", WorkItemState::Open);
-        let projection = derive_work_item_scheduling(WorkItemSchedulingFacts {
-            work_item: &record,
-            is_current: false,
-            is_yielded: true,
-            active_wait_conditions: &[],
-            trigger_delivery_by_id: &BTreeMap::new(),
-        });
-
-        assert_eq!(
-            projection.scheduling_state,
-            WorkItemSchedulingState::YieldedToWorkItem
-        );
-        assert_eq!(projection.candidate_class, WorkItemCandidateClass::Yielded);
-        assert!(!projection.is_runnable);
-    }
-
-    #[test]
-    fn transition_matrix_preserves_terminal_and_wait_invariants() {
-        let plan_statuses = [
-            WorkItemPlanStatus::Draft,
-            WorkItemPlanStatus::Ready,
-            WorkItemPlanStatus::NeedsInput,
-        ];
-        let wait_kinds = [
-            None,
-            Some(WaitConditionKind::Task),
-            Some(WaitConditionKind::Operator),
-            Some(WaitConditionKind::Timer),
-            Some(WaitConditionKind::External),
-            Some(WaitConditionKind::System),
-        ];
-
-        for state in [WorkItemState::Open, WorkItemState::Completed] {
-            for plan_status in plan_statuses {
-                for blocked in [false, true] {
-                    for yielded in [false, true] {
-                        for wait_kind in &wait_kinds {
-                            let mut record = WorkItemRecord::new("agent", "matrix", state.clone());
-                            record.plan_status = plan_status;
-                            record.blocked_by = blocked.then(|| "blocked".into());
-                            let waits = wait_kind
-                                .clone()
-                                .map(|kind| vec![wait(&record, kind)])
-                                .unwrap_or_default();
-                            let projection = derive_work_item_scheduling(WorkItemSchedulingFacts {
-                                work_item: &record,
-                                is_current: false,
-                                is_yielded: yielded,
-                                active_wait_conditions: &waits,
-                                trigger_delivery_by_id: &BTreeMap::new(),
-                            });
-
-                            if state == WorkItemState::Completed {
-                                assert_eq!(
-                                    projection.scheduling_state,
-                                    WorkItemSchedulingState::Completed
-                                );
-                                assert_eq!(projection.readiness, WorkItemReadiness::Completed);
-                                assert!(!projection.is_runnable);
-                            } else if yielded {
-                                assert_eq!(
-                                    projection.scheduling_state,
-                                    WorkItemSchedulingState::YieldedToWorkItem
-                                );
-                                assert_eq!(
-                                    projection.candidate_class,
-                                    WorkItemCandidateClass::Yielded
-                                );
-                            } else if let Some(kind) = wait_kind.as_ref() {
-                                let expected = match kind {
-                                    WaitConditionKind::Task => WorkItemSchedulingState::WaitingTask,
-                                    WaitConditionKind::Operator => {
-                                        WorkItemSchedulingState::WaitingOperator
-                                    }
-                                    WaitConditionKind::Timer => {
-                                        WorkItemSchedulingState::WaitingTimer
-                                    }
-                                    WaitConditionKind::External => {
-                                        WorkItemSchedulingState::WaitingExternal
-                                    }
-                                    WaitConditionKind::System => {
-                                        WorkItemSchedulingState::WaitingSystem
-                                    }
-                                };
-                                assert_eq!(projection.scheduling_state, expected);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
