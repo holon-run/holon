@@ -216,14 +216,18 @@ impl AcpPermissionGate {
     /// Whether a path stays inside one of the bound roots.
     fn path_is_bound(&self, path: &str) -> bool {
         let candidate = Path::new(path);
+        if candidate
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+        {
+            return false;
+        }
         if candidate.is_absolute() {
             return self.roots.iter().any(|root| candidate.starts_with(root));
         }
         // The harness resolves relative paths against the bound cwd. Reject
         // traversal explicitly rather than assuming the peer normalizes it.
-        !candidate
-            .components()
-            .any(|component| component == std::path::Component::ParentDir)
+        true
     }
 }
 
@@ -317,14 +321,12 @@ fn allow_once_option(request: &PermissionRequest) -> Option<String> {
             request.options.iter().find(|option| {
                 let id = option.option_id.to_ascii_lowercase();
                 let name = option.name.to_ascii_lowercase();
-                id.contains("allow") && (id.contains("once") || name.contains("once"))
+                (id.contains("allow")
+                    || id.contains("approve")
+                    || name.contains("allow")
+                    || name.contains("approve"))
+                    && (id.contains("once") || name.contains("once"))
             })
-        })
-        .or_else(|| {
-            request
-                .options
-                .iter()
-                .find(|option| option.option_id.to_ascii_lowercase().contains("allow"))
         })
         .map(|option| option.option_id.clone())
 }
@@ -374,6 +376,14 @@ fn project_updates(updates: &[SessionUpdate]) -> AcpTurnProjection {
             SessionUpdate::AgentMessageChunk { content } => {
                 if let Some(text) = content.as_text() {
                     message.push_str(text);
+                    if let Some(ModelBlock::Text { text: previous }) = projection.blocks.last_mut()
+                    {
+                        previous.push_str(text);
+                    } else {
+                        projection.blocks.push(ModelBlock::Text {
+                            text: text.to_string(),
+                        });
+                    }
                 }
             }
             SessionUpdate::AgentThoughtChunk { content } => {
@@ -427,14 +437,6 @@ fn project_updates(updates: &[SessionUpdate]) -> AcpTurnProjection {
         }
     }
     projection.text = message.trim().to_string();
-    if !projection.text.is_empty() {
-        projection.blocks.insert(
-            0,
-            ModelBlock::Text {
-                text: projection.text.clone(),
-            },
-        );
-    }
     projection
 }
 
@@ -803,7 +805,7 @@ impl super::RuntimeHandle {
         execution: &EffectiveExecution,
         binding: &AcpDriverBinding,
         cancel: CancellationToken,
-    ) -> Result<String> {
+    ) -> Result<AcpTurnResult> {
         let config = self.inner.config_snapshot.load().acp.clone();
         let acp_config = &config;
         let profile = resolve_profile(acp_config, binding, execution)?;
@@ -873,14 +875,15 @@ impl super::RuntimeHandle {
             Outcome::Cancelled => "cancelled".to_string(),
         };
         control.cancel_and_reap().await;
-        self.persist_acp_evidence(
-            agent_id,
-            &projection,
-            &stop_reason,
-            gate.recorded(),
-            session.session_id.as_str(),
-        )
-        .await?;
+        let transcript_entry_id = self
+            .persist_acp_evidence(
+                agent_id,
+                &projection,
+                &stop_reason,
+                gate.recorded(),
+                session.session_id.as_str(),
+            )
+            .await?;
 
         match outcome {
             Outcome::Settled(Ok(_)) => {}
@@ -893,9 +896,15 @@ impl super::RuntimeHandle {
         }
 
         if projection.text.trim().is_empty() {
-            return Ok("ACP harness completed without textual output".into());
+            return Ok(AcpTurnResult {
+                text: "ACP harness completed without textual output".into(),
+                transcript_entry_id,
+            });
         }
-        Ok(projection.text)
+        Ok(AcpTurnResult {
+            text: projection.text,
+            transcript_entry_id,
+        })
     }
 
     /// Append the ACP turn evidence to the agent ledger.
@@ -906,8 +915,8 @@ impl super::RuntimeHandle {
         stop_reason: &str,
         permission_decisions: Vec<Value>,
         session_id: &str,
-    ) -> Result<()> {
-        self.persist_transcript_evidence(&crate::types::TranscriptEntry {
+    ) -> Result<String> {
+        let entry = crate::types::TranscriptEntry {
             stop_reason: Some(stop_reason.to_string()),
             // `usage_update` reports session context occupancy, never a
             // per-turn token delta, so the turn counters stay absent.
@@ -915,7 +924,7 @@ impl super::RuntimeHandle {
             output_tokens: None,
             ..crate::types::TranscriptEntry::new(
                 agent_id.to_string(),
-                crate::types::TranscriptEntryKind::SubagentAssistantRound,
+                crate::types::TranscriptEntryKind::AssistantRound,
                 Some(1),
                 None,
                 json!({
@@ -927,8 +936,10 @@ impl super::RuntimeHandle {
                     "permission_decisions": permission_decisions,
                 }),
             )
-        })
-        .await
+        };
+        let entry_id = entry.id.clone();
+        self.persist_transcript_evidence(&entry).await?;
+        Ok(entry_id)
     }
 
     /// Binding for an agent whose inner loop is owned by an ACP harness.
@@ -968,6 +979,11 @@ impl super::RuntimeHandle {
 enum Outcome {
     Settled(Result<holon_acp::PromptResult, holon_acp::AcpError>),
     Cancelled,
+}
+
+pub(crate) struct AcpTurnResult {
+    pub(crate) text: String,
+    pub(crate) transcript_entry_id: String,
 }
 
 #[cfg(test)]
@@ -1031,11 +1047,11 @@ mod acp_driver_tests {
             },
         ]);
         assert_eq!(projection.text, "done");
-        assert!(matches!(projection.blocks[0], ModelBlock::Text { .. }));
         assert!(matches!(
-            projection.blocks[1],
+            projection.blocks[0],
             ModelBlock::ReasoningText { .. }
         ));
+        assert!(matches!(projection.blocks[1], ModelBlock::Text { .. }));
         assert!(matches!(
             projection.blocks[2],
             ModelBlock::ProviderToolUse { .. }
@@ -1081,6 +1097,28 @@ mod acp_driver_tests {
             "path_outside_bound_execution_root"
         );
 
+        let traversal = format!("{}/../etc/passwd", dir.path().display());
+        let rejected_traversal = gate.decide(&PermissionRequest {
+            session_id: "s".into(),
+            tool_call: json!({
+                "toolCallId": "call-traversal",
+                "kind": "read",
+                "rawInput": {"path": traversal}
+            }),
+            options: vec![PermissionOption {
+                option_id: "reject_once".into(),
+                name: "Reject".into(),
+                kind: None,
+            }],
+        });
+        assert!(
+            matches!(rejected_traversal, PermissionOutcome::Selected { option_id } if option_id == "reject_once")
+        );
+        assert_eq!(
+            gate.recorded()[1]["reason"],
+            "path_outside_bound_execution_root"
+        );
+
         let inside = dir.path().join("src/lib.rs");
         let allowed = gate.decide(&PermissionRequest {
             session_id: "s".into(),
@@ -1118,5 +1156,26 @@ mod acp_driver_tests {
             PermissionOutcome::Selected { .. } | PermissionOutcome::Cancelled
         ));
         assert_eq!(gate.recorded()[0]["reason"], "bound_workspace_is_read_only");
+    }
+
+    #[test]
+    fn permission_gate_does_not_treat_persistent_allow_as_allow_once() {
+        let request = PermissionRequest {
+            session_id: "s".into(),
+            tool_call: json!({"toolCallId": "call-4", "kind": "read"}),
+            options: vec![
+                PermissionOption {
+                    option_id: "allow_session".into(),
+                    name: "Allow for session".into(),
+                    kind: None,
+                },
+                PermissionOption {
+                    option_id: "reject_once".into(),
+                    name: "Reject".into(),
+                    kind: None,
+                },
+            ],
+        };
+        assert_eq!(allow_once_option(&request), None);
     }
 }

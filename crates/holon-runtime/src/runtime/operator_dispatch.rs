@@ -581,7 +581,10 @@ impl RuntimeHandle {
             let reason = snapshot.reason();
             return Err(crate::runtime::CurrentRunAborted { run_id, reason }.into());
         }
-        let text = text?;
+        let super::acp::AcpTurnResult {
+            text,
+            transcript_entry_id,
+        } = text?;
         let state = self.agent_state().await?;
         let mut terminal = crate::types::TurnTerminalRecord {
             turn_id: state
@@ -602,6 +605,7 @@ impl RuntimeHandle {
             let mut brief = brief::make_result(&message.agent_id, message, text);
             brief.turn_index = Some(terminal.turn_index);
             brief.turn_id = Some(terminal.turn_id.clone());
+            bind_brief_to_assistant_round(&mut brief, Some(&transcript_entry_id));
             self.persist_brief(&brief).await?;
             record_operator_span(trace_context, "holon.delivery", chrono::Utc::now(), message);
         } else {
