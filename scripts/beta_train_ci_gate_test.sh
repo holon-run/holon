@@ -41,8 +41,8 @@ STUB
   chmod +x "${case_dir}/bin/gh"
 }
 
-run_gate() { # sha
-  SHA="$1" GITHUB_REPOSITORY=holon-run/holon CI_PATHS_FILE="$paths" \
+run_gate() { # sha [paths_file]
+  SHA="$1" GITHUB_REPOSITORY=holon-run/holon CI_PATHS_FILE="${2:-$paths}" \
     PATH="${case_dir}/bin:${PATH}" bash "$gate"
 }
 
@@ -218,6 +218,27 @@ else
   printf 'FAIL: workflow Preflight does not export SHA to beta_train_ci_gate.sh\n' >&2
   failures=$((failures + 1))
 fi
+
+# 14. Only on.push.paths may bound the window: a pull_request-only path is not
+# push coverage. resetting on the next `  <key>:` section header keeps the two
+# lists from silently merging if they ever diverge.
+new_case push-paths-only
+printf '[]\n' > "${case_dir}/runs.json"
+printf '[{"headSha":"%s"}]\n' "$green_sha" > "${case_dir}/green.json"
+printf '{"status":"ahead","ahead_by":1,"files":[{"filename":"docs/notes.md"}]}\n' > "${case_dir}/compare.json"
+cat > "${case_dir}/ci.yml" <<'YAML'
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+  pull_request:
+    paths:
+      - "docs/**"
+YAML
+out="$(run_gate "$head_sha" "${case_dir}/ci.yml")"
+assert_eq 'push-only decision' 'pass' "$(field "$out" decision)"
+assert_contains 'push-only notice' "$(field "$out" notice)" 'docs-only files'
 
 if [ "$failures" -ne 0 ]; then
   printf '%d beta-train CI gate test(s) failed\n' "$failures" >&2

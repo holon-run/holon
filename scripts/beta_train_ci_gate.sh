@@ -138,6 +138,7 @@ mapfile -t patterns < <(awk '
   {
     if ($0 ~ /^on:[[:space:]]*$/) { on=1; push=0; paths=0; next }
     if ($0 ~ /^[^[:space:]#]/) { on=0; push=0; paths=0; next }
+    if (on && $0 ~ /^  [^[:space:]#][^:]*:[[:space:]]*$/) { push=0; paths=0 }
     if (on && $0 ~ /^  push:[[:space:]]*$/) { push=1; paths=0; next }
     if (push && $0 ~ /^    paths:[[:space:]]*$/) { paths=1; next }
     if (paths) {
