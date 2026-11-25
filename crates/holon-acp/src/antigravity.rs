@@ -44,6 +44,18 @@ pub const ENV_ALLOWLIST: &[&str] = &[
 /// Credential environment variables the profile accepts.
 pub const API_KEY_ENV: &[&str] = &["GEMINI_API_KEY", "GOOGLE_API_KEY"];
 
+/// Vertex / Enterprise `agent-platform` Application Default Credentials.
+///
+/// These are credential inputs, not general environment: they are only
+/// forwarded when the host explicitly has them, and `AGY_ADC_AUTH` selects the
+/// ADC auth mode without copying credential files into the harness home.
+pub const ADC_ENV: &[&str] = &[
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "AGY_ADC_AUTH",
+];
+
 /// Auth methods the first profile recognizes by id.
 pub const AUTH_METHOD_IDS: &[&str] = &[
     "oauth-personal",
@@ -92,7 +104,11 @@ pub fn profile() -> AcpHarnessSpec {
             mode: MODE_META_KEY.to_string(),
         },
         env_allowlist: ENV_ALLOWLIST.iter().map(|name| name.to_string()).collect(),
-        api_key_env: API_KEY_ENV.iter().map(|name| name.to_string()).collect(),
+        api_key_env: API_KEY_ENV
+            .iter()
+            .chain(ADC_ENV.iter())
+            .map(|name| name.to_string())
+            .collect(),
         auth_methods: AUTH_METHOD_IDS.iter().map(|id| id.to_string()).collect(),
         auth_help: Some(AUTH_HELP.to_string()),
         default_session_options: SessionOptions::default(),

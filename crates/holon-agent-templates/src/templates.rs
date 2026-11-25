@@ -258,6 +258,19 @@ struct TemplateManifest {
     #[serde(default)]
     #[allow(dead_code)]
     compatibility: TemplateCompatibility,
+    #[serde(default)]
+    execution: Option<Box<TemplateExecutionBinding>>,
+}
+
+/// Optional execution-driver declaration from a template manifest.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct TemplateExecutionBinding {
+    #[serde(default)]
+    pub driver: Option<String>,
+    #[serde(default)]
+    pub harness_profile: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 /// Parsed `[compatibility]` section from `template.toml`.
@@ -1572,6 +1585,24 @@ async fn resolve_template(
     let entry =
         resolve_template_catalog_entry(environment, template, home_dir, catalog_agent_home)?;
     resolve_catalog_template(environment, entry, home_dir).await
+}
+
+/// Read an optional `[execution]` binding from a resolved template manifest.
+pub async fn template_execution_binding(
+    environment: TemplateEnvironment,
+    template: &str,
+    home_dir: &Path,
+    catalog_agent_home: &Path,
+) -> Result<Option<TemplateExecutionBinding>> {
+    let resolved = resolve_template(environment, template, home_dir, catalog_agent_home).await?;
+    let Some(manifest) = resolved.template_toml.as_deref() else {
+        return Ok(None);
+    };
+    let parsed: TemplateManifest = toml::from_str(manifest)
+        .with_context(|| format!("failed to parse template manifest for `{template}`"))?;
+    Ok(parsed.execution.map(|binding| *binding).filter(|binding| {
+        binding.driver.is_some() || binding.harness_profile.is_some() || binding.role.is_some()
+    }))
 }
 
 fn resolve_absolute_template_path(template: &str) -> Result<PathBuf> {

@@ -731,6 +731,13 @@ impl std::fmt::Display for RuntimeAdmissionClosed {
 
 impl std::error::Error for RuntimeAdmissionClosed {}
 
+fn execution_driver_from_task_detail(
+    task: &TaskRecord,
+) -> Option<crate::types::AgentExecutionDriver> {
+    let value = task.detail.as_ref()?.get("execution_driver")?;
+    serde_json::from_value(value.clone()).ok()
+}
+
 fn stopped_unloaded_agent(agent_id: &str) -> AgentState {
     let mut agent = AgentState::new(agent_id.to_string());
     agent.status = AgentStatus::Stopped;
@@ -9256,6 +9263,9 @@ impl RuntimeHost {
             child_runtime
                 .inherit_from_parent_state(&parent_state)
                 .await?;
+            if let Some(driver) = execution_driver_from_task_detail(task) {
+                child_runtime.apply_execution_driver(driver).await?;
+            }
             apply_spawn_model_resolution(&child_runtime, &model_resolution).await?;
             let child_turn_baseline = child_runtime.agent_state().await?.turn_index;
 

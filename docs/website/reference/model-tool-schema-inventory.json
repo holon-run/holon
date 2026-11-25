@@ -2173,6 +2173,36 @@
               {
                 "additionalProperties": false,
                 "properties": {
+                  "execution_driver": {
+                    "default": null,
+                    "description": "Selects the child's inner turn loop. Absent keeps the native driver.",
+                    "properties": {
+                      "harness_profile": {
+                        "default": null,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "default": null,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
                   "kind": {
                     "const": "new_subagent",
                     "type": "string"

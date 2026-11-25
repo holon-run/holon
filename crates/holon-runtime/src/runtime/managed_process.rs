@@ -38,7 +38,7 @@ pub(in crate::runtime) struct OriginalManagedProcess {
 }
 impl OriginalManagedProcess {
     // Only the Command runner can allocate or complete this responsibility.
-    pub(super) fn before_spawn(
+    pub(in crate::runtime) fn before_spawn(
         scope: &InputEvidenceScope,
         ledger: &InputEvidenceBudgetLedger,
     ) -> Result<Arc<Self>> {
@@ -79,7 +79,10 @@ impl OriginalManagedProcess {
             Some((resources, scope));
         Ok(())
     }
-    pub(super) fn attach_original_handle(&self, process: &dyn RunningProcess) -> Result<()> {
+    pub(in crate::runtime) fn attach_original_handle(
+        &self,
+        process: &dyn RunningProcess,
+    ) -> Result<()> {
         let mut group = self
             .group
             .lock()
@@ -91,7 +94,7 @@ impl OriginalManagedProcess {
         *group = process.registered_group_probe();
         Ok(())
     }
-    pub(super) fn record_not_started(&self) {
+    pub(in crate::runtime) fn record_not_started(&self) {
         self.not_started.store(true, Ordering::Release);
     }
 

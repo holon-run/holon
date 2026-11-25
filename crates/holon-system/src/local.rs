@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::{
     fs,
-    io::AsyncWriteExt,
+    io::{AsyncWrite, AsyncWriteExt},
     process::{Child, Command},
     sync::{mpsc, Notify},
 };
@@ -589,6 +589,13 @@ impl RunningProcess for LocalRunningProcess {
             .stderr
             .take()
             .map(|stderr| Box::new(stderr) as Box<dyn ProcessOutput>)
+    }
+
+    fn take_stdin(&mut self) -> Option<Box<dyn AsyncWrite + Send + Unpin>> {
+        self.child
+            .stdin
+            .take()
+            .map(|stdin| Box::new(stdin) as Box<dyn AsyncWrite + Send + Unpin>)
     }
 
     async fn write_stdin(&mut self, data: &[u8]) -> Result<()> {

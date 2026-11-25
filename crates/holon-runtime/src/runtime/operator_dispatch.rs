@@ -248,6 +248,11 @@ impl RuntimeHandle {
             )
             .await?
         };
+        if let Some(binding) = self.acp_driver_binding().await? {
+            return self
+                .settle_acp_interactive_turn(message, &binding, trace_context.as_ref())
+                .await;
+        }
         #[cfg(all(test, holon_lib_test_shard = "d"))]
         self.check_operator_dispatch_reader_failure(false)?;
         let mut model_selection = TurnModelSelection::from_message(message)?;
@@ -536,6 +541,85 @@ impl RuntimeHandle {
             prepared_wait_for: outcome.prepared_wait_for,
             provider_recovery_message: outcome.provider_recovery_message,
             terminal_tool_executions: outcome.terminal_tool_executions,
+        };
+        transition.normalize_brief_settlement()?;
+        Ok(transition)
+    }
+
+    /// Run one ACP harness turn and settle it through the normal brief path.
+    ///
+    /// The harness receives only the admitted message text. Holon system
+    /// framing, tool descriptions, and workspace guidance stay on this side.
+    async fn settle_acp_interactive_turn(
+        &self,
+        message: &MessageEnvelope,
+        binding: &super::acp::AcpDriverBinding,
+        trace_context: Option<&crate::observability::TraceContext>,
+    ) -> Result<TurnTerminalTransition> {
+        let started = std::time::Instant::now();
+        let prompt = super::message_dispatch::message_text(&message.body);
+        let execution = self
+            .effective_execution(crate::system::ExecutionScopeKind::AgentTurn)
+            .await?;
+        let abort = self.current_run_abort_token().await;
+        let cancel = abort
+            .as_ref()
+            .map(|snapshot| snapshot.token.clone())
+            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+        let text = self
+            .run_acp_turn(
+                &message.agent_id,
+                &prompt,
+                &execution,
+                binding,
+                cancel.clone(),
+            )
+            .await;
+        if cancel.is_cancelled() {
+            let snapshot = abort.context("ACP turn cancelled without a run abort token")?;
+            let run_id = snapshot.run_id.clone();
+            let reason = snapshot.reason();
+            return Err(crate::runtime::CurrentRunAborted { run_id, reason }.into());
+        }
+        let super::acp::AcpTurnResult {
+            text,
+            transcript_entry_id,
+        } = text?;
+        let state = self.agent_state().await?;
+        let mut terminal = crate::types::TurnTerminalRecord {
+            turn_id: state
+                .current_turn_id
+                .clone()
+                .filter(|turn_id| !turn_id.trim().is_empty())
+                .unwrap_or_else(crate::ids::turn_id),
+            turn_index: state.turn_index,
+            kind: crate::types::TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: Some(text.clone()),
+            no_brief_reason: None,
+            checkpoint: None,
+            completed_at: self.now(),
+            duration_ms: started.elapsed().as_millis() as u64,
+        };
+        if !text.trim().is_empty() {
+            let mut brief = brief::make_result(&message.agent_id, message, text);
+            brief.turn_index = Some(terminal.turn_index);
+            brief.turn_id = Some(terminal.turn_id.clone());
+            bind_brief_to_assistant_round(&mut brief, Some(&transcript_entry_id));
+            self.persist_brief(&brief).await?;
+            record_operator_span(trace_context, "holon.delivery", chrono::Utc::now(), message);
+        } else {
+            terminal.no_brief_reason = Some(crate::types::TurnNoBriefReason::ToolOnlyWait);
+        }
+        let turn_record = self.build_turn_record(&terminal).await?;
+        self.transition_to_sleep(None).await?;
+        let mut transition = TurnTerminalTransition {
+            terminal,
+            turn_record,
+            prepared_work_item_completion: None,
+            prepared_wait_for: None,
+            provider_recovery_message: None,
+            terminal_tool_executions: Vec::new(),
         };
         transition.normalize_brief_settlement()?;
         Ok(transition)

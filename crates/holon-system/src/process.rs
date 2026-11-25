@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
     types::{RunningProcessExitStatus, StopSignal},
@@ -37,6 +37,13 @@ pub trait RunningProcess: Send {
     }
     fn take_stdout(&mut self) -> Option<Box<dyn ProcessOutput>>;
     fn take_stderr(&mut self) -> Option<Box<dyn ProcessOutput>>;
+    /// Take the process stdin as an async writer.
+    ///
+    /// Backends that expose a writable stdin hand the handle to the caller so
+    /// a child process can be driven over a request/response protocol.
+    fn take_stdin(&mut self) -> Option<Box<dyn AsyncWrite + Send + Unpin>> {
+        None
+    }
     async fn write_stdin(&mut self, data: &[u8]) -> Result<()>;
     async fn wait(&mut self) -> Result<RunningProcessExitStatus>;
     async fn try_status(&mut self) -> Result<Option<RunningProcessExitStatus>>;

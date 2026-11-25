@@ -327,6 +327,7 @@ pub(super) struct ConfigSnapshot {
     pub decision_tool_max_calls_per_turn: Option<usize>,
     pub decision_tool_timeout_ms: u64,
     pub decision_tool_min_confidence: f32,
+    pub acp: crate::config::AcpConfigFile,
 }
 
 impl ConfigSnapshot {
@@ -396,6 +397,7 @@ impl ConfigSnapshot {
                 .as_ref()
                 .and_then(|tools| tools.min_confidence)
                 .unwrap_or(0.0),
+            acp: config.stored_config.runtime.acp.clone(),
         })
     }
 }
@@ -783,6 +785,10 @@ impl RuntimeHandle {
                 .and_then(|reconfig| reconfig.config.stored_config.decision.tools.as_ref())
                 .and_then(|tools| tools.min_confidence)
                 .unwrap_or(0.0),
+            acp: provider_reconfig
+                .as_ref()
+                .map(|reconfig| reconfig.config.stored_config.runtime.acp.clone())
+                .unwrap_or_default(),
         });
         let runtime_db = match runtime_db {
             Some(runtime_db) => runtime_db,

@@ -70,6 +70,41 @@ impl AcpConnection {
         (connection, notifications_rx)
     }
 
+    /// Spawn the reader task for a separate reader/writer pair.
+    ///
+    /// Managed child processes expose their stdin and stdout as two distinct
+    /// handles, so the ACP client cannot always be built from one duplex
+    /// stream. This entry point keeps the same framing and multiplexing rules
+    /// while letting the caller own the two halves.
+    pub fn spawn_split<R, W>(
+        reader: R,
+        writer: W,
+        handler: Arc<dyn AcpClientHandler>,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionNotification>)
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        let (notifications_tx, notifications_rx) = mpsc::unbounded_channel();
+        let (cancel_tx, _) = watch::channel(0u64);
+        let connection = Arc::new(Self {
+            writer: Mutex::new(Box::new(writer)),
+            pending: Mutex::new(HashMap::new()),
+            cancel_tx,
+            notifications_tx,
+            handler,
+            next_id: AtomicU64::new(1),
+            closed: AtomicBool::new(false),
+        });
+
+        let reader_connection = Arc::clone(&connection);
+        tokio::spawn(async move {
+            reader_connection.read_loop(reader).await;
+        });
+
+        (connection, notifications_rx)
+    }
+
     /// Send a request and await its result without session scoping.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, AcpError> {
         self.request_scoped(method, params, None).await

@@ -1,3 +1,4 @@
+mod acp;
 mod agent_message_delivery;
 mod agent_services;
 mod bootstrap;

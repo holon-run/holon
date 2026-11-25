@@ -24,7 +24,7 @@ pub(crate) async fn execute(
     reject_legacy_agent_invocation_input(input)?;
     let args: InvokeAgentArgs = parse_tool_args(NAME, input)?;
     let initial_message = validate_non_empty(args.initial_message, NAME, "initial_message")?;
-    let target = match args.target {
+    let (target, execution_driver) = match args.target {
         InvokeAgentToolTarget::ExistingAgent {
             agent_id,
             reply_timeout_ms,
@@ -41,28 +41,40 @@ pub(crate) async fn execute(
                     "provide a valid existing agent id",
                 ));
             }
-            InvokeAgentTarget::ExistingAgent {
-                agent_id,
-                reply_timeout_ms,
-            }
+            (
+                InvokeAgentTarget::ExistingAgent {
+                    agent_id,
+                    reply_timeout_ms,
+                },
+                None,
+            )
         }
         InvokeAgentToolTarget::NewSubagent {
             template,
             workspace_mode,
             model,
-        } => InvokeAgentTarget::NewSubagent {
-            template: normalize_optional_non_empty(template),
-            workspace_mode,
-            model_resolution: Some(runtime.resolve_agent_model_request(NAME, model).await?),
-        },
+            execution_driver,
+        } => (
+            InvokeAgentTarget::NewSubagent {
+                template: normalize_optional_non_empty(template),
+                workspace_mode,
+                model_resolution: Some(runtime.resolve_agent_model_request(NAME, model).await?),
+            },
+            execution_driver
+                .map(execution_driver_from_tool)
+                .transpose()?,
+        ),
     };
     let result = runtime
         .agent_invocation_service()
-        .invoke(InvokeAgentRequest {
-            target,
-            message: initial_message,
-            authority_class: authority_class.clone(),
-        })
+        .invoke_with_execution_driver(
+            InvokeAgentRequest {
+                target,
+                message: initial_message,
+                authority_class: authority_class.clone(),
+            },
+            execution_driver,
+        )
         .await
         .map_err(map_invocation_error)?;
     let mut value = serde_json::to_value(&result)?;
@@ -71,6 +83,27 @@ pub(crate) async fn execute(
         result.agent_id, result.task_handle.task_id
     ));
     Ok(success_from_value(NAME, value))
+}
+
+fn execution_driver_from_tool(
+    driver: InvokeAgentExecutionDriver,
+) -> Result<crate::types::AgentExecutionDriver> {
+    let kind = crate::types::AgentExecutionDriverKind::from_id(&driver.kind).ok_or_else(|| {
+        invalid_tool_input(
+            NAME,
+            format!(
+                "InvokeAgent execution driver `{}` is not supported",
+                driver.kind
+            ),
+            serde_json::json!({ "field": "target.execution_driver.kind" }),
+            "use kind=native or kind=acp",
+        )
+    })?;
+    Ok(crate::types::AgentExecutionDriver {
+        kind,
+        harness_profile: normalize_optional_non_empty(driver.harness_profile),
+        role: normalize_optional_non_empty(driver.role),
+    })
 }
 
 fn map_invocation_error(error: anyhow::Error) -> anyhow::Error {

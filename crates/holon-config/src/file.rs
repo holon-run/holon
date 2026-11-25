@@ -518,6 +518,8 @@ pub struct RuntimeConfigFile {
         skip_serializing_if = "RuntimeObservabilityConfigFile::is_empty"
     )]
     pub observability: RuntimeObservabilityConfigFile,
+    #[serde(default, skip_serializing_if = "AcpConfigFile::is_empty")]
+    pub acp: AcpConfigFile,
 }
 
 /// Host-lifetime limits. Historical bytes are separate from current facts,
@@ -691,6 +693,59 @@ pub struct OtlpExporterConfigFile {
     pub batch_interval_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+}
+
+/// ACP harness configuration for agents whose execution driver is `acp`.
+///
+/// The profile overrides are declarative: they never carry credentials, and
+/// the harness process still receives only allowlisted environment variables.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AcpConfigFile {
+    /// Harness profile used when an ACP-driven agent does not name one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_harness_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profiles: BTreeMap<String, AcpHarnessProfileConfigFile>,
+}
+
+impl AcpConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.default_harness_profile.is_none() && self.profiles.is_empty()
+    }
+
+    pub fn profile(&self, name: &str) -> Option<&AcpHarnessProfileConfigFile> {
+        self.profiles.get(name)
+    }
+}
+
+/// Overrides applied on top of a built-in ACP harness profile.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AcpHarnessProfileConfigFile {
+    /// Executable name or absolute path of the harness program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    /// Arguments placed before the profile's own default arguments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// Sandbox mode key: `read_only`, `workspace_write`, or `full_access`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    /// Environment variables injected into the harness process.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Role text delivered through the negotiated persona channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+impl AcpHarnessProfileConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.program.is_none()
+            && self.args.is_none()
+            && self.sandbox.is_none()
+            && self.env.is_empty()
+            && self.role.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
