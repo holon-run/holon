@@ -4,6 +4,7 @@ use holon_domain::decision_telemetry::{
 use holon_domain::runtime_event::*;
 use holon_domain::{
     AgentStateChangedEvent, AuditEvent, BriefCreatedAuditEvent, MessageLifecycleAuditEvent,
+    ProviderRequestFinishedEvent, ProviderRequestStartedEvent, ProviderSwitchEvent,
     SchedulerDiagnosticAuditEvent, TaskLifecycleAuditEvent, WorkItemLifecycleAuditEvent,
 };
 use serde::Serialize;
@@ -59,6 +60,18 @@ fn registry_entries_have_unique_names_and_valid_fixtures() {
             RuntimeEventKind::DecisionOutcomeRecorded => {
                 serde_json::from_str::<DecisionOutcomeRecordedEvent>(entry.fixture_json)
                     .expect("decision outcome fixture must match its payload type");
+            }
+            RuntimeEventKind::ProviderSwitch => {
+                serde_json::from_str::<ProviderSwitchEvent>(entry.fixture_json)
+                    .expect("provider switch fixture must match its payload type");
+            }
+            RuntimeEventKind::ProviderRequestStarted => {
+                serde_json::from_str::<ProviderRequestStartedEvent>(entry.fixture_json)
+                    .expect("provider request started fixture must match its payload type");
+            }
+            RuntimeEventKind::ProviderRequestFinished => {
+                serde_json::from_str::<ProviderRequestFinishedEvent>(entry.fixture_json)
+                    .expect("provider request finished fixture must match its payload type");
             }
         }
     }
@@ -304,6 +317,9 @@ fn scheduler_diagnostics_are_projection_neutral() {
         RuntimeEventKind::SchedulerDiagnostic,
         RuntimeEventKind::DecisionAdvisoryCompleted,
         RuntimeEventKind::DecisionOutcomeRecorded,
+        RuntimeEventKind::ProviderSwitch,
+        RuntimeEventKind::ProviderRequestStarted,
+        RuntimeEventKind::ProviderRequestFinished,
     ];
     for entry in runtime_event_registry() {
         if neutral_kinds.contains(&entry.kind) {
