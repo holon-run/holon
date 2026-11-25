@@ -226,8 +226,13 @@ public actor HolonClient {
         return HolonResponse(identity: captured, value: HolonDownloadedArtifact(data: data, mediaType: mime))
     }
 
+    public func sendOperatorPrompt(agentID: String, request prompt: HolonPromptRequest)
+        async throws -> HolonResponse<HolonPromptReceipt> {
+        try await sendOperatorPrompt(agentID: agentID, request: prompt, admit: nil)
+    }
+
     public func sendOperatorPrompt(agentID: String, request prompt: HolonPromptRequest,
-                                   admit: (@Sendable () throws -> Void)? = nil)
+                                   admit: (@Sendable () throws -> Void)?)
         async throws -> HolonResponse<HolonPromptReceipt> {
         let result = try await request(path: ["control", "agents", agentID, "prompt"],
                                        method: "POST", body: prompt.payload, admit: admit)
@@ -266,8 +271,13 @@ public actor HolonClient {
         }
     }
 
+    public func setAgentModel(agentID: String, request model: HolonAgentModelRequest)
+        async throws -> HolonResponse<HolonAgentModelState> {
+        try await setAgentModel(agentID: agentID, request: model, admit: nil)
+    }
+
     public func setAgentModel(agentID: String, request model: HolonAgentModelRequest,
-                              admit: (@Sendable () throws -> Void)? = nil)
+                              admit: (@Sendable () throws -> Void)?)
         async throws -> HolonResponse<HolonAgentModelState> {
         let result = try await request(path: ["control", "agents", agentID, "model"],
                                        method: "POST", body: model.payload, admit: admit)
@@ -279,7 +289,11 @@ public actor HolonClient {
         }
     }
 
-    public func clearAgentModel(agentID: String, admit: (@Sendable () throws -> Void)? = nil)
+    public func clearAgentModel(agentID: String) async throws -> HolonResponse<HolonAgentModelState> {
+        try await clearAgentModel(agentID: agentID, admit: nil)
+    }
+
+    public func clearAgentModel(agentID: String, admit: (@Sendable () throws -> Void)?)
         async throws -> HolonResponse<HolonAgentModelState> {
         let result = try await request(path: ["control", "agents", agentID, "model", "clear"],
                                        method: "POST", body: .object([

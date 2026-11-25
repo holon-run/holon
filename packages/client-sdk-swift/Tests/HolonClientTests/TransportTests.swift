@@ -109,7 +109,8 @@ final class TransportTests: XCTestCase {
         do { _ = try await sdk.sendOperatorPrompt(agentID: "main", request: prompt); XCTFail() }
         catch { XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, 503) }
         XCTAssertEqual(exchange.requests.count, 1)
-        let receipt = try await sdk.sendOperatorPrompt(agentID: "main", request: prompt)
+        let send: (String, HolonPromptRequest) async throws -> HolonResponse<HolonPromptReceipt> = sdk.sendOperatorPrompt
+        let receipt = try await send("main", prompt)
         XCTAssertTrue(receipt.value.isAccepted)
         XCTAssertEqual(receipt.value.raw["future"], .integer(42))
         XCTAssertEqual(exchange.requests[0].httpBody, exchange.requests[1].httpBody)
@@ -194,9 +195,11 @@ final class TransportTests: XCTestCase {
         let state = try await sdk.agentModel(agentID: "main")
         XCTAssertEqual(state.value.raw["future"], .integer(42))
         let model = try HolonAgentModelRequest(model: "vendor/new", reasoningEffort: "high", serviceTier: "fast")
-        let updated = try await sdk.setAgentModel(agentID: "main", request: model)
+        let set: (String, HolonAgentModelRequest) async throws -> HolonResponse<HolonAgentModelState> = sdk.setAgentModel
+        let updated = try await set("main", model)
         XCTAssertEqual(updated.value.effectiveModel, .string("vendor@default/new"))
-        let cleared = try await sdk.clearAgentModel(agentID: "main")
+        let clearModel: (String) async throws -> HolonResponse<HolonAgentModelState> = sdk.clearAgentModel
+        let cleared = try await clearModel("main")
         XCTAssertEqual(cleared.value.effectiveModel, .string("vendor/model"))
         XCTAssertEqual(cleared.value.raw["source"], .string("runtime_default"))
         let stopped = try await sdk.stopCurrentRun(agentID: "main", runID: "observed-run")

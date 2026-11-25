@@ -555,8 +555,13 @@ final class ConnectionCoordinatorTests: XCTestCase {
                 XCTAssertNil(c?.readingContext)
                 XCTAssertNil(c?.identity)
             }
-            c.handleClientFailure(.init(statusCode: code, apiError: apiError, identity: identity),
-                                  expectedIdentity: identity)
+            let lateFailure = Task { @MainActor in
+                XCTAssertTrue(Task.isCancelled)
+                c.handleClientFailure(.init(statusCode: code, apiError: apiError, identity: identity),
+                                      expectedIdentity: identity)
+            }
+            lateFailure.cancel()
+            await lateFailure.value
             XCTAssertEqual(c.status, code == 401 ? .sessionExpired : .permissionDenied)
             XCTAssertNil(c.identity)
             XCTAssertNil(c.readingContext)
@@ -982,7 +987,12 @@ final class ConnectionCoordinatorTests: XCTestCase {
         let current = try XCTUnwrap(c.identity)
         XCTAssertNotEqual(previous.generation, current.generation)
         let failure = HolonHTTPFailure(statusCode: 401, identity: .init(networkID: "reading"))
-        c.handleReadingFailure(failure, expectedIdentity: previous)
+        let lateFailure = Task { @MainActor in
+            XCTAssertTrue(Task.isCancelled)
+            c.handleReadingFailure(failure, expectedIdentity: previous)
+        }
+        lateFailure.cancel()
+        await lateFailure.value
         XCTAssertEqual(c.identity, current)
         XCTAssertEqual(c.status, .connected)
         XCTAssertNotNil(try f.store.session(for: p))
