@@ -8,7 +8,7 @@
 use std::{
     fs,
     path::PathBuf,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 use serde_json::{json, Value};
@@ -274,4 +274,109 @@ fn failures_never_leak_secrets_in_json_or_human_mode() {
     assert!(text.contains("next: "), "{text}");
     assert!(!text.contains("sup3rsecret"), "{text}");
     assert!(!text.contains(TOKEN), "{text}");
+}
+
+/// A holon pid that is guaranteed to be dead: spawn a trivial child, reap it,
+/// and reuse its pid in fixture metadata. Avoids depending on host pid ranges.
+fn reaped_holon_pid() -> u32 {
+    let mut child = Command::new(holon_bin())
+        .arg("--version")
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn holon --version for a guaranteed-dead pid");
+    let pid = child.id();
+    let status = child.wait().expect("reap the --version child");
+    assert!(status.success(), "holon --version exited with {status}");
+    pid
+}
+
+/// Recorded legacy daemon metadata that carries a forbidden serve argument is
+/// the domain-failure shape of the shared envelope: the command fails before
+/// any runtime probe, stdout is exactly one JSON envelope, and the process exit
+/// code is the domain failure code.
+#[test]
+fn invalid_legacy_daemon_metadata_reports_domain_failure_envelope() {
+    let fixture = Fixture::new();
+    let dead_pid = reaped_holon_pid();
+    let metadata = json!({
+        "pid": dead_pid,
+        "home_dir": fixture.home.path(),
+        "socket_path": fixture.home.path().join("run").join("control.sock"),
+        "http_addr": "http://127.0.0.1:1",
+        "started_at": "2026-01-01T00:00:00Z",
+        "config_fingerprint": "legacy-fixture-fingerprint",
+        "executable_path": holon_bin(),
+        "serve_args": ["--desktop-integration-if-unconfigured"],
+    });
+    fs::write(
+        fixture.home.path().join("run").join("daemon.json"),
+        metadata.to_string(),
+    )
+    .unwrap();
+
+    let output = fixture.run(&["daemon", "--json", "start"]);
+    assert_eq!(output.status.code(), Some(20), "{}", output_text(&output));
+    let value = envelope(&output);
+    assert_eq!(value["command"], "daemon.start");
+    assert_eq!(value["status"], "failed");
+    assert!(value["data"].is_null(), "{value}");
+    assert_eq!(value["error"]["kind"], "domain");
+    assert_eq!(value["error"]["code"], "invalid_legacy_daemon_metadata");
+    assert_eq!(value["error"]["retryable"], false);
+    let message = value["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("reset"),
+        "curated failure message should stay actionable, got: {message}"
+    );
+    assert!(
+        !message.contains("--desktop-integration-if-unconfigured"),
+        "the recorded argument must not leak into the envelope message: {message}"
+    );
+}
+
+/// Recorded metadata that names a different executable is the stale/foreign
+/// runtime identity shape of the shared envelope: the recorded serve options
+/// are refused as a blocked precondition before any runtime probe, stdout is
+/// exactly one JSON envelope, and the process exit code is the blocked code.
+#[test]
+fn foreign_runtime_metadata_reports_blocked_precondition_envelope() {
+    let fixture = Fixture::new();
+    let dead_pid = reaped_holon_pid();
+    let metadata = json!({
+        "pid": dead_pid,
+        "home_dir": fixture.home.path(),
+        "socket_path": fixture.home.path().join("run").join("control.sock"),
+        "http_addr": "http://127.0.0.1:1",
+        "started_at": "2026-01-01T00:00:00Z",
+        "config_fingerprint": "legacy-fixture-fingerprint",
+        "executable_path": "/nonexistent/qa-4502-foreign-holon",
+        "serve_args": ["--listen", "127.0.0.1:1"],
+    });
+    fs::write(
+        fixture.home.path().join("run").join("daemon.json"),
+        metadata.to_string(),
+    )
+    .unwrap();
+
+    let output = fixture.run(&["daemon", "--json", "start"]);
+    assert_eq!(output.status.code(), Some(21), "{}", output_text(&output));
+    let value = envelope(&output);
+    assert_eq!(value["command"], "daemon.start");
+    assert_eq!(value["status"], "blocked");
+    assert!(value["data"].is_null(), "{value}");
+    assert_eq!(value["error"]["kind"], "precondition");
+    assert_eq!(value["error"]["code"], "daemon_identity_mismatch");
+    assert_eq!(value["error"]["retryable"], false);
+    let message = value["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("--reset-serve-options"),
+        "curated failure message should stay actionable, got: {message}"
+    );
+    assert!(
+        !message.contains("nonexistent"),
+        "the foreign executable path must not leak into the envelope message: {message}"
+    );
 }
