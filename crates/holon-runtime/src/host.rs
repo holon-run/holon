@@ -15602,14 +15602,9 @@ mod tests {
             applied_at: chrono::Utc::now(),
             schema_version: None,
         };
-        let provenance_path =
-            crate::agent_template::template_provenance_path(&agent_home);
+        let provenance_path = crate::agent_template::template_provenance_path(&agent_home);
         std::fs::create_dir_all(provenance_path.parent().expect("provenance parent")).unwrap();
-        std::fs::write(
-            provenance_path,
-            serde_json::to_vec_pretty(&legacy).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(provenance_path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
 
         let bootstrap = AgentBootstrapRecord::new(
             agent_id,
