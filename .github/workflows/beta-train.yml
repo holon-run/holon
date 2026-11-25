@@ -100,10 +100,24 @@ jobs:
             fi
             exit 0
           fi
-          ci="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --branch main --commit "$sha" --limit 1 --json conclusion --jq '.[0].conclusion // "none"')"
-          if [ "$ci" != "success" ]; then
-            skip "main CI on ${sha} is ${ci}; fix the failure or rule out an infrastructure flake before the next train"
+          # ci.yml's push trigger has a positive paths whitelist, so a docs-only
+          # head has no CI run at all; that is "missing", not "failed". The gate
+          # script owns the four-state classification and the single docs-only
+          # inheritance branch, and fails closed on anything it cannot prove.
+          if ! gate="$(bash scripts/beta_train_ci_gate.sh)"; then
+            skip "main CI gate for ${sha} produced no decision; failing closed before the next train"
             exit 0
+          fi
+          gate_decision="$(printf '%s\n' "$gate" | sed -n 's/^decision=//p')"
+          gate_message="$(printf '%s\n' "$gate" | sed -n 's/^message=//p')"
+          gate_notice="$(printf '%s\n' "$gate" | sed -n 's/^notice=//p')"
+          gate_passed="$(printf '%s\n' "$gate" | sed -n 's/^passed=//p')"
+          if [ "$gate_decision" != "pass" ]; then
+            skip "${gate_message:-main CI gate for ${sha} produced no usable decision}"
+            exit 0
+          fi
+          if [ -n "$gate_notice" ]; then
+            echo "::notice::${gate_notice}"
           fi
           queued="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow Release --status queued --json databaseId --jq 'length')"
           running="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow Release --status in_progress --json databaseId --jq 'length')"
@@ -113,7 +127,7 @@ jobs:
           fi
 
           echo "skip=false" >> "$GITHUB_OUTPUT"
-          echo "Preflight passed: nightly E2E green ($(( e2e_age / 3600 ))h ago), ${commits} new commits, main CI ${ci}, tag ${beta_tag} free."
+          echo "Preflight passed: nightly E2E green ($(( e2e_age / 3600 ))h ago), ${commits} new commits, ${gate_passed}, tag ${beta_tag} free."
 
       - name: Run Release E2E attestation for the candidate
         if: steps.preflight.outputs.skip != 'true' && steps.preflight.outputs.resume != 'true'
