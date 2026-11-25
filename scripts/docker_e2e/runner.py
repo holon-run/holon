@@ -3943,6 +3943,12 @@ def run_workitem_case(harness: CaseHarness, case: dict[str, Any]) -> None:
             plan_marker=plan_marker,
             completion_marker=completion_marker,
         ),
+        # Resuming a waiting WorkItem is explicitly targeted operator input,
+        # matching scheduler-operator-wait-resume. An untargeted control prompt
+        # is admitted at Priority::Interject and is a lifecycle nudge by
+        # contract (#2708), so it would not bind the completion to this
+        # WorkItem.
+        work_item_id=work_item_id,
     )
     required, forbidden = phase_tools(complete_phase)
     harness.assert_tools(
