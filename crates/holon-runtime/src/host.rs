@@ -79,7 +79,8 @@ use tracing::{instrument::WithSubscriber, warn};
 use crate::{
     agent_memory::load_agent_memory,
     agent_template::{
-        discover_agent_templates_catalog, ensure_agent_home_agents_md_from_template_with_catalog,
+        discover_agent_templates_catalog, ensure_agent_home_agents_md_from_builtin_template,
+        ensure_agent_home_agents_md_from_template_with_catalog,
         ensure_agent_home_agents_md_from_template_with_home,
         ensure_agent_home_agents_md_without_template_with_home, ensure_agent_home_layout,
         initialize_agent_home_from_template_with_catalog,
@@ -8701,9 +8702,10 @@ impl RuntimeHost {
             .unwrap_or(config.home_dir.as_path());
         // The zero-config default agent is the operator's main entry point, so
         // it is initialized from the hidden `holon-default` template
-        // explicitly. Blank initialization is reserved for callers that omit
-        // `template`.
-        let _ = ensure_agent_home_agents_md_from_template_with_home(
+        // explicitly. Resolve the hidden builtin directly so a user template
+        // that reuses the id cannot shadow the main-entry role. Blank
+        // initialization is reserved for callers that omit `template`.
+        let _ = ensure_agent_home_agents_md_from_builtin_template(
             &agent_home,
             template_home,
             DEFAULT_AGENT_TEMPLATE_ID,
@@ -15520,6 +15522,45 @@ mod tests {
             runtime.agent_summary().await.unwrap().identity.agent_id,
             host.config().default_agent_id
         );
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn apply_template_bootstrap_accepts_legacy_default_provenance_for_blank_desired() {
+        let (_home, host) = test_host();
+        let agent_id = "legacy-blank-agent";
+        let agent_home = host.agent_data_dir(agent_id);
+        std::fs::create_dir_all(&agent_home).unwrap();
+        std::fs::write(agent_home.join("AGENTS.md"), "# legacy agent\n").unwrap();
+        let legacy = crate::agent_template::TemplateProvenanceRecord {
+            selector: Some(crate::agent_template::DEFAULT_AGENT_TEMPLATE_ID.to_string()),
+            source: crate::agent_template::TemplateProvenanceSource::TemplateId {
+                template_id: crate::agent_template::DEFAULT_AGENT_TEMPLATE_ID.to_string(),
+                path: agent_home.join(".agents/agent_templates/holon-default"),
+            },
+            applied_at: chrono::Utc::now(),
+            schema_version: None,
+        };
+        std::fs::write(
+            crate::agent_template::template_provenance_path(&agent_home),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let bootstrap = AgentBootstrapRecord::new(
+            agent_id,
+            AgentBootstrapDesiredState {
+                template: None,
+                catalog_agent_home: None,
+                workspace: None,
+                model_resolution: None,
+                initial_message: None,
+                default_initial_message: false,
+            },
+        );
+        host.apply_agent_template_bootstrap(&bootstrap)
+            .await
+            .expect("legacy holon-default provenance must not conflict with a blank bootstrap");
     }
 
     #[cfg(holon_lib_test_shard = "d")]

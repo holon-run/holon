@@ -587,6 +587,20 @@ pub async fn ensure_agent_home_agents_md_from_template_with_home(
     .await
 }
 
+pub async fn ensure_agent_home_agents_md_from_builtin_template(
+    agent_home: &Path,
+    home_dir: &Path,
+    template_id: &str,
+) -> Result<Option<TemplateProvenanceRecord>> {
+    package::ensure_agent_home_agents_md_from_builtin_template(
+        TEMPLATES,
+        agent_home,
+        home_dir,
+        template_id,
+    )
+    .await
+}
+
 pub async fn ensure_agent_home_agents_md_without_template_with_home(
     agent_home: &Path,
     home_dir: &Path,

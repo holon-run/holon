@@ -402,7 +402,14 @@ pub fn recover_template_staging(
     let Some(staging) = read_template_staging(agent_home)? else {
         return Ok(false);
     };
-    if staging.selector.as_deref() != expected_selector {
+    // Legacy agents created before blank initialization existed staged the
+    // implicit `holon-default` selector while `desired.template` stayed unset.
+    // Treat that as a match so an upgrade can still recover an interrupted
+    // materialization instead of failing repair forever.
+    let selector_matches = staging.selector.as_deref() == expected_selector
+        || (expected_selector.is_none()
+            && staging.selector.as_deref() == Some(DEFAULT_AGENT_TEMPLATE_ID));
+    if !selector_matches {
         return Ok(false);
     }
     let agents_md = agent_home.join(TEMPLATE_AGENTS_FILENAME);
@@ -670,13 +677,19 @@ async fn initialize_agent_home_blank(agent_home: &Path) -> Result<TemplateProven
 /// Writes the blank agent-home `AGENTS.md` and provenance marker. The caller
 /// must have created the agent-home layout and ensured `AGENTS.md` is absent.
 async fn materialize_blank_agents_md(agent_home: &Path) -> Result<TemplateProvenanceRecord> {
+    let agents_md_path = agent_home.join(TEMPLATE_AGENTS_FILENAME);
+    if agents_md_path.exists() {
+        bail!(
+            "agent home {} already has an AGENTS.md; blank initialization refuses to overwrite live content",
+            agent_home.display()
+        );
+    }
     let agents_md = render_blank_agent_home_agents_md();
     let staging = TemplateStagingGuard::begin(agent_home, None, &agents_md)?;
+    let mut wrote_agents_md = false;
     let result: Result<TemplateProvenanceRecord> = async {
-        write_file_atomically(
-            &agent_home.join(TEMPLATE_AGENTS_FILENAME),
-            agents_md.as_bytes(),
-        )?;
+        write_file_atomically(&agents_md_path, agents_md.as_bytes())?;
+        wrote_agents_md = true;
         let record = TemplateProvenanceRecord {
             selector: None,
             source: TemplateProvenanceSource::Blank,
@@ -695,8 +708,11 @@ async fn materialize_blank_agents_md(agent_home: &Path) -> Result<TemplateProven
     .await;
 
     if result.is_err() {
-        let _ = fs::remove_file(agent_home.join(TEMPLATE_AGENTS_FILENAME));
+        if wrote_agents_md {
+            let _ = fs::remove_file(&agents_md_path);
+        }
         let _ = fs::remove_file(template_provenance_path(agent_home));
+        let _ = remove_template_staging(agent_home);
     }
 
     result
@@ -746,6 +762,33 @@ pub async fn ensure_agent_home_agents_md_from_template_with_home(
         home_dir,
         None,
         template,
+    )
+    .await
+}
+
+/// Ensures `AGENTS.md` from a hidden builtin template, deliberately bypassing
+/// visible user templates so a local template that reuses the builtin id
+/// cannot shadow the hidden default.
+pub async fn ensure_agent_home_agents_md_from_builtin_template(
+    environment: TemplateEnvironment,
+    agent_home: &Path,
+    home_dir: &Path,
+    template_id: &str,
+) -> Result<Option<TemplateProvenanceRecord>> {
+    let agent_home = agent_home.to_path_buf();
+    fs::create_dir_all(&agent_home)
+        .with_context(|| format!("failed to create {}", agent_home.display()))?;
+    ensure_agent_home_layout(&agent_home)?;
+    if agent_home.join(TEMPLATE_AGENTS_FILENAME).exists() {
+        return Ok(None);
+    }
+    let resolved = resolve_builtin_template(environment, template_id, home_dir)?;
+    materialize_resolved_template(
+        environment,
+        &agent_home,
+        Some(template_id),
+        &resolved,
+        "hidden builtin template",
     )
     .await
 }
