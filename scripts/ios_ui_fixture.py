@@ -948,6 +948,8 @@ with fixture_directory(repo) as root:
     home.mkdir()
     (home / "config.json").write_text(json.dumps({
         "model": {"default": "ios-fixture/fixture-model"},
+        "models": {"catalog": {"ios-fixture/fixture-alternate": {
+            "display_name": "Fixture alternate model"}}},
         "providers": {"ios-fixture": {"transport": "openai_chat_completions",
             "base_url": f"http://127.0.0.1:{provider.server_port}/v1",
             "auth": {"source": "env", "kind": "api_key", "env": "HOLON_IOS_TEST_KEY"}}}}))
@@ -990,6 +992,12 @@ with fixture_directory(repo) as root:
                     return data
                 finally:
                     connection.close()
+
+            model_choices = local("GET", "/models")["model_availability"]
+            if not any(option["model"] == "ios-fixture/fixture-alternate"
+                       and option["display_name"] == "Fixture alternate model" and option["available"]
+                       for option in model_choices):
+                raise RuntimeError("UI fixture alternate model is not selectable")
 
             agent = "holon-tester"
             agent_name = "Holon Native Interface Verification — Long Display Name"

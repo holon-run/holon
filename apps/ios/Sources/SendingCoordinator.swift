@@ -17,7 +17,7 @@ struct SendingExternalContext: Equatable {
 final class SendingCoordinator {
     private(set) var draft = SendingDraft()
     private(set) var entries: [SendingEntry] = []
-    private(set) var models: [SendingModel] = []
+    private(set) var isUpdatingAgentModel = false
     private(set) var status: SendingStatus = .disconnected
     private(set) var error: String?
     private(set) var selectedAgentID: String?
@@ -26,15 +26,13 @@ final class SendingCoordinator {
     @ObservationIgnored private let store: SendingStore
     @ObservationIgnored private var transport: (any SendingTransport)?
     @ObservationIgnored private var partition: ReadingPartition?
-    @ObservationIgnored private var revision = 0
+    private var revision = 0
     @ObservationIgnored private var connectionRevision = 0
     @ObservationIgnored private var confirmationRevision = 0
     @ObservationIgnored private var attachmentRevision = 0
-    @ObservationIgnored private var catalogRevision = 0
     @ObservationIgnored private var foreground = true
     @ObservationIgnored private var sendTask: Task<Void, Never>?
     @ObservationIgnored private var activeRequestID: UUID?
-    @ObservationIgnored private var catalogTask: Task<Void, Never>?
 
     @ObservationIgnored private let consent: SharingConsent
     @ObservationIgnored private var consentURL: URL?
@@ -57,6 +55,14 @@ final class SendingCoordinator {
     /// or permission denied) editDraft drops input silently and the draft is
     /// cleared, so the composer disables itself instead of implying saves.
     var canPersistDraft: Bool { scope != nil }
+    var canEnqueueDraft: Bool { scope != nil && !isUpdatingAgentModel }
+    var hasLegacyModelInQueue: Bool {
+        entries.contains { $0.state != .received && $0.legacyModelID != nil }
+    }
+    var modelAccessRevision: Int? {
+        guard status == .ready || status == .sending, scope != nil else { return nil }
+        return revision
+    }
 
     var attachmentImportContext: SendingAttachmentImportContext? {
         guard let scope else { return nil }
@@ -77,7 +83,6 @@ final class SendingCoordinator {
         partition = ReadingPartition(apiBaseURL: apiBaseURL, identity: identity)
         status = partition == nil ? .disconnected : (foreground ? .ready : .offline)
         reload()
-        loadModels()
     }
 
     /// Offline activation keeps the composer's local scope while the node is
@@ -90,16 +95,12 @@ final class SendingCoordinator {
         connectionRevision += 1
         confirmationRevision += 1
         attachmentRevision += 1
-        catalogRevision += 1
-        catalogTask?.cancel()
-        catalogTask = nil
         transport = nil
         consentURL = nil
         identity = nil
         if self.partition != partition {
             draft = SendingDraft()
             entries = []
-            models = []
         }
         self.partition = partition
         refreshIdleStatus()
@@ -107,22 +108,42 @@ final class SendingCoordinator {
         if let previous { Task { await previous.close() } }
     }
 
-    private func loadModels() {
-        guard foreground, let transport else { return }
-        catalogTask?.cancel()
-        catalogRevision += 1
-        let token = catalogRevision
-        catalogTask = Task { [weak self] in
-            do {
-                let catalog = try await transport.models()
-                guard let self, self.catalogRevision == token, self.foreground, !Task.isCancelled else { return }
-                self.models = catalog
-            } catch {
-                guard let self, self.catalogRevision == token, self.foreground, !Task.isCancelled else { return }
-                self.error = error.localizedDescription
-                self.reportConnectionFailure(error)
-            }
+    private func withModelAccess<T: Sendable>(revision token: Int,
+        _ operation: (any SendingTransport, String) async throws -> T) async throws -> T {
+        guard modelAccessRevision == token, let transport, let scope, foreground else {
+            throw CancellationError()
         }
+        do {
+            let result = try await operation(transport, scope.agentID)
+            guard modelAccessRevision == token else { throw CancellationError() }
+            return result
+        } catch {
+            guard modelAccessRevision == token else { throw CancellationError() }
+            reportConnectionFailure(error)
+            throw error
+        }
+    }
+
+    func readAgentModel(revision token: Int) async throws -> AgentModelConfiguration {
+        try await withModelAccess(revision: token) { try await $0.agentModel(agentID: $1) }
+    }
+
+    func readModelCatalog(revision token: Int) async throws -> [SendingModel] {
+        try await withModelAccess(revision: token) { transport, _ in try await transport.models() }
+    }
+
+    func applyAgentModel(_ selection: AgentModelSelection, revision token: Int) async throws -> AgentModelConfiguration {
+        guard canChangeAgentModel else { throw SendingFailure.unavailable }
+        isUpdatingAgentModel = true
+        defer { isUpdatingAgentModel = false }
+        return try await withModelAccess(revision: token) { transport, agentID in
+            try await transport.updateAgentModel(agentID: agentID, selection: selection)
+        }
+    }
+
+    var canChangeAgentModel: Bool {
+        modelAccessRevision != nil && status == .ready && !isUpdatingAgentModel
+            && draft.modelID == nil && !hasLegacyModelInQueue
     }
 
     func disconnect() {
@@ -132,32 +153,23 @@ final class SendingCoordinator {
         connectionRevision += 1
         confirmationRevision += 1
         attachmentRevision += 1
-        catalogRevision += 1
-        catalogTask?.cancel()
-        catalogTask = nil
         transport = nil
         consentURL = nil
         identity = nil
         partition = nil
         draft = SendingDraft()
         entries = []
-        models = []
         status = .disconnected
         if let previous { Task { await previous.close() } }
     }
 
     func setForeground(_ value: Bool) {
-        let changed = foreground != value
+        guard foreground != value else { return }
         foreground = value
         if !value {
             confirmationRevision += 1
             cancelLocalSend()
             revision += 1
-            catalogRevision += 1
-            catalogTask?.cancel()
-            catalogTask = nil
-        } else if changed {
-            loadModels()
         }
         refreshIdleStatus()
     }
@@ -183,6 +195,13 @@ final class SendingCoordinator {
         perform { try store.saveDraft(next, scope: scope) }
     }
 
+    var draftScopeRevision: Int { revision }
+
+    func removeLegacyDraftModel(revision token: Int) {
+        guard revision == token, draft.modelID != nil else { return }
+        editDraft(text: draft.text, modelID: nil)
+    }
+
     func removeDraftAttachment(_ id: UUID) {
         guard let scope else { return }
         var next = draft
@@ -196,8 +215,8 @@ final class SendingCoordinator {
         perform { try store.stage(source: source, scope: context.scope, contentType: contentType) }
     }
 
-    func enqueue() {
-        guard let scope else { return }
+    func enqueue(legacyModelConfirmedAt token: Int? = nil) {
+        guard let scope, canEnqueueDraft, draft.modelID == nil || token == revision else { return }
         do {
             try requireConsent()
             let entry = try store.enqueue(scope)
@@ -236,7 +255,7 @@ final class SendingCoordinator {
               context.connectionRevision == connectionRevision,
               context.confirmationRevision == confirmationRevision,
               context.scope.partition == partition,
-              !sendNow || context.scope == scope else { throw SendingFailure.unavailable }
+              !sendNow || (context.scope == scope && !isUpdatingAgentModel) else { throw SendingFailure.unavailable }
         if sendNow { try requireConsent() }
         let entry = try store.enqueueExternal(requestID: requestID, scope: context.scope,
                                               text: text, attachments: attachments,
@@ -248,7 +267,7 @@ final class SendingCoordinator {
     }
 
     func canRetry(requestID: UUID) -> Bool {
-        guard transport != nil, identity != nil, foreground, activeRequestID == nil,
+        guard transport != nil, identity != nil, foreground, activeRequestID == nil, !isUpdatingAgentModel,
               let entry = entries.first(where: { $0.requestID == requestID }),
               entry.scope == scope else { return false }
         // Offline records the last failure, not whether an explicit attempt is allowed.
@@ -311,7 +330,7 @@ final class SendingCoordinator {
     }
 
     private func deliver(_ original: SendingEntry) {
-        guard activeRequestID == nil else { return }
+        guard activeRequestID == nil, !isUpdatingAgentModel else { return }
         guard let transport, foreground, original.scope == scope else {
             status = .offline
             error = SendingFailure.unavailable.localizedDescription

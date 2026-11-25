@@ -6,26 +6,29 @@ import XCTest
 @MainActor
 final class ConversationConnectionStatusTests: XCTestCase {
     func testNarrowMaximumTextSizeReservesUntruncatedRecoveryInstructions() throws {
+        let recoveryStates: [(ReadingStatus, String)] = [
+            (.sessionExpired, "reading.status.sessionExpired"),
+            (.incompatible, "reading.status.incompatible"),
+            (.offline, "reading.cache.offline"),
+        ]
         for locale in ["en", "zh-Hans"] {
-            for key in ["reading.status.sessionExpired", "reading.status.incompatible", "reading.cache.offline"] {
-                // At accessibility sizes instructions use the full width,
-                // below the fixed-height icon/action row.
+            for (status, key) in recoveryStates {
                 let reference = ImageRenderer(content:
-                    VStack(alignment: .leading, spacing: 4) {
-                        Color.clear.frame(height: 44)
-                        Text(LocalizedStringKey(key)).font(.caption)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(LocalizedStringKey(key)).font(.headline)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("reading.cache.readOnly").font(.caption2)
+                        Text("reading.cache.readOnly")
                             .fixedSize(horizontal: false, vertical: true)
+                        if status != .sessionExpired { Color.clear.frame(height: 44) }
                     }
-                    .padding(.horizontal, 16).padding(.vertical, 8)
                     .frame(width: 320)
                     .environment(\.locale, Locale(identifier: locale))
                     .dynamicTypeSize(.accessibility5)
                 )
                 let renderer = ImageRenderer(content:
-                    ConversationConnectionStatus(status: .offline, hasSnapshot: true,
-                                                 isCached: true, canPersistDraft: true, retry: {})
+                    ConversationConnectionDetails(presentation: .init(status: status, hasSnapshot: true,
+                                                                       isCached: true, canPersistDraft: true),
+                                                  retry: {})
                         .frame(width: 320)
                         .environment(\.locale, Locale(identifier: locale))
                         .dynamicTypeSize(.accessibility5)
@@ -38,40 +41,35 @@ final class ConversationConnectionStatusTests: XCTestCase {
         }
     }
 
-    func testConnectionAndDraftChangesKeepTheSameHeightInBothLanguagesAndTextSizes() throws {
+    func testConnectionActionKeepsItsHitTargetAcrossStatusAndDynamicType() throws {
         for locale in ["en", "zh-Hans"] {
-            var regularHeight: CGFloat = 0
             for size in [DynamicTypeSize.large, .accessibility5] {
-                var expectedHeight: CGFloat?
-                for status in [ReadingStatus.live, .syncing, .offline, .permissionDenied, .sessionExpired, .incompatible] {
-                    for cached in [false, true] {
-                        for refreshing in [false, true] {
-                            let renderer = ImageRenderer(content:
-                                ConversationConnectionStatus(
-                                    status: status, hasSnapshot: cached || status == .live,
-                                    isCached: cached, isRefreshing: refreshing,
-                                    canPersistDraft: status == .offline, retry: {}
-                                )
-                                .frame(width: 320)
-                                .environment(\.locale, Locale(identifier: locale))
-                                .dynamicTypeSize(size)
-                            )
-                            renderer.scale = 1
-                            let image = try XCTUnwrap(renderer.uiImage)
-                            XCTAssertEqual(image.size.width, 320, accuracy: 0.5)
-                            if let expectedHeight {
-                                XCTAssertEqual(image.size.height, expectedHeight, accuracy: 0.5,
-                                               "\(locale), \(size), \(status), cached=\(cached), refreshing=\(refreshing)")
-                            } else {
-                                expectedHeight = image.size.height
-                            }
-                        }
-                    }
+                for status in [ReadingStatus.live, .syncing, .offline, .sessionExpired] {
+                    let renderer = ImageRenderer(content:
+                        ConversationConnectionButton(presentation: .init(status: status, hasSnapshot: true), open: {})
+                            .environment(\.locale, Locale(identifier: locale))
+                            .dynamicTypeSize(size)
+                    )
+                    let image = try XCTUnwrap(renderer.uiImage)
+                    XCTAssertEqual(image.size.width, 44, accuracy: 0.5)
+                    XCTAssertEqual(image.size.height, 44, accuracy: 0.5)
                 }
-                let height = try XCTUnwrap(expectedHeight)
-                if size == .large { regularHeight = height }
-                else { XCTAssertGreaterThan(height, regularHeight, "Stable chrome must still support Dynamic Type") }
             }
         }
+    }
+
+    func testRefreshDoesNotMaskAccessErrorsOrPretendCachedContentIsLive() {
+        let expired = ConversationConnectionPresentation(status: .sessionExpired, hasSnapshot: true,
+                                                         isCached: true, isRefreshing: true, canPersistDraft: true)
+        XCTAssertEqual(expired.key, "reading.status.sessionExpired")
+        XCTAssertTrue(expired.isError)
+        XCTAssertFalse(expired.isLoading)
+        XCTAssertTrue(expired.showsDraftNotice)
+        XCTAssertFalse(expired.showsRetry)
+
+        let offline = ConversationConnectionPresentation(status: .offline, hasSnapshot: true, isCached: true)
+        XCTAssertEqual(offline.key, "reading.cache.offline")
+        XCTAssertTrue(offline.showsRetry)
+        XCTAssertFalse(offline.showsDraftNotice)
     }
 }

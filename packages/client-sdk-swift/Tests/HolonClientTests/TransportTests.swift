@@ -187,6 +187,7 @@ final class TransportTests: XCTestCase {
             MockReply(body: Data(#"{"available_models":["vendor/model"],"future":true}"#.utf8)),
             MockReply(body: Data(#"{"model":{"effective_model":"vendor/model","future":42}}"#.utf8)),
             MockReply(body: Data(#"{"ok":true,"model":{"effective_model":"vendor@default/new","future":43}}"#.utf8)),
+            MockReply(body: Data(#"{"ok":true,"model":{"source":"runtime_default","effective_model":"vendor/model"}}"#.utf8)),
             MockReply(body: Data(#"{"ok":true,"aborted":true,"agent_id":"main","run_id":"observed-run","mode":"stop_after_abort","future":true}"#.utf8))])
         let catalog = try await sdk.modelCatalog()
         XCTAssertEqual(catalog.value.raw["future"], .bool(true))
@@ -195,11 +196,19 @@ final class TransportTests: XCTestCase {
         let model = try HolonAgentModelRequest(model: "vendor/new", reasoningEffort: "high")
         let updated = try await sdk.setAgentModel(agentID: "main", request: model)
         XCTAssertEqual(updated.value.effectiveModel, .string("vendor@default/new"))
+        let cleared = try await sdk.clearAgentModel(agentID: "main")
+        XCTAssertEqual(cleared.value.effectiveModel, .string("vendor/model"))
+        XCTAssertEqual(cleared.value.raw["source"], .string("runtime_default"))
         let stopped = try await sdk.stopCurrentRun(agentID: "main", runID: "observed-run")
         XCTAssertEqual(stopped.value.runID, "observed-run")
         XCTAssertEqual(exchange.requests.map { $0.url!.path }, [
             "/prefix/api/models", "/prefix/api/agents/main",
-            "/prefix/api/control/agents/main/model", "/prefix/api/control/agents/main/current-run/abort"])
+            "/prefix/api/control/agents/main/model", "/prefix/api/control/agents/main/model/clear",
+            "/prefix/api/control/agents/main/current-run/abort"])
+        let clear = exchange.requests[3]
+        XCTAssertEqual(clear.httpMethod, "POST")
+        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(clear.httpBody)),
+                       .object(["authority_class": .string("operator_instruction")]))
         let stop = try JSONDecoder().decode(JSONValue.self, from: exchange.requests.last!.httpBody!)
         XCTAssertEqual(stop["mode"], .string("stop_after_abort"))
         XCTAssertEqual(stop["run_id"], .string("observed-run"))

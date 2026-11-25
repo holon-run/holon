@@ -46,11 +46,26 @@ struct SendingEntry: Identifiable, Equatable, Codable, Sendable {
     var messageID: String?
     var canonicalObserved: Bool?
     var error: String?
+    var legacyModelID: String? { if let payload { return payload.modelID }; return draft.modelID }
 }
 
 struct SendingModel: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
+    var reasoningEfforts: [String] = []
+}
+
+enum AgentModelSelection: Equatable, Sendable {
+    case automatic
+    case manual(String, reasoningEffort: String?)
+}
+
+struct AgentModelConfiguration: Equatable, Sendable {
+    let effectiveModel: String
+    let activeModel: String?
+    let source: String?
+    let overrideModel: String?
+    let reasoningEffort: String?
 }
 
 enum SendingStatus: String { case disconnected, ready, offline, sending }

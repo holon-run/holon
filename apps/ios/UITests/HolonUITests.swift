@@ -257,9 +257,44 @@ final class HolonUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(model.frame.minY, app.navigationBars.firstMatch.frame.maxY,
                                     "Model selection belongs to the composer, not the title")
         model.tap()
-        let defaultModel = app.buttons[chinese ? "服务端默认" : "Server default"]
-        XCTAssertTrue(defaultModel.waitForExistence(timeout: UIWaitScale.scaled(5)))
-        defaultModel.tap()
+        let closeModels = app.buttons["sending.model.close"]
+        XCTAssertTrue(closeModels.waitForExistence(timeout: UIWaitScale.scaled(5)))
+        closeModels.tap()
+    }
+
+    private func assertAgentModelRoundTrip(_ app: XCUIApplication) throws {
+        let model = app.buttons["sending.model"]
+        let close = app.buttons["sending.model.close"]
+        let effective = app.staticTexts["sending.model.effective"]
+        let apply = app.buttons["sending.model.apply"]
+        func waitForModel(_ suffix: String) {
+            let predicate = NSPredicate { _, _ in effective.exists && effective.label.hasSuffix(suffix) }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: nil)],
+                                         timeout: UIWaitScale.scaled(15)), .completed)
+        }
+        func choose(_ label: String) {
+            let picker = app.descendants(matching: .any)["sending.model.options"].firstMatch
+            XCTAssertTrue(picker.waitForExistence(timeout: UIWaitScale.scaled(8)))
+            reveal(picker, in: app)
+            picker.tap()
+            let choice = app.buttons[label].firstMatch
+            XCTAssertTrue(choice.waitForExistence(timeout: UIWaitScale.scaled(5)))
+            choice.tap()
+        }
+        model.tap()
+        waitForModel("/fixture-model")
+        choose("Fixture alternate model")
+        waitForModel("/fixture-model")
+        reveal(apply, in: app); apply.tap()
+        waitForModel("/fixture-alternate")
+        close.tap(); model.tap()
+        waitForModel("/fixture-alternate")
+        choose("Auto (runtime default)")
+        reveal(apply, in: app); apply.tap()
+        waitForModel("/fixture-model")
+        close.tap(); model.tap()
+        waitForModel("/fixture-model")
+        close.tap()
     }
 
     private func reveal(_ element: XCUIElement, in app: XCUIApplication,
@@ -927,6 +962,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(read.waitForExistence(timeout: UIWaitScale.scaled(30)))
         reveal(read, in: app)
         try assertConversationIdentity(app, chinese: false)
+        try assertAgentModelRoundTrip(app)
         XCTAssertTrue(app.descendants(matching: .any)["conversation.identity"].firstMatch.label.contains(rosterStatus),
                       "The selected header and roster use the same primary status")
         capture(app, "authenticated-reading")
@@ -1990,9 +2026,10 @@ final class HolonUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)),
                       "A confirmed cached session must not fall back to login when its node is unavailable")
-        XCTAssertTrue(app.staticTexts["Cached content · offline"].waitForExistence(timeout: UIWaitScale.scaled(30)))
-        XCTAssertTrue(app.descendants(matching: .any)["conversation.connectionStatus"].firstMatch.exists)
+        let statusButton = waitForConversationConnection("Cached content · offline", in: app, timeout: 30)
+        statusButton.tap()
         XCTAssertTrue(app.staticTexts["conversation.readOnly"].waitForExistence(timeout: UIWaitScale.scaled(10)))
+        app.buttons["conversation.connectionClose"].tap()
         assertRestoredPosition()
         XCTAssertTrue(body.waitForExistence(timeout: UIWaitScale.scaled(10)), "Cold offline launch must retain the fetched brief body")
         XCTAssertFalse(app.staticTexts["conversation.notCached"].exists)
@@ -2021,15 +2058,21 @@ final class HolonUITests: XCTestCase {
         capture(app, "offline-roster-stable-connection-and-agent-rows")
         reveal(agent, in: app); agent.tap()
         XCTAssertTrue(body.waitForExistence(timeout: UIWaitScale.scaled(10)))
-        XCTAssertTrue(app.staticTexts["conversation.readOnly"].exists)
-        try await changeFixtureNodeAvailability(true)
+        waitForConversationConnection("Cached content · offline", in: app).tap()
+        XCTAssertTrue(app.staticTexts["conversation.readOnly"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         let retry = app.buttons["conversation.retry"]
-        XCTAssertTrue(retry.waitForExistence(timeout: UIWaitScale.scaled(10))); retry.tap()
+        XCTAssertTrue(retry.waitForExistence(timeout: UIWaitScale.scaled(10)))
+        XCTAssertEqual(retry.label, "Retry")
+        try await changeFixtureNodeAvailability(true)
+        retry.tap()
+        let message = app.staticTexts["conversation.connectionMessage"]
+        let writable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Live"),
+                                                 object: message)
+        XCTAssertEqual(XCTWaiter.wait(for: [writable], timeout: UIWaitScale.scaled(30)), .completed)
+        XCTAssertFalse(app.staticTexts["conversation.readOnly"].exists)
+        app.buttons["conversation.connectionClose"].tap()
         XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(30)), "Explicit UI retry must establish a fresh online bootstrap")
-        let writable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
-                                                 object: app.staticTexts["conversation.readOnly"])
-        XCTAssertEqual(XCTWaiter.wait(for: [writable], timeout: UIWaitScale.scaled(10)), .completed)
-        XCTAssertFalse(app.staticTexts["Cached content · offline"].exists)
+        waitForConversationConnection("Live", in: app)
         XCTAssertFalse(app.buttons["onboarding.scan"].exists)
         XCTAssertTrue(body.waitForExistence(timeout: UIWaitScale.scaled(10)))
         capture(app, "offline-cache-explicit-ui-retry-live")
@@ -2041,6 +2084,18 @@ final class HolonUITests: XCTestCase {
 
     func testLiveInterruptionMaximumTextSize() async throws {
         try await verifyLiveInterruption(large: true)
+    }
+
+    @discardableResult
+    private func waitForConversationConnection(_ value: String, in app: XCUIApplication,
+                                               timeout: TimeInterval = 10) -> XCUIElement {
+        let button = app.buttons["conversation.connectionStatus"].firstMatch
+        let state = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            button.exists && button.isHittable && (button.value as? String) == value
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [state], timeout: UIWaitScale.scaled(timeout)), .completed,
+                       "The compact connection action must be reachable and expose \(value)")
+        return button
     }
 
     private func verifyLiveInterruption(large: Bool) async throws {
@@ -2060,19 +2115,16 @@ final class HolonUITests: XCTestCase {
             format: "identifier BEGINSWITH %@", "conversation.time.")).firstMatch
         XCTAssertTrue(turnTime.waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "A visible turn must anchor the reading position before the interruption")
-        XCTAssertFalse(app.staticTexts["conversation.readOnly"].exists,
-                       "A live session shows no offline caption")
+        let statusButton = waitForConversationConnection("Live", in: app)
         let viewport = app.scrollViews["conversation.viewport"]
-        let statusBar = app.otherElements["conversation.connectionStatus"].firstMatch
         XCTAssertTrue(viewport.exists)
-        XCTAssertTrue(statusBar.exists)
         let onlineViewport = viewport.frame
-        let onlineStatusBar = statusBar.frame
+        let onlineAction = statusButton.frame
         let onlineComposer = app.otherElements["sending.composer"].firstMatch.frame
         func assertStableChrome(_ phase: String) {
             XCTAssertEqual(viewport.frame.minY, onlineViewport.minY, accuracy: 1, phase)
             XCTAssertEqual(viewport.frame.height, onlineViewport.height, accuracy: 1, phase)
-            XCTAssertEqual(statusBar.frame.height, onlineStatusBar.height, accuracy: 1, phase)
+            XCTAssertEqual(statusButton.frame.height, onlineAction.height, accuracy: 1, phase)
             XCTAssertEqual(app.otherElements["sending.composer"].firstMatch.frame.minY,
                            onlineComposer.minY, accuracy: 1, phase)
         }
@@ -2082,29 +2134,47 @@ final class HolonUITests: XCTestCase {
         // read live. A sustained outage must degrade honestly to offline while
         // keeping the conversation the reader is looking at.
         try await changeFixtureNodeAvailability(false)
-        XCTAssertTrue(app.staticTexts["Cached content · offline"].waitForExistence(timeout: UIWaitScale.scaled(10)),
-                      "A sustained outage must surface the offline state")
+        waitForConversationConnection("Cached content · offline", in: app)
         XCTAssertTrue(turnTime.exists,
                       "The interruption must not clear the conversation being read")
-        XCTAssertTrue(app.staticTexts["conversation.readOnly"].exists)
         assertStableChrome("offline")
         capture(app, "live-interruption-offline")
+        statusButton.tap()
+        let offlineMessage = app.staticTexts["conversation.connectionMessage"]
+        XCTAssertTrue(offlineMessage.waitForExistence(timeout: UIWaitScale.scaled(10)))
+        XCTAssertEqual(offlineMessage.label, "Cached content · offline")
+        XCTAssertTrue(app.staticTexts["conversation.readOnly"].exists)
+        XCTAssertTrue(app.buttons["conversation.retry"].isHittable)
+        capture(app, "live-interruption-offline-details")
+        app.buttons["conversation.connectionClose"].tap()
+        app.buttons["sending.model"].tap()
+        let modelOffline = app.staticTexts["sending.model.offline"]
+        let modelClose = app.buttons["sending.model.close"]
+        XCTAssertTrue(modelOffline.waitForExistence(timeout: UIWaitScale.scaled(10)),
+                      "An offline conversation must show a reconnect notice, not try to load model settings")
+        XCTAssertFalse(app.buttons["sending.model.apply"].exists,
+                       "Offline model settings must not expose a write action")
+        capture(app, "live-interruption-offline-model")
+        modelClose.tap()
+        assertStableChrome("offline after model settings")
 
         // Unbounded recovery backoff reconnects on its own once the node
         // returns, and the session recovers in place: no onboarding fallback,
         // no roster bounce, no rebuilding of the conversation being read.
         try await changeFixtureNodeAvailability(true)
-        let liveAgain = XCTNSPredicateExpectation(predicate: NSPredicate(
-            format: "exists == false"), object: app.staticTexts["conversation.readOnly"])
-        XCTAssertEqual(XCTWaiter.wait(for: [liveAgain], timeout: UIWaitScale.scaled(45)), .completed,
-                       "Unbounded recovery must return the session to live without user action")
-        XCTAssertFalse(app.staticTexts["Cached content · offline"].exists)
+        waitForConversationConnection("Live", in: app, timeout: 45)
         XCTAssertFalse(app.buttons["onboarding.scan"].exists, "Recovery must not fall back to onboarding")
         XCTAssertTrue(turnTime.waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "The recovered session must keep the conversation in place")
         XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(10)), "The composer must return with the live session")
         assertStableChrome("recovered")
         capture(app, "live-interruption-recovered")
+        app.buttons["sending.model"].tap()
+        XCTAssertTrue(app.staticTexts["sending.model.effective"].waitForExistence(timeout: UIWaitScale.scaled(10)),
+                      "The current model must be readable after the same conversation reconnects")
+        XCTAssertFalse(modelOffline.exists)
+        modelClose.tap()
+        assertStableChrome("recovered after model settings")
     }
 
     func testOfflineReadingCacheSignOutBoundary() async throws {
@@ -2155,7 +2225,7 @@ final class HolonUITests: XCTestCase {
         reveal(older, in: app); older.tap()
         func assertTop(_ id: String) {
             let timestamp = app.staticTexts["conversation.time." + id]
-            let status = app.otherElements["conversation.connectionStatus"].firstMatch
+            let status = app.navigationBars.firstMatch
             // A hittable target can still precede the native ID scroll's
             // committed layout. Wait for the same geometry we assert below.
             let positioned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
@@ -2175,7 +2245,7 @@ final class HolonUITests: XCTestCase {
                 "Window navigation must finish positioning its first turn; "
                 + "turn=\(timestamp.frame), viewport=\(viewport), status=\(status.frame)")
             XCTAssertTrue(status.exists)
-            // The scroll view's AX frame includes its top safe-area inset.
+            // Exclude the navigation bar from the scroll view's AX frame.
             let top = max(viewport.minY, status.frame.maxY)
             XCTAssertGreaterThanOrEqual(timestamp.frame.minY, top - 2)
             XCTAssertLessThanOrEqual(timestamp.frame.minY, top + 50,
@@ -2206,7 +2276,7 @@ final class HolonUITests: XCTestCase {
         capture(app, "native-history-multiline-keyboard-position")
         // AX exposes the scroll view behind its safe-area insets. Start in the
         // actual message region, not the composer/keyboard covering that frame.
-        let status = app.otherElements["conversation.connectionStatus"].firstMatch
+        let status = app.navigationBars.firstMatch
         let messageTop = status.frame.maxY
         let messageBottom = editor.frame.minY
         XCTAssertGreaterThan(messageBottom - messageTop, 40)

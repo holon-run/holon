@@ -6,12 +6,18 @@ protocol SendingTransport: Sendable {
     func upload(agentID: String, attachment: SendingAttachment, file: URL) async throws -> SendingPreparedAttachment
     func send(agentID: String, requestID: UUID, payload: SendingPayload) async throws -> String?
     func models() async throws -> [SendingModel]
+    func agentModel(agentID: String) async throws -> AgentModelConfiguration
+    func updateAgentModel(agentID: String, selection: AgentModelSelection) async throws -> AgentModelConfiguration
     func stop(agentID: String, runID: String) async throws
     func close() async
 }
 
 extension SendingTransport {
     func close() async {}
+    func agentModel(agentID: String) async throws -> AgentModelConfiguration { throw SendingFailure.unavailable }
+    func updateAgentModel(agentID: String, selection: AgentModelSelection) async throws -> AgentModelConfiguration {
+        throw SendingFailure.unavailable
+    }
 }
 
 actor SendingClientTransport: SendingTransport {
@@ -93,15 +99,72 @@ actor SendingClientTransport: SendingTransport {
 
     func models() async throws -> [SendingModel] {
         let catalog = try await request { try await $0.modelCatalog() }
-        guard case .array(let values) = catalog.availableModels else { return [] }
-        return values.compactMap { value in
-            if case .string(let id) = value { return SendingModel(id: id, name: id) }
-            guard case .string(let id) = value["model_ref"] ?? value["id"] else { return nil }
-            let name: String
-            if case .string(let displayName) = value["display_name"] { name = displayName }
-            else { name = id }
-            return SendingModel(id: id, name: name)
+        return Self.modelChoices(catalog.raw)
+    }
+
+    nonisolated static func modelChoices(_ catalog: JSONValue) -> [SendingModel] {
+        func efforts(_ value: JSONValue?) -> [String] {
+            guard case .array(let list) = value else { return [] }
+            var seen: Set<String> = []
+            return list.compactMap(\.readingString).filter { !$0.isEmpty && seen.insert($0).inserted }
         }
+        var models: [String: SendingModel] = [:]
+        if case .array(let availability) = catalog["model_availability"] {
+            // The metadata catalog includes built-ins for providers this server cannot call.
+            for item in availability {
+                guard item["available"] == .bool(true)
+                    || (item["available"] == .bool(false) && item["failure_disposition"]?.readingString == "retryable"),
+                    let model = item["model"]?.readingString, !model.isEmpty else { continue }
+                let parts = model.split(separator: "/", maxSplits: 1)
+                let id: String
+                if parts.count == 2, !parts[0].contains("@"),
+                   let family = item["provider_family"]?.readingString,
+                   let endpoint = item["endpoint"]?.readingString {
+                    id = "\(family)@\(endpoint)/\(parts[1])"
+                } else {
+                    id = model
+                }
+                models[id] = SendingModel(id: id, name: item["display_name"]?.readingString ?? model,
+                                          reasoningEfforts: efforts(item["policy"]?["reasoning_effort_options"]))
+            }
+        } else if case .array(let values) = catalog["available_models"] {
+            for value in values {
+                guard let id = value.readingString ?? (value["model"] ?? value["model_ref"] ?? value["id"])?.readingString,
+                      !id.isEmpty else { continue }
+                models[id] = SendingModel(id: id, name: value["display_name"]?.readingString ?? id,
+                                          reasoningEfforts: efforts(value["reasoning_effort_options"]
+                                                                    ?? value["policy"]?["reasoning_effort_options"]))
+            }
+        }
+        return models.values.sorted { ($0.name.lowercased(), $0.id) < ($1.name.lowercased(), $1.id) }
+    }
+
+    func agentModel(agentID: String) async throws -> AgentModelConfiguration {
+        try Self.modelConfiguration(await request { try await $0.agentModel(agentID: agentID) })
+    }
+
+    func updateAgentModel(agentID: String, selection: AgentModelSelection) async throws -> AgentModelConfiguration {
+        let state: HolonAgentModelState
+        switch selection {
+        case .automatic:
+            state = try await request(sharing: true) { try await $0.clearAgentModel(agentID: agentID) }
+        case .manual(let model, let effort):
+            let body = try HolonAgentModelRequest(model: model, reasoningEffort: effort)
+            state = try await request(sharing: true) { try await $0.setAgentModel(agentID: agentID, request: body) }
+        }
+        return try Self.modelConfiguration(state)
+    }
+
+    private static func modelConfiguration(_ state: HolonAgentModelState) throws -> AgentModelConfiguration {
+        let raw = state.raw
+        guard let effective = raw["effective_model"]?.readingString, !effective.isEmpty else {
+            throw HolonClientError.malformedResponse
+        }
+        return AgentModelConfiguration(effectiveModel: effective,
+                                       activeModel: raw["active_model"]?.readingString,
+                                       source: raw["source"]?.readingString,
+                                       overrideModel: raw["override_model"]?.readingString,
+                                       reasoningEffort: raw["override_reasoning_effort"]?.readingString)
     }
 
     func stop(agentID: String, runID: String) async throws {

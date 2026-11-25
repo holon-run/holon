@@ -134,7 +134,7 @@ final class SendingStore {
         }
         var next = snapshot
         next.entries.append(entry)
-        next.drafts[scope] = SendingDraft(modelID: draft.modelID)
+        next.drafts[scope] = SendingDraft()
         try commit(next)
         return entry
     }

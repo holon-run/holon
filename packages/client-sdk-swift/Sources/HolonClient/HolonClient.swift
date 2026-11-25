@@ -277,6 +277,18 @@ public actor HolonClient {
         }
     }
 
+    public func clearAgentModel(agentID: String) async throws -> HolonResponse<HolonAgentModelState> {
+        let result = try await request(path: ["control", "agents", agentID, "model", "clear"],
+                                       method: "POST", body: .object([
+                                        "authority_class": .string("operator_instruction"),
+                                       ]))
+        return try decoded(result) {
+            let raw = try JSONDecoder().decode(JSONValue.self, from: $0)
+            guard raw["ok"] != .bool(false) else { throw HolonClientError.malformedResponse }
+            return try HolonAgentModelState(raw: raw["model"] ?? raw)
+        }
+    }
+
     /// Targets an observed run, never a lifecycle stop or a newer replacement run.
     public func stopCurrentRun(agentID: String, runID: String)
         async throws -> HolonResponse<HolonRunStopReceipt> {

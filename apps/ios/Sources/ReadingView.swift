@@ -238,11 +238,18 @@ struct ConversationReadingView: View {
     @State private var nearBottom = true
     @State private var follow = ConversationFollowState()
     @State private var newContent = false
+    @State private var showConnectionDetails = false
     @State private var initializedAgent: String?
     @State private var readThroughToConfirm: ReadingReadConfirmation?
     @State private var historyEndTurnID: String?
     @State private var visibleTurnIDs: [String] = []
     @State private var userScrolling = false
+
+    private var connectionPresentation: ConversationConnectionPresentation {
+        .init(status: reader.status, hasSnapshot: reader.snapshot != nil,
+              isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing,
+              canPersistDraft: sender?.canPersistDraft == true)
+    }
     @State private var scrollRequest: ScrollRequest?
     @State private var scrollPosition = ScrollPosition(idType: String.self)
     @State private var historyScrollIntent: String?
@@ -462,18 +469,10 @@ struct ConversationReadingView: View {
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            ConversationConnectionStatus(status: reader.status, hasSnapshot: reader.snapshot != nil,
-                                         isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing,
-                                         canPersistDraft: sender?.canPersistDraft == true) {
-                Task { await reader.refresh() }
-            }
-        }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 if let sender {
-                    SendingView(sender: sender, currentRunID: currentRunID,
-                                commonModels: reader.agents.compactMap(\.effectiveModel))
+                    SendingView(sender: sender, reader: reader, currentRunID: currentRunID)
                 } else {
                     Text("status.storageError").font(.caption).padding()
                 }
@@ -481,19 +480,25 @@ struct ConversationReadingView: View {
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                if let agent = reader.agents.first(where: { $0.id == reader.selectedAgentID }) {
-                    AgentConversationTitle(agent: agent, store: reader.avatars, presentation: .derive(
-                        agent, status: reader.status, isRosterCurrent: reader.isRosterCurrent,
-                        isCached: reader.rosterIsCached,
-                        isRefreshing: reader.isRefreshing
-                    ))
-                } else {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(verbatim: reader.selectedAgentID ?? "Holon").lineLimit(1)
-                        AgentStatusLabel(presentation: .init(kind: .unknown)).font(.caption2)
+                HStack(spacing: 0) {
+                    if let agent = reader.agents.first(where: { $0.id == reader.selectedAgentID }) {
+                        AgentConversationTitle(agent: agent, store: reader.avatars, presentation: .derive(
+                            agent, status: reader.status, isRosterCurrent: reader.isRosterCurrent,
+                            isCached: reader.rosterIsCached,
+                            isRefreshing: reader.isRefreshing
+                        ))
+                    } else {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(verbatim: reader.selectedAgentID ?? "Holon").lineLimit(1)
+                            AgentStatusLabel(presentation: .init(kind: .unknown)).font(.caption2)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("conversation.identity")
                     }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("conversation.identity")
+                    ConversationConnectionButton(presentation: connectionPresentation) {
+                        showConnectionDetails = true
+                    }
+                    .layoutPriority(1)
                 }
             }
             ToolbarItemGroup(placement: .primaryAction) {
@@ -516,6 +521,24 @@ struct ConversationReadingView: View {
                         .accessibilityIdentifier("conversation.privacyInfo")
                 } label: { Image(systemName: "ellipsis.circle").accessibilityLabel(Text("conversation.more")) }
                 .accessibilityIdentifier("conversation.more")
+            }
+        }
+        .sheet(isPresented: $showConnectionDetails) {
+            NavigationStack {
+                ScrollView {
+                    ConversationConnectionDetails(presentation: connectionPresentation) {
+                        Task { await reader.refresh() }
+                    }
+                    .padding(20)
+                }
+                .navigationTitle("reading.connectionDetails")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("files.dismiss") { showConnectionDetails = false }
+                            .accessibilityIdentifier("conversation.connectionClose")
+                    }
+                }
             }
         }
         .sheet(isPresented: $showPrivacyInfo) { PrivacyInfoSheet(apiBaseURL: apiBaseURL) }
@@ -662,105 +685,83 @@ struct ReadingInputView: View {
     }
 }
 
-/// Connection state is chrome, not an invented entry in the conversation.
-struct ConversationConnectionStatus: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+/// The connection is independent of the Agent's scheduling state.
+struct ConversationConnectionPresentation {
     let status: ReadingStatus
     let hasSnapshot: Bool
     var isCached = false
     var isRefreshing = false
     var canPersistDraft = false
-    var retry: () -> Void
-
-    // Reserve natural, localized heights rather than truncating recovery text.
-    private static let statusKeys = [
-        "reading.status.disconnected", "reading.status.syncing", "reading.status.live",
-        "reading.status.offline", "reading.status.permissionDenied", "reading.status.sessionExpired",
-        "reading.status.incompatible", "reading.cache.offline", "reading.cache.refreshing",
-        "reading.cache.saved", "reading.loadingConversation"
-    ]
-
-    var body: some View {
-        let key = ReadingPresentation.connectionStatusKey(
+    var key: String {
+        ReadingPresentation.connectionStatusKey(
             status: status, hasContent: hasSnapshot, isCached: isCached, isRefreshing: isRefreshing
         ) ?? "reading.status.live"
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                // Keep recovery instructions full-width at accessibility sizes.
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        statusIcon
-                        Spacer()
-                        retryControl
-                    }
-                    statusCaption(key)
-                    draftNotice
-                }
-            } else {
-                HStack(spacing: 8) {
-                    statusIcon
-                    VStack(alignment: .leading, spacing: 2) {
-                        statusCaption(key)
-                        draftNotice
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    retryControl
+    }
+    var showsDraftNotice: Bool { status != .live && canPersistDraft }
+    var showsRetry: Bool {
+        ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing)
+    }
+    var isError: Bool {
+        switch status {
+        case .permissionDenied, .sessionExpired, .incompatible: true
+        default: false
+        }
+    }
+    var isLoading: Bool {
+        !isError && (isRefreshing || status == .syncing || (status == .live && !hasSnapshot))
+    }
+    var symbol: String {
+        if isError { return "exclamationmark.circle" }
+        if status != .live { return "wifi.exclamationmark" }
+        return isCached ? "internaldrive" : "dot.radiowaves.left.and.right"
+    }
+}
+
+struct ConversationConnectionButton: View {
+    let presentation: ConversationConnectionPresentation
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            Group {
+                if presentation.isLoading {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: presentation.symbol)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(presentation.isError || presentation.showsRetry ? Color.orange : Color.secondary)
                 }
             }
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 16).padding(.vertical, 8)
-        .background(.bar)
-        .accessibilityElement(children: .contain)
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text("reading.connectionDetails"))
+        .accessibilityValue(Text(LocalizedStringKey(presentation.key)))
         .accessibilityIdentifier("conversation.connectionStatus")
     }
+}
 
-    private func statusCaption(_ key: String) -> some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(Self.statusKeys, id: \.self) { candidate in
-                Text(LocalizedStringKey(candidate)).hidden().accessibilityHidden(true)
-            }
-            Text(LocalizedStringKey(key))
-        }
-        .font(.caption).foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+struct ConversationConnectionDetails: View {
+    let presentation: ConversationConnectionPresentation
+    let retry: () -> Void
 
-    private var draftNotice: some View {
-        ZStack(alignment: .topLeading) {
-            Text("reading.cache.readOnly").hidden().accessibilityHidden(true)
-            if status != .live && canPersistDraft {
-                Text("reading.cache.readOnly")
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(LocalizedStringKey(presentation.key)).font(.headline)
+                .accessibilityIdentifier("conversation.connectionMessage")
+            if presentation.showsDraftNotice {
+                Text("reading.cache.readOnly").foregroundStyle(.secondary)
                     .accessibilityIdentifier("conversation.readOnly")
             }
+            if presentation.showsRetry {
+                Button("reading.retry", action: retry)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("conversation.retry")
+            }
         }
-        .font(.caption2).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var statusIcon: some View {
-        Group {
-            if isRefreshing || status == .syncing || (status == .live && !hasSnapshot) {
-                ProgressView().controlSize(.mini)
-            } else {
-                Image(systemName: status == .live ? (isCached ? "internaldrive" : "checkmark.circle") : "wifi.exclamationmark")
-            }
-        }
-        .frame(width: 20, height: 20)
-        .accessibilityHidden(true)
-    }
-
-    private var retryControl: some View {
-        Group {
-            if ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing) {
-                Button("reading.retry", action: retry)
-                    .accessibilityIdentifier("conversation.retry")
-            } else {
-                Text("reading.retry").hidden().accessibilityHidden(true)
-            }
-        }
-        .font(.caption).frame(minWidth: 44, minHeight: 44)
     }
 }
 

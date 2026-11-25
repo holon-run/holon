@@ -48,6 +48,31 @@ private actor SendingMockTransport: SendingTransport {
 
 @MainActor
 final class SendingCoordinatorTests: XCTestCase {
+    func testModelChoicesUseRouteAvailabilityAndKeepDistinctEndpoints() throws {
+        let wire = Data("""
+            {"available_models":["other/catalog-only"],"model_availability":[
+              {"model":"fixture/shared","provider_family":"fixture","endpoint":"a","available":true,
+               "display_name":"Shared","policy":{"reasoning_effort_options":["low","high","low"]}},
+              {"model":"fixture/shared","provider_family":"fixture","endpoint":"b","available":true,
+               "display_name":"Shared"},
+              {"model":"fixture/retry","provider_family":"fixture","endpoint":"default","available":false,
+               "failure_disposition":"retryable","display_name":"Retry"},
+              {"model":"fixture/disabled","available":false}]}
+            """.utf8)
+        let choices = SendingClientTransport.modelChoices(try JSONDecoder().decode(JSONValue.self, from: wire))
+        XCTAssertEqual(choices, [
+            SendingModel(id: "fixture@default/retry", name: "Retry"),
+            SendingModel(id: "fixture@a/shared", name: "Shared", reasoningEfforts: ["low", "high"]),
+            SendingModel(id: "fixture@b/shared", name: "Shared")
+        ])
+        let legacy: JSONValue = .object(["available_models": .array([.string("fixture/legacy")])])
+        XCTAssertEqual(SendingClientTransport.modelChoices(legacy),
+                       [SendingModel(id: "fixture/legacy", name: "fixture/legacy")])
+        let empty: JSONValue = .object(["available_models": .array([.string("fixture/legacy")]),
+                                         "model_availability": .array([])])
+        XCTAssertTrue(SendingClientTransport.modelChoices(empty).isEmpty)
+    }
+
     func testMissingConsentBlocksEnqueueAndNewHost() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try FileManager.default.removeItem(at: folder) }
@@ -278,7 +303,12 @@ final class SendingCoordinatorTests: XCTestCase {
         XCTAssertEqual(catalogs, 0)
         XCTAssertEqual(coordinator.status, .offline)
         coordinator.setForeground(true)
-        try await waitUntil { await transport.catalogCount() == 1 }
+        let token = try XCTUnwrap(coordinator.modelAccessRevision)
+        let beforeOpening = await transport.catalogCount()
+        XCTAssertEqual(beforeOpening, 0, "Returning to the app must not fetch model choices.")
+        _ = try await coordinator.readModelCatalog(revision: token)
+        let afterOpening = await transport.catalogCount()
+        XCTAssertEqual(afterOpening, 1)
         let sends = await transport.callCount()
         XCTAssertEqual(sends, 0)
         XCTAssertEqual(coordinator.entries.first?.state, .queued)
@@ -292,7 +322,7 @@ final class SendingCoordinatorTests: XCTestCase {
         coordinator.activate(transport: transport, identity: identity(), apiBaseURL: URL(string: "https://example.test")!)
         coordinator.disconnect()
         XCTAssertEqual(coordinator.status, .disconnected)
-        XCTAssertTrue(coordinator.models.isEmpty)
+        XCTAssertNil(coordinator.modelAccessRevision)
         XCTAssertTrue(coordinator.entries.isEmpty)
         try await waitUntil { await transport.closeCount() == 1 }
         let stops = await transport.stopCount()
@@ -343,7 +373,7 @@ final class SendingCoordinatorTests: XCTestCase {
         coordinator.activate(transport: transport, identity: identity(), apiBaseURL: URL(string: "https://example.test")!)
         coordinator.selectAgent("A")
         coordinator.editDraft(text: "original", modelID: "model")
-        coordinator.enqueue()
+        coordinator.enqueue(legacyModelConfirmedAt: coordinator.draftScopeRevision)
         try await waitUntil { coordinator.entries.first?.state == .unknown }
         let id = try XCTUnwrap(coordinator.entries.first?.requestID)
         XCTAssertEqual(coordinator.status, .offline)
@@ -523,7 +553,11 @@ final class SendingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.draft.text, "A")
         coordinator.setForeground(false)
         coordinator.enqueue()
+        XCTAssertTrue(coordinator.entries.isEmpty, "A saved model needs explicit confirmation.")
+        coordinator.enqueue(legacyModelConfirmedAt: coordinator.draftScopeRevision)
         XCTAssertEqual(coordinator.entries.first?.state, .queued)
+        XCTAssertEqual(coordinator.entries.first?.legacyModelID, "model")
+        XCTAssertNil(coordinator.draft.modelID, "Fresh drafts must not inherit a saved model.")
         XCTAssertEqual(coordinator.status, .offline)
         coordinator.selectAgent("B")
         XCTAssertEqual(coordinator.draft.text, "B")
