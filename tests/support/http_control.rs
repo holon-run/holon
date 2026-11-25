@@ -1010,6 +1010,7 @@ pub async fn control_agent_deletion_abandon_resolves_needs_attention() -> Result
     assert_eq!(resolved["identity"]["status"], "active");
     assert_eq!(resolved["job"]["status"], "abandoned");
     assert!(resolved["cleanup"]["completed_phases"].is_array());
+    assert_eq!(resolved["cleanup"]["residual_artifacts"], true);
 
     // A terminal abandoned row must not block a fresh deletion admission.
     let redeleted: serde_json::Value = client

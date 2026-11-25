@@ -2307,11 +2307,14 @@ impl AgentDeletionRepository<'_> {
                 super::agent_deletion_cleanup::assert_private_history_cleared_tx(tx, agent_id)
                     .is_ok();
             let retained_lineage_children = count_retained_lineage_children_tx(tx, agent_id)?;
+            let home_cleanup_completed = completed_phases.contains(&AgentDeletionPhase::Home);
             let cleanup = AgentDeletionAbandonCleanup {
                 completed_phases,
                 private_history_cleared,
                 retained_lineage_children,
-                residual_artifacts: !private_history_cleared || retained_lineage_children > 0,
+                residual_artifacts: !home_cleanup_completed
+                    || !private_history_cleared
+                    || retained_lineage_children > 0,
             };
 
             let now = std::cmp::max(

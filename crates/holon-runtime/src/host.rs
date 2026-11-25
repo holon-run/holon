@@ -27195,6 +27195,7 @@ mod tests {
         assert!(abandoned.required_input.is_none());
         assert!(abandoned.next_attempt_at.is_none());
         assert_eq!(abandoned.abandon_cleanup.as_ref(), Some(&cleanup));
+        assert!(cleanup.residual_artifacts);
 
         // The terminal abandoned row must not block a fresh admission.
         let visible = host
@@ -27204,6 +27205,7 @@ mod tests {
             .unwrap()
             .expect("abandoned job should stay observable");
         assert!(visible.status.is_terminal());
+        assert!(!AgentDeletionStatus::NeedsAttention.is_terminal());
         let (refenced, fresh, created) = host
             .begin_public_agent_deletion("delete-abandon", false, "operator")
             .await

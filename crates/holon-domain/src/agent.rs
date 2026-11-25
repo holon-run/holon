@@ -713,12 +713,9 @@ pub enum AgentDeletionStatus {
 }
 
 impl AgentDeletionStatus {
-    /// Terminal states are never picked up by the deletion scheduler again.
+    /// Final states that are never picked up by the deletion scheduler again.
     pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::NeedsAttention | Self::Abandoned
-        )
+        matches!(self, Self::Completed | Self::Abandoned)
     }
 }
 
@@ -777,7 +774,7 @@ pub struct AgentDeletionAbandonCleanup {
     /// Number of canonical lineage child records still attached at
     /// abandonment time.
     pub retained_lineage_children: u64,
-    /// True when private history or lineage artifacts remain.
+    /// True when deletion phases or private-history/lineage artifacts remain.
     pub residual_artifacts: bool,
 }
 
