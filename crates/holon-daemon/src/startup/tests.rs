@@ -232,3 +232,69 @@ fn unfinished_guard_finishes_incomplete_not_ok() {
     assert_phase_pair(&output, "guard.dropped", "incomplete");
     assert!(!output.contains("outcome=\"ok\""), "{output}");
 }
+
+#[test]
+fn scope_aggregates_child_counters_and_reports_unattributed() {
+    let output = capture_logs(|| {
+        let scope = observation().scope("dur");
+        let child = scope.child("child.a");
+        child.counters().add_rows_scanned(3);
+        child.counters().add_candidates(2);
+        child.finish(&Ok::<(), anyhow::Error>(()));
+        let child = scope.child("child.b");
+        child.counters().record_write_transaction(5);
+        child.finish(&Ok::<(), anyhow::Error>(()));
+        scope.finish(&Ok::<(), anyhow::Error>(()));
+    });
+    assert!(output.contains("phase=\"child.a\""), "{output}");
+    assert!(output.contains("rows_scanned=3"), "{output}");
+    assert!(output.contains("write_tx_count=1"), "{output}");
+    assert!(output.contains("max_write_tx_ms=5"), "{output}");
+    let scope_line = output
+        .lines()
+        .find(|line| line.contains("phase=\"dur\"") && line.contains("state=\"counters\""))
+        .expect("scope counters line");
+    assert!(scope_line.contains("attributed_ms="), "{scope_line}");
+    assert!(scope_line.contains("unattributed_ms="), "{scope_line}");
+    // The scope folds its children's counters into its own record.
+    assert!(scope_line.contains("rows_scanned=3"), "{scope_line}");
+    assert!(scope_line.contains("write_tx_count=1"), "{scope_line}");
+}
+
+#[test]
+fn dropped_child_reports_incomplete_and_folds_into_scope() {
+    let output = capture_logs(|| {
+        let scope = observation().scope("dur");
+        {
+            let child = scope.child("child.dropped");
+            child.counters().add_skipped(4);
+        }
+        scope.finish(&Ok::<(), anyhow::Error>(()));
+    });
+    let child_line = output
+        .lines()
+        .find(|line| {
+            line.contains("phase=\"child.dropped\"") && line.contains("state=\"finished\"")
+        })
+        .expect("child finished line");
+    assert!(
+        child_line.contains("outcome=\"incomplete\""),
+        "{child_line}"
+    );
+    let scope_line = output
+        .lines()
+        .find(|line| line.contains("phase=\"dur\"") && line.contains("state=\"counters\""))
+        .expect("scope counters line");
+    assert!(scope_line.contains("skipped=4"), "{scope_line}");
+}
+
+#[test]
+fn plain_phase_does_not_emit_counters_record() {
+    let output = capture_logs(|| {
+        observation()
+            .phase("plain")
+            .finish(&Ok::<(), anyhow::Error>(()));
+    });
+    assert!(!output.contains("state=\"counters\""), "{output}");
+    assert_phase_pair(&output, "plain", "ok");
+}
