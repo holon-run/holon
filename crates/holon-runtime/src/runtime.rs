@@ -33,7 +33,6 @@ pub(crate) use state_mutation::{
 };
 pub(crate) mod completion_sources;
 mod context_capture;
-mod continuation;
 mod control;
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
@@ -163,7 +162,6 @@ mod test_util;
 mod turn;
 mod unsettled_claim;
 mod waiting;
-mod wake_matching;
 mod work_reads;
 pub use work_reads::OwnedWorkItemsRead;
 pub(crate) mod workspace;
@@ -296,7 +294,7 @@ use crate::{
     web::{WebConfig, WebProviderKind},
 };
 use command_task::ManagedTaskHandle;
-use continuation::{resolve_continuation, ContinuationTrigger};
+use holon_domain::continuation::{resolve_continuation, ContinuationTrigger};
 #[cfg(test)]
 use subagent::sanitize_subagent_result;
 use turn::LoopControlOptions;

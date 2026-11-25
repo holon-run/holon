@@ -6,7 +6,10 @@ use crate::{
         input_evidence_budget::InputEvidenceBudgetLedger,
         resident_input_evidence::InputEvidenceScope,
     },
-    types::{WorkItemState, WorkReactivationMode},
+    types::{
+        ClosureOutcome, WorkItemSchedulingState, WorkItemState, WorkReactivationMode,
+        WorkReactivationSignal,
+    },
 };
 
 fn fixture() -> ClosureFacts {
@@ -38,8 +41,21 @@ fn closure_evidence_admits_exact_bytes_records_and_latches_without_partial_resul
     let usage = phase.finish()?;
     assert_eq!(expected.outcome, ClosureOutcome::Continuable);
     assert_eq!(
-        expected.evidence.last().map(String::as_str),
-        Some("runnable_work_present"),
+        expected.evidence,
+        [
+            format!("active_blocking_tasks={}", usize::MAX),
+            "active_waiting_intents=3".into(),
+            "active_agent_waiting_intents=2".into(),
+            "active_timers=1".into(),
+            "work_item_scheduling_state=WaitingTask".into(),
+            "work_reactivation_mode=ContinueActive".into(),
+            "work_item_state=Open".into(),
+            format!(
+                "work_item_id={}",
+                expected.work_signal.as_ref().unwrap().work_item_id
+            ),
+            "runnable_work_present".into(),
+        ],
     );
     assert!(ResourceReadMaterial::active_guard()?.is_none());
     drop(phase);

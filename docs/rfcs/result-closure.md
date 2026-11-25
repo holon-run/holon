@@ -27,6 +27,10 @@ across prompt wording, text output, `Sleep`, task state, and follow-up
 behavior. That made `run` and `serve` harder to explain consistently and left
 operators without a stable answer to "what is the agent waiting on right now?"
 
+The closure rules in `holon-domain` derive an outcome from captured facts
+and supply each evidence entry in order. The runtime owns snapshot acquisition
+and admits the evidence bytes and records before materializing the entries.
+
 ## Core Model
 
 ### Closure Outcome

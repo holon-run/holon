@@ -41,6 +41,10 @@ exact wait selection each follow their own rules. The runtime checks the
 canonical execution state, applies resource admission, and commits wait and
 queue changes in its writer transaction.
 
+The continuation resolver in `holon-domain` classifies re-entry using the
+supplied closure and trigger facts. The runtime provides the durable task and
+wait evidence and applies canonical execution admission.
+
 ## Invariants
 
 - A `WaitFor` sleep must never rely on an in-memory promise alone.
