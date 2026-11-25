@@ -1,6 +1,7 @@
 use super::*;
 
-pub fn maintenance_test_documents(
+#[cfg(test)]
+pub(crate) fn maintenance_test_documents(
     index: &IndexStore,
     agent: &str,
     count: usize,
@@ -30,7 +31,12 @@ pub fn maintenance_test_documents(
     Ok(documents.iter().map(document_key).collect())
 }
 
-pub fn maintenance_test_job(index: &IndexStore, agent: &str, phase: &str) -> Result<RebuildJob> {
+#[cfg(test)]
+pub(crate) fn maintenance_test_job(
+    index: &IndexStore,
+    agent: &str,
+    phase: &str,
+) -> Result<RebuildJob> {
     let now = Utc::now().to_rfc3339();
     index.connection.execute(
         "INSERT INTO memory_index_rebuild_jobs (
