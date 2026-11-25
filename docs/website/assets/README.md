@@ -75,13 +75,16 @@ saved state and event wakeups. Technical terminology in article prose is unchang
 ## Web workbench screenshots
 
 The homepages and `what-is-holon` articles use the matching-language
-`lite-paper/web-gui-review-{zh-CN,en}.png` (3000×1880). Captions describe the
-reviewer waiting for CI and identify the content as demo data. Each image links
-to its full-size version.
+`lite-paper/web-gui-review-{zh-CN,en}.webp` (1600×1003, lossless WebP). Captions
+describe the reviewer waiting for CI and identify the content as demo data. Each
+image links to the same file, so the link opens the largest published size.
 
 The source screenshots and capture metadata are in `docs/lite-paper/assets/`;
 the reproducible capture scripts and fixtures are in
 `docs/lite-paper/tools/gui-tour/`. Website copies should match those sources.
+
+Screenshots stay pixel-lossless on purpose: they contain UI text. Downscale the
+source to the published width and encode lossless WebP, not lossy WebP.
 These are actual GUI captures with synthetic data, not live runtime work records.
 
 Keep the older `holon-tour-review-work.webp`, `holon-tour-agents.webp`, and their

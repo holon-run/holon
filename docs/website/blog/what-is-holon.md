@@ -51,8 +51,8 @@ Handing work to the background should not mean that you can only wait for a resu
 
 Open the work item to see the plan, checklist, and reason for waiting. If it is waiting for CI, you can check progress and leave. If it needs you to decide the compatibility scope, add the requirement directly so it can continue. The screenshot below shows a reviewer that has checked the latest changes and is waiting for CI results.
 
-<a href="/assets/lite-paper/web-gui-review-en.png">
-<img src="/assets/lite-paper/web-gui-review-en.png" width="3000" height="1880" alt="Holon web workbench showing review progress, the work item plan and checklist, and the reason for waiting for CI results before continuing." loading="lazy" decoding="async">
+<a href="/assets/lite-paper/web-gui-review-en.webp">
+<img src="/assets/lite-paper/web-gui-review-en.webp" width="1600" height="1003" alt="Holon web workbench showing review progress, the work item plan and checklist, and the reason for waiting for CI results before continuing." loading="lazy" decoding="async">
 </a>
 
 *Web workbench with demo data: changes reviewed, CI results pending, and the next steps saved in the same work item. Click the image to enlarge.*

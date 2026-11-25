@@ -130,8 +130,8 @@ holon daemon start
 
 </div>
 <figure class="home-workbench-preview">
-<a href="/assets/lite-paper/web-gui-review-zh-CN.png" aria-label="查看 Web 工作台截图大图">
-<img src="/assets/lite-paper/web-gui-review-zh-CN.png" width="3000" height="1880" alt="Holon Web 工作台：左侧按职责列出 Agent，中间展示审阅进展与下一步，右侧显示当前任务、等待原因与待办。" loading="lazy" decoding="async">
+<a href="/assets/lite-paper/web-gui-review-zh-CN.webp" aria-label="查看 Web 工作台截图大图">
+<img src="/assets/lite-paper/web-gui-review-zh-CN.webp" width="1600" height="1003" alt="Holon Web 工作台：左侧按职责列出 Agent，中间展示审阅进展与下一步，右侧显示当前任务、等待原因与待办。" loading="lazy" decoding="async">
 </a>
 <figcaption>Web 工作台：查看已完成的工作、正在等待的结果和下一步。截图使用演示数据，点击可查看大图。</figcaption>
 </figure>
