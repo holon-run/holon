@@ -18,6 +18,7 @@ final class SendingCoordinator {
     private(set) var draft = SendingDraft()
     private(set) var entries: [SendingEntry] = []
     private(set) var isUpdatingAgentModel = false
+    private(set) var modelReadRevision = 0
     private(set) var status: SendingStatus = .disconnected
     private(set) var error: String?
     private(set) var selectedAgentID: String?
@@ -30,7 +31,7 @@ final class SendingCoordinator {
     @ObservationIgnored private var connectionRevision = 0
     @ObservationIgnored private var confirmationRevision = 0
     @ObservationIgnored private var attachmentRevision = 0
-    @ObservationIgnored private var foreground = true
+    private var foreground = true
     @ObservationIgnored private var sendTask: Task<Void, Never>?
     @ObservationIgnored private var activeRequestID: UUID?
 
@@ -60,8 +61,9 @@ final class SendingCoordinator {
         entries.contains { $0.state != .received && $0.legacyModelID != nil }
     }
     var modelAccessRevision: Int? {
-        guard status == .ready || status == .sending, scope != nil else { return nil }
-        return revision
+        let token = revision
+        guard foreground, transport != nil, identity != nil, scope != nil else { return nil }
+        return token
     }
 
     var attachmentImportContext: SendingAttachmentImportContext? {
@@ -125,7 +127,11 @@ final class SendingCoordinator {
     }
 
     func readAgentModel(revision token: Int) async throws -> AgentModelConfiguration {
-        try await withModelAccess(revision: token) { try await $0.agentModel(agentID: $1) }
+        guard !isUpdatingAgentModel else { throw CancellationError() }
+        let readRevision = modelReadRevision
+        let state = try await withModelAccess(revision: token) { try await $0.agentModel(agentID: $1) }
+        guard modelReadRevision == readRevision else { throw CancellationError() }
+        return state
     }
 
     func readModelCatalog(revision token: Int) async throws -> [SendingModel] {
@@ -133,16 +139,22 @@ final class SendingCoordinator {
     }
 
     func applyAgentModel(_ selection: AgentModelSelection, revision token: Int) async throws -> AgentModelConfiguration {
-        guard canChangeAgentModel else { throw SendingFailure.unavailable }
+        guard canChangeAgentModel, modelAccessRevision == token else { throw SendingFailure.unavailable }
         isUpdatingAgentModel = true
-        defer { isUpdatingAgentModel = false }
+        modelReadRevision += 1
+        defer {
+            // The mutation can settle after a foreground or agent change.
+            // Always invalidate reads, even if this caller can't use the response.
+            isUpdatingAgentModel = false
+            modelReadRevision += 1
+        }
         return try await withModelAccess(revision: token) { transport, agentID in
             try await transport.updateAgentModel(agentID: agentID, selection: selection)
         }
     }
 
     var canChangeAgentModel: Bool {
-        modelAccessRevision != nil && status == .ready && !isUpdatingAgentModel
+        modelAccessRevision != nil && status != .sending && !isUpdatingAgentModel
             && draft.modelID == nil && !hasLegacyModelInQueue
     }
 
@@ -274,9 +286,10 @@ final class SendingCoordinator {
         return entry.state == .unknown || entry.state == .failed || entry.state == .queued
     }
 
-    func retry(requestID: UUID) {
+    func retry(requestID: UUID, legacyModelConfirmedAt token: Int? = nil) {
         guard canRetry(requestID: requestID),
-              let entry = entries.first(where: { $0.requestID == requestID }) else { return }
+              let entry = entries.first(where: { $0.requestID == requestID }),
+              entry.legacyModelID == nil || token == revision else { return }
         deliver(entry)
     }
 

@@ -19,6 +19,34 @@ enum LocalMessageProjection {
     }
 }
 
+struct SendingEntryRetryButton: View {
+    let sender: SendingCoordinator
+    let entry: SendingEntry
+    @State private var confirmationRevision: Int?
+
+    var body: some View {
+        Button(LocalizedStringKey(entry.state == .queued ? "sending.send" : entry.state == .unknown ? "sending.retry.same" : "sending.retry")) {
+            if entry.legacyModelID != nil {
+                confirmationRevision = sender.draftScopeRevision
+            } else {
+                sender.retry(requestID: entry.requestID)
+            }
+        }
+        .disabled(!sender.canRetry(requestID: entry.requestID))
+        .alert("sending.model.legacyQueue.item", isPresented: Binding(
+            get: { confirmationRevision != nil },
+            set: { if !$0 { confirmationRevision = nil } }
+        ), presenting: confirmationRevision) { token in
+            Button("sending.model.legacyQueue.confirm") {
+                sender.retry(requestID: entry.requestID, legacyModelConfirmedAt: token)
+            }
+            Button("common.cancel", role: .cancel) {}
+        } message: { _ in
+            Text(verbatim: entry.legacyModelID ?? "")
+        }
+    }
+}
+
 struct LocalMessageView: View {
     let sender: SendingCoordinator
     let canonicalIDs: Set<String>
@@ -36,9 +64,7 @@ struct LocalMessageView: View {
                     Text(LocalizedStringKey(SendingPresentation.stateKey(entry.state))).font(.caption).foregroundStyle(.secondary)
                         .accessibilityIdentifier("sending.state." + entry.state.rawValue)
                     if SendingPresentation.canRetry(entry.state) {
-                        Button(LocalizedStringKey(entry.state == .queued ? "sending.send" : entry.state == .unknown ? "sending.retry.same" : "sending.retry")) {
-                            sender.retry(requestID: entry.requestID)
-                        }.disabled(!sender.canRetry(requestID: entry.requestID)).font(.caption)
+                        SendingEntryRetryButton(sender: sender, entry: entry).font(.caption)
                     }
                     if entry.state != .sending && entry.state != .received {
                         Spacer()

@@ -15,6 +15,11 @@ private actor SendingMockTransport: SendingTransport {
     var failure: HolonHTTPFailure?
     var delayed = false
     var continuation: CheckedContinuation<String?, any Error>?
+    private var model = AgentModelConfiguration(effectiveModel: "test/default", activeModel: nil,
+        source: "runtime_default", overrideModel: nil, reasoningEffort: nil, serviceTier: nil)
+    private var delayModelWrite = false
+    private var modelWrite: CheckedContinuation<Void, Never>?
+    private(set) var modelReads = 0
     func upload(agentID: String, attachment: SendingAttachment, file: URL) async throws -> SendingPreparedAttachment {
         uploads += 1
         afterUpload?()
@@ -29,6 +34,25 @@ private actor SendingMockTransport: SendingTransport {
         return "message"
     }
     func models() async throws -> [SendingModel] { catalogs += 1; return [] }
+    func agentModel(agentID: String) async throws -> AgentModelConfiguration {
+        modelReads += 1
+        return model
+    }
+    func updateAgentModel(agentID: String, selection: AgentModelSelection) async throws -> AgentModelConfiguration {
+        if delayModelWrite { await withCheckedContinuation { modelWrite = $0 } }
+        if case .manual(let modelID, let effort, let tier) = selection {
+            model = AgentModelConfiguration(effectiveModel: modelID, activeModel: nil, source: "agent_override",
+                overrideModel: modelID, reasoningEffort: effort, serviceTier: tier)
+        }
+        return model
+    }
+    func deferModelWrite() { delayModelWrite = true }
+    func hasPendingModelWrite() -> Bool { modelWrite != nil }
+    func settleModelWrite() {
+        delayModelWrite = false
+        modelWrite?.resume()
+        modelWrite = nil
+    }
     func stop(agentID: String, runID: String) async throws { stops += 1 }
     func close() async { closes += 1 }
     func succeed() { loseResponse = false }
@@ -384,6 +408,13 @@ final class SendingCoordinatorTests: XCTestCase {
         XCTAssertEqual(automaticCalls, 1, "Network recovery must not automatically resend unknown entries.")
         XCTAssertEqual(coordinator.status, .offline)
         coordinator.retry(requestID: id)
+        XCTAssertTrue(coordinator.canRetry(requestID: id), "Legacy retry requires explicit confirmation.")
+        let staleToken = coordinator.draftScopeRevision
+        coordinator.setForeground(false)
+        coordinator.setForeground(true)
+        coordinator.retry(requestID: id, legacyModelConfirmedAt: staleToken)
+        XCTAssertTrue(coordinator.canRetry(requestID: id), "A confirmation cannot cross foreground sessions.")
+        coordinator.retry(requestID: id, legacyModelConfirmedAt: coordinator.draftScopeRevision)
         XCTAssertFalse(coordinator.canRetry(requestID: id), "An active request disables the queue button.")
         try await waitUntil { coordinator.entries.first?.state == .received }
         XCTAssertFalse(coordinator.canRetry(requestID: id))
@@ -394,6 +425,75 @@ final class SendingCoordinatorTests: XCTestCase {
         let count = await transport.callCount()
         XCTAssertEqual(count, 2)
         XCTAssertEqual(coordinator.draft.text, "new draft")
+    }
+
+    func testModelAccessDoesNotDependOnLastSendFailure() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try FileManager.default.removeItem(at: folder) }
+        let coordinator = makeCoordinator(store: try makeStore(directory: folder))
+        coordinator.activate(transport: SendingMockTransport(), identity: identity(),
+                             apiBaseURL: URL(string: "https://example.test")!)
+        coordinator.selectAgent("A")
+        let token = try XCTUnwrap(coordinator.modelAccessRevision)
+        coordinator.editDraft(text: "uncertain delivery", modelID: nil)
+        coordinator.enqueue()
+        try await waitUntil { coordinator.entries.first?.state == .unknown }
+        XCTAssertEqual(coordinator.status, .offline)
+        XCTAssertEqual(coordinator.modelAccessRevision, token)
+        coordinator.delete(requestID: try XCTUnwrap(coordinator.entries.first?.requestID))
+        let current = try await coordinator.readAgentModel(revision: token)
+        XCTAssertEqual(current.effectiveModel, "test/default")
+        XCTAssertTrue(coordinator.canChangeAgentModel)
+    }
+
+    func testModelWriteSettlingAfterForegroundChangeInvalidatesReadback() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try FileManager.default.removeItem(at: folder) }
+        let coordinator = makeCoordinator(store: try makeStore(directory: folder))
+        let transport = SendingMockTransport()
+        coordinator.activate(transport: transport, identity: identity(),
+                             apiBaseURL: URL(string: "https://example.test")!)
+        coordinator.selectAgent("A")
+        let token = try XCTUnwrap(coordinator.modelAccessRevision)
+        await transport.deferModelWrite()
+        let write = Task {
+            try await coordinator.applyAgentModel(
+                .manual("test/updated", reasoningEffort: "high", serviceTier: "fast"), revision: token)
+        }
+        try await waitUntil { await transport.hasPendingModelWrite() }
+        coordinator.setForeground(false)
+        XCTAssertNil(coordinator.modelAccessRevision)
+        coordinator.setForeground(true)
+        let resumedToken = try XCTUnwrap(coordinator.modelAccessRevision)
+        XCTAssertNotEqual(resumedToken, token)
+        let beforeSettlement = coordinator.modelReadRevision
+        do {
+            _ = try await coordinator.readAgentModel(revision: resumedToken)
+            XCTFail("The resumed panel must not read pre-write state.")
+        } catch is CancellationError {}
+        let reads = await transport.modelReads
+        XCTAssertEqual(reads, 0)
+        await transport.settleModelWrite()
+        do {
+            _ = try await write.value
+            XCTFail("The old foreground scope must not receive the result.")
+        } catch is CancellationError {}
+        XCTAssertGreaterThan(coordinator.modelReadRevision, beforeSettlement)
+        let current = try await coordinator.readAgentModel(revision: resumedToken)
+        XCTAssertEqual(current.overrideModel, "test/updated")
+        XCTAssertEqual(current.serviceTier, "fast")
+    }
+
+    func testReturningToCurrentModelRestoresReasoningAndPreservesTierOnEdit() {
+        let state = AgentModelConfiguration(effectiveModel: "test/current", activeModel: nil,
+            source: "agent_override", overrideModel: "test/current", reasoningEffort: "high", serviceTier: "fast")
+        XCTAssertNil(state.initialReasoningEffort(for: "test/other"))
+        XCTAssertEqual(state.initialReasoningEffort(for: "test/current"), "high")
+        XCTAssertEqual(state.selection(modelID: "test/current", reasoningEffort: "low"),
+                       .manual("test/current", reasoningEffort: "low", serviceTier: "fast"))
+        XCTAssertEqual(state.selection(modelID: "test/other", reasoningEffort: nil),
+                       .manual("test/other", reasoningEffort: nil, serviceTier: nil))
+        XCTAssertEqual(state.selection(modelID: nil, reasoningEffort: nil), .automatic)
     }
 
     func testUnknownRetryRequiresForegroundAndCurrentIdentity() async throws {

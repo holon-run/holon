@@ -193,7 +193,7 @@ final class TransportTests: XCTestCase {
         XCTAssertEqual(catalog.value.raw["future"], .bool(true))
         let state = try await sdk.agentModel(agentID: "main")
         XCTAssertEqual(state.value.raw["future"], .integer(42))
-        let model = try HolonAgentModelRequest(model: "vendor/new", reasoningEffort: "high")
+        let model = try HolonAgentModelRequest(model: "vendor/new", reasoningEffort: "high", serviceTier: "fast")
         let updated = try await sdk.setAgentModel(agentID: "main", request: model)
         XCTAssertEqual(updated.value.effectiveModel, .string("vendor@default/new"))
         let cleared = try await sdk.clearAgentModel(agentID: "main")
@@ -213,6 +213,9 @@ final class TransportTests: XCTestCase {
         XCTAssertEqual(stop["mode"], .string("stop_after_abort"))
         XCTAssertEqual(stop["run_id"], .string("observed-run"))
         XCTAssertEqual(exchange.requests[2].httpMethod, "POST")
+        let modelBody = try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(exchange.requests[2].httpBody))
+        XCTAssertEqual(modelBody["reasoning_effort"], .string("high"))
+        XCTAssertEqual(modelBody["service_tier"], .string("fast"))
         XCTAssertEqual(exchange.requests[3].httpMethod, "POST")
     }
 

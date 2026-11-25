@@ -63,7 +63,7 @@ private struct AgentModelSheet: View {
     @State private var models: [SendingModel] = []
     @State private var modelID: String?
     @State private var reasoningEffort: String?
-    @State private var loadedRevision: Int?
+    @State private var loadedKey: LoadKey?
     @State private var loadError = false
     @State private var catalogError = false
     @State private var applyError = false
@@ -71,12 +71,8 @@ private struct AgentModelSheet: View {
 
     private struct LoadKey: Equatable {
         let revision: Int?
+        let modelReadRevision: Int
         let reload: Int
-    }
-
-    private var selection: AgentModelSelection {
-        if let modelID { return .manual(modelID, reasoningEffort: reasoningEffort) }
-        return .automatic
     }
 
     private var modelAccessRevision: Int? {
@@ -86,6 +82,7 @@ private struct AgentModelSheet: View {
 
     var body: some View {
         let token = modelAccessRevision
+        let key = LoadKey(revision: token, modelReadRevision: sender.modelReadRevision, reload: reload)
         NavigationStack {
             Form {
                 LegacyDraftModelSection(sender: sender) { dismiss() }
@@ -93,7 +90,7 @@ private struct AgentModelSheet: View {
                     Section { Text("sending.model.legacyQueue.block") }
                 }
                 if let token {
-                    if loadedRevision != token {
+                    if sender.isUpdatingAgentModel || loadedKey != key {
                         ProgressView()
                     } else {
                         if let configuration {
@@ -113,6 +110,9 @@ private struct AgentModelSheet: View {
                                 if let effort = configuration.reasoningEffort {
                                     LabeledContent("sending.model.reasoning") { Text(verbatim: effort) }
                                 }
+                                if let tier = configuration.serviceTier {
+                                    LabeledContent("sending.model.serviceTier") { Text(verbatim: tier) }
+                                }
                                 if let active = configuration.activeModel, active != configuration.effectiveModel {
                                     LabeledContent("sending.model.active") { Text(verbatim: active) }
                                 }
@@ -124,7 +124,11 @@ private struct AgentModelSheet: View {
                                 if loadError { Text("sending.model.loadError") }
                                 if catalogError { Text("sending.model.catalogError") }
                                 if applyError { Text("sending.model.applyError") }
-                                Button("reading.retry") { reload += 1 }.disabled(sender.isUpdatingAgentModel)
+                                Button("reading.retry") {
+                                    if let state = configuration { show(state) }
+                                    applyError = false
+                                    reload += 1
+                                }
                             }
                         }
                     }
@@ -143,12 +147,17 @@ private struct AgentModelSheet: View {
             }
         }
         .interactiveDismissDisabled(sender.isUpdatingAgentModel)
-        .task(id: LoadKey(revision: token, reload: reload)) { await load(token) }
+        .onChange(of: token) { _, _ in applyError = false }
+        .task(id: key) { await load(key) }
     }
 
     private func selectionSection(_ current: AgentModelConfiguration, token: Int) -> some View {
         Section("sending.model.selection") {
-            Picker("sending.model", selection: $modelID) {
+            Picker("sending.model", selection: Binding(get: { modelID }, set: { next in
+                guard next != modelID else { return }
+                modelID = next
+                reasoningEffort = current.initialReasoningEffort(for: next)
+            })) {
                 Text("sending.model.automatic").tag(nil as String?)
                 ForEach(models) { model in
                     Text(verbatim: modelName(model)).tag(Optional(model.id))
@@ -158,10 +167,6 @@ private struct AgentModelSheet: View {
                 }
             }
             .accessibilityIdentifier("sending.model.options")
-            .onChange(of: modelID) { old, new in
-                guard old != new, new != configuration?.overrideModel else { return }
-                reasoningEffort = nil
-            }
             if let model = models.first(where: { $0.id == modelID }), !model.reasoningEfforts.isEmpty {
                 Picker("sending.model.reasoning", selection: $reasoningEffort) {
                     Text("sending.model.default").tag(nil as String?)
@@ -172,13 +177,15 @@ private struct AgentModelSheet: View {
                 }
                 .accessibilityIdentifier("sending.model.reasoning")
             }
-            Button {
-                let requested = selection
-                Task { await apply(requested, token: token) }
-            } label: {
-                if sender.isUpdatingAgentModel { ProgressView() }
-                else { Text("sending.model.apply") }
+            if current.serviceTier != nil && modelID != current.overrideModel {
+                Text("sending.model.serviceTier.removed")
+                    .font(.caption)
+                    .accessibilityIdentifier("sending.model.serviceTier.removed")
             }
+            Button {
+                let requested = current.selection(modelID: modelID, reasoningEffort: reasoningEffort)
+                Task { await apply(requested, token: token) }
+            } label: { Text("sending.model.apply") }
             .accessibilityIdentifier("sending.model.apply")
             .disabled(modelID == current.overrideModel && (modelID == nil || reasoningEffort == current.reasoningEffort)
                       || modelID != nil && !models.contains(where: { $0.id == modelID }))
@@ -190,23 +197,19 @@ private struct AgentModelSheet: View {
         models.filter { $0.name == model.name }.count > 1 ? "\(model.name) · \(model.id)" : model.name
     }
 
-    private func load(_ token: Int?) async {
-        loadedRevision = nil
-        configuration = nil
-        models = []
-        loadError = false
-        catalogError = false
-        applyError = false
-        guard let token, modelAccessRevision == token else { return }
+    private func load(_ key: LoadKey) async {
+        guard let token = key.revision, modelAccessRevision == token,
+              key.modelReadRevision == sender.modelReadRevision, !sender.isUpdatingAgentModel else { return }
         async let current = try? sender.readAgentModel(revision: token)
         async let catalog = try? sender.readModelCatalog(revision: token)
         let (state, choices) = await (current, catalog)
-        guard !Task.isCancelled, modelAccessRevision == token else { return }
+        guard !Task.isCancelled, modelAccessRevision == token, key.reload == reload,
+              key.modelReadRevision == sender.modelReadRevision, !sender.isUpdatingAgentModel else { return }
         models = choices ?? []
         catalogError = choices == nil
         loadError = state == nil
-        if let state { show(state) }
-        loadedRevision = token
+        if let state { show(state) } else { configuration = nil }
+        loadedKey = key
     }
 
     private func show(_ state: AgentModelConfiguration) {
@@ -216,14 +219,12 @@ private struct AgentModelSheet: View {
     }
 
     private func apply(_ selection: AgentModelSelection, token: Int) async {
-        guard modelAccessRevision == token else { return }
+        guard modelAccessRevision == token, sender.canChangeAgentModel else { return }
+        applyError = false
         do {
-            let updated = try await sender.applyAgentModel(selection, revision: token)
-            guard modelAccessRevision == token else { return }
-            show(updated)
+            _ = try await sender.applyAgentModel(selection, revision: token)
         } catch {
             guard modelAccessRevision == token else { return }
-            configuration = nil
             applyError = true
         }
     }
@@ -523,10 +524,7 @@ struct SendingView: View {
                         if entry.state == .unknown { Text("sending.unknown.explanation").font(.caption) }
                         HStack {
                             if SendingPresentation.canRetry(entry.state) {
-                                Button(LocalizedStringKey(entry.state == .unknown ? "sending.retry.same" : "sending.retry")) {
-                                    sender.retry(requestID: entry.requestID)
-                                }
-                                .disabled(!sender.canRetry(requestID: entry.requestID))
+                                SendingEntryRetryButton(sender: sender, entry: entry)
                                 .accessibilityIdentifier("sending.retry." + entry.requestID.uuidString)
                             }
                             Button("sending.delete", role: .destructive) {

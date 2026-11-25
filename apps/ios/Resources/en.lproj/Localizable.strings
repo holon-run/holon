@@ -160,6 +160,9 @@
 "sending.model.legacyDraft.send" = "Send draft with saved model";
 "sending.model.legacyQueue.block" = "A queued message has a saved model. Resolve it in Send Queue before changing the agent’s model.";
 "sending.model.legacyQueue.item" = "Retrying this message changes the agent’s model to:";
+"sending.model.legacyQueue.confirm" = "Change model and send";
+"sending.model.serviceTier" = "Service tier override";
+"sending.model.serviceTier.removed" = "Applying this choice removes the current service tier override.";
 "sending.attachments" = "Attachments";
 "sending.remove" = "Remove attachment";
 "sending.photo" = "Choose photo";

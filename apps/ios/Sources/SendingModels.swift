@@ -57,7 +57,7 @@ struct SendingModel: Identifiable, Equatable, Sendable {
 
 enum AgentModelSelection: Equatable, Sendable {
     case automatic
-    case manual(String, reasoningEffort: String?)
+    case manual(String, reasoningEffort: String?, serviceTier: String?)
 }
 
 struct AgentModelConfiguration: Equatable, Sendable {
@@ -66,6 +66,17 @@ struct AgentModelConfiguration: Equatable, Sendable {
     let source: String?
     let overrideModel: String?
     let reasoningEffort: String?
+    let serviceTier: String?
+
+    func initialReasoningEffort(for modelID: String?) -> String? {
+        modelID == overrideModel ? reasoningEffort : nil
+    }
+
+    func selection(modelID: String?, reasoningEffort: String?) -> AgentModelSelection {
+        guard let modelID else { return .automatic }
+        return .manual(modelID, reasoningEffort: reasoningEffort,
+                       serviceTier: modelID == overrideModel ? serviceTier : nil)
+    }
 }
 
 enum SendingStatus: String { case disconnected, ready, offline, sending }

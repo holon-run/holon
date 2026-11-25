@@ -148,8 +148,8 @@ actor SendingClientTransport: SendingTransport {
         switch selection {
         case .automatic:
             state = try await request(sharing: true) { try await $0.clearAgentModel(agentID: agentID) }
-        case .manual(let model, let effort):
-            let body = try HolonAgentModelRequest(model: model, reasoningEffort: effort)
+        case .manual(let model, let effort, let tier):
+            let body = try HolonAgentModelRequest(model: model, reasoningEffort: effort, serviceTier: tier)
             state = try await request(sharing: true) { try await $0.setAgentModel(agentID: agentID, request: body) }
         }
         return try Self.modelConfiguration(state)
@@ -164,7 +164,8 @@ actor SendingClientTransport: SendingTransport {
                                        activeModel: raw["active_model"]?.readingString,
                                        source: raw["source"]?.readingString,
                                        overrideModel: raw["override_model"]?.readingString,
-                                       reasoningEffort: raw["override_reasoning_effort"]?.readingString)
+                                       reasoningEffort: raw["override_reasoning_effort"]?.readingString,
+                                       serviceTier: raw["override_service_tier"]?.readingString)
     }
 
     func stop(agentID: String, runID: String) async throws {

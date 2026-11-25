@@ -171,6 +171,9 @@
 "sending.model.legacyDraft.send" = "使用保存的模型发送草稿";
 "sending.model.legacyQueue.block" = "待发队列中有消息保存了模型。请先在发送队列中处理它，再更改 Agent 的模型。";
 "sending.model.legacyQueue.item" = "重试此消息会把 Agent 的模型更改为：";
+"sending.model.legacyQueue.confirm" = "更改模型并发送";
+"sending.model.serviceTier" = "服务等级覆盖";
+"sending.model.serviceTier.removed" = "应用此选择会移除当前的服务等级覆盖。";
 "sending.attachments" = "附件";
 "sending.remove" = "移除附件";
 "sending.photo" = "选择照片";

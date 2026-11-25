@@ -70,12 +70,13 @@ public struct HolonPromptReceipt: Sendable, Equatable {
 
 public struct HolonAgentModelRequest: Sendable, Equatable {
     public let payload: JSONValue
-    public init(model: String, reasoningEffort: String? = nil) throws {
+    public init(model: String, reasoningEffort: String? = nil, serviceTier: String? = nil) throws {
         guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { throw HolonClientError.invalidRequest }
         var fields: [String: JSONValue] = ["model": .string(model),
                                           "authority_class": .string("operator_instruction")]
         if let reasoningEffort { fields["reasoning_effort"] = .string(reasoningEffort) }
+        if let serviceTier { fields["service_tier"] = .string(serviceTier) }
         payload = .object(fields)
     }
 }
