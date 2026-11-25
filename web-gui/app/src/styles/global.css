@@ -2850,12 +2850,35 @@ code {
   z-index: 60;
   max-height: 480px;
   overflow: auto;
+  display: flex;
+  flex-direction: column;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--surface);
   box-shadow: var(--shadow);
   backdrop-filter: blur(16px);
+}
+
+/* The picker is a single scroll region: header, runtime-default row, search and
+   footer stay put and only the model list scrolls. Previously .model-menu and
+   .model-browser-results each capped their own height, so the dialog showed two
+   scrollbars and the inner one trapped the wheel. Scoped to .model-menu because
+   only the agent model picker renders it; settings and ModelSelect keep the
+   shared 340px list. */
+.model-menu > * { flex: 0 0 auto; }
+.model-menu > .model-browser {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.model-menu .model-browser-search { position: static; }
+.model-menu .model-browser-results {
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: none;
+  overflow: auto;
 }
 
 .model-menu-header,
