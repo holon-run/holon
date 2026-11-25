@@ -7,13 +7,16 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
 use crate::error::{AcpError, RpcError, METHOD_NOT_FOUND, REQUEST_CANCELLED};
-use crate::handler::{AcpClientHandler, ElicitationRequest, PermissionOutcome, PermissionRequest};
+use crate::handler::{
+    AcpClientHandler, ElicitationRequest, PermissionOutcome, PermissionRequest, PermissionResponse,
+};
 use crate::jsonrpc::{Frame, RpcId};
 use crate::protocol::SessionNotification;
 
@@ -79,6 +82,22 @@ impl AcpConnection {
         params: Value,
         session_id: Option<&str>,
     ) -> Result<Value, AcpError> {
+        self.request_with_timeout(method, params, session_id, None)
+            .await
+    }
+
+    /// Send a request with an optional per-call deadline.
+    ///
+    /// The deadline is caller-scoped rather than connection-wide so that a
+    /// fail-fast handshake bound never truncates a long prompt turn. On expiry
+    /// the pending entry is removed and [`AcpError::Timeout`] is returned.
+    pub async fn request_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        session_id: Option<&str>,
+        timeout: Option<Duration>,
+    ) -> Result<Value, AcpError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
@@ -88,7 +107,19 @@ impl AcpConnection {
             params: Some(params),
         })
         .await?;
-        match rx.await {
+        let received = match timeout {
+            Some(limit) => match tokio::time::timeout(limit, rx).await {
+                Ok(received) => received,
+                Err(_) => {
+                    self.pending.lock().await.remove(&id);
+                    return Err(AcpError::Timeout {
+                        method: method.to_string(),
+                    });
+                }
+            },
+            None => rx.await,
+        };
+        match received {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(RequestFailure::Rpc(error))) => Err(AcpError::from_rpc(error, session_id)),
             Ok(Err(RequestFailure::Client(error))) => Err(error),
@@ -122,6 +153,18 @@ impl AcpConnection {
 
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed)
+    }
+
+    /// Close the connection and fail every pending outbound request.
+    ///
+    /// ACP has no in-band abort frame. Once a turn is abandoned without the peer
+    /// settling it (for example after a cancel-settle timeout), the connection
+    /// can no longer guarantee one in-flight prompt per session, so the only
+    /// safe recovery is to tear it down and rebuild the harness process.
+    pub async fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+        self.fail_pending(RequestFailure::Client(AcpError::Closed))
+            .await;
     }
 
     async fn write_frame(&self, frame: Frame) -> Result<(), AcpError> {
@@ -263,7 +306,13 @@ enum ReverseReply {
 fn cancelled_reply(method: &str) -> ReverseReply {
     match method {
         "session/request_permission" => {
-            ReverseReply::Result(serde_json::json!({"outcome": {"outcome": "cancelled"}}))
+            match serde_json::to_value(PermissionResponse::new(PermissionOutcome::Cancelled)) {
+                Ok(value) => ReverseReply::Result(value),
+                Err(_) => ReverseReply::Error(RpcError::new(
+                    REQUEST_CANCELLED,
+                    "request cancelled by client",
+                )),
+            }
         }
         _ => ReverseReply::Error(RpcError::new(
             REQUEST_CANCELLED,
@@ -281,7 +330,7 @@ async fn dispatch_reverse_request(
         "session/request_permission" => match PermissionRequest::from_params(params) {
             Ok(request) => {
                 let outcome: PermissionOutcome = handler.request_permission(request).await;
-                match serde_json::to_value(outcome) {
+                match serde_json::to_value(PermissionResponse::new(outcome)) {
                     Ok(value) => ReverseReply::Result(value),
                     Err(error) => ReverseReply::Error(RpcError::new(
                         -32603,

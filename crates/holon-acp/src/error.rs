@@ -62,6 +62,8 @@ pub enum AcpError {
     },
     #[error("ACP turn was cancelled")]
     Cancelled,
+    #[error("ACP request `{method}` timed out")]
+    Timeout { method: String },
     #[error("ACP connection closed")]
     Closed,
     #[error("unknown ACP harness profile `{name}`")]

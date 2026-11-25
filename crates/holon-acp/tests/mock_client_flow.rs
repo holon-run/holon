@@ -22,6 +22,9 @@ enum Scenario {
     AuthenticationRequired,
     SessionGone,
     PermissionBlocked,
+    PermissionSelected,
+    PermissionDenied,
+    InitializeHangs,
 }
 
 #[derive(Clone, Debug)]
@@ -44,13 +47,30 @@ impl AcpClientHandler for HangingHandler {
     }
 }
 
-fn start(
-    scenario: Scenario,
-) -> (
+/// Handler that approves the first offered option.
+#[derive(Debug, Default)]
+struct AllowOnceHandler;
+
+#[async_trait]
+impl AcpClientHandler for AllowOnceHandler {
+    async fn request_permission(&self, _request: PermissionRequest) -> PermissionOutcome {
+        PermissionOutcome::Selected {
+            option_id: "allow_once".into(),
+        }
+    }
+}
+
+fn start(scenario: Scenario) -> MockServer {
+    start_with_timeout(scenario, None)
+}
+
+type MockServer = (
     Arc<AcpClient>,
     mpsc::UnboundedReceiver<ServerEvent>,
     Arc<Mutex<Vec<String>>>,
-) {
+);
+
+fn start_with_timeout(scenario: Scenario, request_timeout: Option<Duration>) -> MockServer {
     let (client_io, server_io) = tokio::io::duplex(256 * 1024);
     let (events_tx, events_rx) = mpsc::unbounded_channel();
     let methods = Arc::new(Mutex::new(Vec::new()));
@@ -63,10 +83,14 @@ fn start(
 
     let handler: Arc<dyn AcpClientHandler> = match scenario {
         Scenario::PermissionBlocked => Arc::new(HangingHandler),
+        Scenario::PermissionSelected => Arc::new(AllowOnceHandler),
         _ => Arc::new(DenyAllHandler),
     };
-    let client =
+    let mut client =
         AcpClient::new(client_io, handler).with_cancel_settle_timeout(Duration::from_secs(2));
+    if let Some(timeout) = request_timeout {
+        client = client.with_request_timeout(timeout);
+    }
     (Arc::new(client), events_rx, methods)
 }
 
@@ -103,6 +127,10 @@ async fn run_mock(
                             .cloned()
                             .unwrap_or(Value::Null);
                         events.send(ServerEvent::Initialized(capabilities)).unwrap();
+                        if matches!(scenario, Scenario::InitializeHangs) {
+                            // Never answer, so the client's handshake deadline fires.
+                            continue;
+                        }
                         let reply = match scenario {
                             Scenario::AuthenticationRequired => Frame::Error {
                                 id,
@@ -120,10 +148,16 @@ async fn run_mock(
                                     "protocolVersion": 1,
                                     "agentCapabilities": {
                                         "loadSession": matches!(scenario, Scenario::SessionGone),
-                                    },
-                                    "sessionCapabilities": {
-                                        "resume": matches!(scenario, Scenario::SessionGone),
-                                        "load": matches!(scenario, Scenario::SessionGone),
+                                        // ACP v1 declares resume by presence in
+                                        // `agentCapabilities.sessionCapabilities`.
+                                        "sessionCapabilities": if matches!(
+                                            scenario,
+                                            Scenario::SessionGone
+                                        ) {
+                                            json!({"resume": {}})
+                                        } else {
+                                            json!({})
+                                        },
                                     },
                                     "authMethods": [
                                         {"id": "oauth-personal", "name": "Personal OAuth"},
@@ -163,7 +197,9 @@ async fn run_mock(
                         write_frame(&mut write_half, reply).await;
                     }
                     "session/prompt" => match scenario {
-                        Scenario::PermissionBlocked => {
+                        Scenario::PermissionBlocked
+                        | Scenario::PermissionSelected
+                        | Scenario::PermissionDenied => {
                             pending_prompt = Some(id);
                             write_frame(
                                 &mut write_half,
@@ -229,11 +265,16 @@ async fn run_mock(
                 if id == RpcId::Number(900) {
                     events.send(ServerEvent::PermissionReply(result)).unwrap();
                     if let Some(prompt_id) = pending_prompt.take() {
+                        let stop_reason = if matches!(scenario, Scenario::PermissionSelected) {
+                            "end_turn"
+                        } else {
+                            "cancelled"
+                        };
                         write_frame(
                             &mut write_half,
                             Frame::Response {
                                 id: prompt_id,
-                                result: json!({"stopReason": "cancelled"}),
+                                result: json!({"stopReason": stop_reason}),
                             },
                         )
                         .await;
@@ -410,6 +451,83 @@ async fn cancel_unblocks_pending_permission_request_without_deadlock() {
     }
     assert!(saw_cancel, "mock never observed session/cancel");
     assert!(saw_reply, "mock never observed a permission reply");
+}
+
+/// Drive one prompt turn that triggers a permission request and return the raw
+/// permission reply the mock observed, plus the stop reason the turn settled
+/// with.
+async fn permission_reply(scenario: Scenario) -> (Value, StopReason) {
+    let (client, mut events, _methods) = start(scenario);
+    client
+        .initialize(InitializeParams::new(ClientCapabilities::trimmed()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        next_event(&mut events).await,
+        ServerEvent::Initialized(_)
+    ));
+    client
+        .new_session(SessionNewParams::new("/work/repo"))
+        .await
+        .unwrap();
+
+    let prompt_client = Arc::clone(&client);
+    let prompt = tokio::spawn(async move {
+        prompt_client
+            .prompt(PromptParams::text("s1", "run"), |_| {})
+            .await
+    });
+
+    let mut reply = None;
+    for _ in 0..10 {
+        match tokio::time::timeout(Duration::from_millis(300), events.recv()).await {
+            Ok(Some(ServerEvent::PermissionReply(value))) => {
+                reply = Some(value);
+                break;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let reply = reply.expect("mock never observed a permission reply");
+
+    let result = tokio::time::timeout(Duration::from_secs(5), prompt)
+        .await
+        .expect("prompt did not settle")
+        .expect("prompt task panicked")
+        .expect("prompt failed");
+    (reply, result.stop_reason)
+}
+
+#[tokio::test]
+async fn handler_permission_reply_wraps_selected_outcome_for_wire_v1() {
+    let (reply, stop_reason) = permission_reply(Scenario::PermissionSelected).await;
+    assert_eq!(
+        reply,
+        json!({"outcome": {"outcome": "selected", "optionId": "allow_once"}})
+    );
+    assert_eq!(stop_reason, StopReason::EndTurn);
+}
+
+#[tokio::test]
+async fn default_handler_permission_reply_wraps_cancelled_outcome() {
+    let (reply, stop_reason) = permission_reply(Scenario::PermissionDenied).await;
+    assert_eq!(reply, json!({"outcome": {"outcome": "cancelled"}}));
+    assert_eq!(stop_reason, StopReason::Cancelled);
+}
+
+#[tokio::test]
+async fn handshake_timeout_is_typed_and_scoped_to_lifecycle_calls() {
+    let (client, _events, _methods) =
+        start_with_timeout(Scenario::InitializeHangs, Some(Duration::from_millis(50)));
+    let error = client
+        .initialize(InitializeParams::new(ClientCapabilities::trimmed()))
+        .await
+        .expect_err("initialize must time out against a silent peer");
+    match error {
+        AcpError::Timeout { method } => assert_eq!(method, "initialize"),
+        other => panic!("unexpected error: {other:?}"),
+    }
 }
 
 #[tokio::test]

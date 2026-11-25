@@ -108,31 +108,61 @@ pub struct PromptCapabilities {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCapabilities {
-    /// `session/load` support declared as `loadSession` by ACP.
+    /// `session/load` support, declared as `loadSession` by ACP wire v1.
     #[serde(default)]
     pub load_session: bool,
-    /// Some harnesses declare resume here rather than in `sessionCapabilities`.
-    #[serde(default, alias = "resumeSession")]
-    pub resume_session: bool,
     #[serde(default)]
     pub prompt_capabilities: PromptCapabilities,
+    /// Session lifecycle capabilities advertised by the agent.
+    #[serde(default)]
+    pub session_capabilities: SessionCapabilities,
     #[serde(default, flatten)]
     pub extra: Map<String, Value>,
 }
 
+/// Capabilities carried by `agentCapabilities.sessionCapabilities`.
+///
+/// ACP wire v1 advertises each capability by presence: the field is absent (or
+/// `null`) when unsupported, and an object such as `{}` when supported. Keeping
+/// the raw value preserves that semantics and tolerates peers that send a
+/// boolean instead of an object.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionCapabilities {
-    #[serde(default)]
-    pub resume: bool,
-    #[serde(default)]
-    pub load: bool,
-    #[serde(default)]
-    pub close: bool,
-    #[serde(default)]
-    pub list: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_directories: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<Value>,
     #[serde(default, flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl SessionCapabilities {
+    /// Whether the agent advertises `session/resume`.
+    pub fn supports_resume(&self) -> bool {
+        declares(&self.resume)
+    }
+
+    /// Whether the agent advertises `session/list`.
+    pub fn supports_list(&self) -> bool {
+        declares(&self.list)
+    }
+}
+
+/// ACP v1 presence semantics: an object declaration (typically `{}`) or `true`
+/// means supported; absent, `null`, or `false` means unsupported.
+fn declares(capability: &Option<Value>) -> bool {
+    match capability {
+        Some(Value::Bool(flag)) => *flag,
+        None | Some(Value::Null) => false,
+        Some(_) => true,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,22 +195,22 @@ pub struct InitializeResult {
     #[serde(default)]
     pub agent_capabilities: AgentCapabilities,
     #[serde(default)]
-    pub session_capabilities: SessionCapabilities,
-    #[serde(default)]
     pub auth_methods: Vec<AuthMethod>,
     #[serde(default, flatten)]
     pub extra: Map<String, Value>,
 }
 
 impl InitializeResult {
-    /// Whether the peer declared `session/resume` support in either capability block.
+    /// Whether the peer declared `session/resume` support.
     pub fn supports_resume(&self) -> bool {
-        self.agent_capabilities.resume_session || self.session_capabilities.resume
+        self.agent_capabilities
+            .session_capabilities
+            .supports_resume()
     }
 
-    /// Whether the peer declared `session/load` support in either capability block.
+    /// Whether the peer declared `session/load` support.
     pub fn supports_load(&self) -> bool {
-        self.agent_capabilities.load_session || self.session_capabilities.load
+        self.agent_capabilities.load_session
     }
 }
 
@@ -434,6 +464,16 @@ pub struct AvailableCommand {
     pub input: Option<Value>,
 }
 
+/// Cumulative session cost reported on a `usage_update`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageCost {
+    #[serde(default)]
+    pub amount: f64,
+    #[serde(default)]
+    pub currency: String,
+}
+
 /// One projected `session/update` variant.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "sessionUpdate", rename_all = "snake_case")]
@@ -454,6 +494,9 @@ pub enum SessionUpdate {
         used: u64,
         #[serde(default)]
         size: u64,
+        /// Cumulative session cost; absent when the agent does not report it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost: Option<UsageCost>,
     },
     #[serde(rename_all = "camelCase")]
     CurrentModeUpdate {
@@ -551,17 +594,52 @@ mod tests {
     }
 
     #[test]
-    fn initialize_result_accepts_either_capability_block() {
+    fn initialize_result_reads_session_capabilities_from_agent_capabilities() {
         let result: InitializeResult = serde_json::from_value(json!({
             "protocolVersion": 1,
-            "agentCapabilities": {"loadSession": true},
-            "sessionCapabilities": {"resume": true, "load": false},
+            "agentCapabilities": {
+                "loadSession": true,
+                "sessionCapabilities": {"resume": {}, "list": {}},
+            },
             "authMethods": [{"id": "oauth-personal", "name": "Personal OAuth"}],
         }))
         .unwrap();
         assert!(result.supports_resume());
         assert!(result.supports_load());
+        assert!(result
+            .agent_capabilities
+            .session_capabilities
+            .supports_list());
         assert_eq!(result.auth_methods[0].id, "oauth-personal");
+    }
+
+    #[test]
+    fn absent_or_null_session_capabilities_mean_unsupported() {
+        let result: InitializeResult = serde_json::from_value(json!({
+            "protocolVersion": 1,
+            "agentCapabilities": {
+                "loadSession": false,
+                "sessionCapabilities": {"resume": null},
+            },
+        }))
+        .unwrap();
+        assert!(!result.supports_resume());
+        assert!(!result.supports_load());
+    }
+
+    #[test]
+    fn legacy_top_level_session_capabilities_never_grant_support() {
+        // A top-level block is not part of ACP wire v1: tolerate it, but never
+        // read resume/load support from it.
+        let result: InitializeResult = serde_json::from_value(json!({
+            "protocolVersion": 1,
+            "agentCapabilities": {"loadSession": false},
+            "sessionCapabilities": {"resume": true, "load": true},
+        }))
+        .unwrap();
+        assert!(!result.supports_resume());
+        assert!(!result.supports_load());
+        assert_eq!(result.extra["sessionCapabilities"]["resume"], json!(true));
     }
 
     #[test]
@@ -618,7 +696,32 @@ mod tests {
             notification.update,
             SessionUpdate::UsageUpdate {
                 used: 10,
-                size: 100
+                size: 100,
+                cost: None,
+            }
+        );
+
+        let params = json!({
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": "usage_update",
+                "used": 10,
+                "size": 100,
+                "cost": {"amount": 0.25, "currency": "USD"},
+            },
+        });
+        let notification = SessionNotification::from_params(Some(&params))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            notification.update,
+            SessionUpdate::UsageUpdate {
+                used: 10,
+                size: 100,
+                cost: Some(UsageCost {
+                    amount: 0.25,
+                    currency: "USD".to_string(),
+                }),
             }
         );
     }

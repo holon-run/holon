@@ -11,8 +11,8 @@ use crate::error::AcpError;
 use crate::handler::{AcpClientHandler, DenyAllHandler};
 use crate::protocol::{
     AgentCapabilities, AuthMethod, InitializeParams, InitializeResult, PromptParams, PromptResult,
-    SessionCapabilities, SessionInfo, SessionLoadParams, SessionNewParams, SessionNotification,
-    SessionResumeParams, SessionUpdate, ACP_PROTOCOL_VERSION,
+    SessionInfo, SessionLoadParams, SessionNewParams, SessionNotification, SessionResumeParams,
+    SessionUpdate, ACP_PROTOCOL_VERSION,
 };
 
 /// How long a cancelled turn may take to settle in-flight peer updates.
@@ -23,19 +23,20 @@ pub const DEFAULT_CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct Handshake {
     pub protocol_version: u32,
     pub agent_capabilities: AgentCapabilities,
-    pub session_capabilities: SessionCapabilities,
     pub auth_methods: Vec<AuthMethod>,
 }
 
 impl Handshake {
     /// Whether the peer declared `session/resume` support.
     pub fn supports_resume(&self) -> bool {
-        self.agent_capabilities.resume_session || self.session_capabilities.resume
+        self.agent_capabilities
+            .session_capabilities
+            .supports_resume()
     }
 
     /// Whether the peer declared `session/load` support.
     pub fn supports_load(&self) -> bool {
-        self.agent_capabilities.load_session || self.session_capabilities.load
+        self.agent_capabilities.load_session
     }
 
     pub fn auth_method_ids(&self) -> Vec<String> {
@@ -51,7 +52,6 @@ impl From<InitializeResult> for Handshake {
         Self {
             protocol_version: result.protocol_version,
             agent_capabilities: result.agent_capabilities,
-            session_capabilities: result.session_capabilities,
             auth_methods: result.auth_methods,
         }
     }
@@ -66,6 +66,7 @@ pub struct AcpClient {
     handshake: RwLock<Option<Handshake>>,
     updates: Mutex<mpsc::UnboundedReceiver<SessionNotification>>,
     cancel_settle_timeout: Duration,
+    request_timeout: Option<Duration>,
 }
 
 impl AcpClient {
@@ -80,6 +81,7 @@ impl AcpClient {
             handshake: RwLock::new(None),
             updates: Mutex::new(updates),
             cancel_settle_timeout: DEFAULT_CANCEL_SETTLE_TIMEOUT,
+            request_timeout: None,
         }
     }
 
@@ -93,6 +95,19 @@ impl AcpClient {
 
     pub fn with_cancel_settle_timeout(mut self, timeout: Duration) -> Self {
         self.cancel_settle_timeout = timeout;
+        self
+    }
+
+    /// Apply a deadline to handshake and session lifecycle calls.
+    ///
+    /// The bound covers `initialize`, `session/new`, `session/resume`, and
+    /// `session/load`. It deliberately does not cover `prompt`, because a turn
+    /// may legitimately outlive any fixed bound; cancelled turns are bounded by
+    /// [`AcpClient::with_cancel_settle_timeout`] instead.
+    ///
+    /// Defaults to no deadline, so callers that need fail-fast handshakes opt in.
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = Some(timeout);
         self
     }
 
@@ -115,7 +130,10 @@ impl AcpClient {
         }
         let value =
             serde_json::to_value(&params).map_err(|error| AcpError::protocol(error.to_string()))?;
-        let result = self.connection.request("initialize", value).await?;
+        let result = self
+            .connection
+            .request_with_timeout("initialize", value, None, self.request_timeout)
+            .await?;
         let result: InitializeResult = serde_json::from_value(result)
             .map_err(|error| AcpError::protocol(format!("invalid initialize result: {error}")))?;
         if result.protocol_version != ACP_PROTOCOL_VERSION {
@@ -134,7 +152,10 @@ impl AcpClient {
         self.require_handshake().await?;
         let value =
             serde_json::to_value(&params).map_err(|error| AcpError::protocol(error.to_string()))?;
-        let result = self.connection.request("session/new", value).await?;
+        let result = self
+            .connection
+            .request_with_timeout("session/new", value, None, self.request_timeout)
+            .await?;
         parse_session_info(result)
     }
 
@@ -153,7 +174,12 @@ impl AcpClient {
             serde_json::to_value(&params).map_err(|error| AcpError::protocol(error.to_string()))?;
         let result = self
             .connection
-            .request_scoped("session/resume", value, Some(&params.session_id))
+            .request_with_timeout(
+                "session/resume",
+                value,
+                Some(&params.session_id),
+                self.request_timeout,
+            )
             .await?;
         parse_session_info(result)
     }
@@ -170,13 +196,23 @@ impl AcpClient {
             serde_json::to_value(&params).map_err(|error| AcpError::protocol(error.to_string()))?;
         let result = self
             .connection
-            .request_scoped("session/load", value, Some(&params.session_id))
+            .request_with_timeout(
+                "session/load",
+                value,
+                Some(&params.session_id),
+                self.request_timeout,
+            )
             .await?;
         parse_session_info(result)
     }
 
     /// Send one prompt and stream `session/update` notifications until the peer
     /// answers with a `stopReason`.
+    ///
+    /// A cancelled turn that the peer does not settle within the cancel-settle
+    /// timeout fails with [`AcpError::Cancelled`] and closes the connection,
+    /// because ACP allows only one in-flight prompt per session; rebuild the
+    /// client before prompting again.
     pub async fn prompt<F>(
         &self,
         params: PromptParams,
@@ -230,6 +266,11 @@ impl AcpClient {
                     }
                 }
                 _ = deadline_fut, if cancelled => {
+                    // The peer never settled the cancelled turn. Leaving the
+                    // request in flight would allow a second prompt on the same
+                    // session and let the old turn's updates leak into the next
+                    // callback, so tear the connection down instead.
+                    self.connection.close().await;
                     return Err(AcpError::Cancelled);
                 }
             }

@@ -73,6 +73,21 @@ pub enum PermissionOutcome {
     Cancelled,
 }
 
+/// Wire shape of the `session/request_permission` response.
+///
+/// ACP wire v1 nests the outcome inside a response object, so a selected option
+/// travels as `{"outcome": {"outcome": "selected", "optionId": "allow_once"}}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PermissionResponse {
+    pub outcome: PermissionOutcome,
+}
+
+impl PermissionResponse {
+    pub fn new(outcome: PermissionOutcome) -> Self {
+        Self { outcome }
+    }
+}
+
 /// A harness request for structured user input.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ElicitationRequest {
