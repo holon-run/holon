@@ -35,6 +35,12 @@ explicitly as:
 - `LivenessOnly`: the runtime should reconsider scheduling, but must not invoke
   the model.
 
+The matching rules in `holon-domain` evaluate the message and WaitCondition
+facts supplied by the caller. Scheduler candidate matching and the writer's
+exact wait selection each follow their own rules. The runtime checks the
+canonical execution state, applies resource admission, and commits wait and
+queue changes in its writer transaction.
+
 ## Invariants
 
 - A `WaitFor` sleep must never rely on an in-memory promise alone.
