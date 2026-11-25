@@ -587,6 +587,20 @@ pub async fn ensure_agent_home_agents_md_from_template_with_home(
     .await
 }
 
+pub async fn ensure_agent_home_agents_md_from_builtin_template(
+    agent_home: &Path,
+    home_dir: &Path,
+    template_id: &str,
+) -> Result<Option<TemplateProvenanceRecord>> {
+    package::ensure_agent_home_agents_md_from_builtin_template(
+        TEMPLATES,
+        agent_home,
+        home_dir,
+        template_id,
+    )
+    .await
+}
+
 pub async fn ensure_agent_home_agents_md_without_template_with_home(
     agent_home: &Path,
     home_dir: &Path,
@@ -1210,7 +1224,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provenance_builtin_template_has_schema_version() {
+    async fn provenance_blank_template_records_blank_source() {
         let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let _guard = EnvGuard::set("HOME", home.path().display().to_string());
@@ -1221,9 +1235,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            provenance.schema_version.as_deref(),
-            Some("holon.agent_template.v1")
-        );
+        assert!(provenance.selector.is_none());
+        assert!(matches!(provenance.source, TemplateProvenanceSource::Blank));
+        assert!(provenance.schema_version.is_none());
     }
 }

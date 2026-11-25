@@ -491,7 +491,7 @@ async fn initialize_agent_home_from_absolute_template_path_works() {
 }
 
 #[tokio::test]
-async fn ensure_agent_home_agents_md_from_template_fills_missing_agents_md() {
+async fn ensure_agent_home_agents_md_without_template_writes_blank_agents_md() {
     let _lock = self::lock_env();
     let home = tempdir().unwrap();
     let _guard = EnvGuard::set("HOME", home.path().display().to_string());
@@ -510,16 +510,102 @@ async fn ensure_agent_home_agents_md_from_template_fills_missing_agents_md() {
     .await
     .unwrap()
     .expect("missing AGENTS.md should be materialized");
-    assert!(matches!(
-        record.source,
-        TemplateProvenanceSource::TemplateId { .. }
-    ));
-    assert!(fs::read_to_string(agent_home.join("AGENTS.md"))
-        .unwrap()
-        .contains("Holon Default Agent"));
-    assert!(fs::read_to_string(agent_home.join("AGENTS.md"))
-        .unwrap()
-        .contains("## Holon Agent Home"));
+    assert!(record.selector.is_none());
+    assert!(matches!(record.source, TemplateProvenanceSource::Blank));
+    let agents_md = fs::read_to_string(agent_home.join("AGENTS.md")).unwrap();
+    assert!(agents_md.contains("# Agent"));
+    assert!(agents_md.contains("## Holon Agent Home"));
+    assert!(!agents_md.contains("Holon Default Agent"));
+}
+
+#[test]
+fn recover_template_staging_accepts_legacy_holon_default_selector_for_blank_expectation() {
+    let home = tempdir().unwrap();
+    let agent_home = home.path().join("agent");
+    fs::create_dir_all(&agent_home).unwrap();
+    let agents_md = "# legacy holon-default\n";
+    fs::write(agent_home.join("AGENTS.md"), agents_md).unwrap();
+    write_template_staging(
+        &agent_home,
+        &TemplateStagingRecord {
+            selector: Some(DEFAULT_AGENT_TEMPLATE_ID.to_string()),
+            started_at: Utc::now(),
+            agents_md_sha256: sha256_hex(agents_md.as_bytes()),
+            created_paths: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(recover_template_staging(&agent_home, None).unwrap());
+    assert!(!agent_home.join("AGENTS.md").exists());
+    assert!(!template_staging_path(&agent_home).exists());
+}
+
+#[test]
+fn recover_template_staging_ignores_other_selector_for_blank_expectation() {
+    let home = tempdir().unwrap();
+    let agent_home = home.path().join("agent");
+    fs::create_dir_all(&agent_home).unwrap();
+    let agents_md = "# explicit other template\n";
+    fs::write(agent_home.join("AGENTS.md"), agents_md).unwrap();
+    write_template_staging(
+        &agent_home,
+        &TemplateStagingRecord {
+            selector: Some("other-template".to_string()),
+            started_at: Utc::now(),
+            agents_md_sha256: sha256_hex(agents_md.as_bytes()),
+            created_paths: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    assert!(!recover_template_staging(&agent_home, None).unwrap());
+    assert!(agent_home.join("AGENTS.md").is_file());
+    assert!(template_staging_path(&agent_home).is_file());
+}
+
+#[tokio::test]
+async fn materialize_blank_agents_md_refuses_existing_agents_md() {
+    let home = tempdir().unwrap();
+    let agent_home = home.path().join("agent");
+    fs::create_dir_all(&agent_home).unwrap();
+    fs::write(agent_home.join("AGENTS.md"), "user content\n").unwrap();
+
+    let error = materialize_blank_agents_md(&agent_home).await.unwrap_err();
+    assert!(error.to_string().contains("refuses to overwrite"));
+    assert_eq!(
+        fs::read_to_string(agent_home.join("AGENTS.md")).unwrap(),
+        "user content\n"
+    );
+    assert!(!template_staging_path(&agent_home).exists());
+}
+
+#[tokio::test]
+async fn ensure_from_builtin_template_ignores_same_id_user_template() {
+    let _lock = self::lock_env();
+    let home = tempdir().unwrap();
+    let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+    seed_builtin_templates().unwrap();
+    let templates = templates_root().unwrap();
+    let shadow = templates.join(DEFAULT_AGENT_TEMPLATE_ID);
+    fs::create_dir_all(&shadow).unwrap();
+    fs::write(shadow.join("AGENTS.md"), "# user shadow template\n").unwrap();
+
+    let agent_home = home.path().join("agent");
+    let record = ensure_agent_home_agents_md_from_builtin_template(
+        TEST_TEMPLATES,
+        &agent_home,
+        home.path(),
+        DEFAULT_AGENT_TEMPLATE_ID,
+    )
+    .await
+    .unwrap()
+    .expect("missing AGENTS.md should be materialized");
+
+    assert_eq!(record.selector.as_deref(), Some(DEFAULT_AGENT_TEMPLATE_ID));
+    let agents_md = fs::read_to_string(agent_home.join("AGENTS.md")).unwrap();
+    assert!(agents_md.contains("Holon Default Agent"));
+    assert!(!agents_md.contains("user shadow template"));
 }
 
 #[tokio::test]

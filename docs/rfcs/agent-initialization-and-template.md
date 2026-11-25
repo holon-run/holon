@@ -319,17 +319,34 @@ locally; public sources do not require GitHub Contents or repository metadata
 API calls. An omitted ref is represented as `HEAD`, while configured refs
 remain available for reproducible selection.
 
-### Builtin default template
+### Builtin default template and blank initialization
 
 Holon ships exactly one hidden built-in `holon-default` template as the
-zero-config and offline fallback. It is not exposed as a normal catalog entry
-and is not seeded into the user-visible template root on startup.
+zero-config entry template. It is not exposed as a normal catalog entry and is
+not seeded into the user-visible template root on startup.
 
-Creating an agent without an explicit template selector uses this hidden
-default. Creating an agent with a selector resolves only visible local
-templates, catalog-qualified local templates, explicit paths, and explicit
-GitHub template URLs. Compatibility selectors for the hidden default may remain
-available, but they should not create duplicate visible catalog entries.
+The hidden template and the no-template path serve different roles:
+
+- The zero-config main entry agent uses `holon-default` explicitly. The Web
+  onboarding flow and the daemon/CLI default agent both apply this template, so
+  the operator's first agent starts as a generalist entry point that helps grow
+  a coordinated team.
+- Omitting the template selector means blank initialization, not an implicit
+  fall back to the hidden default. The runtime creates the agent-home layout
+  and a minimal `AGENTS.md` containing only a role-neutral durable
+  responsibility note plus the required agent-home guidance. This is the
+  default for `CreateAgent` / `holon agent create` and for
+  `InvokeAgent(new_subagent)` when no template is given, so new and temporary
+  agents start as clean canvases.
+
+Blank initialization records no `selector` and a
+`TemplateProvenanceSource::Blank` source. Creating an agent with a selector
+resolves only visible local templates, catalog-qualified local templates,
+explicit paths, and explicit GitHub template URLs. Compatibility selectors for
+the hidden default may remain available, but they should not create duplicate
+visible catalog entries. Agents created before blank initialization existed
+recorded the implicit `holon-default` selector; upgrades treat that provenance
+as satisfying a blank bootstrap instead of raising a template conflict.
 
 Common role templates such as developer, reviewer, release, or GitHub issue
 solver should be delivered through the official remote template source and
