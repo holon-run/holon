@@ -986,6 +986,7 @@ pub(crate) struct AcpTurnResult {
     pub(crate) transcript_entry_id: String,
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod acp_driver_tests {
     use super::*;

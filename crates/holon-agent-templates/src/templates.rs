@@ -259,7 +259,7 @@ struct TemplateManifest {
     #[allow(dead_code)]
     compatibility: TemplateCompatibility,
     #[serde(default)]
-    execution: Option<TemplateExecutionBinding>,
+    execution: Option<Box<TemplateExecutionBinding>>,
 }
 
 /// Optional execution-driver declaration from a template manifest.
@@ -1600,7 +1600,7 @@ pub async fn template_execution_binding(
     };
     let parsed: TemplateManifest = toml::from_str(manifest)
         .with_context(|| format!("failed to parse template manifest for `{template}`"))?;
-    Ok(parsed.execution.filter(|binding| {
+    Ok(parsed.execution.map(|binding| *binding).filter(|binding| {
         binding.driver.is_some() || binding.harness_profile.is_some() || binding.role.is_some()
     }))
 }
