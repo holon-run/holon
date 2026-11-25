@@ -16,14 +16,16 @@ function setup() {
   const page = { hidden: false };
   let state: NotificationSnapshot = emptyNotifications;
   const load = vi.fn(async (_signal: AbortSignal) => lists());
+  const notify = vi.fn();
   const sync = createNotificationSync({
     load,
     isHidden: () => page.hidden,
     isViewing: (target) => target.agent_id === "current",
     publish: (snapshot) => { state = snapshot; },
+    notify,
   });
   sync.start();
-  return { load, sync, page, snapshot: () => state };
+  return { load, notify, sync, page, snapshot: () => state };
 }
 
 describe("notification synchronization", () => {
@@ -54,8 +56,8 @@ describe("notification synchronization", () => {
     expect(snapshot().pending).toEqual([]);
   });
 
-  it("catches up hidden hints, reconnects, and health reads without replay", async () => {
-    const { load, sync, page, snapshot } = setup();
+  it("reads hidden hints without replay, then recovers on reconnect and health checks", async () => {
+    const { load, notify, sync, page, snapshot } = setup();
     sync.connected();
     await advance();
     page.hidden = true;
@@ -63,7 +65,10 @@ describe("notification synchronization", () => {
     sync.hint();
     sync.hint();
     await advance();
-    expect(load).toHaveBeenCalledTimes(1);
+    // A hidden tab keeps reading; nothing to report yet, so it stays silent.
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(notify).not.toHaveBeenCalled();
+    expect(snapshot().toasts).toEqual([]);
     for (const [id, refresh] of [
       ["hidden", () => { page.hidden = false; sync.visibilityChanged(); }],
       ["gap", () => { sync.disconnected(); expect(snapshot().status).toBe("stale"); sync.connected(); }],
@@ -74,7 +79,32 @@ describe("notification synchronization", () => {
       await advance();
       expect(snapshot()).toMatchObject({ status: "ready", recent: [item(id)], toasts: [] });
     }
-    expect(load).toHaveBeenCalledTimes(4);
+    expect(load).toHaveBeenCalledTimes(6);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("hands hidden-page arrivals to the OS instead of the toast stack", async () => {
+    const { load, notify, sync, page, snapshot } = setup();
+    sync.connected();
+    await advance();
+    page.hidden = true;
+    sync.visibilityChanged();
+
+    const brief = item("hidden-brief");
+    load.mockResolvedValue(lists([brief, item("viewed", "current")]));
+    sync.hint();
+    await advance();
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith([brief]);
+    expect(snapshot()).toMatchObject({ recent: [brief, item("viewed", "current")], toasts: [] });
+
+    // Coming back is a catchup read: already-delivered items never toast.
+    page.hidden = false;
+    sync.visibilityChanged();
+    load.mockResolvedValue(lists([brief, item("caught-up")]));
+    await advance();
+    expect(snapshot().toasts).toEqual([]);
+    expect(notify).toHaveBeenCalledTimes(1);
   });
 
   it("coalesces hints during a read and does not pop when that read spans visibility loss", async () => {
