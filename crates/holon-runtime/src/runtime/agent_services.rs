@@ -302,8 +302,8 @@ impl AgentInvocationService<'_> {
                             workspace_mode,
                         )
                         .await?;
-                    let driver = match execution_driver.clone() {
-                        Some(driver) => Some(driver),
+                    let driver = match match execution_driver.clone() {
+                        Some(driver) => Ok(Some(driver)),
                         None => match template.as_deref() {
                             Some(template) => {
                                 let home = self.runtime.user_home();
@@ -313,10 +313,18 @@ impl AgentInvocationService<'_> {
                                     &catalog,
                                     template,
                                 )
-                                .await?
+                                .await
                             }
-                            None => None,
+                            None => Ok(None),
                         },
+                    } {
+                        Ok(driver) => driver,
+                        Err(error) => {
+                            self.runtime
+                                .fail_agent_invocation_task(&task, &error)
+                                .await?;
+                            return Err(agent_invocation_admission_error(&task, error));
+                        }
                     };
                     if let Some(driver) = driver {
                         let mut detail =
@@ -341,42 +349,7 @@ impl AgentInvocationService<'_> {
                             self.runtime
                                 .fail_agent_invocation_task(&task, &error)
                                 .await?;
-                            let invocation_error = if error
-                                .downcast_ref::<crate::skills::RemoteSkillArchiveFetchFailed>()
-                                .is_some()
-                            {
-                                let descriptor = describe_runtime_error(&error);
-                                let mut invocation_error = RuntimeError::new(
-                                    RuntimeErrorDomain::Task,
-                                    "agent_invocation_failed",
-                                    format!(
-                                        "failed to invoke agent: {}",
-                                        descriptor.operator_message
-                                    ),
-                                )
-                                .with_retryable(descriptor.retryable);
-                                if let Some(hint) = descriptor.recovery_hint {
-                                    invocation_error = invocation_error.with_recovery_hint(hint);
-                                }
-                                invocation_error
-                            } else {
-                                let direct_cause = collect_runtime_error_source_chain(&error)
-                                    .last()
-                                    .cloned()
-                                    .unwrap_or_else(|| {
-                                        "agent invocation admission failed".to_string()
-                                    });
-                                RuntimeError::new(
-                                    RuntimeErrorDomain::Task,
-                                    "agent_invocation_failed",
-                                    format!("failed to invoke agent: {direct_cause}"),
-                                )
-                                .with_recovery_hint(
-                                    "correct the template, model, or workspace configuration and retry",
-                                )
-                            };
-                            return Err(error
-                                .context(invocation_error.with_safe_context("task_id", &task.id)));
+                            return Err(agent_invocation_admission_error(&task, error));
                         }
                     };
                     admitted.task_detail["created_new_subagent"] = serde_json::json!(true);
@@ -408,6 +381,37 @@ pub(super) fn required_model_resolution(
     resolution: Option<AgentModelResolution>,
 ) -> Result<AgentModelResolution> {
     resolution.ok_or_else(|| anyhow!("new subagent invocation requires model resolution"))
+}
+
+fn agent_invocation_admission_error(task: &TaskRecord, error: anyhow::Error) -> anyhow::Error {
+    let invocation_error = if error
+        .downcast_ref::<crate::skills::RemoteSkillArchiveFetchFailed>()
+        .is_some()
+    {
+        let descriptor = describe_runtime_error(&error);
+        let mut invocation_error = RuntimeError::new(
+            RuntimeErrorDomain::Task,
+            "agent_invocation_failed",
+            format!("failed to invoke agent: {}", descriptor.operator_message),
+        )
+        .with_retryable(descriptor.retryable);
+        if let Some(hint) = descriptor.recovery_hint {
+            invocation_error = invocation_error.with_recovery_hint(hint);
+        }
+        invocation_error
+    } else {
+        let direct_cause = collect_runtime_error_source_chain(&error)
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "agent invocation admission failed".to_string());
+        RuntimeError::new(
+            RuntimeErrorDomain::Task,
+            "agent_invocation_failed",
+            format!("failed to invoke agent: {direct_cause}"),
+        )
+        .with_recovery_hint("correct the template, model, or workspace configuration and retry")
+    };
+    error.context(invocation_error.with_safe_context("task_id", &task.id))
 }
 
 pub(super) fn failed_invocation_task(task: &TaskRecord, error: &anyhow::Error) -> TaskRecord {
