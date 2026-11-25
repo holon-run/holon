@@ -393,6 +393,7 @@ mod deletion_reference_tests {
                             model_resolution: None,
                             initial_message: None,
                             default_initial_message: false,
+                            initial_response_language: None,
                         },
                     );
                     let relations =

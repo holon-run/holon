@@ -185,6 +185,46 @@ pub async fn control_agent_create_qualifies_loaded_creation_audit() -> Result<()
     Ok(())
 }
 
+pub async fn control_agent_create_forwards_one_time_response_language_hint() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+
+    let response = client
+        .post(format!("{base}/api/control/agents/locale-hint/create"))
+        .json(&serde_json::json!({ "initial_response_language": "zh_CN.UTF-8" }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    let created: serde_json::Value = response.json().await?;
+    assert_creation_bootstrap_ready(&client, &base, &created).await?;
+
+    let agent_id = created["identity"]["agent_id"].as_str().unwrap();
+    let runtime = host
+        .get_public_agent(agent_id)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let messages = runtime.storage().read_recent_messages(10)?;
+    let bootstrap = messages
+        .iter()
+        .find(|message| message.id == format!("agent_bootstrap_message:{agent_id}:1"))
+        .expect("default bootstrap should enqueue one initialization message");
+    let MessageBody::Text { text } = &bootstrap.body else {
+        panic!("bootstrap message must carry text");
+    };
+    assert!(
+        text.contains("Respond in zh-CN for this first reply"),
+        "the HTTP creation hint should normalize into the bootstrap instruction: {text}"
+    );
+    assert!(
+        !text.contains("Choose the user's most likely language"),
+        "the fallback language guidance must yield to the HTTP hint: {text}"
+    );
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_agent_create_returns_degraded_receipt_and_repairs() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let (base, server) = spawn_server_for_host(host.clone()).await?;

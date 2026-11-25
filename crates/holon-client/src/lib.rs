@@ -928,6 +928,7 @@ impl LocalClient {
                 authority_class: Some(AuthorityClass::OperatorInstruction),
                 name: None,
                 template,
+                initial_response_language: None,
             },
         )
         .await

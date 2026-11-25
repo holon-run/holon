@@ -448,6 +448,13 @@ Creates a new agent managed by the host. The agent id comes from the URL path.
 { "template": null, "authority_class": "operator_instruction" }
 ```
 
+Optional `initial_response_language` (BCP-47 tag or POSIX locale) is a one-time
+hint for the language of the new agent's first default bootstrap reply. It is
+stored as runtime-owned bootstrap metadata and ignored when the request carries
+an explicit `initial_message`. It never becomes an agent preference, identity
+field, or persisted communication guidance, and unmapped values are dropped
+rather than failing the request.
+
 Creating an id whose deletion job fully completed starts a new incarnation
 (`identity.incarnation` increments; the old state is never revived). While a
 deletion is still in flight or failed, the request fails with

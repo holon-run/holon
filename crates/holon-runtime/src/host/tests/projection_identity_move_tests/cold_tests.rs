@@ -18,6 +18,7 @@ async fn cold_fixture(
                 None,
                 AgentBootstrapDesiredState {
                     default_initial_message: false,
+                    initial_response_language: None,
                     template: None,
                     catalog_agent_home: None,
                     workspace: None,

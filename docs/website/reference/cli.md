@@ -636,6 +636,13 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 |--------|-------------|
 | `--template <TEMPLATE>` | Built-in or path template |
 
+When `holon agent create` runs without an explicit initial message, the CLI
+derives a one-time response-language hint from the caller's locale
+(`LC_ALL`, then `LC_MESSAGES`, then `LANG`) so the new agent's first default
+bootstrap reply matches the terminal language. The hint only shapes that first
+reply; it is not persisted as an agent preference, and an unmapped or missing
+locale simply omits it.
+
 ### `holon solve` options
 
 | Flag | Type | Default | Description |

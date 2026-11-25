@@ -6,6 +6,8 @@ import { AgentCreationError, AgentCreationStatus } from "../features/agent/Agent
 import { useCopyText } from "../components/ClipboardProvider";
 import { NotificationCenter } from "../features/notifications/NotificationCenter";
 import { clearConversationCaches } from "../runtime/conversation-cache-lifecycle";
+import { useI18nSettings } from "../i18n";
+import { initialResponseLanguage } from "../runtime/initial-language";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
@@ -100,6 +102,7 @@ export function App() {
     if (panelIdentity) previousPanelIdentity.current = panelIdentity;
   }, [panelIdentity]);
   const { t } = useTranslation();
+  const { languageMode } = useI18nSettings();
   useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
   const developerDiagnosticsEnabled = isRuntimeTraceEnabled();
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
@@ -563,7 +566,9 @@ export function App() {
   }
 
   async function createTemplateAgent(agentId: string, template: string, name?: string): Promise<AgentCreationResult> {
-    const result = await createAgentFromTemplate(agentId, template, name);
+    // One-time hint so the new agent's first default reply follows the UI
+    // language selected at creation time.
+    const result = await createAgentFromTemplate(agentId, template, name, initialResponseLanguage(languageMode));
     if (result.kind === "accepted") navigateAgent(agentId, undefined, { incarnation: result.creation.identity.incarnation });
     return result;
   }

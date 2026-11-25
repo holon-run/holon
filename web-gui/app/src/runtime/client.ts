@@ -1317,6 +1317,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       agentId: string,
       template: string,
       name?: string,
+      initialResponseLanguage?: string,
     ): Promise<import("./agent-creation").AgentCreateResponse> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
@@ -1325,7 +1326,11 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/control/agents/${encodeURIComponent(agentId)}/create`,
-        { template, ...(name === undefined ? {} : { name }) },
+        {
+          template,
+          ...(name === undefined ? {} : { name }),
+          ...(initialResponseLanguage === undefined ? {} : { initial_response_language: initialResponseLanguage }),
+        },
         requestHeaders,
       );
     },

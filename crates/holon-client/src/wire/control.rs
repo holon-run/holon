@@ -273,6 +273,12 @@ pub struct CreateAgentRequest {
     pub template: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// One-time hint for the language of the new agent's first default
+    /// bootstrap reply. It only shapes that single runtime-owned bootstrap
+    /// instruction: it never becomes an agent preference, and it does not
+    /// affect later turns, existing agents, or explicit initial messages.
+    #[serde(default)]
+    pub initial_response_language: Option<String>,
 }
 fn control_prompt_attachment_schema(kind: &'static str) -> schemars::Schema {
     schemars::json_schema!({
