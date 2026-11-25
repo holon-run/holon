@@ -11,6 +11,9 @@ The script keeps existing file paths (no markup changes) and re-encodes:
 * cover/decorative WebP images: same aspect ratio, width capped, quality 82
 * `assets/lite-paper/*.webp` screenshots: width capped, lossless WebP
 * `assets/logo.png`: capped to a small square, real PNG output
+* `assets/logo.webp`: derived from `assets/logo.png` for the page header, where
+  the logo is downloaded on every page view; the PNG stays for structured data
+  and social crawlers that expect a raster icon
 
 Screenshots stay lossless because they contain UI text; lossy WebP blurs it.
 When adding a screenshot, downscale it, encode lossless WebP, and update its
@@ -38,6 +41,7 @@ MAX_WEBP_WIDTH = 1600
 WEBP_QUALITY = 82
 MAX_SCREENSHOT_WIDTH = 1600
 LOGO_SIZE = 256
+LOGO_WEBP_QUALITY = 82
 MIN_SAVING_RATIO = 0.10
 
 WEBP_GLOBS = ("assets/*.webp",)
@@ -82,27 +86,48 @@ def encode_logo(image: Image.Image) -> tuple[bytes, tuple[int, int]]:
     return buffer.getvalue(), converted.size
 
 
+def encode_logo_webp(image: Image.Image) -> tuple[bytes, tuple[int, int]]:
+    converted = image.convert("RGBA" if image.mode in ("RGBA", "LA") else "RGB")
+    converted.thumbnail((LOGO_SIZE, LOGO_SIZE), Image.LANCZOS)
+    buffer = io.BytesIO()
+    converted.save(buffer, "WEBP", quality=LOGO_WEBP_QUALITY, method=6)
+    return buffer.getvalue(), converted.size
+
+
 ENCODERS = {
     "webp": encode_webp,
     "screenshot_lossless": encode_screenshot_lossless,
     "screenshot_png": encode_screenshot_png,
     "logo": encode_logo,
+    "logo_webp": encode_logo_webp,
 }
 
 
-def candidates() -> list[tuple[Path, str]]:
-    found: list[tuple[Path, str]] = []
+def candidates() -> list[tuple[Path, str, Path | None]]:
+    """Return (target path, encoder key, source path) triples.
+
+    A source path is set only for derived assets that are encoded from another
+    file, such as the header logo WebP built from the PNG logo.
+    """
+    found: list[tuple[Path, str, Path | None]] = []
     for pattern in WEBP_GLOBS:
-        found.extend((path, "webp") for path in sorted(SITE_ROOT.glob(pattern)))
+        found.extend(
+            (path, "webp", None) for path in sorted(SITE_ROOT.glob(pattern))
+        )
     for pattern in SCREENSHOT_GLOBS:
         found.extend(
-            (path, "screenshot_lossless") for path in sorted(SITE_ROOT.glob(pattern))
+            (path, "screenshot_lossless", None)
+            for path in sorted(SITE_ROOT.glob(pattern))
         )
     for pattern in SCREENSHOT_PNG_GLOBS:
-        found.extend((path, "screenshot_png") for path in sorted(SITE_ROOT.glob(pattern)))
+        found.extend(
+            (path, "screenshot_png", None)
+            for path in sorted(SITE_ROOT.glob(pattern))
+        )
     logo = SITE_ROOT / "assets" / "logo.png"
     if logo.exists():
-        found.append((logo, "logo"))
+        found.append((logo, "logo", None))
+        found.append((SITE_ROOT / "assets" / "logo.webp", "logo_webp", logo))
     return found
 
 
@@ -120,11 +145,11 @@ def main() -> int:
     changed = 0
     pending: list[str] = []
 
-    for path, kind in candidates():
-        before = path.stat().st_size
+    for path, kind, source in candidates():
+        before = path.stat().st_size if path.exists() else 0
         total_before += before
         try:
-            with Image.open(path) as image:
+            with Image.open(source or path) as image:
                 image.load()
                 payload, size = ENCODERS[kind](image)
         except OSError as error:
@@ -133,7 +158,7 @@ def main() -> int:
             continue
 
         after = len(payload)
-        if after >= before * (1 - MIN_SAVING_RATIO):
+        if before and after >= before * (1 - MIN_SAVING_RATIO):
             total_after += before
             continue
 

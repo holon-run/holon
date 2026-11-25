@@ -45,10 +45,12 @@ keyboard disclosure controls, heading jumps, and scroll highlighting.
 
 `../assets/` is published byte-for-byte, so an oversized export is an oversized
 page. `python3 optimize-assets.py` re-encodes covers (WebP, quality 82, width
-capped), screenshots (lossless WebP, width capped), and the logo (small square
-PNG) in place, and skips files that would not shrink by 10%. Run it after adding
-or replacing an image, and use `python3 optimize-assets.py --check` to see
-remaining work without writing.
+capped), screenshots (lossless WebP, width capped), and the logo in place, and
+skips files that would not shrink by 10%. It also derives `assets/logo.webp`
+from `assets/logo.png`: the page header loads the WebP on every page view, while
+the PNG stays for structured data and social crawlers that expect a raster icon.
+Run it after adding or replacing an image, and use
+`python3 optimize-assets.py --check` to see remaining work without writing.
 
 Keep screenshots lossless: they contain UI text, and lossy WebP blurs it.
 
