@@ -4897,6 +4897,8 @@ impl RuntimeHandle {
         let has_open_attempt = protocol_state
             .and_then(|protocol| protocol.open_attempt())
             .is_some();
+        let target_work_item_in_flight =
+            completion_target_owns_open_attempt(protocol_state, existing.id.as_str());
 
         let settlement = match authority {
             WorkItemCompletionAuthority::AgentExecution {
@@ -4927,7 +4929,7 @@ impl RuntimeHandle {
                 if authorized_work_item_id == Some(existing.id.as_str()) {
                     WorkItemCompletionSettlement::BoundExecution
                 } else {
-                    if has_open_attempt {
+                    if target_work_item_in_flight {
                         return Err(work_item_execution_active_error(existing));
                     }
                     WorkItemCompletionSettlement::Detached
@@ -5127,6 +5129,9 @@ impl RuntimeHandle {
                 } else {
                     crate::runtime_db::transitions::ExecutionProtocolTransition::default()
                 };
+            let completion_command_lane = (prepared.settlement
+                == WorkItemCompletionSettlement::Detached)
+                .then(|| detached_completion_command_lane(&prepared));
             let commit = {
                 let mut mutation = self.begin_mutation().await?;
                 mutation
@@ -5157,8 +5162,7 @@ impl RuntimeHandle {
                         execution_protocol,
                         true,
                         None,
-                        (prepared.settlement == WorkItemCompletionSettlement::Detached)
-                            .then_some(WorkCommandLane::Idle),
+                        completion_command_lane,
                     )
                     .await
             };
@@ -5196,6 +5200,7 @@ impl RuntimeHandle {
         let execution_protocol =
             execution_protocol_detached_completion_transition_from_prepared(&prepared)?;
         let tool_execution = prepared.tool_execution.clone();
+        let command_lane = detached_completion_command_lane(&prepared);
         let command = crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
             agent_id: record.agent_id.clone(),
             work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -5229,7 +5234,7 @@ impl RuntimeHandle {
                         execution_protocol,
                         true,
                         Some(tool_execution.clone()),
-                        Some(WorkCommandLane::Idle),
+                        Some(command_lane.clone()),
                     )
                     .await
             }?
@@ -5246,7 +5251,7 @@ impl RuntimeHandle {
                         execution_protocol,
                         true,
                         None,
-                        Some(WorkCommandLane::Idle),
+                        Some(command_lane.clone()),
                     )
                     .await
             }?
@@ -5764,6 +5769,62 @@ impl RuntimeHandle {
 fn task_not_found_error(task_id: &str) -> RuntimeError {
     RuntimeError::not_found("task_not_found", format!("task {task_id} not found"))
         .with_safe_context("task_id", task_id)
+}
+
+/// Completion ownership follows the target WorkItem, not the agent lane.
+///
+/// Only an open attempt that the target WorkItem itself owns makes the target
+/// in flight. An attempt owned by another WorkItem (including the finishing
+/// turn of a restart after `WaitFor(operator_input)`) leaves the target
+/// detached, so the active execution can still complete it.
+pub(super) fn completion_target_owns_open_attempt(
+    protocol_state: Option<&crate::domain::execution_protocol::ExecutionProtocolState>,
+    work_item_id: &str,
+) -> bool {
+    let Some(protocol) = protocol_state else {
+        return false;
+    };
+    let mut open_attempts = protocol.attempts.values().filter(|attempt| {
+        attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+    });
+    let Some(open_attempt) = open_attempts.next() else {
+        return false;
+    };
+    debug_assert!(
+        open_attempts.next().is_none(),
+        "execution protocol should hold at most one open attempt"
+    );
+    open_attempt.turn_owner().work_item_id() == Some(work_item_id)
+}
+
+/// A detached completion issued from a live turn belongs to that turn, so its
+/// write must satisfy the turn lane instead of requiring an idle agent lane.
+/// The same command from an idle agent (control plane) still requires an idle
+/// lane, so a busy lane continues to reject cross-WorkItem writes.
+fn detached_completion_command_lane(prepared: &PreparedWorkItemCompletion) -> WorkCommandLane {
+    let Some(binding) = prepared
+        .expected_agent_state
+        .current_execution_binding
+        .as_ref()
+    else {
+        return WorkCommandLane::Idle;
+    };
+    let binding_turn_in_flight = prepared
+        .expected_execution_protocol_state
+        .as_ref()
+        .and_then(|protocol| protocol.open_attempt())
+        .is_some_and(|attempt| {
+            attempt.turn_id.as_deref() == Some(binding.turn_id.as_str())
+                && attempt.source_message_id.as_deref() == Some(binding.source_message_id.as_str())
+        });
+    if binding_turn_in_flight {
+        WorkCommandLane::Turn {
+            turn_id: binding.turn_id.clone(),
+            message_id: binding.source_message_id.clone(),
+        }
+    } else {
+        WorkCommandLane::Idle
+    }
 }
 
 fn work_item_execution_active_error(record: &WorkItemRecord) -> anyhow::Error {
