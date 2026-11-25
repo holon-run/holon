@@ -38,6 +38,7 @@ pub fn record_span(context: &TraceContext, span: TraceSpan) {
                 completed_at: span.completed_at,
                 duration_us: span.duration_us,
                 span_count: 0,
+                dropped_spans_by_name: std::collections::BTreeMap::new(),
                 dropped_spans: 0,
                 error_count: 0,
                 spans: Vec::new(),
@@ -51,8 +52,14 @@ pub fn record_span(context: &TraceContext, span: TraceSpan) {
             trace.error_count = trace.error_count.saturating_add(1);
         }
         if trace.spans.len() == SPANS_PER_TRACE_LIMIT {
-            trace.spans.remove(0);
+            let dropped = trace.spans.remove(0);
             trace.dropped_spans = trace.dropped_spans.saturating_add(1);
+            *trace.dropped_spans_by_name.entry(dropped.name).or_default() += 1;
+            debug_assert_eq!(
+                trace.dropped_spans_by_name.values().sum::<u64>(),
+                trace.dropped_spans,
+                "classified dropped spans must sum to dropped_spans"
+            );
         }
         trace.spans.push(span);
         store.traces.push_front(trace.clone());

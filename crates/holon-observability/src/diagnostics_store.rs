@@ -344,6 +344,7 @@ fn open_connection(path: &Path) -> Result<Connection> {
          CREATE INDEX IF NOT EXISTS traces_completed_at_idx
              ON traces(completed_at DESC);",
     )?;
+    ensure_dropped_spans_by_name_column(&connection)?;
     if let Err(error) = holon_domain::private_fs::restrict_sqlite_database(path) {
         tracing::warn!(
             db = %path.display(),
@@ -352,6 +353,23 @@ fn open_connection(path: &Path) -> Result<Connection> {
         );
     }
     Ok(connection)
+}
+
+/// Adds the nullable `dropped_spans_by_name` classification column to databases
+/// written by older builds. `NULL` means the row predates classification.
+fn ensure_dropped_spans_by_name_column(connection: &Connection) -> Result<()> {
+    let mut statement = connection.prepare("PRAGMA table_info(traces)")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if columns
+        .iter()
+        .any(|column| column == "dropped_spans_by_name")
+    {
+        return Ok(());
+    }
+    connection.execute_batch("ALTER TABLE traces ADD COLUMN dropped_spans_by_name TEXT;")?;
+    Ok(())
 }
 
 fn run_writer(
@@ -493,14 +511,15 @@ fn persist_trace(transaction: &Transaction<'_>, trace: &RecentTrace) -> Result<(
     transaction.execute(
         "INSERT INTO traces (
              trace_id, started_at, completed_at, duration_us, span_count,
-             dropped_spans, error_count, search_text, trace_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             dropped_spans, dropped_spans_by_name, error_count, search_text, trace_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(trace_id) DO UPDATE SET
              started_at = excluded.started_at,
              completed_at = excluded.completed_at,
              duration_us = excluded.duration_us,
              span_count = excluded.span_count,
              dropped_spans = excluded.dropped_spans,
+             dropped_spans_by_name = excluded.dropped_spans_by_name,
              error_count = excluded.error_count,
              search_text = excluded.search_text,
              trace_json = excluded.trace_json",
@@ -511,6 +530,7 @@ fn persist_trace(transaction: &Transaction<'_>, trace: &RecentTrace) -> Result<(
             trace.duration_us as i64,
             trace.span_count as i64,
             trace.dropped_spans as i64,
+            serde_json::to_string(&trace.dropped_spans_by_name)?,
             trace.error_count as i64,
             trace_search_text(trace),
             trace_json,

@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -224,6 +225,13 @@ pub struct RecentTrace {
     pub completed_at: chrono::DateTime<chrono::Utc>,
     pub duration_us: u64,
     pub span_count: usize,
+    /// Span-name breakdown of `dropped_spans`.
+    ///
+    /// Empty when no span was dropped, or when the trace came from a build
+    /// that predates classified dropping. Whenever the persisted column is
+    /// non-NULL the map sums exactly to `dropped_spans`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dropped_spans_by_name: BTreeMap<String, u64>,
     pub dropped_spans: u64,
     pub error_count: usize,
     pub spans: Vec<TraceSpan>,
@@ -236,6 +244,9 @@ pub struct RecentTraceSummary {
     pub completed_at: chrono::DateTime<chrono::Utc>,
     pub duration_us: u64,
     pub span_count: usize,
+    /// Span-name breakdown of `dropped_spans`; see [`RecentTrace`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dropped_spans_by_name: BTreeMap<String, u64>,
     pub dropped_spans: u64,
     pub error_count: usize,
 }
@@ -248,6 +259,7 @@ impl From<&RecentTrace> for RecentTraceSummary {
             completed_at: trace.completed_at,
             duration_us: trace.duration_us,
             span_count: trace.span_count,
+            dropped_spans_by_name: trace.dropped_spans_by_name.clone(),
             dropped_spans: trace.dropped_spans,
             error_count: trace.error_count,
         }

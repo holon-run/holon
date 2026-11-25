@@ -1,6 +1,7 @@
 use super::*;
 use crate::observability::{completed_span_at, TraceAttributes, TraceContext, TraceSpanStatus};
 use chrono::{TimeZone, Utc};
+use std::collections::BTreeMap;
 
 fn trace(trace_id: &str, duration_ms: i64, status: TraceSpanStatus) -> RecentTrace {
     let started_at = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
@@ -30,6 +31,7 @@ fn trace(trace_id: &str, duration_ms: i64, status: TraceSpanStatus) -> RecentTra
         completed_at,
         duration_us: duration_ms as u64 * 1_000,
         span_count: 1,
+        dropped_spans_by_name: Default::default(),
         dropped_spans: 0,
         error_count: usize::from(status == TraceSpanStatus::Error),
         spans: vec![span],
@@ -235,4 +237,110 @@ fn writer_stats_report_persisted_filtered_and_retention_counts() {
     assert_eq!(stats.retention_deleted_traces, 1);
     assert_eq!(stats.dropped_traces, 0);
     assert_eq!(stats.writer_failures, 0);
+}
+
+#[test]
+fn dropped_spans_by_name_round_trips_through_persistence() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("diagnostics.sqlite");
+    let mut connection = open_connection(&path).unwrap();
+    let transaction = connection.transaction().unwrap();
+    let mut classified = trace("classified", 10, TraceSpanStatus::Error);
+    classified.dropped_spans = 3;
+    classified.dropped_spans_by_name = BTreeMap::from([
+        ("holon.provider.attempt".to_string(), 2_u64),
+        ("holon.turn".to_string(), 1_u64),
+    ]);
+    persist_trace(&transaction, &classified).unwrap();
+    transaction.commit().unwrap();
+
+    let persisted = persistent_trace(&path, "classified").unwrap().unwrap();
+    assert_eq!(persisted.dropped_spans, 3);
+    assert_eq!(
+        persisted.dropped_spans_by_name,
+        classified.dropped_spans_by_name
+    );
+
+    let summaries = search_persistent_traces(&path, "classified", 10).unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(
+        summaries[0].dropped_spans_by_name,
+        classified.dropped_spans_by_name
+    );
+
+    let raw: String = open_connection(&path)
+        .unwrap()
+        .query_row(
+            "SELECT dropped_spans_by_name FROM traces WHERE trace_id = ?1",
+            ["classified"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        raw,
+        serde_json::to_string(&classified.dropped_spans_by_name).unwrap()
+    );
+}
+
+#[test]
+fn legacy_rows_with_null_classification_read_as_unclassified() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("diagnostics.sqlite");
+    let connection = open_connection(&path).unwrap();
+    let mut legacy = trace("legacy", 10, TraceSpanStatus::Error);
+    legacy.dropped_spans = 5;
+    let legacy_json = serde_json::to_string(&legacy).unwrap();
+    assert!(
+        !legacy_json.contains("dropped_spans_by_name"),
+        "an unclassified trace must not serialize the breakdown"
+    );
+    connection
+        .execute(
+            "INSERT INTO traces (
+                 trace_id, started_at, completed_at, duration_us, span_count,
+                 dropped_spans, error_count, search_text, trace_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                legacy.trace_id,
+                legacy.started_at.to_rfc3339(),
+                legacy.completed_at.to_rfc3339(),
+                legacy.duration_us as i64,
+                legacy.span_count as i64,
+                legacy.dropped_spans as i64,
+                legacy.error_count as i64,
+                trace_search_text(&legacy),
+                legacy_json,
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    let persisted = persistent_trace(&path, "legacy").unwrap().unwrap();
+    assert_eq!(persisted.dropped_spans, 5);
+    assert!(persisted.dropped_spans_by_name.is_empty());
+    assert_eq!(
+        search_persistent_traces(&path, "legacy", 10).unwrap()[0].dropped_spans_by_name,
+        BTreeMap::new()
+    );
+
+    // `NULL` marks an unclassified row; a classified row with nothing dropped
+    // stores an explicit empty JSON object so operators can tell them apart.
+    let mut connection = open_connection(&path).unwrap();
+    let transaction = connection.transaction().unwrap();
+    persist_trace(
+        &transaction,
+        &trace("classified-empty", 10, TraceSpanStatus::Error),
+    )
+    .unwrap();
+    transaction.commit().unwrap();
+    let mut statement = connection
+        .prepare("SELECT dropped_spans_by_name FROM traces WHERE trace_id = ?1")
+        .unwrap();
+    let mut raw = |trace_id: &str| {
+        statement
+            .query_row([trace_id], |row| row.get::<_, Option<String>>(0))
+            .unwrap()
+    };
+    assert_eq!(raw("legacy"), None);
+    assert_eq!(raw("classified-empty"), Some("{}".to_string()));
 }
