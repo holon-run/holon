@@ -5197,12 +5197,7 @@ impl RuntimeHost {
                 reason: "the configured default agent cannot be deleted".into(),
             });
         }
-        let operator_deletable = (identity.visibility == AgentVisibility::Public
-            && identity.ownership() == AgentOwnership::SelfOwned)
-            || (identity.kind == AgentKind::Child
-                && identity.visibility == AgentVisibility::Private
-                && identity.ownership() == AgentOwnership::ParentSupervised);
-        if !operator_deletable {
+        if !identity.has_operator_delete_surface() {
             return Err(PublicAgentError::DeleteForbidden {
                 agent_id: agent_id.to_string(),
                 reason: "only public self-owned agents and private parent-supervised child agents have an operator delete surface".into(),
@@ -5271,9 +5266,7 @@ impl RuntimeHost {
             .ok_or_else(|| PublicAgentError::NotFound {
                 agent_id: agent_id.to_string(),
             })?;
-        if identity.visibility != AgentVisibility::Public
-            || identity.ownership() != AgentOwnership::SelfOwned
-        {
+        if !identity.has_operator_delete_surface() {
             return Err(PublicAgentError::Private {
                 agent_id: agent_id.to_string(),
             });
