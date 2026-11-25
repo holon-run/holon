@@ -20,9 +20,7 @@ use holon_storage::connection::RuntimeDbLock;
 
 use crate::DaemonConfig;
 
-use super::state::{
-    latest_known_runtime_failure, merge_latest_failure, read_persisted_daemon_failure,
-};
+use super::state::{merge_latest_failure, read_persisted_daemon_failure};
 use super::{
     cleanup_daemon_state, clear_persisted_daemon_lifecycle_failures, daemon_log_hint, daemon_paths,
     load_daemon_desired_running, load_daemon_metadata, persist_daemon_desired_running,
@@ -914,6 +912,12 @@ fn config_for_runtime_status(
 fn stopped_status(config: &dyn DaemonConfig) -> Result<DaemonStatusView> {
     // Invalid desired configuration must not prevent safe shutdown or update preparation.
     let desired_serve = desired_serve_status(config).ok().flatten();
+    // Lifecycle status describes daemon lifecycle state only, so it reads the
+    // bounded daemon-persisted failure file instead of the runtime DB. This
+    // mirrors the stopped branch of `daemon_status_from_probe`; opening the DB
+    // here raced the exiting runtime and surfaced raw `database is locked`
+    // after a successful stop (#4497).
+    let persisted = read_persisted_daemon_failure(config);
     Ok(DaemonStatusView {
         ok: true,
         state: DaemonLifecycleState::Stopped,
@@ -934,8 +938,8 @@ fn stopped_status(config: &dyn DaemonConfig) -> Result<DaemonStatusView> {
         config_fingerprint_match: None,
         activity: None,
         tunnel: None,
-        last_failure: latest_known_runtime_failure(config)?,
-        failure_diagnostics: None,
+        last_failure: persisted.failure,
+        failure_diagnostics: Some(persisted.diagnostics),
         stale_files: stale_files(config),
         message: "runtime is not running".into(),
     })

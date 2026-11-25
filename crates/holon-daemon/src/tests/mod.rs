@@ -17,11 +17,23 @@ use super::*;
 
 const TEST_PRODUCT_VERSION: &str = "test-build";
 
+/// Controls whether the fixture is allowed to read the runtime DB.
+///
+/// Real daemon configs expose `latest_public_runtime_failure`, which opens and
+/// migrates the runtime SQLite database. Lifecycle paths must not use it while
+/// stopping a daemon (#4497), so tests can forbid it and fail on any read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuntimeDbFailureAccess {
+    Allowed,
+    Forbidden,
+}
+
 #[derive(Clone)]
 struct TestConfig {
     home_dir: PathBuf,
     socket_path: PathBuf,
     http_addr: String,
+    runtime_db_failure_access: RuntimeDbFailureAccess,
     _home: Arc<tempfile::TempDir>,
 }
 
@@ -32,6 +44,7 @@ fn test_config() -> TestConfig {
         socket_path: home_dir.join("run/holon.sock"),
         home_dir,
         http_addr: "127.0.0.1:0".into(),
+        runtime_db_failure_access: RuntimeDbFailureAccess::Allowed,
         _home: Arc::new(home),
     }
 }
@@ -88,7 +101,12 @@ impl DaemonConfig for TestConfig {
     }
 
     fn latest_public_runtime_failure(&self) -> Result<Option<RuntimeFailureSummary>> {
-        Ok(None)
+        match self.runtime_db_failure_access {
+            RuntimeDbFailureAccess::Allowed => Ok(None),
+            RuntimeDbFailureAccess::Forbidden => {
+                panic!("daemon lifecycle path must not read the runtime DB (#4497)")
+            }
+        }
     }
 }
 
@@ -1747,6 +1765,57 @@ async fn daemon_stop_treats_missing_pid_process_as_stale_state() {
     assert_eq!(stopped.status.state, DaemonLifecycleState::Stopped);
     assert!(!paths.pid_path.exists());
     assert!(!paths.metadata_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_stop_success_path_does_not_read_runtime_db() {
+    // The fixture panics if a lifecycle path reads the runtime DB.
+    let config = TestConfig {
+        runtime_db_failure_access: RuntimeDbFailureAccess::Forbidden,
+        ..test_config()
+    };
+    let paths = daemon_paths(&config);
+    let pid = dead_pid();
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    let metadata = RuntimeServiceMetadata {
+        pid,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config.config_fingerprint().unwrap(),
+        product_version: TEST_PRODUCT_VERSION.into(),
+        control_protocol_version: crate::DAEMON_CONTROL_PROTOCOL_VERSION,
+        lifecycle_owner: crate::DaemonLifecycleOwner::Standalone,
+        executable_path: std::env::current_exe().unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    // A successful stop clears persisted lifecycle failures, so lifecycle status
+    // must report the empty daemon-persisted source instead of a DB-derived one.
+    persist_last_runtime_failure(
+        &config,
+        &RuntimeFailureSummary {
+            occurred_at: Utc::now(),
+            summary: "previous shutdown failed".into(),
+            phase: RuntimeFailurePhase::Shutdown,
+            detail_hint: Some(daemon_log_hint()),
+            failure_artifact: None,
+        },
+    )
+    .unwrap();
+
+    let stopped = daemon_stop(&config).await.unwrap();
+    assert_eq!(stopped.action, crate::DaemonLifecycleAction::Stop);
+    assert_eq!(stopped.status.state, DaemonLifecycleState::Stopped);
+    assert_eq!(stopped.status.last_failure, None);
+    assert_eq!(
+        stopped.status.failure_diagnostics,
+        Some(available_persisted_daemon_diagnostics())
+    );
 }
 
 #[cfg(unix)]
