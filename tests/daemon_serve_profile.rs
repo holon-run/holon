@@ -1858,3 +1858,91 @@ fn daemon_status_stays_bounded_under_db_write_and_migration_lock_contention() {
     fixture.stop();
     fixture.assert_no_secrets();
 }
+
+/// A running runtime must surface the conflicting-start and restart outcomes
+/// through the shared envelope with stable exit codes: a conflicting start is
+/// a blocked precondition, a successful restart is one `ok` envelope, and a
+/// rejected restart argv is a usage failure that leaves the runtime running.
+#[test]
+fn conflicting_start_and_restart_report_envelopes_with_exit_codes() {
+    let _lock = server_lock();
+    let mut fixture = Fixture::new();
+    let address = free_address();
+    fixture.start(&address);
+
+    // Conflicting start on a running runtime: blocked precondition, exit 21.
+    let other_address = free_address();
+    let output = fixture.run(&["daemon", "start", "--listen", &other_address]);
+    assert_eq!(output.status.code(), Some(21), "{}", output_text(&output));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "expected one JSON envelope: {error}\n{}",
+            output_text(&output)
+        )
+    });
+    assert_eq!(value["command"], "daemon.start", "{value}");
+    assert_eq!(value["status"], "blocked", "{value}");
+    assert!(value["data"].is_null(), "{value}");
+    assert_eq!(value["error"]["kind"], "precondition", "{value}");
+    assert_eq!(value["error"]["code"], "daemon_running", "{value}");
+    assert_eq!(value["error"]["retryable"], false, "{value}");
+
+    // Successful restart: exit 0 with one `ok` envelope for daemon.restart.
+    let restarted = fixture.run(&["daemon", "restart"]);
+    assert_eq!(
+        restarted.status.code(),
+        Some(0),
+        "{}",
+        output_text(&restarted)
+    );
+    let value: Value = serde_json::from_slice(&restarted.stdout).unwrap_or_else(|error| {
+        panic!(
+            "expected one JSON envelope: {error}\n{}",
+            output_text(&restarted)
+        )
+    });
+    assert_eq!(value["command"], "daemon.restart", "{value}");
+    assert_eq!(value["status"], "ok", "{value}");
+    assert!(value["error"].is_null(), "{value}");
+    assert_eq!(value["data"]["state"], "running", "{value}");
+
+    // Rejected restart argv: usage envelope, exit 1, runtime still healthy.
+    let rejected = fixture.run(&[
+        "daemon",
+        "restart",
+        "--token",
+        "restart-envelope-conflict-token",
+        "--token-file",
+        "control.token",
+    ]);
+    assert_eq!(
+        rejected.status.code(),
+        Some(1),
+        "{}",
+        output_text(&rejected)
+    );
+    let value: Value = serde_json::from_slice(&rejected.stdout).unwrap_or_else(|error| {
+        panic!(
+            "expected one JSON envelope: {error}\n{}",
+            output_text(&rejected)
+        )
+    });
+    assert_eq!(value["command"], "daemon.restart", "{value}");
+    assert_eq!(value["status"], "failed", "{value}");
+    assert!(value["data"].is_null(), "{value}");
+    assert_eq!(value["error"]["kind"], "usage", "{value}");
+    assert_eq!(value["error"]["code"], "invalid_serve_options", "{value}");
+    let rejected_text = output_text(&rejected);
+    assert!(
+        !rejected_text.contains("restart-envelope-conflict-token"),
+        "the rejected argv token must not leak into any output: {rejected_text}"
+    );
+
+    assert_eq!(
+        fixture.success(&["daemon", "status"])["healthy"],
+        true,
+        "rejected argv must not disturb the running runtime"
+    );
+    fixture.stop();
+    fixture.assert_no_secrets();
+}
