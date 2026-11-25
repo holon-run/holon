@@ -85,16 +85,11 @@ fn reviewed_subscription_model(
     supports_reasoning: bool,
     image_input: bool,
 ) -> BuiltInModelMetadata {
-    let tier_note = if provider == "volcengine" && model == "kimi-k3" {
-        " Kimi K3 requires Medium/Large/Max on Agent Plan."
-    } else {
-        ""
-    };
     BuiltInModelMetadata {
         model_ref: ModelRef::new(provider_id(provider), model),
         display_name: display_name.into(),
         description: format!(
-            "{provider} {endpoint} subscription {display_name}; exact token limits unconfirmed.{tier_note}"
+            "{provider} {endpoint} subscription {display_name}; exact token limits unconfirmed."
         ),
         context_window_tokens: None,
         effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
@@ -258,12 +253,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
     );
     definitions.extend(
         [
-            (
-                "doubao-seed-2-0-code-preview-260215",
-                Some("Doubao Seed 2.0 Code"),
-            ),
             ("doubao-seed-2-0-pro-260215", None),
-            ("doubao-seed-2-0-lite-260215", None),
             ("deepseek-v3-2-251201", None),
             ("glm-5.2", None),
         ]
@@ -274,12 +264,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
     );
     definitions.extend(
         [
-            (
-                "doubao-seed-2-0-code-preview-260215",
-                Some("Doubao Seed 2.0 Code"),
-            ),
             ("doubao-seed-2-0-pro-260215", None),
-            ("doubao-seed-2-0-lite-260215", None),
             ("ark-code-latest", None),
             ("deepseek-v4-pro", None),
             ("deepseek-v4-flash", None),
@@ -301,7 +286,6 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             "deepseek-v4.1-flash",
             "deepseek-v4.1-flash-economy",
             "kimi-k2.8-preview",
-            "kimi-k3",
             "kimi-k3.1-pro",
             "glm-latest",
             "minimax-latest",
@@ -311,6 +295,17 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
         .into_iter()
         .map(|model| volcengine_route_definition("volcengine-agent", "plan", model, None)),
     );
+    definitions.push(BuiltInModelRouteDefinition {
+        legacy_provider: provider_id("volcengine-coding"),
+        model_ref: ModelRef::new(provider_id("volcengine"), "glm-5.4"),
+        endpoint: ProviderEndpointId::parse("coding").expect("valid endpoint"),
+        policy: BuiltInModelRoutePolicy {
+            context_window_tokens: Some(Some(1_024_000)),
+            default_max_output_tokens: Some(None),
+            max_output_tokens_upper_limit: Some(Some(131_072)),
+            ..BuiltInModelRoutePolicy::default()
+        },
+    });
     definitions.push(volcengine_route_definition(
         "volcengine-agent",
         "plan",
@@ -589,15 +584,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         catalog_model(
-            "volcengine",
-            "doubao-seed-2-0-code-preview-260215",
-            "Doubao Seed 2.0 Code Preview",
-            256_000,
-            4_096,
-            false,
-            true,
-        ),
-        catalog_model(
             "volcengine-coding",
             "ark-code-latest",
             "Ark Code Latest",
@@ -640,15 +626,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             204_800,
             128_000,
             true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-agent",
-            "doubao-seed-2-0-mini-260215",
-            "Doubao Seed 2.0 Mini",
-            256_000,
-            4_096,
-            false,
             false,
         ),
         catalog_model(
@@ -1247,7 +1224,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
                 true,
             ),
             ("kimi-k2.8-preview", "Kimi K2.8 Preview", true, true),
-            ("kimi-k3", "Kimi K3", true, true),
             ("kimi-k3.1-pro", "Kimi K3.1 Pro", true, false),
         ]
         .into_iter()
@@ -1420,20 +1396,14 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
     // Keep the shared metadata, but no longer register a default API route.
     // Append after existing candidates to preserve subscription defaults.
     entries.extend(
-        [
-            ("deepseek-v3-2-251201", "DeepSeek V3.2", 128_000),
-            (
-                "doubao-seed-2-0-lite-260215",
-                "Doubao Seed 2.0 Lite",
-                256_000,
-            ),
-        ]
-        .into_iter()
-        .map(|(model, name, context)| {
-            let mut entry = catalog_model("volcengine", model, name, context, 4_096, false, false);
-            entry.endpoint = Some(ProviderEndpointId::parse("coding").expect("valid endpoint"));
-            entry
-        }),
+        [("deepseek-v3-2-251201", "DeepSeek V3.2", 128_000)]
+            .into_iter()
+            .map(|(model, name, context)| {
+                let mut entry =
+                    catalog_model("volcengine", model, name, context, 4_096, false, false);
+                entry.endpoint = Some(ProviderEndpointId::parse("coding").expect("valid endpoint"));
+                entry
+            }),
     );
     // Native Responses IDs, independently reviewed against model-list.md and
     // responses-api-deep-thinking.md. Do not project dotted subscription IDs
@@ -1530,7 +1500,6 @@ fn volcengine_api_eos_keeps_independently_reviewed_subscription_routes() {
         "doubao-seed-1-6-251015",
         "doubao-seed-1-6-flash-250828",
         "doubao-seed-1-6-vision-250815",
-        "doubao-seed-2-0-lite-260215",
         "doubao-seed-2-0-mini-260215",
     ] {
         let api = ModelRouteRef::parse(&format!("volcengine@default/{model}")).unwrap();
@@ -1538,34 +1507,11 @@ fn volcengine_api_eos_keeps_independently_reviewed_subscription_routes() {
     }
     for (endpoint, model) in [
         ("coding", "deepseek-v3-2-251201"),
-        ("coding", "doubao-seed-2-0-lite-260215"),
-        ("plan", "doubao-seed-2-0-lite-260215"),
-        ("plan", "doubao-seed-2-0-mini-260215"),
         // EOS for these API versions is not until 2026-11-24 (UTC+8).
         ("default", "doubao-seed-2-0-pro-260215"),
-        ("default", "doubao-seed-2-0-code-preview-260215"),
     ] {
         let route = ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap();
         assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
-    }
-    let lite = ModelRef::new(provider_id("volcengine"), "doubao-seed-2-0-lite-260215");
-    let entries = late_entries();
-    let metadata = entries
-        .iter()
-        .find(|entry| entry.model_ref == lite)
-        .unwrap();
-    assert!(!metadata.capabilities.image_input);
-    for endpoint in ["coding", "plan"] {
-        let route = ModelRouteRef::parse(&format!("volcengine@{endpoint}/{}", lite.model)).unwrap();
-        let policy = catalog.resolve_route_policy(
-            &route,
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            &ContextConfig::default(),
-            8_192,
-        );
-        assert!(!policy.capabilities.image_input);
     }
 }
 
@@ -1661,10 +1607,7 @@ fn volcengine_native_additions_do_not_displace_surviving_preferences() {
             "volcengine@default/doubao-seed-2-0-pro-260215",
         ),
         ("volcengine-coding", "volcengine@coding/ark-code-latest"),
-        (
-            "volcengine-agent",
-            "volcengine@plan/doubao-seed-2-0-mini-260215",
-        ),
+        ("volcengine-agent", "volcengine@plan/MiniMax-M3"),
     ] {
         assert_eq!(
             catalog.preferred_route_for_provider(&provider_id(provider)),
@@ -1675,7 +1618,6 @@ fn volcengine_native_additions_do_not_displace_surviving_preferences() {
         ("ark-code-latest", "coding"),
         ("deepseek-v4-pro", "coding"),
         ("kimi-k3.1-pro", "coding"),
-        ("doubao-seed-2-0-code-preview-260215", "default"),
     ] {
         assert_eq!(
             catalog.preferred_route_for_model(&ModelRef::new(provider_id("volcengine"), model)),
@@ -1695,7 +1637,6 @@ fn volcengine_reviewed_subscription_models_do_not_imply_default_api_routes() {
         "glm-5.3-flash",
         "deepseek-v4.1-flash",
         "kimi-k2.8-preview",
-        "kimi-k3",
         "kimi-k3.1-pro",
     ] {
         for endpoint in ["coding", "plan"] {
@@ -1749,7 +1690,7 @@ fn reviewed_byteplus_vision_and_volcengine_alias_are_endpoint_scoped() {
 }
 
 #[test]
-fn volcengine_glm54_admits_only_agent_plan_and_scopes_image_input() {
+fn volcengine_glm54_scopes_plan_and_coding_contracts() {
     for catalog in [
         BuiltInModelCatalog::from_legacy_definitions(),
         BuiltInModelCatalog::new(),
@@ -1778,11 +1719,15 @@ fn volcengine_glm54_admits_only_agent_plan_and_scopes_image_input() {
         assert_eq!(plan.max_output_tokens_upper_limit, None);
         assert!(plan.reasoning_effort_options.is_empty());
 
-        for endpoint in ["default", "coding"] {
-            let other = ModelRouteRef::parse(&format!("volcengine@{endpoint}/glm-5.4")).unwrap();
-            assert!(catalog.get_route(&other).is_none());
-            assert!(!resolve(&other).capabilities.image_input);
-        }
+        let default = ModelRouteRef::parse("volcengine@default/glm-5.4").unwrap();
+        assert!(catalog.get_route(&default).is_none());
+        assert!(!resolve(&default).capabilities.image_input);
+
+        let coding = ModelRouteRef::parse("volcengine@coding/glm-5.4").unwrap();
+        assert!(catalog.get_route(&coding).is_some());
+        let coding_policy = resolve(&coding);
+        assert_eq!(coding_policy.context_window_tokens, Some(1_024_000));
+        assert_eq!(coding_policy.max_output_tokens_upper_limit, Some(131_072));
     }
 }
 

@@ -579,6 +579,7 @@ fn supplement_model_supported_by_provider(
                 | "doubao-seed-1-6-vision-250815"
                 | "doubao-seed-2-0-lite-260215"
                 | "doubao-seed-2-0-mini-260215"
+                | "doubao-seed-2-0-code-preview-260215"
         )
     {
         return false;

@@ -9,6 +9,36 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-26 incremental review
+
+Retire the eight Volcengine routes with affirmative endpoint-specific
+deprecation evidence:
+
+- `volcengine@default/doubao-seed-2-0-code-preview-260215`
+- `volcengine@coding/doubao-seed-2-0-code-preview-260215`
+- `volcengine@coding/doubao-seed-2-0-lite-260215`
+- `volcengine@plan/doubao-seed-2-0-code-preview-260215`
+- `volcengine@plan/doubao-seed-2-0-lite-260215`
+- `volcengine@plan/doubao-seed-2-0-mini-260215`
+- `volcengine@coding/kimi-k3`
+- `volcengine@plan/kimi-k3`
+
+The official [model deprecation notice](https://ark.volcengine.com/region:cn-beijing/docs/model-deprecation-notice.md)
+and separate [Coding Plan](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-model-deprecation.md)
+and [Agent Plan](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-model-deprecation-announcement.md)
+notices give EOS at **October 22, 2026 14:00 UTC+8** for
+`doubao-seed-2-0-lite-260215` and `doubao-seed-2-0-mini-260215`, at
+**November 24, 2026 14:00 UTC+8** for `doubao-seed-2-0-code-preview-260215`,
+and at **November 25, 2026 14:00 UTC+8** for `kimi-k3`. Keep the separately
+dated `doubao-seed-2-0-pro-260215` routes; its EOS is **January 22, 2027
+14:00 UTC+8**.
+
+Add only `volcengine@coding/glm-5.4`: the official [Coding Plan overview](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-plan-overview.md)
+and its HTML-equivalent page list the exact model ID with **1024K context** and
+**128K maximum output**. Do not add a general API route or change the existing
+`volcengine@plan/glm-5.4` route; its exact Agent Plan capacity remains unknown.
+[Field evidence](metadata-evidence.md#incremental-review-2026-11-26)
+
 ## 2026-11-25 incremental review
 
 Retire `dashscope@token-plan/qwen4-max-preview`: the official Chinese and English
