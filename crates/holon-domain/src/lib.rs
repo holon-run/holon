@@ -6,6 +6,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub mod calendar;
+pub mod closure;
+pub mod continuation;
 pub mod conversation;
 pub mod decision_telemetry;
 pub mod diagnostics;
