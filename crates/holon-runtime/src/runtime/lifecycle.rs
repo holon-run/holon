@@ -143,26 +143,19 @@ impl RuntimeHandle {
                 metadata_estimate_bytes: 0,
             },
         )?;
-        let (blocked_by, blocked_by_wait_id) = match closure.waiting_reason {
-            Some(waiting_reason) => turn_end_wait_blocker_state(&latest, waiting_reason),
-            None if closure.outcome == crate::types::ClosureOutcome::Failed => {
-                (latest.blocked_by.clone(), latest.blocked_by_wait_id.clone())
-            }
-            None => (None, None),
-        };
         let mut refreshed = latest.clone();
         let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
             self.agent_home().as_path(),
             &mut refreshed,
         )?;
-        let work_item_state_changed =
-            latest.state == WorkItemState::Open && latest.blocked_by != blocked_by;
-        let wrote_new_snapshot = work_item_state_changed || plan_artifact_changed;
+        // `blocked_by` is a display field owned by explicit agent writes. Turn-end
+        // neither derives it from the closure decision nor clears it.
+        let wrote_new_snapshot = plan_artifact_changed;
         let committed = if wrote_new_snapshot {
             let record = crate::types::WorkItemRecord {
                 revision: latest.revision + 1,
-                blocked_by,
-                blocked_by_wait_id,
+                blocked_by: latest.blocked_by.clone(),
+                blocked_by_wait_id: latest.blocked_by_wait_id.clone(),
                 updated_at: chrono::Utc::now(),
                 turn_id: current_turn_id,
                 ..refreshed
@@ -218,7 +211,6 @@ impl RuntimeHandle {
                 "committed_state": committed.state,
                 "wrote_new_snapshot": wrote_new_snapshot,
                 "plan_artifact_changed": plan_artifact_changed,
-                "work_item_state_changed": work_item_state_changed,
                 "closure": closure,
             }),
         ))
@@ -2682,25 +2674,6 @@ fn blocking_task_count(active_tasks: &[&TaskRecord]) -> usize {
     blocking_tasks(active_tasks).len()
 }
 
-fn waiting_reason_blocker(reason: crate::types::WaitingReason) -> &'static str {
-    match reason {
-        crate::types::WaitingReason::AwaitingOperatorInput => "Waiting on operator input.",
-        crate::types::WaitingReason::AwaitingExternalChange => "Waiting on an external change.",
-        crate::types::WaitingReason::AwaitingTaskResult => crate::runtime::TASK_RESULT_WAIT_BLOCKER,
-        crate::types::WaitingReason::AwaitingTimer => "Waiting on a timer.",
-    }
-}
-
-fn turn_end_wait_blocker_state(
-    latest: &WorkItemRecord,
-    waiting_reason: crate::types::WaitingReason,
-) -> (Option<String>, Option<String>) {
-    let blocker = waiting_reason_blocker(waiting_reason).to_string();
-    // Turn-end normalization may change the display text, but it must not
-    // discard ownership established when the blocker was registered.
-    (Some(blocker), latest.blocked_by_wait_id.clone())
-}
-
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "current_state_reads_tests.rs"]
@@ -3359,32 +3332,6 @@ mod tests {
             "wait_policy": wait_policy,
         }));
         task
-    }
-
-    #[test]
-    fn turn_end_wait_blocker_preserves_custom_reason_provenance() {
-        let mut work_item = WorkItemRecord::new("default", "wait", WorkItemState::Open);
-        work_item.blocked_by = Some("waiting for a custom task reason".into());
-        work_item.blocked_by_wait_id = Some("wait-1".into());
-
-        assert_eq!(
-            turn_end_wait_blocker_state(&work_item, WaitingReason::AwaitingTaskResult),
-            (
-                Some(crate::runtime::TASK_RESULT_WAIT_BLOCKER.into()),
-                Some("wait-1".into())
-            )
-        );
-    }
-
-    #[test]
-    fn turn_end_wait_blocker_does_not_invent_independent_provenance() {
-        let mut work_item = WorkItemRecord::new("default", "wait", WorkItemState::Open);
-        work_item.blocked_by = Some("operator-owned blocker".into());
-
-        assert_eq!(
-            turn_end_wait_blocker_state(&work_item, WaitingReason::AwaitingTaskResult),
-            (Some(crate::runtime::TASK_RESULT_WAIT_BLOCKER.into()), None)
-        );
     }
 
     #[test]

@@ -163,17 +163,6 @@ fn run_benchmarks(samples: usize, filter: &[String]) -> Result<Vec<BenchmarkResu
             || verify_fifo_projection(&storage, &runnable_ids),
         )?);
     }
-    if benchmark_selected(filter, "scheduler.due_rechecks.50") {
-        results.push(measure("scheduler.due_rechecks.50", samples, 1, || {
-            let due = storage.due_blocked_work_item_rechecks(AGENT_ID, now)?;
-            anyhow::ensure!(
-                due.len() == LEGACY_RECHECK_ITEMS,
-                "expected 50 due rechecks"
-            );
-            black_box(due);
-            Ok(())
-        })?);
-    }
     if benchmark_selected(filter, "scheduler.active_waits.50") {
         results.push(measure("scheduler.active_waits.50", samples, 1, || {
             let waits = storage.active_wait_conditions_for_agent(AGENT_ID)?;
@@ -235,8 +224,8 @@ fn seed_scheduler_state(storage: &AppStorage, now: chrono::DateTime<Utc>) -> Res
         storage.append_work_item(&item)?;
     }
 
-    // Legacy recheck rows still exercise the storage query, but are ordinary FIFO
-    // candidates in the scheduler projection.
+    // Legacy recheck rows keep the projection covered by blocked work items and
+    // stay ordinary FIFO candidates; no recheck query reads them anymore.
     for index in 0..LEGACY_RECHECK_ITEMS {
         let mut item = WorkItemRecord::new(
             AGENT_ID,

@@ -84,7 +84,7 @@ jobs:
             HOLON_BENCH_FILTER="runtime_db.open_and_migrate.fresh,projection.agent_summary_storage.50_briefs_100_events" \
             cargo bench --locked --bench runtime_db > target/performance/runtime_db.json
           HOLON_BENCH_SAMPLES=5 \
-            HOLON_BENCH_FILTER="scheduler.work_queue_read_model.200,scheduler.due_rechecks.50,scheduler.active_waits.50" \
+            HOLON_BENCH_FILTER="scheduler.work_queue_read_model.200,scheduler.active_waits.50" \
             cargo bench --locked --bench scheduler > target/performance/scheduler.json
           HOLON_BENCH_SAMPLES=5 \
             HOLON_BENCH_FILTER="http.runtime_performance.100,http.work_items.200x10" \

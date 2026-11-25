@@ -1117,23 +1117,6 @@ impl AppStorage {
         self.read_models().waiting_contract_anchor()
     }
 
-    pub fn due_blocked_work_item_rechecks(
-        &self,
-        agent_id: &str,
-        now: DateTime<Utc>,
-    ) -> Result<Vec<WorkItemRecord>> {
-        let runtime_db = self.runtime_db.clone();
-        return runtime_db.work_items().due_blocked_rechecks(agent_id, now);
-    }
-
-    pub fn next_blocked_work_item_recheck_at(
-        &self,
-        agent_id: &str,
-    ) -> Result<Option<DateTime<Utc>>> {
-        let runtime_db = self.runtime_db.clone();
-        return runtime_db.work_items().next_recheck_at(agent_id);
-    }
-
     pub fn latest_work_item(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
         let runtime_db = self.runtime_db.clone();
         return runtime_db.work_items().latest(work_item_id);

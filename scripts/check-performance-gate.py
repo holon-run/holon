@@ -16,7 +16,6 @@ EXPECTED = {
         "samples": 5,
         "limits_ns": {
             "scheduler.work_queue_read_model.200": 5_000_000_000,
-            "scheduler.due_rechecks.50": 2_000_000_000,
             "scheduler.active_waits.50": 5_000_000_000,
         },
     },
