@@ -7,8 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::params;
-use schemars::JsonSchema;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -33,15 +32,20 @@ use holon_memory_index::projection::{
     work_item_document, workspace_profile_document,
 };
 use holon_memory_index::{
-    all_backfill_source_kinds, document_key_for, projection_hash, IndexStore, MemoryDocument,
-    PendingSource, PreparedPendingSource, RebuildJob, WriterMetrics, INDEX_FILENAME,
-    MEMORY_INDEX_OUTBOX_CURSOR, MEMORY_INDEX_REBUILD_PHASE_CLEANUP_PENDING,
-    MEMORY_INDEX_REBUILD_PHASE_CLEANUP_SEEN, MEMORY_INDEX_REBUILD_PHASE_FINALIZE,
-    MEMORY_INDEX_REBUILD_PHASE_FINALIZE_COMMIT, MEMORY_INDEX_REBUILD_PHASE_PRUNE,
-    MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIR, MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIRED,
-    MEMORY_INDEX_REBUILD_PHASE_SCAN, MEMORY_INDEX_REBUILD_SOURCE_KIND,
+    all_backfill_source_kinds, document_key_for,
+    maintenance::{
+        AppliedOutboxPrefix, IndexOutboxChange, RebuildAdvance, RebuildPage, RebuildSourceRecord,
+        RebuildSources, RebuildStart,
+    },
+    projection_hash,
+    status::{aggregate_index_status, IndexOutboxStatus},
+    IndexStore, MemoryDocument, PendingSource, PreparedPendingSource, RebuildJob, WriterMetrics,
+    INDEX_FILENAME, MEMORY_INDEX_OUTBOX_CURSOR, MEMORY_INDEX_REBUILD_SOURCE_KIND,
 };
-pub use holon_memory_index::{MemoryGetResult, MemorySearchResult};
+pub use holon_memory_index::{
+    status::{MemorySearchIndexStatus, MemorySearchQueryResult},
+    MemoryGetResult, MemorySearchResult,
+};
 
 const LEGACY_INDEX_FILENAME: &str = "memory.sqlite3";
 
@@ -54,67 +58,6 @@ const GET_CHARS_DEFAULT: usize = 12_000;
 const GET_CHARS_MAX: usize = 50_000;
 
 const MEMORY_INDEX_REBUILD_DEFAULT_SLICE: usize = 500;
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct MemorySearchIndexStatus {
-    pub freshness: String,
-    /// Highest applied contiguous runtime outbox `change_seq`.
-    pub cursor: i64,
-    /// Monotonic produced watermark: highest `change_seq` ever appended for
-    /// the agent. Unlike the drained-outbox maximum, it never returns to 0.
-    pub high_watermark: i64,
-    /// Sequence distance `produced - applied`. Cross-agent global
-    /// autoincrement makes this an upper-bound hint only; `pending_count` is
-    /// the exact backlog metric.
-    pub lag: i64,
-    /// Exact pending outbox row count for this agent.
-    #[serde(default, skip_serializing_if = "is_zero_i64")]
-    pub pending_count: i64,
-    /// Age of the oldest pending outbox row, the real propagation delay.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oldest_pending_age_ms: Option<i64>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub indexing_needed: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub results_may_be_incomplete: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub consumption_was_limited: bool,
-    /// Failures hit by this index handle's current consume pass. Transient
-    /// by design; not a durable health history.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub skipped_error_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_indexed_at: Option<DateTime<Utc>>,
-    /// Machine-readable reasons the index is not currently fresh:
-    /// `index_missing`, `dirty_marker`, `backfill_incomplete`, `outbox_lag`,
-    /// `pending_sources`, `stale_projection`, `consume_error`. Empty when
-    /// fresh. The background daemon self-heals every reason; they are
-    /// diagnostic, not a manual-work order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stale_reasons: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rebuild_phase: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rebuild_documents_processed: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rebuild_started_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rebuild_last_progress_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct MemorySearchQueryResult {
-    pub results: Vec<MemorySearchResult>,
-    /// Aggregate status across the agents actually queried. For a
-    /// default-agent-only search this equals that agent's status exactly.
-    pub index_status: MemorySearchIndexStatus,
-    /// Per-agent status covering exactly the queried agents. Present only
-    /// when the query spanned more than one agent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub index_status_by_agent: Option<std::collections::BTreeMap<String, MemorySearchIndexStatus>>,
-}
 
 pub fn memory_index_path(storage: &AppStorage) -> PathBuf {
     storage.shared_indexes_dir().join(INDEX_FILENAME)
@@ -268,7 +211,7 @@ pub fn search_memory_query_for_agent_storages(
         let status = index.index_status(storage, filter_agent_id)?;
         index_status_by_agent.insert(filter_agent_id.clone(), status);
     }
-    let index_status = aggregate_index_status(index_status_by_agent.values());
+    let index_status = aggregate_index_status(&index_status_by_agent);
     // An empty agent_ids filter means default-agent-only; one status is the
     // whole story, so per-agent detail would be pure duplication.
     let index_status_by_agent = if index_status_by_agent.len() > 1 {
@@ -281,74 +224,6 @@ pub fn search_memory_query_for_agent_storages(
         index_status,
         index_status_by_agent,
     })
-}
-
-/// Merge per-agent statuses into one aggregate without pretending multiple
-
-/// agents' cursors are a single agent's: freshness is the worst, reasons are
-
-/// the union, pending counts sum, and sequence fields report cross-agent
-
-/// maxima with the details available per agent.
-
-fn aggregate_index_status<'a>(
-    statuses: impl Iterator<Item = &'a MemorySearchIndexStatus>,
-) -> MemorySearchIndexStatus {
-    let mut aggregate = MemorySearchIndexStatus {
-        freshness: "fresh".into(),
-        cursor: 0,
-        high_watermark: 0,
-        lag: 0,
-        pending_count: 0,
-        oldest_pending_age_ms: None,
-        indexing_needed: false,
-        results_may_be_incomplete: false,
-        consumption_was_limited: false,
-        skipped_error_count: 0,
-        last_indexed_at: None,
-        stale_reasons: Vec::new(),
-        rebuild_phase: None,
-        rebuild_documents_processed: None,
-        rebuild_started_at: None,
-        rebuild_last_progress_at: None,
-    };
-    let mut freshness_rank = 0; // fresh < stale < missing
-    let mut reasons_seen = std::collections::BTreeSet::new();
-    for status in statuses {
-        let rank = match status.freshness.as_str() {
-            "missing" => 2,
-            "stale" => 1,
-            _ => 0,
-        };
-        if rank > freshness_rank {
-            freshness_rank = rank;
-            aggregate.freshness = status.freshness.clone();
-        }
-        aggregate.cursor = aggregate.cursor.max(status.cursor);
-        aggregate.high_watermark = aggregate.high_watermark.max(status.high_watermark);
-        aggregate.lag = aggregate.lag.max(status.lag);
-        aggregate.pending_count += status.pending_count;
-        aggregate.oldest_pending_age_ms = aggregate
-            .oldest_pending_age_ms
-            .max(status.oldest_pending_age_ms);
-        aggregate.consumption_was_limited |= status.consumption_was_limited;
-        aggregate.skipped_error_count += status.skipped_error_count;
-        aggregate.last_indexed_at = match (aggregate.last_indexed_at, status.last_indexed_at) {
-            (Some(left), Some(right)) => Some(left.min(right)),
-            (left, right) => left.or(right),
-        };
-        if aggregate.rebuild_phase.is_none() {
-            aggregate.rebuild_phase = status.rebuild_phase.clone();
-            aggregate.rebuild_documents_processed = status.rebuild_documents_processed;
-            aggregate.rebuild_started_at = status.rebuild_started_at;
-            aggregate.rebuild_last_progress_at = status.rebuild_last_progress_at;
-        }
-        reasons_seen.extend(status.stale_reasons.iter().cloned());
-    }
-    aggregate.indexing_needed = aggregate.freshness != "fresh";
-    aggregate.results_may_be_incomplete = aggregate.indexing_needed;
-    aggregate.stale_reasons = reasons_seen.into_iter().collect();
-    aggregate
 }
 
 pub fn refresh_memory_index_bounded(
@@ -893,20 +768,12 @@ fn dirty_filename_for_agent(agent_id: &str) -> String {
     DIRTY_FILENAME.replace(".dirty", &format!(".{agent_key}.dirty"))
 }
 
-#[derive(Debug)]
-struct RebuildSourceRecord {
-    cursor: String,
-    documents: Vec<MemoryDocument>,
-    document_offset: usize,
-    total_documents: usize,
-}
-
-fn pending_source_from_outbox_row(row: &RuntimeIndexOutboxRow) -> PendingSource {
+fn pending_source_from_outbox_row(row: RuntimeIndexOutboxRow) -> PendingSource {
     PendingSource {
         document_key: document_key_for(&row.agent_id, &row.source_ref),
-        source_ref: row.source_ref.clone(),
-        source_kind: row.source_kind.clone(),
-        source_id: row.source_id.clone(),
+        source_ref: row.source_ref,
+        source_kind: row.source_kind,
+        source_id: row.source_id,
         operation: row.operation.as_str().to_string(),
     }
 }
@@ -1517,24 +1384,65 @@ fn file_updated_at(path: &Path) -> DateTime<Utc> {
         .unwrap_or_else(|_| Utc::now())
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
-fn is_zero(value: &usize) -> bool {
-    *value == 0
-}
-
-fn is_zero_i64(value: &i64) -> bool {
-    *value == 0
-}
-
 const WRITER_METRICS: WriterMetrics = WriterMetrics {
     enqueued: crate::diagnostics::record_memory_index_writer_enqueued,
     dequeued: crate::diagnostics::record_memory_index_writer_dequeued,
     timed_out: crate::diagnostics::record_memory_index_writer_timeout,
     queue_wait: crate::diagnostics::record_memory_index_writer_queue_wait,
 };
+
+struct RuntimeRebuildSources<'a> {
+    storage: &'a AppStorage,
+}
+
+impl RebuildSources for RuntimeRebuildSources<'_> {
+    fn start(&self, agent_id: &str) -> Result<RebuildStart> {
+        let runtime_db = self
+            .storage
+            .runtime_db()?
+            .context("runtime database is required for memory index rebuild")?;
+        let runtime_high_watermark = runtime_db
+            .runtime_index_outbox()
+            .produced_watermark_for_agent(agent_id)?;
+        let generation = Uuid::new_v4().simple().to_string();
+        let now = Utc::now();
+        Ok(RebuildStart {
+            generation,
+            runtime_high_watermark,
+            now,
+        })
+    }
+
+    fn consume_initial_dirty_marker(&self, job: &RebuildJob) -> Result<()> {
+        let dirty_path = self
+            .storage
+            .shared_indexes_dir()
+            .join(dirty_filename_for_agent(&job.agent_id));
+        if !dirty_path.exists() {
+            return Ok(());
+        }
+        let consumed_path = dirty_path.with_extension(format!("rebuild-{}.dirty", job.generation));
+        match fs::rename(&dirty_path, &consumed_path) {
+            Ok(()) => {
+                let _ = fs::remove_file(consumed_path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
+    fn read_page(&self, page: RebuildPage<'_>) -> Result<Vec<RebuildSourceRecord>> {
+        rebuild_source_records(
+            self.storage,
+            page.source_kind,
+            page.cursor,
+            page.document_offset > 0,
+            page.document_offset,
+            page.limit,
+        )
+    }
+}
 
 pub(crate) struct MemoryIndex {
     store: IndexStore,
@@ -1561,174 +1469,18 @@ impl MemoryIndex {
     }
 
     fn advance_rebuild(&mut self, storage: &AppStorage, slice_limit: usize) -> Result<bool> {
-        let agent_id = storage_agent_id(storage);
-        let mut remaining = slice_limit.max(1);
-        let started_job = if self.store.rebuild_job(&agent_id)?.is_none() {
-            self.start_rebuild_job(storage)?
-        } else {
-            false
-        };
-        let Some(initial_job) = self.store.rebuild_job(&agent_id)? else {
-            return Ok(false);
-        };
-        if started_job {
-            self.consume_initial_dirty_marker(storage, &initial_job)?;
-        }
-        loop {
-            let Some(job) = self.store.rebuild_job(&agent_id)? else {
-                return Ok(false);
-            };
-            let used = match job.phase.as_str() {
-                MEMORY_INDEX_REBUILD_PHASE_SCAN => {
-                    self.scan_rebuild_slice(storage, &job, remaining)?
-                }
-                MEMORY_INDEX_REBUILD_PHASE_PRUNE | MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIRED => {
-                    self.store.prune_rebuild_slice(&job, remaining)?
-                }
-                MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIR => {
-                    self.store.prune_rebuild_fts_repair_slice(&job, remaining)?
-                }
-                MEMORY_INDEX_REBUILD_PHASE_FINALIZE => {
-                    // Also upgrades jobs persisted in the old unsliced final
-                    // phase. Do not publish completion before cleanup resumes.
-                    self.store
-                        .update_rebuild_phase(&job, MEMORY_INDEX_REBUILD_PHASE_CLEANUP_PENDING)?;
-                    0
-                }
-                MEMORY_INDEX_REBUILD_PHASE_CLEANUP_PENDING => {
-                    self.store.cleanup_rebuild_pending_slice(&job, remaining)?
-                }
-                MEMORY_INDEX_REBUILD_PHASE_CLEANUP_SEEN => {
-                    self.store.cleanup_rebuild_seen_slice(&job, remaining)?
-                }
-                MEMORY_INDEX_REBUILD_PHASE_FINALIZE_COMMIT => {
-                    self.finalize_rebuild(storage, &job)?;
-                    return Ok(false);
-                }
-                phase => anyhow::bail!(
-                    "unsupported memory index rebuild phase {phase:?} for agent {}",
-                    job.agent_id
-                ),
-            };
-            remaining = remaining.saturating_sub(used);
-            if used > 0 && remaining == 0 {
-                return Ok(true);
-            }
-        }
-    }
-
-    fn start_rebuild_job(&mut self, storage: &AppStorage) -> Result<bool> {
-        let agent_id = storage_agent_id(storage);
-        let Some(_intent) = self
+        let sources = RuntimeRebuildSources { storage };
+        match self
             .store
-            .rebuild_intents_for_agent(&agent_id)?
-            .into_iter()
-            .next()
-        else {
-            return Ok(false);
-        };
-        let runtime_db = storage
-            .runtime_db()?
-            .context("runtime database is required for memory index rebuild")?;
-        let runtime_high_watermark = runtime_db
-            .runtime_index_outbox()
-            .produced_watermark_for_agent(&agent_id)?;
-        let generation = Uuid::new_v4().simple().to_string();
-        let now = Utc::now();
-        self.store
-            .start_rebuild(&agent_id, &generation, runtime_high_watermark, now)?;
-        tracing::info!(
-            agent_id = %agent_id,
-            generation = %generation,
-            runtime_high_watermark,
-            "started bounded memory index rebuild"
-        );
-        Ok(true)
-    }
-
-    fn consume_initial_dirty_marker(&self, storage: &AppStorage, job: &RebuildJob) -> Result<()> {
-        let dirty_path = storage
-            .shared_indexes_dir()
-            .join(dirty_filename_for_agent(&job.agent_id));
-        if !dirty_path.exists() {
-            return Ok(());
-        }
-        let consumed_path = dirty_path.with_extension(format!("rebuild-{}.dirty", job.generation));
-        match fs::rename(&dirty_path, &consumed_path) {
-            Ok(()) => {
-                let _ = fs::remove_file(consumed_path);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        Ok(())
-    }
-
-    fn scan_rebuild_slice(
-        &mut self,
-        storage: &AppStorage,
-        job: &RebuildJob,
-        slice_limit: usize,
-    ) -> Result<usize> {
-        let source_kinds = all_backfill_source_kinds();
-        if job.source_kind_index >= source_kinds.len() {
-            self.store
-                .update_rebuild_phase(job, MEMORY_INDEX_REBUILD_PHASE_PRUNE)?;
-            return Ok(0);
-        }
-        let source_kind = source_kinds[job.source_kind_index];
-        let records = rebuild_source_records(
-            storage,
-            source_kind,
-            &job.source_cursor,
-            job.source_offset > 0,
-            job.source_offset,
-            slice_limit,
-        )?;
-        if records.is_empty() {
-            let next_index = job.source_kind_index + 1;
-            let phase = if next_index >= source_kinds.len() {
-                MEMORY_INDEX_REBUILD_PHASE_PRUNE
-            } else {
-                MEMORY_INDEX_REBUILD_PHASE_SCAN
-            };
-            self.store
-                .advance_rebuild_source_kind(job, next_index, phase)?;
-            return Ok(0);
-        }
-
-        let mut remaining = slice_limit;
-        let mut next_cursor = job.source_cursor.clone();
-        let mut next_offset = job.source_offset;
-        let mut documents = Vec::new();
-        for record in records {
-            let offset = record.document_offset.min(record.total_documents);
-            let available = record.total_documents.saturating_sub(offset);
-            let take = record.documents.len().min(remaining);
-            documents.extend(record.documents.into_iter().take(take));
-            remaining = remaining.saturating_sub(take.max(1));
-            if take < available {
-                next_cursor = record.cursor;
-                next_offset = offset + take;
-                break;
-            }
-            next_cursor = record.cursor;
-            next_offset = 0;
-            if remaining == 0 {
-                break;
+            .advance_rebuild(&sources, &storage_agent_id(storage), slice_limit)?
+        {
+            RebuildAdvance::Idle => Ok(false),
+            RebuildAdvance::Pending => Ok(true),
+            RebuildAdvance::ReadyToFinalize(job) => {
+                self.finalize_rebuild(storage, &job)?;
+                Ok(false)
             }
         }
-
-        self.store
-            .apply_rebuild_scan(job, &documents, &next_cursor, next_offset)?;
-        tracing::debug!(
-            agent_id = %job.agent_id,
-            generation = %job.generation,
-            source_kind,
-            documents = documents.len(),
-            "advanced bounded memory index rebuild scan"
-        );
-        Ok(slice_limit.saturating_sub(remaining))
     }
 
     fn finalize_rebuild(&mut self, storage: &AppStorage, job: &RebuildJob) -> Result<()> {
@@ -1762,45 +1514,17 @@ impl MemoryIndex {
     }
 
     fn consume_pending_sources(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
-        let agent_id = storage_agent_id(storage);
-        let pending = self
-            .store
-            .pending_sources_for_agent_with_limit(&agent_id, limit)?;
-        for pending_source in pending {
-            let source = &pending_source.source;
-            if source.source_kind == MEMORY_INDEX_REBUILD_SOURCE_KIND {
-                continue;
-            }
-            let prepared = prepare_pending_source(storage, source);
-            self.store
-                .consume_pending_source_snapshot(&pending_source, &prepared)?;
-        }
-        Ok(())
+        self.store
+            .consume_pending_sources(&storage_agent_id(storage), limit, &|source| {
+                prepare_pending_source(storage, source)
+            })
     }
 
     fn consume_stale_source_states(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
-        let agent_id = storage_agent_id(storage);
-        let stale_sources = self
-            .store
-            .stale_source_states_for_agent_with_limit(&agent_id, limit)?;
-        for source in stale_sources {
-            let prepared = match prepare_pending_source(storage, &source) {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    tracing::warn!(
-                        agent_id,
-                        source_kind = %source.source_kind,
-                        source_ref = %source.source_ref,
-                        error = %error,
-                        "skipping failed stale memory index source refresh"
-                    );
-                    continue;
-                }
-            };
-            self.store
-                .apply_stale_source(&agent_id, &source, &prepared)?;
-        }
-        self.store.refresh_stale_meta(&agent_id)
+        self.store
+            .consume_stale_sources(&storage_agent_id(storage), limit, &|source| {
+                prepare_pending_source(storage, source)
+            })
     }
 
     fn consume_runtime_outbox(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
@@ -1821,40 +1545,19 @@ impl MemoryIndex {
         // The cursor only advances over the contiguous acknowledged prefix:
         // each row must apply successfully and advance the cursor inside one
         // index transaction before it counts as consumed.
-        let mut last_successful_seq = cursor;
-        let mut consume_error: Option<anyhow::Error> = None;
-        for row in rows {
-            let source = pending_source_from_outbox_row(&row);
-            let prepared = match prepare_pending_source(storage, &source) {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    consume_error = Some(error.context(format!(
-                        "agent_id={} change_seq={} source_kind={} source_ref={}",
-                        row.agent_id, row.change_seq, row.source_kind, row.source_ref
-                    )));
-                    break;
-                }
-            };
-            let applied = self.store.apply_outbox_change(
-                &runtime_id,
-                &agent_id,
-                &source,
-                &prepared,
-                row.change_seq,
-            );
-            match applied {
-                Ok(()) => {
-                    last_successful_seq = row.change_seq;
-                }
-                Err(error) => {
-                    consume_error = Some(error.context(format!(
-                        "agent_id={} change_seq={} source_kind={} source_ref={}",
-                        row.agent_id, row.change_seq, row.source_kind, row.source_ref
-                    )));
-                    break;
-                }
-            }
-        }
+        let AppliedOutboxPrefix {
+            acknowledged_through: last_successful_seq,
+            error: consume_error,
+        } = self.store.apply_outbox_prefix(
+            &runtime_id,
+            &agent_id,
+            cursor,
+            &mut rows.into_iter().map(|row| IndexOutboxChange {
+                change_seq: row.change_seq,
+                source: pending_source_from_outbox_row(row),
+            }),
+            &|source| prepare_pending_source(storage, source),
+        );
 
         // Acknowledged rows are those at or below the committed cursor: rows
         // applied this round, plus any rows a crash between apply and delete
@@ -1898,122 +1601,50 @@ impl MemoryIndex {
         agent_id: &str,
     ) -> Result<MemorySearchIndexStatus> {
         let shared_indexes_dir = storage.shared_indexes_dir();
-        let has_stale_projection = self.store.has_stale_source_states_for_agent(agent_id)?;
-        let has_pending_sources = self.store.has_pending_sources_for_agent(agent_id)?;
-        let lacks_full_backfill = !self.store.has_backfill_checkpoints_for_agent(agent_id)?;
-        let is_dirty = memory_index_is_dirty_for(&shared_indexes_dir, agent_id);
-        let rebuild_job = self.store.rebuild_job(agent_id)?;
-        // Order matters for readability, not semantics: every reason is
-        // independently healed by the background daemon.
-        let mut stale_reasons = Vec::new();
-        if !memory_index_path(storage).exists() {
-            stale_reasons.push("index_missing".to_string());
-        }
-        if is_dirty {
-            stale_reasons.push("dirty_marker".to_string());
-        }
-        if lacks_full_backfill {
-            stale_reasons.push("backfill_incomplete".to_string());
-        }
-        if has_stale_projection {
-            stale_reasons.push("stale_projection".to_string());
-        }
-        if has_pending_sources {
-            stale_reasons.push("pending_sources".to_string());
-        }
-        if rebuild_job.is_some() {
-            stale_reasons.push("rebuild_in_progress".to_string());
-        }
-        if self.last_outbox_error_count > 0 {
-            stale_reasons.push("consume_error".to_string());
-        }
-        let Some(runtime_db) = storage.runtime_db()? else {
-            let indexing_needed = is_dirty
-                || has_stale_projection
-                || has_pending_sources
-                || lacks_full_backfill
-                || rebuild_job.is_some();
-            return Ok(MemorySearchIndexStatus {
-                freshness: if indexing_needed { "stale" } else { "fresh" }.into(),
-                cursor: 0,
-                high_watermark: 0,
-                lag: 0,
-                pending_count: 0,
-                oldest_pending_age_ms: None,
-                indexing_needed,
-                results_may_be_incomplete: indexing_needed,
-                consumption_was_limited: false,
-                skipped_error_count: self.last_outbox_error_count,
-                last_indexed_at: None,
-                stale_reasons,
-                rebuild_phase: rebuild_job.as_ref().map(|job| job.phase.clone()),
-                rebuild_documents_processed: rebuild_job
-                    .as_ref()
-                    .map(|job| job.documents_processed),
-                rebuild_started_at: rebuild_job.as_ref().map(|job| job.started_at),
-                rebuild_last_progress_at: rebuild_job.as_ref().map(|job| job.last_progress_at),
-            });
-        };
-        let runtime_id = runtime_index_runtime_id(&runtime_db);
-        let cursor = self
-            .store
-            .cursor(&runtime_id, agent_id, MEMORY_INDEX_OUTBOX_CURSOR)?;
-        let high_watermark = runtime_db
-            .runtime_index_outbox()
-            .produced_watermark_for_agent(agent_id)?;
-        let pending_count = runtime_db
-            .runtime_index_outbox()
-            .pending_count_for_agent(agent_id, cursor)?;
-        let oldest_pending_age_ms = match runtime_db
-            .runtime_index_outbox()
-            .oldest_pending_created_at_for_agent(agent_id, cursor)?
-        {
-            Some(oldest_pending_at) if pending_count > 0 => {
-                Some((Utc::now() - oldest_pending_at).num_milliseconds().max(0))
-            }
-            _ => None,
-        };
-        let lag = (high_watermark - cursor).max(0);
-        if lag > 0 || pending_count > 0 {
-            stale_reasons.push("outbox_lag".to_string());
-        }
-        let freshness = if !memory_index_path(storage).exists() {
-            "missing"
-        } else if is_dirty
-            || lag > 0
-            || pending_count > 0
-            || has_stale_projection
-            || has_pending_sources
-            || lacks_full_backfill
-            || rebuild_job.is_some()
-        {
-            "stale"
-        } else {
-            "fresh"
-        };
-        let indexing_needed = freshness != "fresh";
-        Ok(MemorySearchIndexStatus {
-            freshness: freshness.into(),
-            cursor,
-            high_watermark,
-            lag,
-            pending_count,
-            oldest_pending_age_ms,
-            indexing_needed,
-            results_may_be_incomplete: indexing_needed,
-            consumption_was_limited: self.last_outbox_consume_reached_limit && lag > 0,
-            skipped_error_count: self.last_outbox_error_count,
-            last_indexed_at: self.store.cursor_updated_at(
-                &runtime_id,
-                agent_id,
-                MEMORY_INDEX_OUTBOX_CURSOR,
-            )?,
-            stale_reasons,
-            rebuild_phase: rebuild_job.as_ref().map(|job| job.phase.clone()),
-            rebuild_documents_processed: rebuild_job.as_ref().map(|job| job.documents_processed),
-            rebuild_started_at: rebuild_job.as_ref().map(|job| job.started_at),
-            rebuild_last_progress_at: rebuild_job.as_ref().map(|job| job.last_progress_at),
-        })
+        let facts = self.store.read_maintenance_status(agent_id, &|| {
+            memory_index_is_dirty_for(&shared_indexes_dir, agent_id)
+        })?;
+        let index_path = memory_index_path(storage);
+        let index_exists = index_path.exists();
+        let outbox = storage
+            .runtime_db()?
+            .map(|runtime_db| -> Result<_> {
+                let runtime_id = runtime_index_runtime_id(&runtime_db);
+                let cursor =
+                    self.store
+                        .cursor(&runtime_id, agent_id, MEMORY_INDEX_OUTBOX_CURSOR)?;
+                let outbox = runtime_db.runtime_index_outbox();
+                let high_watermark = outbox.produced_watermark_for_agent(agent_id)?;
+                let pending_count = outbox.pending_count_for_agent(agent_id, cursor)?;
+                let oldest_pending_age_ms =
+                    match outbox.oldest_pending_created_at_for_agent(agent_id, cursor)? {
+                        Some(oldest_pending_at) if pending_count > 0 => {
+                            Some((Utc::now() - oldest_pending_at).num_milliseconds().max(0))
+                        }
+                        _ => None,
+                    };
+                let index_exists = index_path.exists();
+                let last_indexed_at = self.store.cursor_updated_at(
+                    &runtime_id,
+                    agent_id,
+                    MEMORY_INDEX_OUTBOX_CURSOR,
+                )?;
+                Ok(IndexOutboxStatus {
+                    cursor,
+                    high_watermark,
+                    pending_count,
+                    oldest_pending_age_ms,
+                    index_exists,
+                    last_indexed_at,
+                })
+            })
+            .transpose()?;
+        Ok(facts.into_search_status(
+            index_exists,
+            outbox,
+            self.last_outbox_consume_reached_limit,
+            self.last_outbox_error_count,
+        ))
     }
 
     fn from_store(store: IndexStore) -> Self {
@@ -2047,9 +1678,7 @@ mod tests {
 
     use holon_memory_index::MEMORY_INDEX_BACKFILL_CURSOR;
 
-    use holon_memory_index::test_support::{
-        maintenance_test_documents, maintenance_test_job, seed_outbox_cursor,
-    };
+    use holon_memory_index::test_support::seed_outbox_cursor;
     use tempfile::tempdir;
 
     use super::*;
@@ -2203,63 +1832,6 @@ mod tests {
         )
         .unwrap()
         .is_none());
-    }
-
-    #[test]
-    fn maintenance_legacy_finalize_cleans_in_slices_before_completion() -> Result<()> {
-        let directory = tempdir()?;
-        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
-        let mut index = MemoryIndex::open(&storage)?;
-        let keys = maintenance_test_documents(&index.store, "default", 140)?;
-        for number in 0..140 {
-            index.enqueue_upsert(
-                "default",
-                "message",
-                &number.to_string(),
-                &format!("message:pending-{number:04}"),
-            )?;
-        }
-        let job =
-            maintenance_test_job(&index.store, "default", MEMORY_INDEX_REBUILD_PHASE_FINALIZE)?;
-        for key in keys {
-            index.store.test_connection().execute(
-                "INSERT INTO memory_index_rebuild_seen VALUES (?1, ?2, ?3)",
-                params![job.agent_id, job.generation, key],
-            )?;
-        }
-        assert!(index.advance_rebuild(&storage, 7)?);
-        let progress = index.store.rebuild_job("default")?.unwrap();
-        assert_eq!(progress.phase, MEMORY_INDEX_REBUILD_PHASE_CLEANUP_PENDING);
-        assert!(!progress.source_cursor.is_empty());
-        assert_eq!(index.store.pending_sources_for_agent("default")?.len(), 133);
-        index.enqueue_upsert("default", "message", "new", "message:aaa-new")?;
-        index.store.test_connection().execute(
-            "UPDATE memory_index_pending_sources SET enqueued_at = ?1
-             WHERE source_ref = 'message:aaa-new'",
-            [(job.started_at + chrono::Duration::seconds(1)).to_rfc3339()],
-        )?;
-        drop(index);
-        let mut index = MemoryIndex::open(&storage)?;
-        assert_eq!(
-            index.store.rebuild_job("default")?.unwrap().source_cursor,
-            progress.source_cursor
-        );
-        for _ in 0..128 {
-            if !index.advance_rebuild(&storage, 7)? {
-                break;
-            }
-        }
-        assert!(index.store.rebuild_job("default")?.is_none());
-        let pending = index.store.pending_sources_for_agent("default")?;
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].source_ref, "message:aaa-new");
-        let seen: usize = index.store.test_connection().query_row(
-            "SELECT COUNT(*) FROM memory_index_rebuild_seen",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(seen, 0);
-        Ok(())
     }
 
     fn brief_with_workspace(
@@ -5497,69 +5069,6 @@ mod tests {
         assert!(memory
             .content
             .contains("\"source_type\": \"tool_execution_output\""));
-    }
-
-    #[test]
-    fn maintenance_prune_bounds_seen_candidates_and_resumes_repair() -> Result<()> {
-        let directory = tempdir()?;
-        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
-        let mut index = MemoryIndex::open(&storage)?;
-        let keys = maintenance_test_documents(&index.store, "default", 140)?;
-        maintenance_test_documents(&index.store, "default-extra", 3)?;
-        let job = maintenance_test_job(&index.store, "default", MEMORY_INDEX_REBUILD_PHASE_PRUNE)?;
-        for key in &keys[..139] {
-            index.store.test_connection().execute(
-                "INSERT INTO memory_index_rebuild_seen VALUES (?1, ?2, ?3)",
-                params![job.agent_id, job.generation, key],
-            )?;
-        }
-        index.store.test_connection().execute(
-            "DELETE FROM memory_documents_fts_rows WHERE document_key = ?1",
-            [&keys[139]],
-        )?;
-        index.store.test_connection().execute(
-            "INSERT INTO memory_documents_fts (document_key, title, body, sanitized_excerpt)
-             VALUES (?1, 'duplicate', 'duplicate', 'duplicate')",
-            [&keys[139]],
-        )?;
-        assert_eq!(index.store.prune_rebuild_slice(&job, 3)?, 3);
-        assert_eq!(
-            index.store.rebuild_job("default")?.unwrap().source_cursor,
-            keys[2]
-        );
-        drop(index);
-        let mut index = MemoryIndex::open(&storage)?;
-        let resumed = index.store.rebuild_job("default")?.unwrap();
-        assert_eq!(index.store.prune_rebuild_slice(&resumed, 3)?, 3);
-        assert_eq!(
-            index.store.rebuild_job("default")?.unwrap().source_cursor,
-            keys[5]
-        );
-        for _ in 0..256 {
-            if !index.advance_rebuild(&storage, 3)? {
-                break;
-            }
-        }
-        assert!(index.store.rebuild_job("default")?.is_none());
-        for table in [
-            "memory_documents",
-            "memory_documents_fts",
-            "memory_documents_fts_rows",
-        ] {
-            let count: usize = index.store.test_connection().query_row(
-                &format!("SELECT COUNT(*) FROM {table} WHERE document_key = ?1"),
-                [&keys[139]],
-                |row| row.get(0),
-            )?;
-            assert_eq!(count, 0, "{table} retains stale broken-map document");
-        }
-        let remaining: usize = index.store.test_connection().query_row(
-            "SELECT COUNT(*) FROM memory_documents",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(remaining, 142);
-        Ok(())
     }
 
     #[test]

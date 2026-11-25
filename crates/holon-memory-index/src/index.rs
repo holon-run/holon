@@ -2379,6 +2379,8 @@ impl IndexStore {
 }
 
 #[cfg(test)]
+mod maintenance_tests;
+#[cfg(test)]
 mod tests;
 
 #[cfg(any(test, feature = "test-support"))]

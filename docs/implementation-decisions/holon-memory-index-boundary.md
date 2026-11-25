@@ -9,8 +9,11 @@ command preview formatter, and writer metrics callbacks. Document layout and
 projection version are preserved so existing index rows remain valid.
 
 The application resolves canonical sources through `AppStorage` and
-`RuntimeDb`, drives bounded rebuild passes, and reports freshness from both
-databases. It resolves exact `MemoryGet` content through runtime references.
+`RuntimeDb`, schedules bounded maintenance, and resolves exact `MemoryGet`
+content through runtime references. It supplies prepared source pages and
+samples the canonical outbox and dirty marker. The index advances its persisted
+rebuild phases, applies bounded source batches, and derives search freshness
+from the observations.
 
 The index applies an outbox change and updates its applied cursor in the
 same SQLite transaction. The application acknowledges the committed prefix
@@ -20,5 +23,5 @@ before the application acknowledges rows covered by the rebuild.
 
 Run the store and coordinator tests with
 `cargo test --locked --manifest-path crates/holon-memory-index/Cargo.toml`.
-The root memory tests exercise canonical reads, outbox retries, and rebuild
+The runtime memory tests exercise canonical reads, outbox retries, and rebuild
 orchestration against both stores.
