@@ -5,6 +5,29 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-25
+
+The November 25 Beijing cycle sampled the official
+[Qwen4-Max-Preview page](https://help.aliyun.com/zh/model-studio/qwen4-max-preview)
+at SHA256
+`183fb985b5a7c18f3a9a37351cefed1e2072faf19e3d4dc60ef0681db35f78b9`.
+Its published window changed from **November 25, 2026 at 24:00 UTC+8** in
+the prior sample to **November 25, 2026 at 10:00 UTC+8**, and still says the
+model goes offline after the preview.
+
+A post-boundary recheck at 10:03 UTC+8 sampled the same page again (Chinese
+SHA256 `c61465a00a2edec1d9c66210e9207a0a379dbdf5c248f9ab620ce1989e36637c`,
+English SHA256
+`198c3e84651f00cb5a2c09f50d7e04e4a66c20346e5708b9f3a392af52a06429`). The
+extracted page text is unchanged from the 04:00 sample; the raw bytes differ
+only in analytics beacon tokens. Both language versions still bound the
+preview to 10:00 UTC+8 on the same date and still say the model is retired
+afterwards, so the removal rests on an elapsed published deadline rather than
+on a later listing change. The personal and team Token Plan tables still
+showed the preview entitlement at that hour; that documentation lag is
+recorded as such instead of being read as continued availability. The formal
+Qwen4 model and its Token Plan route are unaffected.
+
 ## Incremental review: 2026-11-24
 
 The November 24 Beijing review tested models.dev sample

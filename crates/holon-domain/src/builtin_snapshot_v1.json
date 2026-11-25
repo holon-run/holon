@@ -2198,32 +2198,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "dashscope/qwen4-max-preview",
-      "display_name": "qwen4-max-preview",
-      "description": "DashScope qwen4-max-preview Messages model; max_tokens is required, not an omitted protocol default.",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": 393216,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "low",
-        "medium",
-        "xhigh"
-      ],
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "deepseek/deepseek-flash",
       "display_name": "DeepSeek Flash",
       "description": "DeepSeek Flash with image input through the Responses API; conservative reviewed ceilings, not the native API's full binary-unit limits.",
@@ -9557,19 +9531,6 @@
       }
     },
     {
-      "route_ref": "dashscope@token-plan/qwen4-max-preview",
-      "policy": {
-        "cache_capabilities": {
-          "cache_control": false
-        },
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "deepseek@default/deepseek-v4-flash",
       "policy": {
         "display_name": null,
@@ -15165,10 +15126,6 @@
       "target": "dashscope/qwen4-max"
     },
     {
-      "alias": "dashscope-token-plan/qwen4-max-preview",
-      "target": "dashscope/qwen4-max-preview"
-    },
-    {
       "alias": "dashscope/qwen-3.7",
       "target": "dashscope/qwen3.7-max"
     },
@@ -16385,10 +16342,6 @@
     {
       "model_ref": "dashscope/qwen4-max",
       "route_ref": "dashscope@default/qwen4-max"
-    },
-    {
-      "model_ref": "dashscope/qwen4-max-preview",
-      "route_ref": "dashscope@token-plan/qwen4-max-preview"
     },
     {
       "model_ref": "deepseek/deepseek-flash",

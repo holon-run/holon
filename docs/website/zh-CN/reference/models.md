@@ -11,7 +11,7 @@ summary: Holon 内置支持的所有模型和提供商的完整参考。
 # Supported Models
 
 Holon includes built-in configuration for **37 provider accounts**
-across **51 endpoints** and **430 models**.
+across **51 endpoints** and **429 models**.
 
 This page is auto-generated from the Holon source code
 ([`crates/holon-model-catalog/src/lib.rs`](https://github.com/holon-run/holon/blob/main/crates/holon-model-catalog/src/lib.rs) and
@@ -209,7 +209,6 @@ and capabilities.
 | `dashscope` | `qwen3.8-max-preview` | `dashscope/qwen3.8-max-preview` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope` | `qwen3.8-omni-flash` | `dashscope/qwen3.8-omni-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `dashscope` | `qwen4-max` | `dashscope/qwen4-max` | 1000000 | — | ✅ | ✅ |
-| `dashscope` | `qwen4-max-preview` | `dashscope/qwen4-max-preview` | — | — | ✅ | ✅ |
 | `deepseek` | `deepseek-flash` | `deepseek/deepseek-flash` | 1000000 | — | ✅ | ✅ |
 | `deepseek` | `deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `deepseek` | `deepseek-v4-flash-vision-exp` | `deepseek/deepseek-v4-flash-vision-exp` | 1048576 | 393216 | ✅ | ✅ |
