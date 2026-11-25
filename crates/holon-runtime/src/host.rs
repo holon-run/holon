@@ -15617,6 +15617,7 @@ mod tests {
                 model_resolution: None,
                 initial_message: None,
                 default_initial_message: false,
+                initial_response_language: None,
             },
         );
         host.apply_agent_template_bootstrap(&bootstrap)
