@@ -2817,6 +2817,7 @@ final class ReadingCoordinatorTests: XCTestCase {
     func testSameEpochReconnectLoadsGapBetweenCachedAndLiveWindows() async throws {
         let (coordinator, fake, _) = try await start(
             turns: (1...20).map { readingTurn("turn-\($0)", index: Int64($0)) })
+        let originalConnection = coordinator.liveConnectionRevision
         await fake.setHistoryTurns([])
         await coordinator.loadHistory()
         XCTAssertFalse(coordinator.canLoadHistory)
@@ -2827,6 +2828,9 @@ final class ReadingCoordinatorTests: XCTestCase {
         await fake.setLiveTurns((41...100).map { readingTurn("turn-\($0)", index: Int64($0)) })
         await fake.setOffline(false)
         await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .live)
+        XCTAssertNotEqual(coordinator.liveConnectionRevision, originalConnection,
+                          "An in-place reconnect must invalidate previously loaded live settings.")
         XCTAssertEqual(turnIDs(coordinator).count, 80)
         XCTAssertTrue(coordinator.canLoadHistory)
         await fake.setHistoryTurns((1...40).map { readingTurn("turn-\($0)", index: Int64($0)) })

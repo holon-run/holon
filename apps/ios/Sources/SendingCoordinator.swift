@@ -17,7 +17,7 @@ struct SendingExternalContext: Equatable {
 final class SendingCoordinator {
     private(set) var draft = SendingDraft()
     private(set) var entries: [SendingEntry] = []
-    private(set) var isUpdatingAgentModel = false
+    private var modelWrites: Set<SendingScope> = []
     private(set) var modelReadRevision = 0
     private(set) var status: SendingStatus = .disconnected
     private(set) var error: String?
@@ -57,6 +57,7 @@ final class SendingCoordinator {
     /// cleared, so the composer disables itself instead of implying saves.
     var canPersistDraft: Bool { scope != nil }
     var canEnqueueDraft: Bool { scope != nil && !isUpdatingAgentModel }
+    var isUpdatingAgentModel: Bool { scope.map { modelWrites.contains($0) } ?? false }
     var hasLegacyModelInQueue: Bool {
         entries.contains { $0.state != .received && $0.legacyModelID != nil }
     }
@@ -139,18 +140,23 @@ final class SendingCoordinator {
     }
 
     func applyAgentModel(_ selection: AgentModelSelection, revision token: Int) async throws -> AgentModelConfiguration {
-        guard canChangeAgentModel, modelAccessRevision == token else { throw SendingFailure.unavailable }
-        isUpdatingAgentModel = true
-        modelReadRevision += 1
+        guard canChangeAgentModel, modelAccessRevision == token, let scope else { throw SendingFailure.unavailable }
+        return try await trackingModelWrite(in: scope) {
+            try await withModelAccess(revision: token) { transport, agentID in
+                try await transport.updateAgentModel(agentID: agentID, selection: selection)
+            }
+        }
+    }
+
+    private func trackingModelWrite<T>(in target: SendingScope, _ operation: () async throws -> T) async throws -> T {
+        guard modelWrites.insert(target).inserted else { throw SendingFailure.unavailable }
+        if scope == target { modelReadRevision += 1 }
         defer {
-            // The mutation can settle after a foreground or agent change.
-            // Always invalidate reads, even if this caller can't use the response.
-            isUpdatingAgentModel = false
-            modelReadRevision += 1
+            modelWrites.remove(target)
+            // A write can settle after leaving and returning to the same Agent.
+            if scope == target { modelReadRevision += 1 }
         }
-        return try await withModelAccess(revision: token) { transport, agentID in
-            try await transport.updateAgentModel(agentID: agentID, selection: selection)
-        }
+        return try await operation()
     }
 
     var canChangeAgentModel: Bool {
@@ -381,8 +387,15 @@ final class SendingCoordinator {
                 }
                 guard self.revision == token, !Task.isCancelled, let payload = entry.payload else { return }
                 try self.requireConsent()
-                let receipt = try await transport.send(agentID: entry.scope.agentID,
-                                                      requestID: entry.requestID, payload: payload)
+                let target = entry.scope
+                let requestID = entry.requestID
+                let send = { try await transport.send(agentID: target.agentID, requestID: requestID, payload: payload) }
+                // Legacy payloads mutate the model inside send, before the prompt POST.
+                let receipt = if payload.modelID != nil {
+                    try await self.trackingModelWrite(in: target, send)
+                } else {
+                    try await send()
+                }
                 guard self.revision == token, !Task.isCancelled else { return }
                 entry.state = .received
                 entry.messageID = receipt

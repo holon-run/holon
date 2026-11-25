@@ -2173,6 +2173,17 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["sending.model.effective"].waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "The current model must be readable after the same conversation reconnects")
         XCTAssertFalse(modelOffline.exists)
+        if !large {
+            // Keep the previously loaded panel alive through an in-place
+            // outage; recovery must replace its live snapshot without reopening.
+            try await changeFixtureNodeAvailability(false)
+            XCTAssertTrue(modelOffline.waitForExistence(timeout: UIWaitScale.scaled(45)))
+            XCTAssertFalse(app.staticTexts["sending.model.effective"].exists)
+            XCTAssertFalse(app.buttons["sending.model.apply"].exists)
+            try await changeFixtureNodeAvailability(true)
+            XCTAssertTrue(app.staticTexts["sending.model.effective"].waitForExistence(timeout: UIWaitScale.scaled(60)))
+            XCTAssertFalse(modelOffline.exists)
+        }
         modelClose.tap()
         assertStableChrome("recovered after model settings")
     }

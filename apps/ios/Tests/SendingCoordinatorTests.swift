@@ -29,6 +29,10 @@ private actor SendingMockTransport: SendingTransport {
     func send(agentID: String, requestID: UUID, payload: SendingPayload) async throws -> String? {
         calls.append(Call(id: requestID, payload: payload))
         if let failure { throw failure }
+        if let modelID = payload.modelID {
+            _ = try await updateAgentModel(agentID: agentID,
+                                          selection: .manual(modelID, reasoningEffort: nil, serviceTier: nil))
+        }
         if delayed { return try await withCheckedThrowingContinuation { continuation = $0 } }
         if loseResponse { throw URLError(.networkConnectionLost) }
         return "message"
@@ -482,6 +486,52 @@ final class SendingCoordinatorTests: XCTestCase {
         let current = try await coordinator.readAgentModel(revision: resumedToken)
         XCTAssertEqual(current.overrideModel, "test/updated")
         XCTAssertEqual(current.serviceTier, "fast")
+    }
+
+    func testLegacyRetryBlocksOnlyItsScopeUntilLateModelWriteSettles() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try FileManager.default.removeItem(at: folder) }
+        let coordinator = makeCoordinator(store: try makeStore(directory: folder))
+        let transport = SendingMockTransport()
+        coordinator.activate(transport: transport, identity: identity(),
+                             apiBaseURL: URL(string: "https://example.test")!)
+        coordinator.selectAgent("A")
+        coordinator.editDraft(text: "original", modelID: "test/legacy")
+        coordinator.enqueue(legacyModelConfirmedAt: coordinator.draftScopeRevision)
+        try await waitUntil { coordinator.entries.first?.state == .unknown }
+        let id = try XCTUnwrap(coordinator.entries.first?.requestID)
+
+        await transport.deferModelWrite()
+        let beforeRetry = coordinator.modelReadRevision
+        coordinator.retry(requestID: id, legacyModelConfirmedAt: coordinator.draftScopeRevision)
+        try await waitUntil { await transport.hasPendingModelWrite() }
+        XCTAssertTrue(coordinator.isUpdatingAgentModel)
+        XCTAssertGreaterThan(coordinator.modelReadRevision, beforeRetry)
+        coordinator.setForeground(false)
+        coordinator.setForeground(true)
+        coordinator.selectAgent("B")
+        XCTAssertFalse(coordinator.isUpdatingAgentModel)
+        XCTAssertTrue(coordinator.canChangeAgentModel)
+        coordinator.selectAgent("A")
+        let token = try XCTUnwrap(coordinator.modelAccessRevision)
+        XCTAssertFalse(coordinator.canRetry(requestID: id))
+        do {
+            _ = try await coordinator.readAgentModel(revision: token)
+            XCTFail("The old queue's pending write must block same-Agent model reads.")
+        } catch is CancellationError {}
+        let reads = await transport.modelReads
+        XCTAssertEqual(reads, 0)
+
+        let beforeSettlement = coordinator.modelReadRevision
+        await transport.settleModelWrite()
+        try await waitUntil { !coordinator.isUpdatingAgentModel }
+        XCTAssertGreaterThan(coordinator.modelReadRevision, beforeSettlement)
+        let configuration = try await coordinator.readAgentModel(revision: token)
+        XCTAssertEqual(configuration.overrideModel, "test/legacy")
+        let calls = await transport.recorded()
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls.first, calls.last)
+        XCTAssertEqual(coordinator.entries.first?.state, .unknown)
     }
 
     func testReturningToCurrentModelRestoresReasoningAndPreservesTierOnEdit() {

@@ -41,8 +41,12 @@ final class ReadingCoordinator {
     }
     private(set) var loadingActivities: Set<String> = []
     private(set) var failedActivities: Set<String> = []
+    private(set) var liveConnectionRevision = 0
     private(set) var status: ReadingStatus = .disconnected {
-        didSet { avatars.setOnline(status == .live) }
+        didSet {
+            if status == .live && oldValue != .live { liveConnectionRevision += 1 }
+            avatars.setOnline(status == .live)
+        }
     }
     private(set) var canLoadHistory = false
     private(set) var isLoadingHistory = false

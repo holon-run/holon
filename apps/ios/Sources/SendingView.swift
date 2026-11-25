@@ -71,6 +71,7 @@ private struct AgentModelSheet: View {
 
     private struct LoadKey: Equatable {
         let revision: Int?
+        let liveConnectionRevision: Int
         let modelReadRevision: Int
         let reload: Int
     }
@@ -80,16 +81,20 @@ private struct AgentModelSheet: View {
         reader.status == .live ? sender.modelAccessRevision : nil
     }
 
+    private var currentLoadKey: LoadKey {
+        LoadKey(revision: modelAccessRevision, liveConnectionRevision: reader.liveConnectionRevision,
+                modelReadRevision: sender.modelReadRevision, reload: reload)
+    }
+
     var body: some View {
-        let token = modelAccessRevision
-        let key = LoadKey(revision: token, modelReadRevision: sender.modelReadRevision, reload: reload)
+        let key = currentLoadKey
         NavigationStack {
             Form {
                 LegacyDraftModelSection(sender: sender) { dismiss() }
                 if sender.hasLegacyModelInQueue {
                     Section { Text("sending.model.legacyQueue.block") }
                 }
-                if let token {
+                if key.revision != nil {
                     if sender.isUpdatingAgentModel || loadedKey != key {
                         ProgressView()
                     } else {
@@ -117,7 +122,7 @@ private struct AgentModelSheet: View {
                                     LabeledContent("sending.model.active") { Text(verbatim: active) }
                                 }
                             }
-                            selectionSection(configuration, token: token)
+                            selectionSection(configuration, key: key)
                         }
                         if loadError || catalogError || applyError {
                             Section {
@@ -147,11 +152,11 @@ private struct AgentModelSheet: View {
             }
         }
         .interactiveDismissDisabled(sender.isUpdatingAgentModel)
-        .onChange(of: token) { _, _ in applyError = false }
+        .onChange(of: key.revision) { _, _ in applyError = false }
         .task(id: key) { await load(key) }
     }
 
-    private func selectionSection(_ current: AgentModelConfiguration, token: Int) -> some View {
+    private func selectionSection(_ current: AgentModelConfiguration, key: LoadKey) -> some View {
         Section("sending.model.selection") {
             Picker("sending.model", selection: Binding(get: { modelID }, set: { next in
                 guard next != modelID else { return }
@@ -184,7 +189,7 @@ private struct AgentModelSheet: View {
             }
             Button {
                 let requested = current.selection(modelID: modelID, reasoningEffort: reasoningEffort)
-                Task { await apply(requested, token: token) }
+                Task { await apply(requested, key: key) }
             } label: { Text("sending.model.apply") }
             .accessibilityIdentifier("sending.model.apply")
             .disabled(modelID == current.overrideModel && (modelID == nil || reasoningEffort == current.reasoningEffort)
@@ -198,13 +203,11 @@ private struct AgentModelSheet: View {
     }
 
     private func load(_ key: LoadKey) async {
-        guard let token = key.revision, modelAccessRevision == token,
-              key.modelReadRevision == sender.modelReadRevision, !sender.isUpdatingAgentModel else { return }
+        guard let token = key.revision, key == currentLoadKey, !sender.isUpdatingAgentModel else { return }
         async let current = try? sender.readAgentModel(revision: token)
         async let catalog = try? sender.readModelCatalog(revision: token)
         let (state, choices) = await (current, catalog)
-        guard !Task.isCancelled, modelAccessRevision == token, key.reload == reload,
-              key.modelReadRevision == sender.modelReadRevision, !sender.isUpdatingAgentModel else { return }
+        guard !Task.isCancelled, key == currentLoadKey, !sender.isUpdatingAgentModel else { return }
         models = choices ?? []
         catalogError = choices == nil
         loadError = state == nil
@@ -218,13 +221,14 @@ private struct AgentModelSheet: View {
         reasoningEffort = state.reasoningEffort
     }
 
-    private func apply(_ selection: AgentModelSelection, token: Int) async {
-        guard modelAccessRevision == token, sender.canChangeAgentModel else { return }
+    private func apply(_ selection: AgentModelSelection, key: LoadKey) async {
+        guard let token = key.revision, loadedKey == key, currentLoadKey == key,
+              sender.canChangeAgentModel else { return }
         applyError = false
         do {
             _ = try await sender.applyAgentModel(selection, revision: token)
         } catch {
-            guard modelAccessRevision == token else { return }
+            guard modelAccessRevision == token, reader.liveConnectionRevision == key.liveConnectionRevision else { return }
             applyError = true
         }
     }
