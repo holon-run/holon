@@ -261,6 +261,36 @@ struct ReadingPartition: Hashable, Codable, Sendable {
 }
 
 /// Keep the server's live cursor authoritative while retaining a bounded history window.
+struct ReadingConversationProjection {
+    let snapshot: HolonConversationSnapshot
+    let turns: [ReadingTurnPresentation]
+    let turnIDs: [String]
+
+    init(snapshot: HolonConversationSnapshot) {
+        self.snapshot = snapshot
+        // The SDK's canonical `turns` already includes `active_turns`,
+        // deduplicated and sorted by index then ID.
+        if case .array(let rawTurns) = snapshot.raw["turns"] {
+            turns = rawTurns.compactMap(ReadingTurnPresentation.init(raw:))
+        } else {
+            turns = []
+        }
+        turnIDs = turns.map(\.id)
+    }
+}
+
+struct ReadingTurnPresentation: Identifiable {
+    let id: String
+    let raw: JSONValue
+
+    init?(raw: JSONValue) {
+        guard let id = raw["turn_id"]?.readingString, !id.isEmpty,
+              raw["key"]?["turn_index"]?.readingInteger != nil else { return nil }
+        self.id = id
+        self.raw = raw
+    }
+}
+
 enum ReadingSnapshotWindow {
     static let maximumTurns = 180
     static let maximumBytes = 262_144

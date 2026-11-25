@@ -255,21 +255,11 @@ struct ConversationReadingView: View {
     @State private var historyScrollIntent: String?
     @State private var showPrivacyInfo = false
 
-    private var turnIDs: [String] { turns.map(\.id) }
+    private var turnIDs: [String] { reader.conversationProjection?.turnIDs ?? [] }
     private var turnRange: Range<Int> { ConversationTurnWindow.range(ids: turnIDs, endingAt: historyEndTurnID) }
     private var visibleTurns: ArraySlice<ReadingTurnPresentation> { turns[turnRange] }
 
-    private var turns: [ReadingTurnPresentation] {
-        guard let raw = reader.snapshot?.raw else { return [] }
-        var byID: [String: ReadingTurnPresentation] = [:]
-        for turn in raw["turns"].viewArray + raw["active_turns"].viewArray {
-            guard let item = ReadingTurnPresentation(raw: turn) else { continue }
-            byID[item.id] = item
-        }
-        return byID.values.sorted {
-            $0.index == $1.index ? $0.id < $1.id : $0.index < $1.index
-        }
-    }
+    private var turns: [ReadingTurnPresentation] { reader.conversationProjection?.turns ?? [] }
 
     private var currentRunID: String? {
         guard reader.status == .live,
@@ -581,20 +571,6 @@ struct ConversationReadingView: View {
             "\(id):\(reader.briefs[id].map { BriefPresentation.text($0).utf8.count } ?? -1)"
         }.joined(separator: "|") ?? ""
         return "\(latest?.id ?? "")|\(latest?.raw["revision"].viewJSON ?? "")|\(loadedBriefs)|\(reader.snapshot?.raw["pending_inputs"].viewJSON ?? "")|\(sender?.entries.count ?? 0)"
-    }
-}
-
-private struct ReadingTurnPresentation: Identifiable {
-    let id: String
-    let index: Int64
-    let raw: JSONValue
-
-    init?(raw: JSONValue) {
-        guard let id = raw["turn_id"].viewString, !id.isEmpty,
-              case .integer(let index)? = raw["key"]?["turn_index"] else { return nil }
-        self.id = id
-        self.index = index
-        self.raw = raw
     }
 }
 
@@ -1033,9 +1009,15 @@ enum ReadingPresentation {
         !(connecting || isRefreshing) && (status == .offline || status == .incompatible)
     }
 
-    static func date(_ value: String) -> Date? {
-        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    @MainActor private static let fractionalDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    @MainActor private static let wholeSecondDateFormatter = ISO8601DateFormatter()
+
+    @MainActor static func date(_ value: String) -> Date? {
+        fractionalDateFormatter.date(from: value) ?? wholeSecondDateFormatter.date(from: value)
     }
 
     static func turnStatus(_ turn: JSONValue) -> String? {

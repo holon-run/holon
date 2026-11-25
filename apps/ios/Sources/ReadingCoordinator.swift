@@ -28,7 +28,14 @@ final class ReadingCoordinator {
     // Only a successful roster response in the current context authorizes missing-agent decisions.
     private(set) var isRosterCurrent = false
     private(set) var selectedAgentID: String?
-    private(set) var snapshot: HolonConversationSnapshot?
+    private(set) var conversationProjection: ReadingConversationProjection?
+    private(set) var snapshot: HolonConversationSnapshot? {
+        get { conversationProjection?.snapshot }
+        set {
+            guard newValue != conversationProjection?.snapshot else { return }
+            conversationProjection = newValue.map(ReadingConversationProjection.init(snapshot:))
+        }
+    }
     private(set) var briefs: [String: JSONValue] = [:]
     private(set) var loadingBriefs: Set<String> = []
     private(set) var failedBriefs: Set<String> = []

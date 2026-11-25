@@ -4,6 +4,14 @@ import XCTest
 
 @MainActor
 final class ReadingPresentationTests: XCTestCase {
+    func testDatesKeepFractionalSecondsAndFallbackToWholeSeconds() throws {
+        let whole = try XCTUnwrap(ReadingPresentation.date("2026-11-25T19:00:00Z"))
+        let fractional = try XCTUnwrap(ReadingPresentation.date("2026-11-25T14:00:00.125-05:00"))
+        XCTAssertEqual(fractional.timeIntervalSince(whole), 0.125, accuracy: 0.000_001)
+        XCTAssertNil(ReadingPresentation.date("not a timestamp"))
+        XCTAssertEqual(ReadingPresentation.date("2026-11-25T19:00:00Z"), whole)
+    }
+
     func testCachedContentDistinguishesBackgroundRefreshFromOffline() {
         XCTAssertEqual(ReadingPresentation.connectionStatusKey(
             status: .syncing, hasContent: true, isCached: true, isRefreshing: true
