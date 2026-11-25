@@ -347,6 +347,7 @@ impl AgentProvider for ConversationRecorder {
             .await
             .push(request.conversation.clone());
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text { text: "ok".into() }],
             stop_reason: None,
@@ -364,6 +365,7 @@ impl AgentProvider for ConversationRecorder {
 impl AgentProvider for PolicyProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text { text: "ok".into() }],
             stop_reason: None,
@@ -399,6 +401,7 @@ impl AgentProvider for RecordingProvider {
             return Err(anyhow!("forced provider failure"));
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text { text: "ok".into() }],
             stop_reason: None,
@@ -419,6 +422,7 @@ impl AgentProvider for RecordingProvider {
 impl AgentProvider for SearchProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text { text: "ok".into() }],
             stop_reason: None,
@@ -443,6 +447,7 @@ impl AgentProvider for SearchProvider {
 impl AgentProvider for ImageProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text { text: "ok".into() }],
             stop_reason: None,
@@ -562,6 +567,7 @@ impl AgentProvider for ScriptedProvider {
                 ),
             ),
             ScriptedFailure::Succeed => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text { text: "ok".into() }],
                 stop_reason: None,

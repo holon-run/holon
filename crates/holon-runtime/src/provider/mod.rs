@@ -44,9 +44,9 @@ pub(crate) use holon_provider::provider::{
 pub use holon_provider::provider::{
     image_delivery, provider_attempt_timeline, provider_error_code,
     provider_error_is_context_length_exceeded, provider_transport_diagnostics, test_support,
-    AgentProvider, AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ContinuationScopeId,
-    ConversationMessage, ModelBlock, ModelToolCallKind, PromptContentBlock, ProviderAttemptOutcome,
-    ProviderAttemptRecord, ProviderAttemptTimeline, ProviderBlockData,
+    AgentProvider, AnthropicPromptCacheDiagnostics, AttemptTokenUsage, CacheBreakpointInfo,
+    ContinuationScopeId, ConversationMessage, ModelBlock, ModelToolCallKind, PromptContentBlock,
+    ProviderAttemptOutcome, ProviderAttemptRecord, ProviderAttemptTimeline, ProviderBlockData,
     ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderContextBudgetDiagnostics,
     ProviderContextManagementPolicy, ProviderDispatchGuard, ProviderFallbackDisposition,
     ProviderGenerateImageRequest, ProviderGenerateImageResponse, ProviderGeneratedImage,

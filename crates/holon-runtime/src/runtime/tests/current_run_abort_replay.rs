@@ -54,6 +54,7 @@ impl AgentProvider for AbortReplayProvider {
             return std::future::pending().await;
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "fresh input completed".into(),

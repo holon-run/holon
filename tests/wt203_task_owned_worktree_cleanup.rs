@@ -80,6 +80,7 @@ impl AgentProvider for DelayedTextProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         sleep(Duration::from_millis(250)).await;
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Made changes in worktree".into(),

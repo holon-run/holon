@@ -668,6 +668,7 @@ impl AgentProvider for ResultFallbackProvider {
                         backoff_source: None,
                         token_usage: None,
                         cache_usage: None,
+                        normalized_token_usage: None,
                         provider_message_id: None,
                         provider_request_id: None,
                         provider_http_trace_id: None,
@@ -687,6 +688,7 @@ impl AgentProvider for ResultFallbackProvider {
             ));
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: request.material,
             blocks: vec![ModelBlock::Text {
                 text: "result handled".into(),
@@ -1259,6 +1261,7 @@ impl AgentProvider for BatchProvider {
         let material = request.material.clone();
         self.requests.lock().await.push(request);
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material,
             blocks: vec![ModelBlock::Text {
                 text: "done".into(),

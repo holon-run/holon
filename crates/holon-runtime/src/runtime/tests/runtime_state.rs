@@ -1880,6 +1880,7 @@ impl AgentProvider for CanonicalCompletionProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -1942,6 +1943,7 @@ impl AgentProvider for SourceBoundRecoveryProvider {
                 .await;
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Recovered the source task.".into(),
@@ -4612,6 +4614,7 @@ impl AgentProvider for GatedSuccessProvider {
         self.started.notify_one();
         self.release.notified().await;
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "terminal settlement result".into(),
@@ -4639,6 +4642,7 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
             self.first_tool_round.notify_one();
             self.release_first_tool_round.notified().await;
             Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep".into(),
@@ -4661,6 +4665,7 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
             })
         } else {
             Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "interjection handled".into(),
@@ -4693,6 +4698,7 @@ impl AgentProvider for TerminalWaitInterjectionProvider {
 
         match call {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "terminal-wait".into(),
@@ -4714,6 +4720,7 @@ impl AgentProvider for TerminalWaitInterjectionProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "queued operator input handled".into(),

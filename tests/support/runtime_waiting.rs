@@ -213,6 +213,7 @@ impl AgentProvider for WaitForDispatchProvider {
         });
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -396,6 +397,7 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
         };
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,

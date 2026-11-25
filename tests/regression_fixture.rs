@@ -73,6 +73,7 @@ impl AgentProvider for FixtureProvider {
         }
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: step.blocks,
             stop_reason: None,

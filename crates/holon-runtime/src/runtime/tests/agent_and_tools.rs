@@ -8,6 +8,7 @@ struct FreeformPromptProvider;
 impl AgentProvider for FreeformPromptProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "done".into(),

@@ -37,6 +37,7 @@ impl AgentProvider for SharedReplyGateProvider {
             }
             if self.0.wait {
                 return Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
 material: Default::default(),
                     blocks: vec![crate::provider::ModelBlock::ToolUse {
                         id: "reply-fixture-wait".into(),

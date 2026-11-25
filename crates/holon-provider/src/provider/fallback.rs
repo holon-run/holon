@@ -5,7 +5,8 @@ use tokio::time::sleep;
 use tracing::warn;
 
 use super::{
-    aggregate_attempt_token_usage, provider_error_code, provider_error_token_usage,
+    aggregate_attempt_token_usage, provider_error_cache_usage, provider_error_code,
+    provider_error_normalized_token_usage, provider_error_token_usage,
     provider_transport_diagnostics, provider_transport_error_with_code, provider_turn_error,
     quota::ProviderQuotaCoordinator,
     retry::{
@@ -113,6 +114,7 @@ impl AgentProvider for FallbackProvider {
                             backoff_source: None,
                             token_usage: None,
                             cache_usage: None,
+                            normalized_token_usage: None,
                             provider_message_id: None,
                             provider_request_id: None,
                             provider_http_trace_id: None,
@@ -183,6 +185,7 @@ impl AgentProvider for FallbackProvider {
                             response.output_tokens,
                         )),
                         cache_usage: response.cache_usage.clone(),
+                        normalized_token_usage: response.normalized_token_usage,
                         provider_message_id: response.provider_message_id.clone(),
                         provider_request_id: response.provider_request_id.clone(),
                         provider_http_trace_id: None,
@@ -291,7 +294,9 @@ impl AgentProvider for FallbackProvider {
                             backoff_ms: Some(backoff.as_millis() as u64),
                             backoff_source: Some(source.as_str().to_string()),
                             token_usage: provider_error_token_usage(&error).cloned(),
-                            cache_usage: None,
+                            cache_usage: provider_error_cache_usage(&error).cloned(),
+                            normalized_token_usage: provider_error_normalized_token_usage(&error)
+                                .cloned(),
                             provider_message_id: None,
                             provider_request_id: None,
                             provider_http_trace_id: provider_transport_diagnostics(&error)
@@ -357,7 +362,9 @@ impl AgentProvider for FallbackProvider {
                         backoff_ms: None,
                         backoff_source: None,
                         token_usage: provider_error_token_usage(&error).cloned(),
-                        cache_usage: None,
+                        cache_usage: provider_error_cache_usage(&error).cloned(),
+                        normalized_token_usage: provider_error_normalized_token_usage(&error)
+                            .cloned(),
                         provider_message_id: None,
                         provider_request_id: None,
                         provider_http_trace_id: provider_transport_diagnostics(&error)

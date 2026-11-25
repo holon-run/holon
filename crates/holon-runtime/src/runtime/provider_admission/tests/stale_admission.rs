@@ -351,6 +351,7 @@ async fn repeated_guard_calls_keep_an_inflight_request_charged_once_and_unknown(
 
 fn usable_guard_response() -> ProviderTurnResponse {
     ProviderTurnResponse {
+        normalized_token_usage: None,
         material: Default::default(),
         blocks: vec![ModelBlock::Text {
             text: "usable".into(),

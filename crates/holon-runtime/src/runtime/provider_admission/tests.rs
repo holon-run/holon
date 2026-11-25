@@ -2091,6 +2091,7 @@ async fn healthy_responses_do_not_apply_a_global_three_request_limit() {
         admission.before_dispatch().unwrap();
         admission
             .after_response(&Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "usable".into(),
@@ -2190,6 +2191,7 @@ async fn scarce_operator_probe_skips_auxiliary_until_usable_model_response() {
     assert_eq!(admission.episode().unwrap().total_requests, 0);
     admission.before_dispatch().unwrap();
     let response = ProviderTurnResponse {
+        normalized_token_usage: None,
         material: Default::default(),
         blocks: vec![ModelBlock::Text {
             text: "usable".into(),

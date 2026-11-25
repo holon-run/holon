@@ -424,6 +424,7 @@ impl AgentProvider for WorkloadProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,

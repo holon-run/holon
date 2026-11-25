@@ -149,6 +149,33 @@ pub struct DiagnosticsWriterStats {
     pub writer_failures: u64,
 }
 
+/// Transport-normalized token usage for one provider attempt
+/// (`attempt_token_usage.v1`).
+///
+/// The four flat token fields on [`TraceAttributes`]
+/// (`input_tokens`/`output_tokens`/`cache_read_input_tokens`/
+/// `cache_creation_input_tokens`) stay as raw per-transport wire evidence and
+/// keep their historical (transport-dependent) meaning. This object is the
+/// normalized view that downstream cost code can use without branching on
+/// transport.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TraceTokenUsage {
+    /// Input billed at full price (cache reads/writes excluded).
+    pub uncached_input_tokens: u64,
+    /// Cache read hits.
+    pub cache_read_tokens: u64,
+    /// Cache writes.
+    pub cache_write_tokens: u64,
+    /// Total billed output, including reasoning / thinking tokens.
+    pub output_tokens: u64,
+    /// Subset of `output_tokens`; `None` when the transport does not report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    /// Schema version of the normalization contract, currently
+    /// `"attempt_token_usage.v1"`.
+    pub semantics: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TraceAttributes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,6 +222,8 @@ pub struct TraceAttributes {
     pub provider_message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_http_trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TraceTokenUsage>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

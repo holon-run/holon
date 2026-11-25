@@ -469,6 +469,7 @@ impl AgentProvider for SharedReplyProvider {
         let material = request.material.clone();
         self.requests.lock().await.push(request);
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material,
             blocks: vec![ModelBlock::Text {
                 text: "shared reply handled".into(),
@@ -2078,6 +2079,7 @@ impl AgentProvider for LiveSharedReplyProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material,
             blocks,
             stop_reason: None,

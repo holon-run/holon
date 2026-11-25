@@ -58,6 +58,7 @@ impl AgentProvider for MaxOutputRecoveryProvider {
                 Log aggregation and analysis support debugging and compliance.";
 
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: extensive_text.into(),
@@ -86,6 +87,7 @@ impl AgentProvider for MaxOutputRecoveryProvider {
             );
 
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep-1".into(),
@@ -141,6 +143,7 @@ impl AgentProvider for RepeatedCompactionProvider {
 
         match call_count {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -166,6 +169,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -191,6 +195,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                 request_diagnostics: None,
             }),
             3 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -216,6 +221,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                 request_diagnostics: None,
             }),
             4 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Round 4: checkpoint-ready continuation with deterministic next step. "
@@ -230,6 +236,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                 request_diagnostics: None,
             }),
             _ => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Checkpointed review complete; carry the current discovery forward."
@@ -278,6 +285,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
 
         match call_count {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "[analysis] ".repeat(260),
@@ -291,6 +299,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -318,6 +327,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 request_diagnostics: None,
             }),
             3 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -344,6 +354,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 request_diagnostics: None,
             }),
             4 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Round 4: follow-up synthesis for compacted checkpoint continuity."
@@ -358,6 +369,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 request_diagnostics: None,
             }),
             _ => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Recovery path complete.".into(),
@@ -436,6 +448,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
 
         match call_index {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: format!(
@@ -453,6 +466,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
             request_diagnostics: None
             }),
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -488,6 +502,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                     .clone()
                     .unwrap_or_else(|| "missing-task".into());
                 Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                     blocks: vec![
                         ModelBlock::Text {
@@ -528,6 +543,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                     })
                 }).expect("TaskStatus must confirm the seed task output path");
                 Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -567,6 +583,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
             })
             },
             _ => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Completed after bounded repeated compaction.".into()

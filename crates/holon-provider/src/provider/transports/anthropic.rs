@@ -21,8 +21,8 @@ use crate::{
     provider::{
         builtin_web_search_probe_turn_request,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
-        AgentProvider, AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ConversationMessage,
-        ModelBlock, ModelToolCallKind, PromptContentBlock, ProviderBlockData,
+        AgentProvider, AnthropicPromptCacheDiagnostics, AttemptTokenUsage, CacheBreakpointInfo,
+        ConversationMessage, ModelBlock, ModelToolCallKind, PromptContentBlock, ProviderBlockData,
         ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderContextBudgetDiagnostics,
         ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
         ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderPromptCapability,
@@ -41,8 +41,8 @@ use crate::provider::retry::{
     empty_response_error_with_trace, invalid_response_error_with_trace, parse_retry_after,
     provider_transport_error, provider_transport_error_with_code,
     retryable_invalid_response_error_with_trace, sanitize_transport_url,
-    timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
-    RetryDisposition,
+    set_provider_transport_usage_evidence, timeout_transport_error_with_trace,
+    ProviderFailureClassification, ProviderFailureKind, RetryDisposition,
 };
 
 const ANTHROPIC_PROVIDER_BLOCK_FORMAT: &str = "anthropic_messages/v1";
@@ -1146,16 +1146,32 @@ fn anthropic_messages_response_to_turn_response(
         read_input_tokens: usage.cache_read_input_tokens.unwrap_or(0),
         creation_input_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
     });
+    // Anthropic `input_tokens` already excludes cache reads/writes, so treat it
+    // as the uncached portion directly. Anthropic does not report reasoning
+    // separately; `output_tokens` already includes thinking.
+    let normalized_token_usage = parsed.usage.as_ref().map(|usage| {
+        AttemptTokenUsage::from_exclusive_input(
+            usage.input_tokens.unwrap_or(0),
+            usage.cache_read_input_tokens.unwrap_or(0),
+            usage.cache_creation_input_tokens.unwrap_or(0),
+            usage.output_tokens.unwrap_or(0),
+            None,
+        )
+    });
     if parsed.content.is_empty() {
-        return Err(empty_response_error_with_trace(
-            "empty Anthropic response",
-            "response_protocol",
-            provider_id,
-            Some(model_ref),
-            Some(url),
-            "Anthropic response contained no content blocks",
-            trace,
-            crate::types::TokenUsage::new(input_tokens, output_tokens),
+        return Err(set_provider_transport_usage_evidence(
+            empty_response_error_with_trace(
+                "empty Anthropic response",
+                "response_protocol",
+                provider_id,
+                Some(model_ref),
+                Some(url),
+                "Anthropic response contained no content blocks",
+                trace,
+                crate::types::TokenUsage::new(input_tokens, output_tokens),
+            ),
+            cache_usage,
+            normalized_token_usage,
         ));
     }
     let tools_available = !request.tools.is_empty();
@@ -1204,15 +1220,19 @@ fn anthropic_messages_response_to_turn_response(
             tools_available,
             "anthropic response stopped for tool_use but returned no tool call blocks"
         );
-        return Err(retryable_invalid_response_error_with_trace(
-            "invalid Anthropic tool response",
-            "response_protocol",
-            provider_id,
-            Some(model_ref),
-            Some(url),
-            "stop_reason=tool_use without any tool_use block; retrying as protocol violation",
-            trace,
-            crate::types::TokenUsage::new(input_tokens, output_tokens),
+        return Err(set_provider_transport_usage_evidence(
+            retryable_invalid_response_error_with_trace(
+                "invalid Anthropic tool response",
+                "response_protocol",
+                provider_id,
+                Some(model_ref),
+                Some(url),
+                "stop_reason=tool_use without any tool_use block; retrying as protocol violation",
+                trace,
+                crate::types::TokenUsage::new(input_tokens, output_tokens),
+            ),
+            cache_usage,
+            normalized_token_usage,
         ));
     }
 
@@ -1268,6 +1288,7 @@ fn anthropic_messages_response_to_turn_response(
         input_tokens,
         output_tokens,
         cache_usage,
+        normalized_token_usage,
         provider_message_id: parsed.id,
         provider_request_id,
         request_diagnostics: Some(crate::provider::ProviderRequestDiagnostics {

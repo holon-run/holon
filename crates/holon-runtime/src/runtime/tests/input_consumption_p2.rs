@@ -291,6 +291,7 @@ impl AgentProvider for LiveProvider {
             runtime.inject_next_transition_fault(fault);
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material,
             blocks,
             stop_reason: None,

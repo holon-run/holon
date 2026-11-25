@@ -297,6 +297,7 @@ impl AgentProvider for TaskResultReentryProvider {
             _ => anyhow::bail!("unexpected task-result provider call {call}"),
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -337,6 +338,7 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
 
         match call {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep-1".into(),
@@ -356,6 +358,7 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "background command result observed".into(),
@@ -564,6 +567,7 @@ impl AgentProvider for FastPathWaitProvider {
         };
         let response = |blocks: Vec<ModelBlock>| {
             Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks,
                 stop_reason: None,

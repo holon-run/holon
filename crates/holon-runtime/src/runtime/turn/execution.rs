@@ -2183,6 +2183,16 @@ fn record_provider_round_span(
                     provider_request_id: attempt.provider_request_id.clone(),
                     provider_message_id: attempt.provider_message_id.clone(),
                     provider_http_trace_id: attempt.provider_http_trace_id.clone(),
+                    usage: attempt.normalized_token_usage.map(|usage| {
+                        crate::observability::TraceTokenUsage {
+                            uncached_input_tokens: usage.uncached_input_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            cache_write_tokens: usage.cache_write_tokens,
+                            output_tokens: usage.output_tokens,
+                            reasoning_tokens: usage.reasoning_tokens,
+                            semantics: crate::provider::AttemptTokenUsage::SEMANTICS.to_string(),
+                        }
+                    }),
                     ..Default::default()
                 },
             ),
@@ -2352,6 +2362,7 @@ mod provider_span_tests {
                     backoff_source: Some("server_retry_after".into()),
                     token_usage: None,
                     cache_usage: None,
+                    normalized_token_usage: None,
                     provider_message_id: None,
                     provider_request_id: Some("request-1".into()),
                     provider_http_trace_id: Some("capture-1".into()),
@@ -2377,6 +2388,7 @@ mod provider_span_tests {
                         read_input_tokens: 8,
                         creation_input_tokens: 3,
                     }),
+                    normalized_token_usage: None,
                     provider_message_id: Some("message-2".into()),
                     provider_request_id: Some("request-2".into()),
                     provider_http_trace_id: Some("capture-2".into()),
@@ -2401,6 +2413,7 @@ mod provider_span_tests {
         };
         let result = Ok((
             ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: Vec::new(),
                 stop_reason: Some("end_turn".into()),
@@ -6354,6 +6367,7 @@ mod tests {
             backoff_source: None,
             token_usage: None,
             cache_usage: None,
+            normalized_token_usage: None,
             provider_message_id: None,
             provider_request_id: None,
             provider_http_trace_id: None,
@@ -6579,6 +6593,7 @@ mod tests {
                 backoff_source: None,
                 token_usage: None,
                 cache_usage: None,
+                normalized_token_usage: None,
                 provider_message_id: provider_message_id.map(str::to_owned),
                 provider_request_id: None,
                 provider_http_trace_id: None,
@@ -6631,6 +6646,7 @@ mod tests {
                     backoff_source: None,
                     token_usage: None,
                     cache_usage: None,
+                    normalized_token_usage: None,
                     provider_message_id: None,
                     provider_request_id: None,
                     provider_http_trace_id: None,
