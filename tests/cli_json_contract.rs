@@ -77,6 +77,18 @@ fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
     spawn_serve_command(command)
 }
 
+fn spawn_local_serve_with_env(
+    home: &tempfile::TempDir,
+    envs: &[(&str, &str)],
+) -> (ServeChild, String) {
+    let mut command = isolated_holon_command(home);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command.args(["serve", "--listen", "127.0.0.1:0"]);
+    spawn_serve_command(command)
+}
+
 fn forward_serve_stdout(reader: impl BufRead, line_tx: mpsc::Sender<std::io::Result<String>>) {
     for line in reader.lines() {
         // Keep the pipe open after the startup receiver has its listener address.
@@ -1523,4 +1535,76 @@ fn agent_model_get_uses_the_dedicated_model_endpoint() {
     let restored = run_json_with_env(&home, &["agent", "model", "get", "model-cli"], &envs);
     assert_eq!(restored["source"], json!("runtime_default"));
     assert!(restored.get("override_model").is_none());
+}
+
+#[test]
+fn template_catalog_and_show_read_the_api_catalog_without_writing() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let user_home = tempfile::tempdir().expect("create isolated HOME");
+    let template_dir = user_home.path().join(".agents/agent_templates/demo");
+    std::fs::create_dir_all(&template_dir).expect("create user-global template dir");
+    std::fs::write(
+        template_dir.join("AGENTS.md"),
+        "# Demo agent\n\nDemo deployment notes.\n",
+    )
+    .expect("write template AGENTS.md");
+
+    let (_serve, addr) = spawn_local_serve_with_env(
+        &home,
+        &[(
+            "HOME",
+            user_home
+                .path()
+                .to_str()
+                .expect("temp HOME should be UTF-8"),
+        )],
+    );
+    let envs = [("HOLON_HTTP_ADDR", addr.as_str())];
+
+    let catalog = run_json_with_env(&home, &["template", "catalog"], &envs);
+    assert_eq!(catalog["ok"], json!(true));
+    let entries = catalog["catalog"]
+        .as_array()
+        .expect("catalog response should carry an entries array");
+    let entry = entries
+        .iter()
+        .find(|entry| entry["template"] == json!("demo"))
+        .expect("user-global template should be listed");
+    assert_eq!(entry["source"], json!("user_global"));
+    let catalog_id = entry["catalog_id"]
+        .as_str()
+        .expect("catalog entry should carry a catalog id")
+        .to_string();
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["template"] != json!("holon-default")),
+        "hidden builtin holon-default must not be a catalog entry"
+    );
+
+    let detail = run_json_with_env(&home, &["template", "show", &catalog_id], &envs);
+    assert_eq!(detail["ok"], json!(true));
+    assert_eq!(detail["detail"]["catalog_id"], json!(catalog_id));
+    assert!(detail["detail"]["agents_md"]
+        .as_str()
+        .expect("detail should carry AGENTS.md content")
+        .contains("Demo deployment notes."));
+
+    // The same detail is reachable through the preferred selector name.
+    let by_name = run_json_with_env(&home, &["template", "show", "demo"], &envs);
+    assert_eq!(by_name["detail"]["catalog_id"], json!(catalog_id));
+
+    // Read-only failure contract for an unknown id.
+    let (stdout, stderr) = run_failure_with_env(&home, &["template", "show", "missing"], &envs);
+    assert!(
+        stdout.trim().is_empty(),
+        "failure output should stay on stderr"
+    );
+    assert!(
+        stderr.contains("not found"),
+        "unknown catalog id should report not found: {stderr}"
+    );
 }

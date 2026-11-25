@@ -288,6 +288,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: SkillsCommands,
     },
+    #[command(about = "Read-only Agent template catalog queries")]
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommands,
+    },
     Run {
         text: String,
         #[arg(
@@ -1293,6 +1298,17 @@ pub enum SkillsCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum TemplateCommands {
+    #[command(about = "List the visible Agent template catalog")]
+    Catalog,
+    #[command(about = "Show one Agent template catalog entry with full detail")]
+    Show {
+        #[arg(value_name = "CATALOG_ID")]
+        catalog_id: String,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot helpers
 // ---------------------------------------------------------------------------
@@ -1900,6 +1916,35 @@ mod tests {
         assert!(help.contains("status"));
         assert!(!help.contains("output"));
         assert!(Cli::try_parse_from(["holon", "task", "output", "task-old"]).is_err());
+    }
+
+    #[test]
+    fn template_catalog_and_show_parse_as_read_only_subcommands() {
+        let cli = Cli::try_parse_from(["holon", "template", "catalog"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Template {
+                command: TemplateCommands::Catalog
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["holon", "template", "show", "user_global:code-reviewer"])
+            .unwrap();
+        let Commands::Template {
+            command: TemplateCommands::Show { catalog_id },
+        } = cli.command
+        else {
+            panic!("expected template show command");
+        };
+        assert_eq!(catalog_id, "user_global:code-reviewer");
+
+        // `show` requires exactly one catalog id.
+        assert!(Cli::try_parse_from(["holon", "template", "show"]).is_err());
+        assert!(Cli::try_parse_from(["holon", "template", "show", "a", "b"]).is_err());
+
+        let entries = collect_snapshot();
+        assert!(entries.iter().any(|entry| entry.path == "template.catalog"));
+        assert!(entries.iter().any(|entry| entry.path == "template.show"));
     }
 }
 

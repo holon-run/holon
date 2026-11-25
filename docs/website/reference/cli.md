@@ -137,6 +137,9 @@ holon (v0.61.0)
 │   ├── refresh    Rescan local roots
 │   ├── install    [deprecated] Compatibility alias
 │   └── uninstall  [deprecated] Compatibility alias
+├── template       Read-only Agent template catalog queries
+│   ├── catalog    List visible Agent templates
+│   └── show       Show one template catalog entry with full detail
 ├── run          One-shot agent interaction
 ├── solve        Solve a GitHub issue or similar target
 ├── workspace    Workspace management (attach, exit, detach)
@@ -190,6 +193,20 @@ holon agent create reviewer --template code-reviewer
 holon agent repair reviewer
 holon run --agent reviewer "Review src/runtime/turn.rs"
 ```
+
+### Template catalog
+
+```bash
+holon template catalog
+holon template show user_global:code-reviewer
+```
+
+`holon template catalog` returns the same read-only catalog as
+`GET /templates/catalog`: user-global library entries plus synced remote
+sources, with the hidden builtin `holon-default` excluded. `holon template
+show <catalog_id>` returns one entry's detail from
+`GET /templates/catalog/{catalog_id}`. Both commands only read; they do not
+sync, install, remove, or create agents.
 
 ### Agent lifecycle
 
