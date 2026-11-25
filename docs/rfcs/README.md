@@ -20,6 +20,7 @@ implementation and tests.
 - [Agent Actor And Invocation Model](./agent-actor-invocation-model.md)
 - [Agent Lifecycle Control Posture](./agent-lifecycle-control-posture.md)
 - [Subagent Residency And Reclamation (draft)](./subagent-residency-and-reclamation.md)
+- [External ACP Agent Harness Integration (draft)](./external-acp-agent-harness.md)
 - [Agent State Model And Runtime Projection](./agent-state-model.md)
 - [Agent Runtime State and Context Snapshots (draft)](./agent-runtime-state-and-context-snapshots.md)
 - [Agent Status Display Projection](./agent-status-display-projection.md)
