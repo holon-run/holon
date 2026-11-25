@@ -104,7 +104,7 @@ jobs:
           # head has no CI run at all; that is "missing", not "failed". The gate
           # script owns the four-state classification and the single docs-only
           # inheritance branch, and fails closed on anything it cannot prove.
-          if ! gate="$(bash scripts/beta_train_ci_gate.sh)"; then
+          if ! gate="$(SHA="$sha" bash scripts/beta_train_ci_gate.sh)"; then
             skip "main CI gate for ${sha} produced no decision; failing closed before the next train"
             exit 0
           fi

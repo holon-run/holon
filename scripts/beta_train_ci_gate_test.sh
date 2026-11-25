@@ -207,6 +207,18 @@ out="$(run_gate "$head_sha")"
 assert_eq 'not-ahead decision' 'skip' "$(field "$out" decision)"
 assert_contains 'not-ahead reason' "$(field "$out" message)" 'compare status identical'
 
+# 13. Workflow wiring: the script requires SHA in the environment, so the
+# Preflight step must pass it at the call site. A shell variable is not an
+# exported one; assert the invocation itself sets SHA=.
+case_index=$((case_index + 1))
+gate_call="$(grep -F 'bash scripts/beta_train_ci_gate.sh' "${root}/.github/workflows/beta-train.yml" || true)"
+if printf '%s\n' "$gate_call" | grep -qF 'SHA="'; then
+  :
+else
+  printf 'FAIL: workflow Preflight does not export SHA to beta_train_ci_gate.sh\n' >&2
+  failures=$((failures + 1))
+fi
+
 if [ "$failures" -ne 0 ]; then
   printf '%d beta-train CI gate test(s) failed\n' "$failures" >&2
   exit 1
