@@ -1029,6 +1029,23 @@
     "aliases": []
   },
   {
+    "path": "daemon.validate-startup",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "migrate",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "debug",
     "positionals": [],
     "flags": [],

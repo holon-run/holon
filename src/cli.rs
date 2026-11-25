@@ -486,6 +486,25 @@ pub enum DaemonCommands {
     Status,
     /// Read the last recorded startup quarantine report without contacting the daemon.
     Quarantine,
+    /// Validate that this binary can start against the existing runtime library.
+    ///
+    /// Read-only by default: it parses configuration, resolves effective paths,
+    /// opens the existing runtime database with `SQLITE_OPEN_READ_ONLY` and
+    /// `PRAGMA query_only=1`, and verifies the schema ledger, storage domains,
+    /// agent registry, quarantine report, and persisted input-evidence snapshot
+    /// metadata. It never creates a missing database, migrates, initializes
+    /// storage domains, materializes workspace/identity rows, normalizes wakes
+    /// or queues, or appends audit events.
+    ///
+    /// `--migrate` performs the real schema migration and backfills on an
+    /// explicitly selected copy or maintenance window. It refuses before
+    /// opening the database unless it holds the maintenance lease and the
+    /// control socket is not live, then runs the same read-only validation.
+    ValidateStartup {
+        /// Apply the real migration and backfills (requires the daemon stopped).
+        #[arg(long)]
+        migrate: bool,
+    },
     Restart {
         #[command(flatten)]
         options: ServeOptions,

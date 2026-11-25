@@ -92,7 +92,7 @@ its `status` to a dedicated exit code:
 | `1` | usage/parse failure or unexpected internal error |
 | `20` | expected domain failure (`status: failed`, `error.kind: domain`) |
 | `21` | blocked state: `daemon_unavailable`, `daemon_running`, `daemon_lease_held`, or a stale/unresponsive runtime |
-| `22` | reserved for `daemon validate-startup` reporting `migration_required` |
+| `22` | `daemon validate-startup` read-only mode reporting `migration_required` |
 
 Human (non-`--json`) daemon output keeps the same exit codes but writes bounded
 prose instead of the envelope. Because daemon failures always emit an error
