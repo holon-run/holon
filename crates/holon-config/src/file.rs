@@ -872,12 +872,6 @@ impl WebProviderLimitsConfigFile {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct ClaudeSettings {
-    #[serde(default)]
-    pub(crate) env: HashMap<String, String>,
-}
-
 impl ModelConfigFile {
     pub(crate) fn is_empty(&self) -> bool {
         self.default.is_none()

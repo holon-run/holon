@@ -799,7 +799,10 @@ fn unset_provider_plan_config_key(config: &mut HolonConfigFile, key: &str) -> Re
 pub fn built_in_provider_default_config(
     provider_id: &ProviderId,
 ) -> Result<Option<ProviderConfigFile>> {
-    let settings_env = load_settings_env()?;
+    // The optional Claude-compatible settings file is best-effort: a damaged
+    // file yields whatever env values it could provide instead of failing
+    // every built-in provider default.
+    let settings_env = load_settings_env().into_env();
     built_in_provider_default_config_with_settings(provider_id, &settings_env)
 }
 
@@ -1362,7 +1365,7 @@ fn insert_generic_provider(
 
 /// Public entry point for tools that need the built-in provider registry (e.g. docgen).
 pub fn built_in_provider_registry() -> Result<ProviderRegistry> {
-    let settings_env = load_settings_env()?;
+    let settings_env = load_settings_env().into_env();
     built_in_provider_registry_with_settings(&settings_env)
 }
 

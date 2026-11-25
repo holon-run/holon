@@ -997,9 +997,16 @@ fn validate_runtime_config_candidate(
     // Rebuild the provider registry from the candidate so route validation
     // sees newly added endpoints/plans, then verify model.route_options and
     // models.routes reference resolvable endpoints.
+    // `~/.claude/settings.json` is only an optional Claude-compatible env
+    // source; a damaged file must not reject unrelated runtime config updates
+    // per field. Report its single aggregated diagnostic instead.
+    let claude_settings = crate::config::load_settings_env();
+    if let Some(diagnostic) = claude_settings.diagnostic() {
+        tracing::warn!(target: "holon::config", "{diagnostic}");
+    }
     candidate_config.providers = crate::config::resolve_provider_registry(
         candidate,
-        &crate::config::load_settings_env()?,
+        &claude_settings.into_env(),
         &credentials,
     )?;
     candidate_config.validate_model_route_options()?;
