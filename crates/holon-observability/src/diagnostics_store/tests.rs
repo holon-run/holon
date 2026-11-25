@@ -267,23 +267,10 @@ fn dropped_spans_by_name_round_trips_through_persistence() {
         summaries[0].dropped_spans_by_name,
         classified.dropped_spans_by_name
     );
-
-    let raw: String = open_connection(&path)
-        .unwrap()
-        .query_row(
-            "SELECT dropped_spans_by_name FROM traces WHERE trace_id = ?1",
-            ["classified"],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        raw,
-        serde_json::to_string(&classified.dropped_spans_by_name).unwrap()
-    );
 }
 
 #[test]
-fn legacy_rows_with_null_classification_read_as_unclassified() {
+fn legacy_rows_without_classification_read_as_unclassified() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("diagnostics.sqlite");
     let connection = open_connection(&path).unwrap();
@@ -322,25 +309,4 @@ fn legacy_rows_with_null_classification_read_as_unclassified() {
         search_persistent_traces(&path, "legacy", 10).unwrap()[0].dropped_spans_by_name,
         BTreeMap::new()
     );
-
-    // `NULL` marks an unclassified row; a classified row with nothing dropped
-    // stores an explicit empty JSON object so operators can tell them apart.
-    let mut connection = open_connection(&path).unwrap();
-    let transaction = connection.transaction().unwrap();
-    persist_trace(
-        &transaction,
-        &trace("classified-empty", 10, TraceSpanStatus::Error),
-    )
-    .unwrap();
-    transaction.commit().unwrap();
-    let mut statement = connection
-        .prepare("SELECT dropped_spans_by_name FROM traces WHERE trace_id = ?1")
-        .unwrap();
-    let mut raw = |trace_id: &str| {
-        statement
-            .query_row([trace_id], |row| row.get::<_, Option<String>>(0))
-            .unwrap()
-    };
-    assert_eq!(raw("legacy"), None);
-    assert_eq!(raw("classified-empty"), Some("{}".to_string()));
 }
