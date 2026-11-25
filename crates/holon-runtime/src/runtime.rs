@@ -46,8 +46,8 @@ mod control_cancellation;
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod control_task_generation_tests;
-pub(crate) mod task_generation;
 pub(crate) use control_cancellation::RetiredProducerExit;
+pub(crate) use holon_domain::task_generation;
 pub(crate) mod agent_list_projection;
 pub mod agent_observation;
 mod agent_summary_read;

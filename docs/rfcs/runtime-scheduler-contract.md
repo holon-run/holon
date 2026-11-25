@@ -480,6 +480,11 @@ Invariants:
 - task completion should be persisted before the corresponding model-reentry
   task result is queued.
 
+The Task rules in `holon-domain` evaluate status progression, rejoin generation,
+and exact result wait evidence from supplied records. The runtime reads the
+authoritative records and commits task status, result admission, and wait
+changes through its existing transaction.
+
 Recommended implementation boundary:
 
 - all task lifecycle writes should go through one `TaskTransition` reducer;

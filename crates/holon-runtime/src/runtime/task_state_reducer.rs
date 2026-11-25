@@ -1,8 +1,13 @@
 use super::{scheduler, *};
 #[cfg(test)]
 use crate::types::BriefKind;
-use crate::types::{ExecutionAdmissionProvenance, WaitConditionKind, WakeSource};
-use sha2::{Digest, Sha256};
+use crate::types::ExecutionAdmissionProvenance;
+use holon_domain::task_transition::canonical_exact_task_wait_matches;
+
+pub(crate) use holon_domain::is_terminal_task_status;
+pub(crate) use holon_domain::task_transition::{
+    should_ignore_task_update as should_ignore_task_update_ref, stable_terminal_task_event_id,
+};
 
 pub(super) const TASK_TRANSITION_MAX_ATTEMPTS: usize = 3;
 
@@ -41,44 +46,6 @@ impl std::fmt::Display for TaskTransitionRetryExhausted {
 impl std::error::Error for TaskTransitionRetryExhausted {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.source.as_ref())
-    }
-}
-
-pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
-    scheduler::is_terminal_task_status(status)
-}
-
-pub(super) fn should_ignore_task_update(latest: Option<TaskRecord>, task: &TaskRecord) -> bool {
-    should_ignore_task_update_ref(latest.as_ref(), task)
-}
-
-pub(crate) fn should_ignore_task_update_ref(
-    latest: Option<&TaskRecord>,
-    task: &TaskRecord,
-) -> bool {
-    let Some(latest) = latest else {
-        return false;
-    };
-
-    if is_terminal_task_status(&latest.status)
-        && is_terminal_task_status(&task.status)
-        && latest.status != task.status
-    {
-        return true;
-    }
-
-    task_status_phase(&latest.status) > task_status_phase(&task.status)
-}
-
-fn task_status_phase(status: &TaskStatus) -> u8 {
-    match status {
-        TaskStatus::Queued => 0,
-        TaskStatus::Running => 1,
-        TaskStatus::Cancelling => 2,
-        TaskStatus::Completed
-        | TaskStatus::Failed
-        | TaskStatus::Cancelled
-        | TaskStatus::Interrupted => 3,
     }
 }
 
@@ -426,7 +393,7 @@ impl RuntimeHandle {
                 return Ok(latest.clone());
             }
         }
-        if should_ignore_task_update(latest_task.clone(), task) {
+        if should_ignore_task_update_ref(latest_task.as_ref(), task) {
             return Ok(latest_task.expect("ignored Task update has a canonical record"));
         }
         let repeated_terminal = latest_task.as_ref().is_some_and(|latest| {
@@ -1340,30 +1307,6 @@ fn task_transition_error_is_retryable_conflict(error: &anyhow::Error) -> bool {
     crate::runtime_db::retryable_state_transition_conflict(error).is_some()
 }
 
-pub(crate) fn stable_terminal_task_event_id(event_kind: &str, task: &TaskRecord) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(event_kind.as_bytes());
-    hasher.update([0]);
-    hasher.update(task.id.as_bytes());
-    hasher.update([0]);
-    if let Some(message_id) = task.parent_message_id.as_deref() {
-        hasher.update(message_id.as_bytes());
-    }
-    hasher.update([0]);
-    let status = match task.status {
-        TaskStatus::Queued => "queued",
-        TaskStatus::Running => "running",
-        TaskStatus::Cancelling => "cancelling",
-        TaskStatus::Completed => "completed",
-        TaskStatus::Failed => "failed",
-        TaskStatus::Cancelled => "cancelled",
-        TaskStatus::Interrupted => "interrupted",
-    };
-    hasher.update(status.as_bytes());
-    let digest = format!("{:x}", hasher.finalize());
-    format!("event_{}", &digest[..15])
-}
-
 fn should_emit_task_result_brief(task: &TaskRecord) -> bool {
     task.kind != TaskKind::CommandTask && task.kind != TaskKind::AgentMessageWait
 }
@@ -1414,82 +1357,6 @@ fn task_result_has_canonical_exact_wait(
     ))
 }
 
-fn canonical_exact_task_wait_matches<'a>(
-    message: &MessageEnvelope,
-    task: &TaskRecord,
-    activation_id: &str,
-    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
-    owner_work: Option<&crate::domain::execution_protocol::WorkItemExecutionRecord>,
-    waits: impl Iterator<Item = &'a WaitConditionRecord> + Clone,
-) -> bool {
-    use crate::domain::execution_protocol::{
-        eligible_work_item_at_generation, ExecutionAttemptState, ExecutionSourceIdentity,
-    };
-    if attempt.state != ExecutionAttemptState::Open
-        || attempt.attempt_id != activation_id
-        || attempt.agent_id != message.agent_id
-        || !attempt.binding.matches_agent_partition(&message.agent_id)
-        || attempt.source_message_id.as_deref() != Some(message.id.as_str())
-        || task.agent_id != message.agent_id
-        || message.kind != MessageKind::TaskResult
-        || message.task_id.as_deref() != Some(task.id.as_str())
-        || !matches!(&message.origin, MessageOrigin::Task { task_id } if task_id == &task.id)
-    {
-        return false;
-    }
-    let owner = match attempt.binding.work_item_id() {
-        Some(work_item_id) => {
-            if !owner_work.is_some_and(|work| {
-                eligible_work_item_at_generation(work, attempt.admitted_fences.work_item_generation)
-            }) {
-                return false;
-            }
-            Some(work_item_id)
-        }
-        _ => None,
-    };
-    let wait_id = match &attempt.source.identity {
-        ExecutionSourceIdentity::TriggeredWait {
-            wait_id,
-            trigger_message_id,
-            ..
-        } if trigger_message_id == &message.id => Some(wait_id.as_str()),
-        ExecutionSourceIdentity::TaskResult {
-            task_id,
-            result_message_id,
-        } if task_id == &task.id
-            && result_message_id == &message.id
-            && owner.is_some()
-            && task.effective_work_item_id() == owner
-            && message.work_item_id.as_deref() == owner =>
-        {
-            None
-        }
-        _ => return false,
-    };
-    // A replacement wait must not lend its predecessor's resolved trigger.
-    if waits.clone().any(|wait| {
-        wait.work_item_id.as_deref() == owner
-            && matches!(
-                wait.status,
-                WaitConditionStatus::Active | WaitConditionStatus::Triggered
-            )
-    }) {
-        return false;
-    }
-    let mut matching = waits.filter(|wait| {
-        wait_id.is_none_or(|wait_id| wait.id == wait_id)
-                && wait.work_item_id.as_deref() == owner
-                && wait.status == WaitConditionStatus::Resolved
-                && wait.kind == WaitConditionKind::Task
-                && wait.trigger_message_id() == Some(message.id.as_str())
-                && wait.wake_sources.iter().any(|source| {
-                    matches!(source, WakeSource::TaskResult { task_id } if task_id == &task.id)
-                })
-    });
-    matching.next().is_some() && matching.next().is_none()
-}
-
 #[cfg(test)]
 fn task_result_parent_turn_already_delivered(
     storage: &AppStorage,
@@ -1520,7 +1387,9 @@ mod tests {
             WorkItemExecutionState,
         },
         provider::StubProvider,
-        types::{AuthorityClass, MessageKind, MessageOrigin, Priority},
+        types::{
+            AuthorityClass, MessageKind, MessageOrigin, Priority, WaitConditionKind, WakeSource,
+        },
     };
     use chrono::Utc;
     use serde_json::json;
@@ -2258,58 +2127,6 @@ mod tests {
         })
     }
 
-    #[test]
-    fn stale_non_terminal_updates_are_ignored_after_terminal_status_exists() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        storage
-            .append_task(&task("task-1", TaskStatus::Completed, true))
-            .unwrap();
-
-        let latest = storage.latest_task_record("task-1").unwrap();
-        let stale = task("task-1", TaskStatus::Running, true);
-        assert!(should_ignore_task_update(latest, &stale));
-    }
-
-    #[test]
-    fn conflicting_terminal_updates_are_ignored_after_terminal_status_exists() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        storage
-            .append_task(&task("task-1", TaskStatus::Completed, true))
-            .unwrap();
-
-        let latest = storage.latest_task_record("task-1").unwrap();
-        let late_terminal = task("task-1", TaskStatus::Failed, true);
-        assert!(should_ignore_task_update(latest, &late_terminal));
-    }
-
-    #[test]
-    fn repeated_same_terminal_updates_are_preserved_for_result_events() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        storage
-            .append_task(&task("task-1", TaskStatus::Failed, true))
-            .unwrap();
-
-        let latest = storage.latest_task_record("task-1").unwrap();
-        let repeated_terminal = task("task-1", TaskStatus::Failed, true);
-        assert!(!should_ignore_task_update(latest, &repeated_terminal));
-    }
-
-    #[test]
-    fn stale_running_update_is_ignored_after_cancelling() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        storage
-            .append_task(&task("task-1", TaskStatus::Cancelling, true))
-            .unwrap();
-
-        let latest = storage.latest_task_record("task-1").unwrap();
-        let stale = task("task-1", TaskStatus::Running, true);
-        assert!(should_ignore_task_update(latest, &stale));
-    }
-
     #[tokio::test]
     async fn concurrent_running_snapshot_cannot_overwrite_cancelling() {
         let runtime = runtime();
@@ -2533,20 +2350,6 @@ mod tests {
             .latest_active_task_records_for_agent("default", usize::MAX)
             .unwrap();
         assert!(active.is_empty());
-    }
-
-    #[test]
-    fn task_record_work_item_id_falls_back_to_detail_for_old_records() {
-        let mut record = task("task-1", TaskStatus::Running, true);
-        record.detail = Some(serde_json::json!({
-            "wait_policy": "blocking",
-            "work_item_id": "work-old",
-        }));
-
-        assert_eq!(record.effective_work_item_id(), Some("work-old"));
-
-        record.work_item_id = Some("work-new".into());
-        assert_eq!(record.effective_work_item_id(), Some("work-new"));
     }
 
     #[tokio::test]

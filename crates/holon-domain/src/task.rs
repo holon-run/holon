@@ -906,3 +906,13 @@ pub fn is_active_task_status(status: &TaskStatus) -> bool {
         TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
     )
 }
+
+pub fn is_terminal_task_status(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Completed
+            | TaskStatus::Failed
+            | TaskStatus::Cancelled
+            | TaskStatus::Interrupted
+    )
+}
