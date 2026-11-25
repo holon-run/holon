@@ -27,7 +27,7 @@ final class FilesCoordinator {
     @ObservationIgnored private var revision = 0
     @ObservationIgnored private var operation = 0
     private var conversationImageRevision = 0
-    @ObservationIgnored private var activeConversationImageDownloads = 0
+    @ObservationIgnored private let conversationImageSlots = ConversationImageSlots()
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private let cache: FilesCache
     @ObservationIgnored private var pins: [FilesRequest: FilesSource] = [:]
@@ -199,12 +199,11 @@ final class FilesCoordinator {
 
     func loadConversationImage(_ reference: String, agentID: String, scope: Int) async throws -> CGImage {
         try Task.checkCancellation()
-        guard conversationImageScope(agentID: agentID) == scope,
-              let transport, activeConversationImageDownloads < 3 else {
-            throw FilesFailure.invalidReference
-        }
-        activeConversationImageDownloads += 1
-        defer { activeConversationImageDownloads -= 1 }
+        guard conversationImageScope(agentID: agentID) == scope else { throw CancellationError() }
+        try await conversationImageSlots.acquire()
+        defer { conversationImageSlots.release() }
+        try Task.checkCancellation()
+        guard conversationImageScope(agentID: agentID) == scope, let transport else { throw CancellationError() }
         let download = try await transport.download(source: .reference(reference),
                                                      maximumBytes: ConversationImageThumbnail.maximumBytes)
         try Task.checkCancellation()

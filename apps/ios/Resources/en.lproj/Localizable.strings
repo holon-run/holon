@@ -113,6 +113,9 @@
 "reading.imageLoading" = "Loading image…";
 "reading.imageOffline" = "Reconnect to load image";
 "reading.imageUnavailable" = "Image unavailable · Retry";
+"reading.imageTooLarge" = "Image is too large to preview";
+"reading.imageOpenInFiles" = "Open in Files";
+"reading.loadImageReferences" = "Load image references";
 "reading.connectionDetails" = "Connection";
 "reading.markRead" = "Mark read through viewed brief…";
 "reading.confirmReadThrough" = "Mark this and all earlier briefs read";

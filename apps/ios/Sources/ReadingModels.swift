@@ -95,6 +95,25 @@ enum OperatorInputPresentation {
         let isTruncated: Bool
     }
 
+    struct Message {
+        let text: String
+        // nil means legacy or unrelated provenance; [] is an authoritative absence.
+        let uploadedImages: [ConversationImageReference]?
+    }
+
+    static func message(_ envelope: JSONValue, agentID: String, messageID: String) -> Message? {
+        guard let text = messageText(envelope, agentID: agentID, messageID: messageID) else { return nil }
+        let uploadedImages: [ConversationImageReference]?
+        if envelope["kind"]?.readingString == "operator_prompt",
+           envelope["delivery_surface"]?.readingString == "http_control_prompt",
+           let captionBytes = envelope["metadata"]?["control_prompt_caption_utf8_bytes"]?.readingInteger {
+            uploadedImages = ConversationImageReference.controlAttachments(in: text, captionUTF8Bytes: captionBytes)
+        } else {
+            uploadedImages = nil
+        }
+        return Message(text: text, uploadedImages: uploadedImages)
+    }
+
     static func text(_ preview: String) -> String {
         decodePreview(preview).text
     }

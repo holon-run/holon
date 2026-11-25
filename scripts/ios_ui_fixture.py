@@ -1227,22 +1227,37 @@ with fixture_directory(repo) as root:
                 missing = workspace / "media" / "inbox" / "missing-history-probe.png"
                 if missing.exists():
                     raise RuntimeError("Negative image fixture must not exist")
-                caption = ("IOS_IMAGE_HISTORY_CAPTION\n" + "isolated caption line\n" * 1500
-                           + f"![Missing image]({urllib.parse.quote(str(missing))})\n"
+                caption = ("IOS_IMAGE_HISTORY_CAPTION 截图\n" + "isolated caption line\n" * 1500
+                           + "".join(f"![Caption {i}]({urllib.parse.quote(str(missing.with_stem(f'missing-caption-{i}')))})\n"
+                                     for i in range(3))
                            + "![External image](https://example.invalid/image.png)\n")
+                sample_image = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGNQKDhAEmIY1TCqYfhqAAABLlAQG7VYsQAAAABJRU5ErkJggg=="
                 receipt = local("POST", f"/control/agents/{agent}/prompt", {
                     "client_request_id": str(uuid.uuid4()), "text": caption,
                     "attachments": [{
-                        "kind": "image", "name": "history-probe.png", "media_type": "image/png",
-                        "data_base64": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGNQKDhAEmIY1TCqYfhqAAABLlAQG7VYsQAAAABJRU5ErkJggg==",
-                    }],
+                        "kind": "image", "name": name, "media_type": "image/png",
+                        "data_base64": sample_image,
+                    } for name in ("history-probe.png", "history-deleted.png", "history-oversized.png")],
                 })
                 message_id = receipt["message_id"]
                 message_path = f"/agents/{agent}/messages/{urllib.parse.quote(message_id, safe='')}"
                 canonical = local("GET", message_path)
                 body = canonical.get("body", {}).get("text", "")
-                if not body.startswith(caption.rstrip()) or "\n![" not in body or "history-probe.png" not in body:
-                    raise RuntimeError("Canonical message lacks the long caption or materialized image reference")
+                if not body.startswith(caption) or canonical.get("metadata", {}).get(
+                        "control_prompt_caption_utf8_bytes") != len(caption.encode()):
+                    raise RuntimeError("Canonical message lacks the original UTF-8 caption boundary")
+                suffix = body[len(caption):]
+                image_paths = [pathlib.Path(urllib.parse.unquote(value)).resolve(strict=True)
+                               for value in re.findall(r"^!\[[^\n]*\]\(([^()\n]+)\)$", suffix, re.MULTILINE)]
+                if len(image_paths) != 3 or any(not path.is_relative_to(root.resolve())
+                                                or path.parent.name != "inbox" or path.parent.parent.name != "media"
+                                                for path in image_paths):
+                    raise RuntimeError("Expected three materialized images in the private fixture")
+                if not image_paths[1].name.endswith("history-deleted.png") or not image_paths[2].name.endswith("history-oversized.png"):
+                    raise RuntimeError("Unexpected attachment order in the private fixture")
+                image_paths[1].unlink()
+                with image_paths[2].open("r+b") as image_file:
+                    image_file.truncate(5 * 1024 * 1024 + 1)
                 # Match the native client's HTTP pairing and read path, not local operator control.
                 ticket = local("POST", "/auth/pairing/issue")["ticket"]
                 redeem = urllib.request.Request(base + "/auth/pairing/redeem/native",
@@ -1257,7 +1272,9 @@ with fixture_directory(repo) as root:
                     headers={"Authorization": "Bearer " + credential})
                 with urllib.request.urlopen(detail, timeout=10) as response:
                     paired = json.load(response)
-                if paired.get("id") != canonical.get("id") or paired.get("body") != canonical.get("body"):
+                if (paired.get("id") != canonical.get("id") or paired.get("body") != canonical.get("body")
+                        or paired.get("metadata") != canonical.get("metadata")
+                        or paired.get("kind") != "operator_prompt" or paired.get("delivery_surface") != "http_control_prompt"):
                     raise RuntimeError("Paired message detail did not match the canonical fixture message")
                 for _ in range(100):
                     inputs = conversation_inputs(local("GET", f"/agents/{agent}/conversation?limit=60"))

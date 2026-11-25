@@ -124,6 +124,9 @@
 "reading.imageLoading" = "正在加载图片…";
 "reading.imageOffline" = "重新连接后加载图片";
 "reading.imageUnavailable" = "图片不可用 · 重试";
+"reading.imageTooLarge" = "图片过大，无法预览";
+"reading.imageOpenInFiles" = "在文件中打开";
+"reading.loadImageReferences" = "加载图片引用";
 "reading.connectionDetails" = "连接状态";
 "reading.markRead" = "标为已读至已查看的 brief…";
 "reading.confirmReadThrough" = "将此 brief 及全部更早结果标为已读";

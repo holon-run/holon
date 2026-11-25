@@ -855,7 +855,7 @@ final class ReadingCoordinator {
         await task.value
     }
 
-    func loadOperatorMessage(_ messageID: String, agentID: String) async throws -> String {
+    func loadOperatorMessage(_ messageID: String, agentID: String) async throws -> OperatorInputPresentation.Message {
         let token = revision
         guard status == .live, current(token), selectedAgentID == agentID,
               !messageID.isEmpty, messageID.utf8.count <= 512, let transport else {
@@ -871,10 +871,10 @@ final class ReadingCoordinator {
         guard current(token), status == .live, selectedAgentID == agentID else {
             throw CancellationError()
         }
-        guard let text = OperatorInputPresentation.messageText(response, agentID: agentID, messageID: messageID) else {
+        guard let message = OperatorInputPresentation.message(response, agentID: agentID, messageID: messageID) else {
             throw HolonClientError.invalidRequest
         }
-        return text
+        return message
     }
 
     func loadBrief(_ briefID: String) async {

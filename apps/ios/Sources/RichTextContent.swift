@@ -233,18 +233,11 @@ struct HolonMarkdownParser: MarkupParser {
 /// Operator input stays verbatim; only authorized host-file actions are annotated.
 struct OperatorMessageText: View {
     let text: String
-    var showsAttachments = false
-    @Environment(\.holonConversationImageAccess) private var imageAccess
     @Environment(\.holonOpenReference) private var openReference
     @Environment(\.holonOpenWebLink) private var openWebLink
     @State private var unavailable = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(Self.attributed(text)).textSelection(.enabled)
-            if showsAttachments, imageAccess != nil {
-                ConversationImagePreviews(images: ConversationImageReference.operatorAttachments(text))
-            }
-        }
+        Text(Self.attributed(text)).textSelection(.enabled)
             .environment(\.openURL, OpenURLAction { url in
                 switch RichTextLink.classify(url) {
                 case .reference(let reference):

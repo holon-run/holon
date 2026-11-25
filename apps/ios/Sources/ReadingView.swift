@@ -677,7 +677,10 @@ struct ReadingInputView: View {
             let preview = OperatorInputPresentation.decodePreview(input["preview"].viewString ?? "")
             OperatorMessageBubble {
                 VStack(alignment: .leading, spacing: 6) {
-                    OperatorMessageText(text: preview.text, showsAttachments: !preview.isTruncated)
+                    OperatorMessageText(text: preview.text)
+                    if !preview.isTruncated, !input.viewMessageID.isEmpty {
+                        ReadingOperatorInlineImages(reader: reader, messageID: input.viewMessageID, text: preview.text)
+                    }
                     if preview.isTruncated, !input.viewMessageID.isEmpty {
                         Button("reading.fullMessage") { showsFullMessage = true }
                             .font(.callout)
@@ -699,23 +702,98 @@ struct ReadingInputView: View {
     }
 }
 
+private struct ReadingOperatorInlineImages: View {
+    private struct Request: Equatable {
+        let scope: Int
+        let agentID: String
+        let messageID: String
+        let attempt: Int
+    }
+
+    let reader: ReadingCoordinator
+    let messageID: String
+    let text: String
+    @Environment(\.holonConversationImageAccess) private var imageAccess
+    @State private var resolved: (Request, OperatorInputPresentation.Message?)?
+    @State private var attempt = 0
+
+    var body: some View {
+        if !ConversationImageReference.operatorTailReferences(text).isEmpty,
+           let scope = imageAccess?.scope, let agentID = reader.selectedAgentID {
+            let request = Request(scope: scope, agentID: agentID, messageID: messageID, attempt: attempt)
+            Group {
+                if let resolved, resolved.0 == request {
+                    if let message = resolved.1 {
+                        ReadingOperatorImages(message: message)
+                            .id(messageID)
+                    } else {
+                        Button("reading.retry") { attempt &+= 1 }
+                            .font(.callout)
+                    }
+                } else {
+                    ProgressView("reading.imageLoading").font(.caption)
+                }
+            }
+            .task(id: request) {
+                do {
+                    let message = try await reader.loadOperatorMessage(messageID, agentID: agentID)
+                    try Task.checkCancellation()
+                    resolved = (request, message)
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    resolved = (request, nil)
+                }
+            }
+        }
+    }
+}
+
+private struct ReadingOperatorImages: View {
+    let message: OperatorInputPresentation.Message
+    @State private var loadLegacyReferences = false
+
+    var body: some View {
+        if let uploadedImages = message.uploadedImages {
+            ConversationImagePreviews(images: uploadedImages)
+        } else {
+            let references = ConversationImageReference.operatorTailReferences(message.text)
+            if !references.isEmpty {
+                if loadLegacyReferences {
+                    ConversationImagePreviews(images: references)
+                } else {
+                    Button("reading.loadImageReferences") { loadLegacyReferences = true }
+                        .font(.callout)
+                        .accessibilityIdentifier("conversation.image.loadReferences")
+                }
+            }
+        }
+    }
+}
+
 private struct ReadingFullOperatorMessage: View {
     let reader: ReadingCoordinator
     let agentID: String
     let messageID: String
     @Environment(\.dismiss) private var dismiss
-    @State private var text: String?
+    @Environment(\.holonOpenReference) private var openReference
+    @State private var message: OperatorInputPresentation.Message?
     @State private var didFail = false
     @State private var attempt = 0
 
     var body: some View {
         NavigationStack {
             Group {
-                if let text {
+                if let message {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
-                            ConversationImagePreviews(images: ConversationImageReference.operatorAttachments(text))
-                            OperatorMessageText(text: text)
+                            ReadingOperatorImages(message: message)
+                                .environment(\.holonOpenReference, openReference.map { open in
+                                    { reference in
+                                        dismiss()
+                                        open(reference)
+                                    }
+                                })
+                            OperatorMessageText(text: message.text)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
@@ -744,7 +822,7 @@ private struct ReadingFullOperatorMessage: View {
             do {
                 let loaded = try await reader.loadOperatorMessage(messageID, agentID: agentID)
                 try Task.checkCancellation()
-                text = loaded
+                message = loaded
             } catch {
                 guard !Task.isCancelled else { return }
                 didFail = true

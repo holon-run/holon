@@ -30,23 +30,34 @@ struct ConversationImageReference: Hashable {
         return images
     }
 
-    // Control sends append standalone image references to the operator's plain text.
-    // Keep all other operator Markdown literal, including arbitrary image syntax.
-    static func operatorAttachments(_ text: String) -> [Self] {
-        guard text.contains("\n!["), text.contains("/media/inbox/") else { return [] }
+    // With legacy history, this finds opt-in references, not verified uploads.
+    static func operatorTailReferences(_ text: String) -> [Self] {
+        guard text.contains("!["), text.contains("/media/inbox/") else { return [] }
         var images: [Self] = []
         var seen = Set<String>()
-        for line in text.split(separator: "\n") {
-            guard line.hasPrefix("!["), line.hasSuffix(")"), let boundary = line.range(of: "]("),
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        for line in lines.reversed() {
+            // Control puts a blank line between consecutive attachments.
+            if line.isEmpty { continue }
+            let image = line.hasPrefix("![")
+            guard (image || line.hasPrefix("[")), line.hasSuffix(")"), let boundary = line.range(of: "]("),
                   let url = URL(string: String(line[boundary.upperBound..<line.index(before: line.endIndex)])),
                   url.scheme == nil, let reference = attachmentURL(url),
                   reference.hasPrefix("/"), !reference.contains("\\"),
-                  (reference as NSString).deletingLastPathComponent.hasSuffix("/media/inbox"),
-                  seen.insert(reference).inserted else { continue }
+                  (reference as NSString).deletingLastPathComponent.hasSuffix("/media/inbox") else { break }
+            guard image, seen.insert(reference).inserted else { continue }
             images.append(.init(reference: reference, label: String(line[line.index(line.startIndex, offsetBy: 2)..<boundary.lowerBound])))
             if images.count == inlineLimit { break }
         }
-        return images
+        return images.reversed()
+    }
+
+    static func controlAttachments(in text: String, captionUTF8Bytes: Int64) -> [Self] {
+        let utf8 = text.utf8
+        guard let length = Int(exactly: captionUTF8Bytes), length >= 0,
+              let split = utf8.index(utf8.startIndex, offsetBy: length, limitedBy: utf8.endIndex),
+              split != utf8.endIndex, utf8[split] == 0x0A else { return [] }
+        return operatorTailReferences(String(decoding: utf8[split...], as: UTF8.self))
     }
 }
 
@@ -76,37 +87,80 @@ struct ConversationImagePreviews: View {
     }
 }
 
+@MainActor
+final class ConversationImageSlots {
+    private var available = 3
+    private var waiters: [(UUID, CheckedContinuation<Void, any Error>)] = []
+
+    func acquire() async throws {
+        try Task.checkCancellation()
+        if available > 0 {
+            available -= 1
+            return
+        }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, any Error>) in
+                if Task.isCancelled { waiter.resume(throwing: CancellationError()) }
+                else { waiters.append((id, waiter)) }
+            }
+        } onCancel: {
+            Task { @MainActor in
+                guard let index = self.waiters.firstIndex(where: { $0.0 == id }) else { return }
+                self.waiters.remove(at: index).1.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    func release() {
+        // A resumed waiter owns the slot, even if it was cancelled during handoff.
+        if waiters.isEmpty { available += 1 }
+        else { waiters.removeFirst().1.resume() }
+    }
+}
+
 private struct ConversationImagePreview: View {
     private struct Request: Hashable {
         let scope: Int?
         let reference: ConversationImageReference
         let retry: Int
     }
-    private enum Result { case image(CGImage), unavailable }
+    private enum Result { case image(CGImage), tooLarge, unavailable }
 
     let reference: ConversationImageReference
     @Environment(\.holonConversationImageAccess) private var access
+    @Environment(\.holonOpenReference) private var openReference
     @State private var response: (Request, Result)?
     @State private var retry = 0
 
     var body: some View {
         let request = Request(scope: access?.scope, reference: reference, retry: retry)
         Group {
-            if case .image(let image) = response?.0 == request ? response?.1 : nil {
+            switch response?.0 == request ? response?.1 : nil {
+            case .image(let image):
                 Image(image, scale: 1, label: reference.label.isEmpty ? Text("reading.image") : Text(verbatim: reference.label))
                     .resizable().scaledToFit()
                     .accessibilityIdentifier("conversation.image.loaded")
-            } else if request.scope == nil || response?.0 == request {
-                if request.scope != nil {
-                    Button("reading.imageUnavailable", systemImage: "photo.badge.exclamationmark") { retry &+= 1 }
-                        .font(.callout).multilineTextAlignment(.center)
-                        .accessibilityIdentifier("conversation.image.unavailable")
-                } else {
+            case .tooLarge:
+                VStack(spacing: 4) {
+                    Text("reading.imageTooLarge")
+                    if let openReference {
+                        Button("reading.imageOpenInFiles") { openReference(reference.reference) }
+                            .accessibilityIdentifier("conversation.image.openInFiles")
+                    }
+                }
+                .font(.callout).multilineTextAlignment(.center)
+            case .unavailable:
+                Button("reading.imageUnavailable", systemImage: "photo.badge.exclamationmark") { retry &+= 1 }
+                    .font(.callout).multilineTextAlignment(.center)
+                    .accessibilityIdentifier("conversation.image.unavailable")
+            case nil:
+                if request.scope == nil {
                     Label("reading.imageOffline", systemImage: "photo")
                         .font(.callout).multilineTextAlignment(.center)
+                } else {
+                    ProgressView("reading.imageLoading").font(.caption)
                 }
-            } else {
-                ProgressView("reading.imageLoading").font(.caption)
             }
         }
         .frame(maxWidth: 280)
@@ -121,7 +175,7 @@ private struct ConversationImagePreview: View {
                 response = (request, .image(image))
             } catch {
                 guard !Task.isCancelled else { return }
-                response = (request, .unavailable)
+                response = (request, (error as? FilesFailure) == .tooLarge ? .tooLarge : .unavailable)
             }
         }
     }

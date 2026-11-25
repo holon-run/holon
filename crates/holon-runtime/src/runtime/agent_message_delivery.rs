@@ -67,6 +67,7 @@ impl AgentMessageDeliveryService<'_> {
         text: String,
         work_item_id: Option<String>,
         client_request_id: Option<String>,
+        caption_utf8_bytes: usize,
     ) -> Result<PreparedAgentMessageDelivery> {
         let mut prepared = Self::prepare(request, caller)?;
         prepared.message.kind = MessageKind::OperatorPrompt;
@@ -76,6 +77,7 @@ impl AgentMessageDeliveryService<'_> {
         prepared.message.metadata = Some(serde_json::json!({
             "control": true,
             "client_request_id": client_request_id,
+            "control_prompt_caption_utf8_bytes": caption_utf8_bytes,
         }));
         Ok(prepared)
     }

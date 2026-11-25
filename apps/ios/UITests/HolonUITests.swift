@@ -1494,13 +1494,25 @@ final class HolonUITests: XCTestCase {
                       "A missing server file must show an explicit retry instead of an image")
         XCTAssertEqual(app.images.matching(identifier: "conversation.image.loaded").count, 1)
         XCTAssertEqual(app.buttons.matching(identifier: "conversation.image.unavailable").count, 1,
-                       "An external reference in operator text should not create a preview")
+                       "Caption references and external images should not create previews")
+        let openInFiles = app.buttons["conversation.image.openInFiles"]
+        XCTAssertTrue(openInFiles.exists,
+                      "An oversized upload should offer Files instead of another retry")
         reveal(unavailable, in: app, fullyVisible: true)
         let imageFrame = image.frame
         unavailable.tap()
         XCTAssertTrue(unavailable.waitForExistence(timeout: UIWaitScale.scaled(15)))
         XCTAssertEqual(image.frame, imageFrame, "Retry should not shift the neighboring image")
         capture(app, "conversation-full-message-image")
+        reveal(openInFiles, in: app, fullyVisible: true)
+        openInFiles.tap()
+        XCTAssertTrue(app.navigationBars.matching(
+            NSPredicate(format: "identifier ENDSWITH %@", "history-oversized.png")
+        ).firstMatch.waitForExistence(timeout: UIWaitScale.scaled(20)),
+                      "The Files entry must open the oversized attachment, not merely dismiss the message")
+        XCTAssertTrue(app.staticTexts["image/png"].exists,
+                      "Files should prepare the oversized attachment as an image")
+        capture(app, "conversation-oversized-image-in-files")
     }
 
     private func connectForSharing(large: Bool = false) async throws {
