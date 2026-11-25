@@ -445,7 +445,7 @@ impl PreparedTaskBaseline {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum WorkCommandLane {
     Idle,
     Turn { turn_id: String, message_id: String },

@@ -277,7 +277,14 @@ pub fn complete_work_item_execution(
     if state.work_items.get(&command.work_item_id) != Some(&command.expected) {
         return Err("WorkItem completion fence is stale".into());
     }
-    if state.open_attempt().is_some()
+    // Completion is blocked only by the target WorkItem's own open attempt.
+    // An attempt owned by another WorkItem (for example the finishing turn of
+    // a restart after WaitFor(operator_input)) does not make the target
+    // ineligible; that turn is the one completing it.
+    let target_in_flight = state.open_attempt().is_some_and(|attempt| {
+        attempt.turn_owner().work_item_id() == Some(command.work_item_id.as_str())
+    });
+    if target_in_flight
         || matches!(
             command.expected.state,
             WorkItemExecutionState::Terminal { .. }
