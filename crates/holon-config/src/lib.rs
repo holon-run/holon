@@ -37,6 +37,7 @@ use web_config::{
 };
 
 mod builtin_providers;
+mod claude_settings;
 mod credentials;
 mod file;
 mod models;
@@ -49,6 +50,7 @@ mod service_tier;
 mod web;
 
 pub use builtin_providers::*;
+pub use claude_settings::*;
 pub use credentials::*;
 pub use file::*;
 pub use models::*;
@@ -90,19 +92,6 @@ impl AltScreenMode {
     }
 }
 
-pub fn load_settings_env() -> Result<HashMap<String, String>> {
-    let path = settings_path();
-    if !path.exists() {
-        return Ok(HashMap::new());
-    }
-
-    let content =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    let settings: ClaudeSettings =
-        serde_json::from_str(&content).context("failed to parse ~/.claude/settings.json")?;
-    Ok(settings.env)
-}
-
 pub fn default_holon_home() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".into());
     Path::new(&home).join(".holon")
@@ -128,11 +117,6 @@ pub fn default_user_home_dir() -> Option<PathBuf> {
 pub fn default_codex_home() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".into());
     Path::new(&home).join(".codex")
-}
-
-fn settings_path() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
-    Path::new(&home).join(".claude/settings.json")
 }
 
 #[doc(hidden)]

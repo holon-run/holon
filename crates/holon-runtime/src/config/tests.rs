@@ -1690,3 +1690,47 @@ fn retired_scheduler_selector_accepts_only_canonical_compatibility_value() {
         super::validate_retired_scheduler_selector_values(Some("shadow"), None).unwrap_err();
     assert!(obsolete.to_string().contains("is obsolete"));
 }
+
+#[test]
+fn claude_settings_with_non_string_env_keeps_config_load_working() {
+    struct HomeGuard(Option<std::ffi::OsString>);
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    let config_home = tempdir().unwrap();
+    let os_home = tempdir().unwrap();
+    fs::create_dir_all(os_home.path().join(".claude")).unwrap();
+    // A non-string env value is common in real Claude settings files and must
+    // not reject unrelated built-in providers.
+    fs::write(
+        os_home.path().join(".claude/settings.json"),
+        r#"{"env": {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1, "UNSET_VALUE": null}}"#,
+    )
+    .unwrap();
+
+    let path = persisted_config_path(config_home.path());
+    let mut stored = HolonConfigFile::default();
+    set_config_key(&mut stored, "model.default", "deepseek/deepseek-chat").unwrap();
+    save_persisted_config_at(&path, &stored).unwrap();
+
+    let _env_lock = crate::test_env::lock_env();
+    let _home_guard = HomeGuard(std::env::var_os("HOME"));
+    std::env::set_var("HOME", os_home.path());
+
+    let config = AppConfig::load_with_home(Some(config_home.path().to_path_buf())).unwrap();
+    let deepseek = ProviderId::parse("deepseek").unwrap();
+    assert!(
+        config.providers.contains_key(&deepseek),
+        "built-in provider defaults must survive a partially compatible Claude settings file"
+    );
+
+    let reloaded = config.reload_runtime_config().unwrap();
+    assert!(reloaded.providers.contains_key(&deepseek));
+}

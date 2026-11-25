@@ -186,7 +186,14 @@ impl AppConfig {
         home_override: Option<PathBuf>,
         mode: ConfigLoadMode,
     ) -> Result<Self> {
-        let settings_env = load_settings_env().unwrap_or_default();
+        // `~/.claude/settings.json` is only an optional Claude-compatible env
+        // source, so a damaged file degrades instead of failing the load.
+        // Report its aggregated diagnostic once per load.
+        let claude_settings = load_settings_env();
+        if let Some(diagnostic) = claude_settings.diagnostic() {
+            tracing::warn!(target: "holon::config", "{diagnostic}");
+        }
+        let settings_env = claude_settings.into_env();
         let user_home_dir = default_user_home_dir();
         let home_dir = home_override.unwrap_or_else(|| {
             env::var("HOLON_HOME")

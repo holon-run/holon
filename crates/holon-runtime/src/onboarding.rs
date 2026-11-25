@@ -14,10 +14,10 @@ use serde_json::{json, Value};
 use crate::{
     auth::load_codex_cli_credential,
     config::{
-        built_in_provider_default_config, credential_store_path, set_credential_profile_at,
-        validate_provider_config, AppConfig, CredentialKind, CredentialSource, ModelRef,
-        ModelRouteRef, PersistedConfigTransaction, ProviderAuthConfig, ProviderConfigFile,
-        ProviderId, ProviderRuntimeConfig,
+        built_in_provider_default_config_with_settings, credential_store_path,
+        set_credential_profile_at, validate_provider_config, AppConfig, CredentialKind,
+        CredentialSource, ModelRef, ModelRouteRef, PersistedConfigTransaction, ProviderAuthConfig,
+        ProviderConfigFile, ProviderId, ProviderRuntimeConfig,
     },
     model_catalog::BuiltInModelCatalog,
     web::{WebProviderAuthClass, WebProviderSupportStatus},
@@ -434,6 +434,14 @@ pub fn apply_onboarding_wizard_draft(
     draft: &OnboardingWizardDraft,
     credential_material: Option<String>,
 ) -> Result<OnboardingApplySummary> {
+    // Use the same best-effort Claude-compatible env result as the rest of the
+    // config load, and surface its aggregated diagnostic instead of silently
+    // dropping it with `ok().flatten()`.
+    let claude_settings = crate::config::load_settings_env();
+    if let Some(diagnostic) = claude_settings.diagnostic() {
+        tracing::warn!(target: "holon::config", "{diagnostic}");
+    }
+    let claude_env = claude_settings.into_env();
     let transaction = PersistedConfigTransaction::begin(&config.config_file_path)?;
     let mut persisted = transaction.load()?;
     let mut provider_config = persisted
@@ -446,7 +454,7 @@ pub fn apply_onboarding_wizard_draft(
                 .map(provider_config_file_from_runtime)
         })
         .or_else(|| {
-            built_in_provider_default_config(&draft.provider)
+            built_in_provider_default_config_with_settings(&draft.provider, &claude_env)
                 .ok()
                 .flatten()
         })
@@ -1640,5 +1648,46 @@ mod tests {
             search.details["managed_providers"][0]["kind"],
             "duck_duck_go"
         );
+    }
+
+    #[test]
+    fn onboarding_resolves_built_in_default_with_damaged_claude_settings() {
+        struct HomeGuard(Option<std::ffi::OsString>);
+
+        impl Drop for HomeGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => std::env::set_var("HOME", value),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+
+        let config = test_config(None);
+        let deepseek = ProviderId::parse("deepseek").unwrap();
+        assert!(!config.providers.contains_key(&deepseek));
+
+        let os_home = tempdir().unwrap();
+        std::fs::create_dir_all(os_home.path().join(".claude")).unwrap();
+        std::fs::write(
+            os_home.path().join(".claude/settings.json"),
+            r#"{"env": {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": true}}"#,
+        )
+        .unwrap();
+
+        let _env_lock = crate::test_env::lock_env();
+        let _home_guard = HomeGuard(std::env::var_os("HOME"));
+        std::env::set_var("HOME", os_home.path());
+
+        let draft = OnboardingWizardDraft {
+            provider: deepseek,
+            credential_profile: "deepseek".into(),
+            credential_kind: CredentialKind::ApiKey,
+            default_model: ModelRouteRef::parse("deepseek@default/deepseek-chat").unwrap(),
+            search: OnboardingSearchSelection::Disabled,
+        };
+        let summary =
+            apply_onboarding_wizard_draft(&config, &draft, Some("test-secret\n".into())).unwrap();
+        assert_eq!(summary.provider, "deepseek");
     }
 }
