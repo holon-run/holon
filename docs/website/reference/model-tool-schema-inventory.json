@@ -1097,6 +1097,28 @@
                   "minimum": 0.0,
                   "type": "integer"
                 },
+                "failure_kind": {
+                  "anyOf": [
+                    {
+                      "description": "Why a deletion job stopped in the `NeedsAttention` terminal state.",
+                      "oneOf": [
+                        {
+                          "const": "terminal_invariant",
+                          "description": "A data-condition invariant failed; another attempt cannot make progress.",
+                          "type": "string"
+                        },
+                        {
+                          "const": "retry_budget_exhausted",
+                          "description": "The retry budget was exhausted while the failure stayed retryable.",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "last_error": {
                   "type": [
                     "string",
@@ -1145,13 +1167,22 @@
                   "type": "string"
                 },
                 "status": {
-                  "enum": [
-                    "pending",
-                    "running",
-                    "retryable_failed",
-                    "completed"
-                  ],
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "enum": [
+                        "pending",
+                        "running",
+                        "retryable_failed",
+                        "completed"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "const": "needs_attention",
+                      "description": "Terminal failure that retrying cannot resolve: the persisted state needs\n an explicit ownership or cleanup decision from the operator.",
+                      "type": "string"
+                    }
+                  ]
                 },
                 "updated_at": {
                   "format": "date-time",

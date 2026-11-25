@@ -10,6 +10,7 @@ pub mod closure;
 pub mod continuation;
 pub mod conversation;
 pub mod decision_telemetry;
+pub mod deletion_failure;
 pub mod diagnostics;
 pub mod execution_protocol;
 pub mod execution_types;

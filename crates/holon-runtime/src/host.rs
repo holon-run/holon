@@ -26839,6 +26839,231 @@ mod tests {
         assert_eq!(completed.attempts, 2);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn data_condition_invariant_stops_deletion_in_needs_attention() {
+        let (_home, host) = test_host();
+        let agent = AgentIdentityRecord::new(
+            "delete-needs-attention",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+        let (_, job, created) = host
+            .begin_public_agent_deletion("delete-needs-attention", false, "operator")
+            .await
+            .unwrap();
+        assert!(created);
+
+        // A joint delegation record makes purge ownership ambiguous. Retrying
+        // cannot resolve it, so the job must stop instead of rescheduling.
+        host.runtime_db()
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO work_item_delegations
+                     (delegation_id, parent_agent_id, parent_work_item_id,
+                      child_agent_id, child_work_item_id, state,
+                      created_at, updated_at, payload_json)
+                     VALUES ('delegation-needs-attention', 'foreign-parent', 'work-1',
+                             ?1, 'work-2', 'open', ?2, ?2, '{}')",
+                    rusqlite::params![job.agent_id, Utc::now().to_rfc3339()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let error = host.execute_deletion_job(job).await.unwrap_err();
+        assert!(
+            format!("{error:#}").contains("shared history requires explicit ownership resolution"),
+            "unexpected deletion error: {error:#}"
+        );
+
+        let stopped = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-needs-attention")
+            .unwrap()
+            .expect("failed job should exist");
+        assert_eq!(stopped.status, AgentDeletionStatus::NeedsAttention);
+        assert_eq!(
+            stopped.failure_kind,
+            Some(crate::types::AgentDeletionFailureKind::TerminalInvariant)
+        );
+        assert!(stopped.next_attempt_at.is_none());
+        assert_eq!(stopped.attempts, 1);
+        // F6: one actionable layer plus the root cause, never a repeated prefix.
+        let last_error = stopped.last_error.clone().expect("last_error");
+        assert_eq!(
+            last_error
+                .matches("shared history requires explicit ownership resolution")
+                .count(),
+            1,
+            "{last_error}"
+        );
+
+        // F1: ten scheduling cycles must not pick the terminal job up again.
+        for _ in 0..10 {
+            let due = host
+                .runtime_db()
+                .agent_deletions()
+                .due_jobs(Utc::now(), 16)
+                .unwrap();
+            assert!(
+                due.iter()
+                    .all(|candidate| candidate.agent_id != stopped.agent_id),
+                "terminal job must not be due"
+            );
+            host.execute_deletion_job(stopped.clone()).await.unwrap();
+        }
+        let after = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-needs-attention")
+            .unwrap()
+            .expect("terminal job should remain");
+        assert_eq!(after.status, AgentDeletionStatus::NeedsAttention);
+        assert_eq!(after.attempts, 1);
+        assert!(after.next_attempt_at.is_none());
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn retry_budget_exhaustion_turns_deletion_terminal() {
+        let (_home, host) = test_host();
+        let default_storage = host.agent_storage(&host.config().default_agent_id).unwrap();
+        crate::memory::rebuild_memory_index(&default_storage, None).unwrap();
+        let index_path = crate::memory::index::memory_index_path(&default_storage);
+        let blocker = rusqlite::Connection::open(index_path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let agent = AgentIdentityRecord::new(
+            "delete-exhausted",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+        let (_, mut job, created) = host
+            .begin_public_agent_deletion("delete-exhausted", false, "operator")
+            .await
+            .unwrap();
+        assert!(created);
+        job.attempts = crate::deletion::DELETION_MAX_ATTEMPTS - 1;
+        host.runtime_db().agent_deletions().update(&job).unwrap();
+
+        let error = host
+            .execute_deletion_job(job)
+            .await
+            .expect_err("a held index lock must stay retryable");
+        assert!(
+            format!("{error:#}").contains("exhausted retry deadline"),
+            "unexpected deletion error: {error:#}"
+        );
+
+        let stopped = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-exhausted")
+            .unwrap()
+            .expect("failed job should exist");
+        assert_eq!(stopped.status, AgentDeletionStatus::NeedsAttention);
+        assert_eq!(
+            stopped.failure_kind,
+            Some(crate::types::AgentDeletionFailureKind::RetryBudgetExhausted)
+        );
+        assert!(stopped.next_attempt_at.is_none());
+        assert_eq!(stopped.attempts, crate::deletion::DELETION_MAX_ATTEMPTS);
+
+        let before = stopped.attempts;
+        host.execute_deletion_job(stopped).await.unwrap();
+        let after = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-exhausted")
+            .unwrap()
+            .expect("terminal job should remain");
+        assert_eq!(after.attempts, before);
+        assert_eq!(after.status, AgentDeletionStatus::NeedsAttention);
+
+        blocker.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn transient_sqlite_busy_stays_retryable_and_completes_on_retry() {
+        let (_home, host) = test_host();
+        let default_storage = host.agent_storage(&host.config().default_agent_id).unwrap();
+        crate::memory::rebuild_memory_index(&default_storage, None).unwrap();
+        let index_path = crate::memory::index::memory_index_path(&default_storage);
+        let blocker = rusqlite::Connection::open(index_path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let agent = AgentIdentityRecord::new(
+            "delete-transient-busy",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+        let (_, job, created) = host
+            .begin_public_agent_deletion("delete-transient-busy", false, "operator")
+            .await
+            .unwrap();
+        assert!(created);
+
+        host.execute_deletion_job(job)
+            .await
+            .expect_err("a held index lock must fail the attempt");
+
+        // F2: a transient storage failure keeps the existing retry contract.
+        let paused = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-transient-busy")
+            .unwrap()
+            .expect("failed job should exist");
+        assert_eq!(paused.status, AgentDeletionStatus::RetryableFailed);
+        assert_eq!(paused.failure_kind, None);
+        assert!(paused.next_attempt_at.is_some());
+        assert_eq!(paused.attempts, 1);
+
+        blocker.execute_batch("ROLLBACK").unwrap();
+
+        let mut due = paused;
+        due.next_attempt_at = Some(Utc::now());
+        host.runtime_db().agent_deletions().update(&due).unwrap();
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .due_jobs(Utc::now(), 16)
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.agent_id == due.agent_id));
+        host.execute_deletion_job(due).await.unwrap();
+
+        let completed = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-transient-busy")
+            .unwrap()
+            .expect("completed job should remain");
+        assert_eq!(completed.status, AgentDeletionStatus::Completed);
+        assert_eq!(completed.attempts, 2);
+    }
+
     fn retained_cleanup_fixture(host: &RuntimeHost, child_id: &str) -> AgentIdentityRecord {
         let parent_id = host.config().default_agent_id.clone();
         let task_id = format!("task-{child_id}");
@@ -27563,8 +27788,19 @@ mod tests {
                     .unwrap();
                 if parent_cleanup && case != "git-refusal" {
                     assert!(job.is_none());
+                } else if case == "git-refusal" {
+                    assert_eq!(
+                        job.expect("retryable job should remain").status,
+                        AgentDeletionStatus::RetryableFailed
+                    );
                 } else {
-                    assert_eq!(job.unwrap().status, AgentDeletionStatus::RetryableFailed);
+                    let job = job.expect("terminal job should remain");
+                    assert_eq!(job.status, AgentDeletionStatus::NeedsAttention);
+                    assert_eq!(
+                        job.failure_kind,
+                        Some(crate::types::AgentDeletionFailureKind::TerminalInvariant)
+                    );
+                    assert!(job.next_attempt_at.is_none());
                 }
             }
         }

@@ -7750,6 +7750,13 @@ async fn wait_for_deletion(client: &LocalClient, agent_id: &str, timeout_secs: u
                     );
                     return Ok(());
                 }
+                AgentDeletionStatus::NeedsAttention => {
+                    anyhow::bail!(
+                        "deletion stopped and needs attention: {}\n\
+                         Check progress: holon agent status {agent_id}",
+                        job.last_error.as_deref().unwrap_or("unknown error")
+                    );
+                }
                 AgentDeletionStatus::Pending | AgentDeletionStatus::Running => {}
             }
         }

@@ -3110,6 +3110,7 @@ export interface components {
                 deletion_id: string;
                 /** Format: uint64 */
                 expected_identity_revision: number;
+                failure_kind?: ("terminal_invariant" | "retry_budget_exhausted") | null;
                 last_error?: string | null;
                 /** @default delete */
                 mode: ("delete" | "cleanup_repair") | "parent_cleanup";
@@ -3118,8 +3119,7 @@ export interface components {
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize";
                 requested_by: string;
-                /** @enum {string} */
-                status: "pending" | "running" | "retryable_failed" | "completed";
+                status: ("pending" | "running" | "retryable_failed" | "completed") | "needs_attention";
                 /** Format: date-time */
                 updated_at: string;
             };
@@ -3166,6 +3166,7 @@ export interface components {
                 deletion_id: string;
                 /** Format: uint64 */
                 expected_identity_revision: number;
+                failure_kind?: ("terminal_invariant" | "retry_budget_exhausted") | null;
                 last_error?: string | null;
                 /** @default delete */
                 mode: ("delete" | "cleanup_repair") | "parent_cleanup";
@@ -3174,8 +3175,7 @@ export interface components {
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize";
                 requested_by: string;
-                /** @enum {string} */
-                status: "pending" | "running" | "retryable_failed" | "completed";
+                status: ("pending" | "running" | "retryable_failed" | "completed") | "needs_attention";
                 /** Format: date-time */
                 updated_at: string;
             } | null;
@@ -3365,6 +3365,7 @@ export interface components {
                 deletion_id: string;
                 /** Format: uint64 */
                 expected_identity_revision: number;
+                failure_kind?: ("terminal_invariant" | "retry_budget_exhausted") | null;
                 last_error?: string | null;
                 /** @default delete */
                 mode: ("delete" | "cleanup_repair") | "parent_cleanup";
@@ -3373,8 +3374,7 @@ export interface components {
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize";
                 requested_by: string;
-                /** @enum {string} */
-                status: "pending" | "running" | "retryable_failed" | "completed";
+                status: ("pending" | "running" | "retryable_failed" | "completed") | "needs_attention";
                 /** Format: date-time */
                 updated_at: string;
             } | null;

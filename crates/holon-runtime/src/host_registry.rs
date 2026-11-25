@@ -367,9 +367,11 @@ impl RuntimeRegistry {
             .active_workspace_occupancies_for_root(execution_root_id)?
             .is_empty()
         {
-            return Err(anyhow!(
-                "execution root {} still has active occupancy",
-                execution_root_id
+            return Err(crate::types::deletion_failure::mark_ownership_unresolved(
+                anyhow!(
+                    "execution root {} still has active occupancy",
+                    execution_root_id
+                ),
             ));
         }
         cleanup_leases.insert(execution_root_id.to_string());

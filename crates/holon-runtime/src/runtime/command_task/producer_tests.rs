@@ -401,6 +401,7 @@ fn set_original_command_deleting(
                 cascade_private_children: false,
                 attempts: 0,
                 last_error: None,
+                failure_kind: None,
                 next_attempt_at: None,
                 created_at: identity.updated_at,
                 updated_at: identity.updated_at,

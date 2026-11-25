@@ -1042,7 +1042,7 @@ export type AgentControlAction = "stop" | "start";
 
 export interface AgentDeletionJob {
   deletionId: string;
-  status: "pending" | "running" | "retryable_failed" | "completed";
+  status: "pending" | "running" | "retryable_failed" | "completed" | "needs_attention";
   phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
   attempts: number;
   lastError?: string | null;
