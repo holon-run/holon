@@ -137,7 +137,9 @@ jobs:
           for _ in $(seq 1 30); do
             sleep 10
             run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-e2e.yml/runs?event=workflow_dispatch&per_page=30" \
-              --jq "[.workflow_runs[] | select(.created_at >= \"${dispatch_at}\")][0].databaseId // \"\"")"
+              --jq "[.workflow_runs[] | select(.created_at >= \"${dispatch_at}\")][0].id // \"\"")"
+            # The REST workflow-runs list exposes the numeric run id as `id`;
+            # `databaseId` only exists in the `gh run list --json` wrapper.
             [ -n "$run_id" ] && break
           done
           if [ -z "$run_id" ]; then
