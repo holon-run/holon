@@ -73,6 +73,12 @@ describe("agent creation boundaries", () => {
     expect(mocks.create).toHaveBeenCalledWith("new-agent", "template", "Display name", "zh-CN");
   });
 
+  it("forwards a blank agent without a template", async () => {
+    expect(await useRuntimeStore.getState().createAgentFromTemplate("new-agent", undefined, "Display name"))
+      .toMatchObject({ kind: "accepted" });
+    expect(mocks.create).toHaveBeenCalledWith("new-agent", undefined, "Display name", undefined);
+  });
+
   it("accepts degraded receipts without throwing or suggesting another POST", async () => {
     mocks.create.mockResolvedValue(creation("degraded"));
     expect(await create()).toMatchObject({ kind: "accepted" });

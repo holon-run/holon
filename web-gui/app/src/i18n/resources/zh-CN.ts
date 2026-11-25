@@ -222,6 +222,7 @@ const zh: Record<string, any> = {
     agentId: "智能体 ID",
     template: "模板",
     chooseTemplate: "选择模板…",
+    blankAgentTemplate: "不使用模板（空白 Agent）",
     createAgentTitle: "从模板创建智能体",
     needAttention: "需要关注",
     allClear: "一切正常",

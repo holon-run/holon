@@ -1315,7 +1315,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
     },
     async createAgentFromTemplate(
       agentId: string,
-      template: string,
+      template?: string,
       name?: string,
       initialResponseLanguage?: string,
     ): Promise<import("./agent-creation").AgentCreateResponse> {
@@ -1327,7 +1327,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         baseUrl,
         `/control/agents/${encodeURIComponent(agentId)}/create`,
         {
-          template,
+          ...(template === undefined ? {} : { template }),
           ...(name === undefined ? {} : { name }),
           ...(initialResponseLanguage === undefined ? {} : { initial_response_language: initialResponseLanguage }),
         },

@@ -371,6 +371,21 @@ describe("createRuntimeClient", () => {
     expect(bodies[1]).toEqual({ template: "template" });
     expect(bodies[2]).toEqual({ template: "template", name: "Named", initial_response_language: "en" });
   });
+  it("omits the template field for a blank agent", async () => {
+    const bodies: unknown[] = [];
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        identity: { agent_id: "new-agent", incarnation: 1, status: "active" },
+        receipt: { agent_id: "new-agent", receipt_id: "receipt-1", stage: "bootstrapped" },
+      });
+    });
+    const client = createRuntimeClient({ baseUrl: "/api", fetchImpl: fetchImpl as typeof fetch });
+
+    await client.createAgentFromTemplate("new-agent", undefined, "Blank", "zh-CN");
+
+    expect(bodies[0]).toEqual({ name: "Blank", initial_response_language: "zh-CN" });
+  });
   it("maps the current session user response", async () => {
     const seen: string[] = [];
     const client = createRuntimeClient({
