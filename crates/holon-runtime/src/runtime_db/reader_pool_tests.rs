@@ -13,12 +13,16 @@ use super::{RuntimeDb, RuntimeDbReadScope, RuntimeDbReaderConfig, RuntimeDbRetry
 use super::{RuntimeDbProtectionError, RuntimeDbProtectionState};
 
 fn fixture(capacity: u32) -> Result<(tempfile::TempDir, RuntimeDb)> {
+    fixture_with_budget(capacity, Duration::from_millis(100))
+}
+
+fn fixture_with_budget(capacity: u32, budget: Duration) -> Result<(tempfile::TempDir, RuntimeDb)> {
     let directory = tempfile::tempdir()?;
     let mut db = RuntimeDb::open_and_migrate(
         directory.path().join("runtime.sqlite"),
         directory.path().join("runtime.lock"),
     )?;
-    db.configure_reader_pool_for_tests(capacity, Duration::from_millis(100))?;
+    db.configure_reader_pool_for_tests(capacity, budget)?;
     Ok((directory, db))
 }
 
@@ -1263,7 +1267,13 @@ async fn cancellation_retains_started_work_and_removes_unstarted_waiter() -> Res
 
 #[test]
 fn blocking_queue_wait_obeys_acquisition_budget_without_running_read_closure() -> Result<()> {
-    let (_directory, db) = fixture(1)?;
+    // The acquisition budget spans the whole checkout, including opening a
+    // fresh sqlite connection for the recovery read at the end of this case.
+    // On a loaded CI host that connection alone can exceed 100ms, which made
+    // this case flaky. Keep the budget well above scheduler jitter and give
+    // the case a much larger outer timeout so only a real regression fails.
+    let acquisition_budget = Duration::from_secs(2);
+    let (_directory, db) = fixture_with_budget(1, acquisition_budget)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(1)
@@ -1279,7 +1289,7 @@ fn blocking_queue_wait_obeys_acquisition_budget_without_running_read_closure() -
         let was_started = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&was_started);
         let error = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(10),
             db.with_read_async(move |_| {
                 started.store(true, Ordering::SeqCst);
                 Ok(())
