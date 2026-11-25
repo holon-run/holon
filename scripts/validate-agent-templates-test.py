@@ -57,6 +57,31 @@ class GithubSkillValidationTests(unittest.TestCase):
                     self.validate(fields)
 
 
+class RoleContractValidationTests(unittest.TestCase):
+    def validate(self, text: str) -> None:
+        VALIDATOR["validate_role_contract"](Path("AGENTS.md"), text)
+
+    def test_rejects_supervised_cleanup_section(self) -> None:
+        text = (
+            "# Agent\n\n## Role\n\nDo the work.\n\n"
+            "## Supervised subagent cleanup\n\n"
+            "Call DeleteAgent when a retained child is no longer needed.\n"
+        )
+        with self.assertRaisesRegex(ValueError, "Supervised subagent cleanup"):
+            self.validate(text)
+
+    def test_accepts_role_contract_without_runtime_tool_guidance(self) -> None:
+        self.validate("# Agent\n\n## Role\n\nDo the work.\n")
+
+    def test_checked_in_templates_pass_role_contract_validation(self) -> None:
+        for directory in VALIDATOR["template_directories"]():
+            agents = directory / "AGENTS.md"
+            with self.subTest(agents=str(agents)):
+                VALIDATOR["validate_role_contract"](
+                    agents, agents.read_text(encoding="utf-8")
+                )
+
+
 class VideoProducerSkillTests(unittest.TestCase):
     def test_motion_reference_is_pinned_alongside_production_skills(self) -> None:
         path = (

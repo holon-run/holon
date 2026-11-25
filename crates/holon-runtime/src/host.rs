@@ -15484,6 +15484,9 @@ mod tests {
         assert!(std::fs::read_to_string(agent_home.join("AGENTS.md"))
             .unwrap()
             .contains("## Holon Agent Home"));
+        assert!(!std::fs::read_to_string(agent_home.join("AGENTS.md"))
+            .unwrap()
+            .contains("## Supervised subagent cleanup"));
         assert!(agent_home.join("memory/self.md").is_file());
         assert!(agent_home.join("memory/operator.md").is_file());
         assert!(agent_home.join("notes").is_dir());

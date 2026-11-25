@@ -14,6 +14,7 @@ ROOTS = (Path("agent_templates"), Path("builtin_templates"))
 TEMPLATE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 REQUIRED_FILES = ("AGENTS.md", "template.toml")
 SKILL_KINDS = {"github", "local"}
+RUNTIME_TOOL_GUIDANCE_HEADINGS = ("## Supervised subagent cleanup",)
 
 
 def fail(path: Path, message: str) -> None:
@@ -183,6 +184,17 @@ def validate_manifest(path: Path, directory_name: str) -> None:
         fail(path, "compatibility.holon must be a string")
 
 
+def validate_role_contract(path: Path, text: str) -> None:
+    """Reject runtime tool guidance that belongs in tool descriptions, not roles."""
+    for heading in RUNTIME_TOOL_GUIDANCE_HEADINGS:
+        if re.search(rf"^{re.escape(heading)}\s*$", text, re.MULTILINE):
+            fail(
+                path,
+                f"must not contain runtime tool guidance section {heading!r}; "
+                "keep that contract in the tool description",
+            )
+
+
 def validate_skills(path: Path) -> None:
     manifest = load_toml(path)
     skills = manifest.get("skills")
@@ -232,6 +244,7 @@ def main() -> int:
             if skills.exists():
                 validate_skills(skills)
             agents_text = agents.read_text(encoding="utf-8")
+            validate_role_contract(agents, agents_text)
             for other_id in sorted(template_ids - {directory.name}):
                 if other_id in agents_text:
                     fail(
