@@ -14973,6 +14973,15 @@
             "minimum": 0,
             "type": "integer"
           },
+          "dropped_spans_by_name": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Span-name breakdown of `dropped_spans`.\n\n Empty when no span was dropped, or when the trace came from a build\n that predates classified dropping. Whenever the persisted column is\n non-NULL the map sums exactly to `dropped_spans`.",
+            "type": "object"
+          },
           "duration_us": {
             "format": "uint64",
             "minimum": 0,
@@ -15220,6 +15229,15 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "dropped_spans_by_name": {
+              "additionalProperties": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "description": "Span-name breakdown of `dropped_spans`; see [`RecentTrace`].",
+              "type": "object"
             },
             "duration_us": {
               "format": "uint64",

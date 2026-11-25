@@ -7289,6 +7289,16 @@ export interface components {
             completed_at: string;
             /** Format: uint64 */
             dropped_spans: number;
+            /**
+             * @description Span-name breakdown of `dropped_spans`.
+             *
+             *      Empty when no span was dropped, or when the trace came from a build
+             *      that predates classified dropping. Whenever the persisted column is
+             *      non-NULL the map sums exactly to `dropped_spans`.
+             */
+            dropped_spans_by_name?: {
+                [key: string]: number;
+            };
             /** Format: uint64 */
             duration_us: number;
             /** Format: uint */
@@ -7349,6 +7359,10 @@ export interface components {
             completed_at: string;
             /** Format: uint64 */
             dropped_spans: number;
+            /** @description Span-name breakdown of `dropped_spans`; see [`RecentTrace`]. */
+            dropped_spans_by_name?: {
+                [key: string]: number;
+            };
             /** Format: uint64 */
             duration_us: number;
             /** Format: uint */

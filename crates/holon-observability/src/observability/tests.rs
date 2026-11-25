@@ -90,6 +90,17 @@ fn recent_trace_ring_aggregates_searches_and_bounds_spans() {
     assert_eq!(trace.span_count, SPANS_PER_TRACE_LIMIT + 2);
     assert_eq!(trace.spans.len(), SPANS_PER_TRACE_LIMIT);
     assert_eq!(trace.dropped_spans, 2);
+    assert_eq!(
+        trace.dropped_spans_by_name,
+        std::collections::BTreeMap::from([
+            ("span-0".to_string(), 1_u64),
+            ("span-1".to_string(), 1_u64),
+        ])
+    );
+    assert_eq!(
+        trace.dropped_spans_by_name.values().sum::<u64>(),
+        trace.dropped_spans
+    );
     assert_eq!(trace.error_count, 1);
     assert_eq!(trace.spans[0].name, "span-2");
     assert_eq!(
@@ -98,5 +109,39 @@ fn recent_trace_ring_aggregates_searches_and_bounds_spans() {
             .map(|summary| summary.trace_id)
             .collect::<Vec<_>>(),
         vec![root.trace_id]
+    );
+}
+
+#[test]
+fn dropped_span_names_aggregate_repeated_names() {
+    let root = TraceContext::new_root(true);
+    let started_at = chrono::Utc::now();
+
+    for _ in 0..(SPANS_PER_TRACE_LIMIT + 3) {
+        let context = root.child();
+        record_span(
+            &context,
+            TraceSpan {
+                name: "holon.provider.attempt".to_string(),
+                span_id: context.span_id.clone(),
+                parent_span_id: Some(root.span_id.clone()),
+                started_at,
+                completed_at: started_at,
+                duration_us: 0,
+                status: TraceSpanStatus::Ok,
+                attributes: TraceAttributes::default(),
+            },
+        );
+    }
+
+    let trace = recent_trace(&root.trace_id).expect("trace should be retained");
+    assert_eq!(trace.dropped_spans, 3);
+    assert_eq!(
+        trace.dropped_spans_by_name,
+        std::collections::BTreeMap::from([("holon.provider.attempt".to_string(), 3_u64)])
+    );
+    assert_eq!(
+        trace.dropped_spans_by_name.values().sum::<u64>(),
+        trace.dropped_spans
     );
 }

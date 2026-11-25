@@ -2461,6 +2461,7 @@ mod tests {
             completed_at,
             duration_us: 0,
             span_count: 1,
+            dropped_spans_by_name: std::collections::BTreeMap::new(),
             dropped_spans: 0,
             error_count: 0,
         }
