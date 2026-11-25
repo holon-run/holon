@@ -118,6 +118,12 @@
 "reading.detailUnavailable" = "尚未加载详情，或离线时不可用。";
 "reading.refresh" = "刷新";
 "reading.retry" = "重试";
+"reading.fullMessage" = "查看完整消息";
+"reading.fullMessageUnavailable" = "无法读取完整消息。";
+"reading.image" = "图片";
+"reading.imageLoading" = "正在加载图片…";
+"reading.imageOffline" = "重新连接后加载图片";
+"reading.imageUnavailable" = "图片不可用 · 重试";
 "reading.connectionDetails" = "连接状态";
 "reading.markRead" = "标为已读至已查看的 brief…";
 "reading.confirmReadThrough" = "将此 brief 及全部更早结果标为已读";

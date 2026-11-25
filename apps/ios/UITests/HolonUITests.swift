@@ -1421,7 +1421,88 @@ final class HolonUITests: XCTestCase {
             probe.buttons["share.send"].tap()
             probe.terminate()
         }
+        try await verifySharedImageReadBack(agent: agent)
     }
+
+    private func verifySharedImageReadBack(agent: String) async throws {
+        let control = try XCTUnwrap(URL(string: required("NODE_CONTROL_URL")))
+        let endpoint = try XCTUnwrap(URL(string: required("ENDPOINT")))
+        let url = control.deletingLastPathComponent().appendingPathComponent("shared-image-reference")
+        guard url.scheme == "http", url.host == "127.0.0.1", url.port == endpoint.port else {
+            return XCTFail("Only the isolated fixture may supply the generated reference")
+        }
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.setValue("Bearer " + (try required("NODE_CONTROL_TOKEN")), forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        struct Reference: Decodable { let reference: String }
+        let reference = try JSONDecoder().decode(Reference.self, from: data).reference
+
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        let files = app.buttons["conversation.files"]
+        if !files.waitForExistence(timeout: UIWaitScale.scaled(5)) {
+            let agentRow = app.buttons["agent." + agent]
+            reveal(agentRow, in: app); agentRow.tap()
+        }
+        XCTAssertTrue(files.waitForExistence(timeout: UIWaitScale.scaled(15)))
+        let image = app.images["conversation.image.loaded"].firstMatch
+        reveal(image, in: app)
+        XCTAssertTrue(image.waitForExistence(timeout: UIWaitScale.scaled(20)),
+                      "Reopened chat must render the canonical system-share image")
+        reveal(image, in: app, fullyVisible: true)
+        capture(app, "system-share-conversation-image")
+        waitForEnabled(files); files.tap()
+        app.buttons["files.options"].tap()
+        app.buttons["Server reference"].tap()
+        let entry = app.textFields["files.reference"]
+        XCTAssertTrue(entry.waitForExistence(timeout: UIWaitScale.scaled(10)))
+        entry.tap(); entry.typeText(reference)
+        app.buttons["files.openReference"].tap()
+        let name = (reference as NSString).lastPathComponent
+        XCTAssertTrue(app.navigationBars[name].waitForExistence(timeout: UIWaitScale.scaled(25)),
+                      "The paired app must read the shared image through Files")
+        XCTAssertTrue(app.staticTexts["image/png"].exists)
+        capture(app, "system-share-image-authorized-reader")
+    }
+
+    func testConversationLongImageHistory() async throws {
+        guard ProcessInfo.processInfo.environment["HOLON_UI_IMAGE_HISTORY_MESSAGE_ID"] != nil else {
+            throw XCTSkip("Requires the isolated long image history probe")
+        }
+        let agent = try required("AGENT_ID")
+        let id = try required("IMAGE_HISTORY_MESSAGE_ID")
+        try await connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        let row = app.buttons["agent." + agent]
+        if !app.buttons["conversation.files"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
+            reveal(row, in: app); row.tap()
+        }
+        let detail = app.buttons["operator.fullMessage." + id]
+        reveal(detail, in: app)
+        XCTAssertTrue(detail.waitForExistence(timeout: UIWaitScale.scaled(15)))
+        XCTAssertFalse(app.images["conversation.image.loaded"].exists,
+                       "The truncated summary should not pretend the attachment is present")
+        detail.tap()
+        let image = app.images["conversation.image.loaded"].firstMatch
+        XCTAssertTrue(app.navigationBars["Full message"].waitForExistence(timeout: UIWaitScale.scaled(10)))
+        XCTAssertTrue(image.waitForExistence(timeout: UIWaitScale.scaled(25)))
+        XCTAssertTrue(image.isHittable, "The attachment should be visible before scrolling the long body")
+        let unavailable = app.buttons["conversation.image.unavailable"]
+        XCTAssertTrue(unavailable.waitForExistence(timeout: UIWaitScale.scaled(15)),
+                      "A missing server file must show an explicit retry instead of an image")
+        XCTAssertEqual(app.images.matching(identifier: "conversation.image.loaded").count, 1)
+        XCTAssertEqual(app.buttons.matching(identifier: "conversation.image.unavailable").count, 1,
+                       "An external reference in operator text should not create a preview")
+        reveal(unavailable, in: app, fullyVisible: true)
+        let imageFrame = image.frame
+        unavailable.tap()
+        XCTAssertTrue(unavailable.waitForExistence(timeout: UIWaitScale.scaled(15)))
+        XCTAssertEqual(image.frame, imageFrame, "Retry should not shift the neighboring image")
+        capture(app, "conversation-full-message-image")
+    }
+
     private func connectForSharing(large: Bool = false) async throws {
         let endpoint = try required("ENDPOINT")
         let app = launch(language: "en", dark: false, large: large)

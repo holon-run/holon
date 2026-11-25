@@ -342,7 +342,7 @@ struct ConversationReadingView: View {
                     }.accessibilityIdentifier("conversation.newer")
                 }
                 ForEach((reader.snapshot?.raw["pending_inputs"].viewArray ?? []).filter { $0["presentation_class"] == .string("operator") && TaskResultInput($0) == nil }, id: \.viewMessageID) { input in
-                    ReadingInputView(input: input)
+                    ReadingInputView(input: input, reader: reader)
                         .environment(\.holonOpenReference, reader.status == .live ? openReference : nil)
                         .accessibilityIdentifier("pending." + input.viewMessageID)
                 }
@@ -618,7 +618,7 @@ private struct ReadingTurnView: View {
             }
             .font(.caption2).foregroundStyle(.secondary)
             ForEach(turn.raw["inputs"].viewArray, id: \.viewMessageID) { input in
-                ReadingInputView(input: input, fallbackClass: turn.raw["presentation_class"].viewString)
+                ReadingInputView(input: input, reader: reader, fallbackClass: turn.raw["presentation_class"].viewString)
             }
             ForEach(turn.raw["brief_ids"].viewArray.compactMap(\.viewString), id: \.self) { briefID in
                 ReadingBriefView(briefID: briefID, reader: reader, inputs: turn.raw["inputs"].viewArray,
@@ -668,19 +668,93 @@ private struct ReadingTurnView: View {
 
 struct ReadingInputView: View {
     let input: JSONValue
+    let reader: ReadingCoordinator
     var fallbackClass: String? = nil
+    @State private var showsFullMessage = false
 
     var body: some View {
         if (input["presentation_class"].viewString ?? fallbackClass) == "operator" {
+            let preview = OperatorInputPresentation.decodePreview(input["preview"].viewString ?? "")
             OperatorMessageBubble {
                 VStack(alignment: .leading, spacing: 6) {
-                    OperatorMessageText(text: ReadingPresentation.operatorText(input))
+                    OperatorMessageText(text: preview.text, showsAttachments: !preview.isTruncated)
+                    if preview.isTruncated, !input.viewMessageID.isEmpty {
+                        Button("reading.fullMessage") { showsFullMessage = true }
+                            .font(.callout)
+                            .disabled(reader.status != .live)
+                            .accessibilityIdentifier("operator.fullMessage." + input.viewMessageID)
+                    }
                     if let actor = input["actor_display_name"].viewString?.trimmingCharacters(in: .whitespacesAndNewlines), !actor.isEmpty {
                         Text(verbatim: actor).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
             .accessibilityIdentifier("operator." + input.viewMessageID)
+            .sheet(isPresented: $showsFullMessage) {
+                if let agentID = reader.selectedAgentID {
+                    ReadingFullOperatorMessage(reader: reader, agentID: agentID, messageID: input.viewMessageID)
+                }
+            }
+        }
+    }
+}
+
+private struct ReadingFullOperatorMessage: View {
+    let reader: ReadingCoordinator
+    let agentID: String
+    let messageID: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var text: String?
+    @State private var didFail = false
+    @State private var attempt = 0
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let text {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ConversationImagePreviews(images: ConversationImageReference.operatorAttachments(text))
+                            OperatorMessageText(text: text)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                    }
+                } else if didFail {
+                    VStack(spacing: 12) {
+                        Text("reading.fullMessageUnavailable")
+                        Button("reading.retry") {
+                            didFail = false
+                            attempt += 1
+                        }.disabled(reader.status != .live)
+                    }.padding()
+                } else {
+                    ProgressView()
+                }
+            }
+            .navigationTitle("reading.fullMessage")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("files.dismiss") { dismiss() }
+                }
+            }
+        }
+        .task(id: attempt) {
+            do {
+                let loaded = try await reader.loadOperatorMessage(messageID, agentID: agentID)
+                try Task.checkCancellation()
+                text = loaded
+            } catch {
+                guard !Task.isCancelled else { return }
+                didFail = true
+            }
+        }
+        .onChange(of: reader.selectedAgentID) { _, selected in
+            if selected != agentID { dismiss() }
+        }
+        .onChange(of: reader.status) { _, status in
+            if status == .sessionExpired || status == .permissionDenied { dismiss() }
         }
     }
 }

@@ -90,14 +90,30 @@ struct ReadingOperatorPreview: Equatable, Sendable {
 }
 
 enum OperatorInputPresentation {
+    struct Preview: Equatable {
+        let text: String
+        let isTruncated: Bool
+    }
+
     static func text(_ preview: String) -> String {
+        decodePreview(preview).text
+    }
+
+    static func messageText(_ message: JSONValue, agentID: String, messageID: String) -> String? {
+        guard message["agent_id"]?.readingString == agentID,
+              message["id"]?.readingString == messageID,
+              message["body"]?["type"]?.readingString == "text" else { return nil }
+        return message["body"]?["text"]?.readingString
+    }
+
+    static func decodePreview(_ preview: String) -> Preview {
         if let envelope = try? JSONDecoder().decode(JSONValue.self, from: Data(preview.utf8)),
            envelope["type"]?.readingString == "text",
-           let text = envelope["text"]?.readingString { return text }
+           let text = envelope["text"]?.readingString { return Preview(text: text, isTruncated: false) }
 
         let bytes = Array(preview.utf8)
         let prefix = Array(#"{"type":"text","text":""#.utf8)
-        guard bytes.starts(with: prefix) else { return preview }
+        guard bytes.starts(with: prefix) else { return Preview(text: preview, isTruncated: false) }
         let encoded = bytes.dropFirst(prefix.count)
         // A byte cut can leave a closing quote, an escape, or half a surrogate pair.
         for trim in 0...min(11, encoded.count) {
@@ -106,10 +122,10 @@ enum OperatorInputPresentation {
             candidate.append(contentsOf: encoded.dropLast(trim))
             candidate.append(0x22)
             if let text = try? JSONDecoder().decode(String.self, from: candidate) {
-                return text + "…"
+                return Preview(text: text + "…", isTruncated: true)
             }
         }
-        return preview
+        return Preview(text: preview, isTruncated: false)
     }
 
     private static func isIncompleteTail(_ tail: ArraySlice<UInt8>) -> Bool {

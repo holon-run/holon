@@ -855,6 +855,28 @@ final class ReadingCoordinator {
         await task.value
     }
 
+    func loadOperatorMessage(_ messageID: String, agentID: String) async throws -> String {
+        let token = revision
+        guard status == .live, current(token), selectedAgentID == agentID,
+              !messageID.isEmpty, messageID.utf8.count <= 512, let transport else {
+            throw HolonClientError.invalidRequest
+        }
+        let response: JSONValue
+        do {
+            response = try await transport.message(agentID: agentID, messageID: messageID)
+        } catch {
+            failed(error, token: token, recover: false)
+            throw error
+        }
+        guard current(token), status == .live, selectedAgentID == agentID else {
+            throw CancellationError()
+        }
+        guard let text = OperatorInputPresentation.messageText(response, agentID: agentID, messageID: messageID) else {
+            throw HolonClientError.invalidRequest
+        }
+        return text
+    }
+
     func loadBrief(_ briefID: String) async {
         if briefs[briefID] != nil { touchBrief(briefID); return }
         guard !briefID.isEmpty, briefID.utf8.count <= 512 else { return }

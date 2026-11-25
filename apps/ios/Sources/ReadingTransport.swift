@@ -11,6 +11,7 @@ protocol ReadingTransport: Sendable {
     func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview?
     func conversation(agentID: String, before: String?) async throws -> HolonConversationSnapshot
     func brief(agentID: String, briefID: String) async throws -> JSONValue
+    func message(agentID: String, messageID: String) async throws -> JSONValue
     func activities(agentID: String, turnID: String) async throws -> JSONValue
     func activities(agentID: String, turnID: String, before: String?) async throws -> JSONValue
     func activityDetail(agentID: String, turnID: String, activity: ReadingActivity) async throws -> JSONValue
@@ -21,6 +22,10 @@ protocol ReadingTransport: Sendable {
 }
 
 extension ReadingTransport {
+    func message(agentID: String, messageID: String) async throws -> JSONValue {
+        throw HolonClientError.invalidRequest
+    }
+
     func createContentReport(_ request: HolonContentReportRequest) async throws -> HolonContentReportResponse {
         throw HolonClientError.invalidRequest
     }
@@ -266,6 +271,9 @@ actor ReadingClientTransport: ReadingTransport {
     }
     func brief(agentID: String, briefID: String) async throws -> JSONValue {
         try await request { try await $0.briefDetail(agentID: agentID, briefID: briefID) }
+    }
+    func message(agentID: String, messageID: String) async throws -> JSONValue {
+        try await request { try await $0.getJSON(path: ["agents", agentID, "messages", messageID]) }
     }
     func activities(agentID: String, turnID: String) async throws -> JSONValue {
         try await activities(agentID: agentID, turnID: turnID, before: nil)

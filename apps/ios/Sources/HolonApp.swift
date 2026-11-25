@@ -361,6 +361,11 @@ struct HolonApp: App {
                         router.path.append(.file(agent, .source(.reference(reference))))
                     }, openWork: { workID in router.path.append(.workDetail(agent, .item(workID))) },
                     openTask: { taskID in router.path.append(.workDetail(agent, .task(taskID))) })
+                    .environment(\.holonConversationImageAccess, ConversationImageAccess(
+                        scope: reader.status == .live ? files.conversationImageScope(agentID: agent) : nil,
+                        load: { reference, scope in
+                            try await files.loadConversationImage(reference, agentID: agent, scope: scope)
+                        }))
                     .id(agent)
             } else { ProgressView("reading.loadingConversation") }
         case .work(let agent), .workDetail(let agent, _):

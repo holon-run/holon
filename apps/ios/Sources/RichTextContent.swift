@@ -233,11 +233,18 @@ struct HolonMarkdownParser: MarkupParser {
 /// Operator input stays verbatim; only authorized host-file actions are annotated.
 struct OperatorMessageText: View {
     let text: String
+    var showsAttachments = false
+    @Environment(\.holonConversationImageAccess) private var imageAccess
     @Environment(\.holonOpenReference) private var openReference
     @Environment(\.holonOpenWebLink) private var openWebLink
     @State private var unavailable = false
     var body: some View {
-        Text(Self.attributed(text)).textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(Self.attributed(text)).textSelection(.enabled)
+            if showsAttachments, imageAccess != nil {
+                ConversationImagePreviews(images: ConversationImageReference.operatorAttachments(text))
+            }
+        }
             .environment(\.openURL, OpenURLAction { url in
                 switch RichTextLink.classify(url) {
                 case .reference(let reference):
@@ -269,12 +276,18 @@ struct RichTextContent: View {
     var openReference: ((String) -> Void)? = nil
     var openRelative: ((String) -> Void)? = nil
     var onReport: (() -> Void)? = nil
+    @Environment(\.holonConversationImageAccess) private var imageAccess
     @Environment(\.holonOpenWebLink) private var openWebLink
     @State private var unsupportedLink = false
     @State private var selectingText = false
 
     var body: some View {
-        StructuredText(text, parser: HolonMarkdownParser(allowsRelativePaths: openRelative != nil))
+        VStack(alignment: .leading, spacing: 6) {
+            StructuredText(text, parser: HolonMarkdownParser(allowsRelativePaths: openRelative != nil))
+            if imageAccess != nil {
+                ConversationImagePreviews(images: ConversationImageReference.markdown(text))
+            }
+        }
             .textual.structuredTextStyle(.gitHub)
             // Textual's UIKit selection overlay swallows link taps on iOS 26.
             // Keep native links; range selection has its own system text surface.

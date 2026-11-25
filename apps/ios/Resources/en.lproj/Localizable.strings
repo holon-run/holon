@@ -107,6 +107,12 @@
 "reading.detailUnavailable" = "Detail not loaded or unavailable offline.";
 "reading.refresh" = "Refresh";
 "reading.retry" = "Retry";
+"reading.fullMessage" = "Full message";
+"reading.fullMessageUnavailable" = "The full message could not be loaded.";
+"reading.image" = "Image";
+"reading.imageLoading" = "Loading image…";
+"reading.imageOffline" = "Reconnect to load image";
+"reading.imageUnavailable" = "Image unavailable · Retry";
 "reading.connectionDetails" = "Connection";
 "reading.markRead" = "Mark read through viewed brief…";
 "reading.confirmReadThrough" = "Mark this and all earlier briefs read";
