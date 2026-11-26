@@ -1661,6 +1661,40 @@ describe("server brief read state", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/brief-read-cursor"))).toBe(false);
   });
 
+  it("reports whether the read-marker gate accepted the advance", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => Promise.resolve(new Response(
+      JSON.stringify(String(input).includes("/agents/brief-read-states")
+        ? [state({ read_through_event_seq: 0, event_head_seq: 3, unread_count: 2 })]
+        : {}),
+      { status: 200 },
+    )));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-a",
+      discovery: { ...useRuntimeStore.getState().discovery, freshness: "fresh" },
+    });
+    // The accepted advance schedules a quiet-window timer; keep it fake so the
+    // deadline cannot leak into a later test's client generation reset.
+    vi.useFakeTimers();
+    try {
+      // A reload can settle before the displayed conversation catches up. The
+      // caller must see false so it can retry instead of assuming success.
+      seedReadyConversationScope("agent-a", { throughSeq: 1 });
+      expect(useRuntimeStore.getState().markAgentConversationRead("agent-a")).toBe(false);
+
+      seedReadyConversationScope("agent-a", { throughSeq: 3 });
+      expect(useRuntimeStore.getState().markAgentConversationRead("agent-a")).toBe(true);
+      expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([undefined, 7])("gates reads and retries on the displayed scope (incarnation %s)", async (incarnation) => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

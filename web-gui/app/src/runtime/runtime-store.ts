@@ -367,7 +367,8 @@ export interface RuntimeStoreState {
 
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string) => void;
-  markAgentConversationRead: (agentId: string, scopeKey?: string) => void;
+  /** Returns true only when the read-marker gate accepted an advance. */
+  markAgentConversationRead: (agentId: string, scopeKey?: string) => boolean;
   refreshBriefReadStates: () => Promise<void>;
   openSkill: (skillId: string, agentId?: string) => void;
   openTemplate: (catalogId: string) => void;
@@ -1071,10 +1072,12 @@ function cancelClientGenerationWork(): void {
   for (const timer of agentSkillCatalogRetryTimers.values()) window.clearTimeout(timer);
   agentSkillCatalogRetryTimers.clear();
   agentSkillCatalogRetryAttempts.clear();
-  for (const timer of readMarkerRetryTimers.values()) window.clearTimeout(timer);
+  // Use the ambient timer handles the read-marker path scheduled with; the
+  // store also runs in environments without a `window` (tests, node tooling).
+  for (const timer of readMarkerRetryTimers.values()) clearTimeout(timer);
   readMarkerRetryTimers.clear();
   readMarkerRetryAttempts.clear();
-  for (const timer of readMarkerAdvanceTimers.values()) window.clearTimeout(timer);
+  for (const timer of readMarkerAdvanceTimers.values()) clearTimeout(timer);
   readMarkerAdvanceTimers.clear();
   readMarkerAdvanceScheduledSeq.clear();
   pendingReadMarkerAgentIds.clear();
@@ -1874,7 +1877,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       state,
       conversationScopeSnapshot(scopeKey),
     );
+    // Callers use the result to decide whether to retry: a reload can land
+    // before the message list has laid out, so "conversation ready" alone
+    // must not be treated as a successful advance.
+    let accepted = false;
     if (current && decision.mayAdvance && decision.candidateSeq != null) {
+      accepted = true;
       pendingReadMarkerCursorByAgentId.set(
         agentId,
         Math.max(pendingReadMarkerCursorByAgentId.get(agentId) ?? 0, decision.candidateSeq),
@@ -1892,6 +1900,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
     pendingReadMarkerAgentIds.add(agentId);
     void retryPendingReadMarker(agentId);
+    return accepted;
   },
   refreshBriefReadStates: async () => {
     await refreshBriefReadStatesInView();

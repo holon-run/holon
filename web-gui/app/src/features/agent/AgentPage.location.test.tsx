@@ -75,7 +75,7 @@ const onRead = vi.fn(() => true);
 const onSendPrompt = vi.fn(async () => {});
 async function render(conversation: ConversationTimelineBundle, overrides: {
   parentAgentId?: string; parentTaskId?: string; sendDisabledReason?: string; promptError?: string;
-  sendingPrompt?: boolean;
+  sendingPrompt?: boolean; conversationUnreadCount?: number;
 } = {}) {
   await act(async () => root.render(<AgentPage
     agent={{ id: "alpha", model: "model" } as AgentSummary} conversation={conversation}
@@ -313,6 +313,28 @@ describe("AgentPage reading-position lifecycle", () => {
     await resize();
     expect(list.scrollTop).toBe(930);
     expect(target.getBoundingClientRect().top).toBe(170);
+    expect(onRead).not.toHaveBeenCalled();
+  });
+
+  it("clears unread when content arrives at the latest viewport without a scroll", async () => {
+    const live = () => ({ ...bundle(), browsing: false, location: undefined, hasNewerHistory: false });
+    const list = await render(live());
+    await userScroll(list, 1600);
+    onRead.mockClear();
+
+    await render({ ...live(), model: model(2) }, { conversationUnreadCount: 1 });
+
+    expect(onRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps unread when the operator is reading away from the latest viewport", async () => {
+    const live = () => ({ ...bundle(), browsing: false, location: undefined, hasNewerHistory: false });
+    const list = await render(live());
+    await userScroll(list, 400);
+    onRead.mockClear();
+
+    await render({ ...live(), model: model(2) }, { conversationUnreadCount: 1 });
+
     expect(onRead).not.toHaveBeenCalled();
   });
 });
