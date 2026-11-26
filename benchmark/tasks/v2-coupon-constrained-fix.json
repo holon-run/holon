@@ -1,0 +1,22 @@
+{
+  "name": "v2-coupon-constrained-fix",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "coupon-constrained-fix"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 600,
+  "prompt": "Make the verification pass for this workspace. Constraints, in order of importance: do not modify test.js or src/pricing.js (both are hash-verified after your run); do not create new files or add dependencies; the defect is in coupon handling. Explain the root cause briefly and verify before finishing.",
+  "setup": [
+    "node test.js"
+  ],
+  "verify": [
+    "python3 -c \"import hashlib,sys\nfor p,h in [('test.js','3a65a7b13319af470c26e87d0dcbd9dd683c2522e11a96f59e994b79d893e00b'),('src/pricing.js','682d3fa416b59d5ff84469a0566934e2684d455432e3f2321c4dc183980b0279')]:\n    if hashlib.sha256(open(p,'rb').read()).hexdigest()!=h: sys.exit('protected file changed: '+p)\"",
+    "node test.js"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0,
+    "min_final_message_length": 100
+  }
+}

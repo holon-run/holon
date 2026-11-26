@@ -1,0 +1,21 @@
+{
+  "name": "v2-analyze-pipeline",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "analyze-pipeline"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 900,
+  "prompt": "The report written by analyze.py to out/report.json does not conform to the rules in README.md. Run the pipeline, compare the output against every rule, fix analyze.py, and regenerate out/report.json so the verification passes. Do not modify data/, README.md, or any file other than analyze.py. Explain which rules were violated and why.",
+  "setup": [
+    "python3 analyze.py"
+  ],
+  "verify": [
+    "python3 - <<'PYEOF'\nimport json, hashlib, math, sys\nfrom pathlib import Path\nguards = {\n    \"data/records.jsonl\": \"6a7a51c98b47b52afcaabe5b1a9f5845de39961045ae2bf410a40bf75440a4cc\",\n    \"README.md\": \"084cafde2f7407d61cd8795182907633cdff58d4e418fcb8be929b06354b5f73\",\n}\nfor path, expected_digest in guards.items():\n    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()\n    if digest != expected_digest:\n        sys.exit(\"protected file changed: \" + path)\nrecords = [json.loads(line) for line in Path(\"data/records.jsonl\").read_text().splitlines() if line.strip()]\nactive = [r for r in records if r[\"status\"] == \"active\"]\ncounts = {}\nfor r in active:\n    counts[r[\"category\"]] = counts.get(r[\"category\"], 0) + 1\ntop = sorted(active, key=lambda r: (-r[\"score\"], r[\"id\"]))[:3]\navg = math.floor(sum(r[\"score\"] for r in active) / len(active) * 100 + 0.5) / 100\nexpected = {\"counts\": counts, \"top\": [{\"id\": r[\"id\"], \"score\": r[\"score\"]} for r in top], \"avg_score\": avg}\ntry:\n    actual = json.loads(Path(\"out/report.json\").read_text())\nexcept Exception as error:\n    sys.exit(\"cannot read out/report.json: \" + str(error))\nif actual != expected:\n    print(\"expected:\", json.dumps(expected))\n    print(\"actual:\", json.dumps(actual))\n    sys.exit(\"report mismatch\")\nprint(\"report ok\")\nPYEOF"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0,
+    "min_final_message_length": 100
+  }
+}

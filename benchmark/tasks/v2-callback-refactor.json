@@ -1,0 +1,23 @@
+{
+  "name": "v2-callback-refactor",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "callback-refactor"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 900,
+  "prompt": "Refactor this project's order API: rename the export getUserOrders to fetchCustomerOrders and convert it from error-first callback style to a Promise-based async function that rejects on errors. Update every call site (handlers, report, cli) to the new API and remove the old callback export entirely. test.js is the acceptance spec: do not modify it. Make the verification pass and summarize the migration.",
+  "setup": [
+    "node test.js"
+  ],
+  "verify": [
+    "python3 -c \"import hashlib,sys\nif hashlib.sha256(open('test.js','rb').read()).hexdigest()!='99ca47ae9d44ec19de4aa9d6d5a4147fc1878005d9644a05b8a0157d62e550a3': sys.exit('protected file changed: test.js')\"",
+    "node -e \"const fs=require('fs');const walk=d=>fs.readdirSync(d,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(d+'/'+e.name):[d+'/'+e.name]);const bad=walk('src').filter(f=>fs.readFileSync(f,'utf8').includes('getUserOrders'));if(bad.length){console.error('old API still referenced in: '+bad.join(', '));process.exit(1)}\"",
+    "node test.js"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0,
+    "min_final_message_length": 100
+  }
+}
