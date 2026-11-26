@@ -23,17 +23,20 @@ test("reads both lists on the shared stream, does not replay, and opens the targ
   const old = notice("old", "operator_first_brief");
   await control({ status: 200, pending: [silent], recent: [old] });
   const traffic: string[] = [];
-  page.on("request", (request) => traffic.push(new URL(request.url()).pathname));
+  page.on("request", (req) => traffic.push(new URL(req.url()).pathname));
   await page.goto("/");
-  const trigger = page.getByLabel(/^Notifications \(/);
+
+  const navBadge = page.locator(".primary-global-nav .nav-attention-badge");
+  const inboxPanel = page.locator(".dashboard-triage-panel");
   const toasts = page.getByTestId("notification-toast");
-  await expect(trigger).toHaveAccessibleName("Notifications (1 needs your input)");
+
+  await expect(navBadge).toHaveText("1");
+  await expect(inboxPanel).toBeVisible();
   await expect(toasts).toHaveCount(0);
-  await trigger.press("Enter");
-  await expect(page.getByRole("region", { name: "Notifications" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Recent" }).getByText("New reply")).toBeVisible();
-  await page.getByRole("region", { name: "Needs your input" }).getByRole("button").press("Escape");
-  await expect(trigger).toBeFocused();
+
+  await inboxPanel.getByRole("tab", { name: /Recent/ }).click();
+  await expect(inboxPanel.getByText("New reply")).toBeVisible();
+  await inboxPanel.getByRole("tab", { name: /Needs your action/ }).click();
 
   // A genuine hint over the existing SSE must not nudge the roster.
   const before = traffic.filter((url) => url === "/api/agents/list").length;
@@ -42,31 +45,32 @@ test("reads both lists on the shared stream, does not replay, and opens the targ
   await expect(toasts).toHaveText(/Result ready/);
   expect(traffic.filter((url) => url === "/api/agents/list")).toHaveLength(before);
 
-  await trigger.click();
-  const detail = page.waitForRequest((request) => new URL(request.url()).pathname === `/api/agents/${agentId}/work-items/${workId}`);
-  await page.getByRole("region", { name: "Needs your input" }).getByRole("button").click();
+  const detail = page.waitForRequest((req) => new URL(req.url()).pathname === `/api/agents/${agentId}/work-items/${workId}`);
+  await inboxPanel.locator(".dashboard-triage-main").first().click();
   await expect(page).toHaveURL(/\/agents\/bootstrap-agent\/conversation/);
   await detail;
-  await expect(trigger).toHaveAccessibleName("Notifications (1 needs your input)");
+  await expect(navBadge).toHaveText("1");
   await page.getByRole("button", { name: "Dismiss notification" }).click();
   await expect(toasts).toHaveCount(0);
 
   const duringConversation = notice("during-conversation", "operator_input_required", workId);
   await control({ recent: [duringConversation, result, old], signal: "changed" });
-  await trigger.click();
-  await expect(page.getByRole("region", { name: "Recent" }).getByText("Needs your input")).toBeVisible();
   await expect(toasts).toHaveCount(0);
+
+  await page.locator(".primary-global-nav").getByRole("button", { name: "Dashboard" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await inboxPanel.getByRole("tab", { name: /Recent/ }).click();
+  await expect(inboxPanel.locator(".dashboard-triage-list").getByText("Needs your input")).toBeVisible();
 
   await control({ pending: [], recent: [result, old], signal: "disconnect" });
   await expect(page.getByText("Notifications may be out of date.")).toBeVisible();
-  await expect(trigger).toHaveAccessibleName("Notifications (0 need your input)");
-  await expect(page.getByRole("region", { name: "Recent" }).getByText("Needs your input")).toHaveCount(0);
+  await expect(navBadge).toHaveCount(0);
+  await expect(inboxPanel.locator(".dashboard-triage-list").getByText("Needs your input")).toHaveCount(0);
   await expect(toasts).toHaveCount(0);
   expect(traffic.filter((url) => url === "/api/events/stream")).toHaveLength(2);
 
   await control({ status: 403, signal: "changed" });
-  await expect(trigger).toHaveCount(0);
-  await expect(page).toHaveURL(/\/agents\/bootstrap-agent\/conversation/);
+  await expect(inboxPanel).toHaveCount(0);
 });
 
 test("hides the entry on a legacy runtime with no notification endpoints", async ({ page, context }, testInfo) => {
@@ -76,5 +80,5 @@ test("hides the entry on a legacy runtime with no notification endpoints", async
   const legacy = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/notifications/pending");
   await page.goto("/");
   expect((await legacy).status()).toBe(404);
-  await expect(page.getByLabel(/^Notifications \(/)).toHaveCount(0);
+  await expect(page.locator(".dashboard-triage-panel")).toHaveCount(0);
 });

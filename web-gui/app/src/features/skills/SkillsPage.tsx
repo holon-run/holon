@@ -136,7 +136,7 @@ export function SkillsPage({
               {t("skillsPage.showingSkills", { visible: visibleSkills.length, total: skills.length })}
             </p>
           </div>
-          <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
+          <StatusBadge className="state-chip" kind="connection" value={catalog.source} showLabel />
         </CardHeader>
         <CardContent>
           <details className="library-install">
@@ -250,6 +250,11 @@ export function SkillsPage({
   );
 }
 
+function sanitizeSkillDescription(description: string | undefined): string {
+  const trimmed = description?.trim() ?? "";
+  return /^[>|][+-]?$/.test(trimmed) ? "" : trimmed;
+}
+
 function SkillRow({
   skill,
   loading,
@@ -264,14 +269,15 @@ function SkillRow({
   onOpen: (skillId: string) => void;
 }) {
   const { t } = useTranslation();
+  const cleanDescription = sanitizeSkillDescription(skill.description);
   return (
     <li className="skills-row">
       <button type="button" className="skills-row-open" onClick={() => onOpen(skill.skillId)}>
         <div>
           <strong>{skill.name}</strong>
-          <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
+          <StatusBadge className="state-chip" kind="connection" value={skill.scope} showLabel />
         </div>
-        <p>{skill.description || t("skillsPage.noDescription")}</p>
+        <p>{cleanDescription || t("skillsPage.noDescription")}</p>
       </button>
       <div className="skills-row-actions">
         <Button type="button" size="sm" variant="outline" disabled={loading || normalizedSkillScope(skill.scope) !== "user"} onClick={() => onUpdate(skill.name)}>
@@ -316,7 +322,7 @@ export function SkillDetailPage({
         <div className="skills-hero-copy">
           <span className="eyebrow">{t("skillsPage.skillDetail")}</span>
           <h1>{skill?.name ?? skillId}</h1>
-          {skill?.description ? <p>{skill.description}</p> : null}
+          {sanitizeSkillDescription(skill?.description) ? <p>{sanitizeSkillDescription(skill?.description)}</p> : null}
         </div>
         <div className="skills-actions" aria-label={t("skillsPage.skillDetail")}>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>

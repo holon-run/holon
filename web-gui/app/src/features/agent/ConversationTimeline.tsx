@@ -392,6 +392,11 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     ));
   };
   const responseBriefIds = turn.briefIds.filter((id) => actions.locatedAnchor === `brief:${id}` || !isRuntimeTaskBrief(id));
+  const deduplicatedBriefs = deduplicateTurnResponseBriefs(
+    responseBriefIds,
+    actions.briefRecord,
+    actions.locatedAnchor,
+  );
 
   // Reveal anchors must open the execution details for machine inputs; the
   // operator bubbles above them are always visible without expansion.
@@ -506,7 +511,15 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
         {turn.execution.kind === "terminal" && turn.execution.outcome === "baseline_over_budget" ? (
           <div className="conversation-turn-notice is-error" role="note">{t("agentCreation.budgetFailure")}</div>
         ) : null}
-        {responseBriefIds.map((briefId) => <ConversationBriefCard key={briefId} briefId={briefId} actions={actions} />)}
+        {deduplicatedBriefs.map((entry) => (
+          <ConversationBriefCard
+            key={entry.primaryId}
+            briefId={entry.primaryId}
+            anchorId={entry.anchorId}
+            mergedBrief={entry.mergedBrief}
+            actions={actions}
+          />
+        ))}
         {presentation.kind === "deleted" ? (
           <div className="conversation-turn-notice" role="note">{t("agentPage.turnContentDeleted")}</div>
         ) : null}
@@ -641,15 +654,90 @@ function parseTruncatedTextBodyPreview(preview: string): string | undefined {
   return undefined;
 }
 
+export interface DeduplicatedBriefEntry {
+  primaryId: string;
+  anchorId: string;
+  mergedBrief: BriefRecord | null;
+}
+
+function normalizeBriefBodyForDedupe(text: string): string {
+  return text.replace(/\r\n/g, "\n").trim();
+}
+
+/**
+ * Collapse duplicate briefs within a single turn when both carry identical
+ * non-empty body text (e.g., a WorkItem completion brief and a turn reply
+ * brief with the same summary), while preserving `work_item_id`, citations,
+ * attachments, and any deep-linked `locatedAnchor`.
+ */
+export function deduplicateTurnResponseBriefs(
+  briefIds: readonly string[],
+  briefRecord: (briefId: string) => BriefRecord | null,
+  locatedAnchor?: string,
+): DeduplicatedBriefEntry[] {
+  const entries: DeduplicatedBriefEntry[] = [];
+  const indexByNormalizedText = new Map<string, number>();
+
+  for (const id of briefIds) {
+    const record = briefRecord(id);
+    if (record === null) {
+      entries.push({ primaryId: id, anchorId: id, mergedBrief: null });
+      continue;
+    }
+    const normalized = normalizeBriefBodyForDedupe(record.text);
+    const hasAttachments = Boolean(record.attachments && record.attachments.length > 0);
+    if (!normalized || hasAttachments) {
+      entries.push({ primaryId: id, anchorId: id, mergedBrief: record });
+      continue;
+    }
+    const existingIndex = indexByNormalizedText.get(normalized);
+    if (existingIndex === undefined) {
+      indexByNormalizedText.set(normalized, entries.length);
+      entries.push({ primaryId: id, anchorId: id, mergedBrief: record });
+      continue;
+    }
+    const existing = entries[existingIndex];
+    const existingBrief = existing.mergedBrief!;
+    const mergedCitations = (() => {
+      const a = existingBrief.citations ?? [];
+      const b = record.citations ?? [];
+      if (a.length === 0 && b.length === 0) return existingBrief.citations;
+      const seen = new Set<string>();
+      const out = [];
+      for (const item of [...a, ...b]) {
+        if (!seen.has(item.url)) {
+          seen.add(item.url);
+          out.push(item);
+        }
+      }
+      return out;
+    })();
+    entries[existingIndex] = {
+      primaryId: existing.primaryId,
+      anchorId: locatedAnchor === `brief:${id}` ? id : existing.anchorId,
+      mergedBrief: {
+        ...existingBrief,
+        work_item_id: existingBrief.work_item_id ?? record.work_item_id,
+        ...(mergedCitations !== undefined ? { citations: mergedCitations } : {}),
+      },
+    };
+  }
+  return entries;
+}
+
 const ConversationBriefCard = memo(function ConversationBriefCard({
   briefId,
+  anchorId,
+  mergedBrief,
   actions,
 }: {
   briefId: string;
+  anchorId?: string;
+  mergedBrief?: BriefRecord | null;
   actions: ConversationTimelineActions;
 }) {
   const { t } = useTranslation();
-  const brief = actions.briefRecord(briefId);
+  const brief = mergedBrief ?? actions.briefRecord(briefId);
   const loadState = actions.briefLoadState(briefId);
 
   useEffect(() => {
@@ -678,10 +766,10 @@ const ConversationBriefCard = memo(function ConversationBriefCard({
       </div>
     );
   }
-  return <BriefCardBody brief={brief} onOpenWorkItemId={actions.onOpenWorkItemId} />;
+  return <BriefCardBody brief={brief} anchorId={anchorId} onOpenWorkItemId={actions.onOpenWorkItemId} />;
 });
 
-function BriefCardBody({ brief, onOpenWorkItemId }: { brief: BriefRecord; onOpenWorkItemId?: (id: string) => void }) {
+function BriefCardBody({ brief, anchorId, onOpenWorkItemId }: { brief: BriefRecord; anchorId?: string; onOpenWorkItemId?: (id: string) => void }) {
   const { t } = useTranslation();
   const copyText = useCopyText();
   const [copied, setCopied] = useState(false);
@@ -690,7 +778,7 @@ function BriefCardBody({ brief, onOpenWorkItemId }: { brief: BriefRecord; onOpen
     [brief.created_at],
   );
   return (
-    <article className={`conversation-brief is-${brief.kind}`} data-conversation-anchor={`brief:${brief.id}`}>
+    <article className={`conversation-brief is-${brief.kind}`} data-conversation-anchor={`brief:${anchorId ?? brief.id}`}>
       <MarkdownContent
         text={brief.text}
         citations={brief.citations?.map((citation) => ({

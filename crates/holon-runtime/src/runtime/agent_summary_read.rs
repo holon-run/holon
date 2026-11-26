@@ -320,10 +320,15 @@ impl RuntimeHandle {
                 &self.inner.config_snapshot.load_full().model_catalog,
                 agent,
             )?;
+            let attached_workspaces = self
+                .inner
+                .runtime_db
+                .agent_secondary_workspace_list_entries(agent);
             resource_io::admit_cloned_value(&(
                 identity,
                 &agent.current_run_id,
                 &agent.active_workspace_entry,
+                &attached_workspaces,
             ))?;
             Ok(crate::types::AgentListEntry {
                 observation: None,
@@ -342,6 +347,7 @@ impl RuntimeHandle {
                     .active_workspace_entry
                     .clone()
                     .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
+                attached_workspaces,
             })
         })
     }

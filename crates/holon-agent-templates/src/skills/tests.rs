@@ -989,6 +989,49 @@ fn frontmatter_description_wins_over_body() {
 }
 
 #[test]
+fn frontmatter_folded_and_literal_block_scalars_parse_multiline_description() {
+    let dir = tempdir().unwrap();
+    let folded_root = dir.path().join("skills/ace-step");
+    let literal_root = dir.path().join("skills/literal-demo");
+    fs::create_dir_all(&folded_root).unwrap();
+    fs::create_dir_all(&literal_root).unwrap();
+    fs::write(
+        folded_root.join(SKILL_ENTRYPOINT),
+        "---\nname: ace-step\ndescription: >\n  Generate and edit music with ACE Step.\n  Endpoints: text-to-audio and audio-inpaint.\n---\n\nBody text",
+    )
+    .unwrap();
+    fs::write(
+        literal_root.join(SKILL_ENTRYPOINT),
+        "---\nname: literal-demo\ndescription: |\n  First line: alpha\n  Second line: beta\n---\n\nBody text",
+    )
+    .unwrap();
+
+    let view = load_skills_runtime_view(
+        &crate::TestIo,
+        SkillVisibility::NonDefaultAgent,
+        None,
+        dir.path(),
+        None,
+        &[],
+    )
+    .unwrap();
+
+    let by_name: std::collections::BTreeMap<&str, &str> = view
+        .discoverable_skills
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.description.as_str()))
+        .collect();
+    assert_eq!(
+        by_name.get("ace-step"),
+        Some(&"Generate and edit music with ACE Step. Endpoints: text-to-audio and audio-inpaint.")
+    );
+    assert_eq!(
+        by_name.get("literal-demo"),
+        Some(&"First line: alpha\nSecond line: beta")
+    );
+}
+
+#[test]
 fn filters_active_skills_to_visible_catalog() {
     let dir = tempdir().unwrap();
     let root = dir.path().join("skills/demo");

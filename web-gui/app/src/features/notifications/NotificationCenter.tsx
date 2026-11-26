@@ -1,20 +1,41 @@
 import {
-  CircleCheck, Bell, MessageSquare, TriangleAlert, X, type LucideProps,
+  Bell, CircleCheck, MessageSquare, TriangleAlert, X, type LucideProps,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ComponentType } from "react";
+import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
 import type { NotificationKind, NotificationTarget, RuntimeNotification } from "../../runtime/notification-sync";
 import {
   runtimeNotificationSync,
   useRuntimeNotifications,
   useSystemNotificationPermission,
 } from "../../runtime/runtime-notifications";
+import { useRuntimeStore } from "../../runtime/runtime-store";
 
 /** Long enough to read the card and reach for it, short enough not to pile up. */
 const TOAST_TTL_MS = 8_000;
+const SYSTEM_PROMPT_DISMISSED_KEY = "holon.webGui.systemNotificationPromptDismissed.v1";
+
+function readPromptDismissed(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(SYSTEM_PROMPT_DISMISSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writePromptDismissed(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SYSTEM_PROMPT_DISMISSED_KEY, "1");
+  } catch {
+    // Ignore storage errors; session state still hides the prompt.
+  }
+}
 
 interface ToastPresentation {
   tone: "warning" | "accent" | "success";
@@ -31,71 +52,113 @@ const fallbackPresentation: ToastPresentation = { tone: "accent", Icon: Bell };
 
 interface Props {
   onNavigate: (target: NotificationTarget) => void;
+  allowPermissionPrompt?: boolean;
 }
 
-export function NotificationCenter({ onNavigate }: Props) {
+/**
+ * Headless global overlay for live notification toasts and a one-time proactive
+ * browser notification opt-in card. Persistent pending/recent lists live on
+ * Dashboard, and permanent system notification settings live on Settings.
+ */
+export function NotificationCenter({ onNavigate, allowPermissionPrompt = true }: Props) {
   const { t } = useTranslation();
-  const { pending, recent, status, toasts } = useRuntimeNotifications();
-  const disclosure = useRef<HTMLDetailsElement>(null);
-  const trigger = useRef<HTMLElement>(null);
-  const title = useId();
-  if (status === "loading" || status === "unavailable") return null;
+  const { status, toasts } = useRuntimeNotifications();
+  const permission = useSystemNotificationPermission((state) => state.permission);
+  const refreshPermission = useSystemNotificationPermission((state) => state.refresh);
+  const requestPermission = useSystemNotificationPermission((state) => state.request);
+  const [promptDismissed, setPromptDismissed] = useState<boolean>(readPromptDismissed);
 
-  function close() {
-    if (disclosure.current?.open) {
-      disclosure.current.open = false;
-      trigger.current?.focus();
+  const agents = useRuntimeStore((state) => state.bootstrap?.agents ?? []);
+  const agentNamesById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const agent of agents) {
+      if (agent.name && agent.name !== agent.id) {
+        map.set(agent.id, agent.name);
+      }
     }
+    return map;
+  }, [agents]);
+
+  useEffect(() => {
+    refreshPermission();
+  }, [refreshPermission]);
+
+  if (status === "loading" || status === "unavailable" || typeof document === "undefined") {
+    return null;
   }
 
-  return (
-    <div className="notification-center">
-      <details ref={disclosure} onKeyDown={(event) => {
-        if (event.key !== "Escape" || !disclosure.current?.open) return;
-        event.stopPropagation();
-        close();
-      }}>
-        <summary className="notification-trigger" ref={trigger} title={t("notifications.title")}
-          aria-label={t("notifications.trigger", { count: pending.length })}>
-          <Bell size={16} aria-hidden="true" />
-          {pending.length > 0 ? <span aria-hidden="true">{pending.length > 99 ? "99+" : pending.length}</span> : null}
-        </summary>
-        <div className="notification-panel" role="region" aria-labelledby={title}>
-          <h2 id={title}>{t("notifications.title")}</h2>
-          {status === "stale" ? <p role="status">{t("notifications.stale")}</p> : null}
-          <NotificationList heading={t("notifications.pending")} items={pending} onNavigate={(target) => {
-            close();
-            onNavigate(target);
-          }} />
-          <NotificationList heading={t("notifications.recent")} items={recent} onNavigate={(target) => {
-            close();
-            onNavigate(target);
-          }} />
-          <SystemNotificationSettings />
-        </div>
-      </details>
-      {/* The topbar's backdrop-filter would anchor a fixed child, so the stack
-          lives on body; the sr-only region stays mounted for announcements. */}
-      {typeof document === "undefined" ? null : createPortal(
-        <div className="notification-toasts">
-          <div role="status" className="sr-only">
-            {toasts[0] ? t("notifications.announcement", {
-              kind: t(`notifications.kinds.${toasts[0].kind}`), agent: toasts[0].target.agent_id,
-            }) : ""}
+  const showPermissionPrompt = allowPermissionPrompt && permission === "default" && !promptDismissed;
+
+  const dismissPrompt = () => {
+    writePromptDismissed();
+    setPromptDismissed(true);
+  };
+
+  const acceptPrompt = () => {
+    writePromptDismissed();
+    setPromptDismissed(true);
+    void requestPermission();
+  };
+
+  return createPortal(
+    <div className="notification-toasts">
+      <div role="status" className="sr-only">
+        {toasts[0] ? t("notifications.announcement", {
+          kind: t(`notifications.kinds.${toasts[0].kind}`),
+          agent: agentNamesById.get(toasts[0].target.agent_id) ?? toasts[0].target.agent_id,
+        }) : ""}
+      </div>
+      {showPermissionPrompt ? (
+        <div
+          className="notification-toast notification-permission-prompt"
+          data-testid="system-notification-prompt"
+          data-tone="accent"
+          role="region"
+          aria-label={t("notifications.system.title")}
+        >
+          <span className="notification-toast-tone" aria-hidden="true" />
+          <div className="notification-prompt-body">
+            <span className="notification-toast-title">
+              <Bell size={15} aria-hidden="true" />
+              <strong>{t("notifications.system.promptTitle")}</strong>
+            </span>
+            <p className="notification-prompt-copy">{t("notifications.system.promptBody")}</p>
+            <div className="notification-prompt-actions">
+              <Button type="button" variant="accent" size="sm" onClick={acceptPrompt}>
+                {t("notifications.system.enable")}
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={dismissPrompt}>
+                {t("notifications.system.notNow")}
+              </Button>
+            </div>
           </div>
-          {toasts.map((item) => (
-            <NotificationToast key={item.id} item={item} onDismiss={runtimeNotificationSync.dismiss}
-              onNavigate={onNavigate} />
-          ))}
-        </div>,
-        document.body,
-      )}
-    </div>
+          <button
+            type="button"
+            className="notification-toast-dismiss"
+            aria-label={t("notifications.system.notNow")}
+            onClick={dismissPrompt}
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+      {toasts.map((item) => (
+        <NotificationToast
+          key={item.id}
+          item={item}
+          agentName={agentNamesById.get(item.target.agent_id)}
+          onDismiss={runtimeNotificationSync.dismiss}
+          onNavigate={onNavigate}
+        />
+      ))}
+    </div>,
+    document.body,
   );
 }
 
-function NotificationToast({ item, onNavigate, onDismiss }: {
+function NotificationToast({ item, agentName, onNavigate, onDismiss }: {
   item: RuntimeNotification;
+  agentName?: string;
   onNavigate: (target: NotificationTarget) => void;
   onDismiss: (id: string) => void;
 }) {
@@ -103,6 +166,8 @@ function NotificationToast({ item, onNavigate, onDismiss }: {
   const [paused, setPaused] = useState(false);
   const { tone, Icon } = toastPresentation[item.kind] ?? fallbackPresentation;
   const timestamp = new Date(item.created_at);
+  const agentLabel = agentName ?? item.target.agent_id;
+  const detailText = item.title ?? item.summary;
 
   // Hover and focus both pause, so the card only disappears untouched.
   useEffect(() => {
@@ -126,10 +191,16 @@ function NotificationToast({ item, onNavigate, onDismiss }: {
         <span className="notification-toast-title">
           <Icon size={15} aria-hidden="true" />
           {t(`notifications.kinds.${item.kind}`)}
+          <strong>{agentLabel}</strong>
         </span>
+        {detailText ? (
+          <span className="notification-toast-summary">{detailText}</span>
+        ) : null}
         <span className="notification-toast-meta">
           <span className="notification-toast-target">
-            {item.target.agent_id}{item.target.work_item_id ? ` · ${item.target.work_item_id}` : ""}
+            {detailText
+              ? agentLabel
+              : `${agentLabel}${item.target.work_item_id ? ` · ${item.target.work_item_id}` : ""}`}
           </span>
           {Number.isFinite(timestamp.getTime()) ? (
             <time dateTime={item.created_at}>
@@ -146,62 +217,48 @@ function NotificationToast({ item, onNavigate, onDismiss }: {
   );
 }
 
-function NotificationList({ heading, items, onNavigate }: Props & {
-  heading: string;
-  items: RuntimeNotification[];
-}) {
-  const { t } = useTranslation();
-  return (
-    <section aria-label={heading}>
-      <h3>{heading}</h3>
-      {items.length ? <ul>{items.map((item) => (
-        <li key={item.id}><NotificationLink item={item} onNavigate={onNavigate} /></li>
-      ))}</ul> : <p>{t("notifications.empty")}</p>}
-    </section>
-  );
-}
-
-function NotificationLink({ item, onNavigate }: Props & { item: RuntimeNotification }) {
-  const { t, i18n } = useTranslation();
-  const timestamp = new Date(item.created_at);
-  return (
-    <button type="button" className="notification-link" onClick={() => onNavigate(item.target)}>
-      <strong>{t(`notifications.kinds.${item.kind}`)}</strong>
-      <span>{item.target.agent_id}{item.target.work_item_id ? ` · ${item.target.work_item_id}` : ""}</span>
-      {Number.isFinite(timestamp.getTime()) ? (
-        <time dateTime={item.created_at}>
-          {timestamp.toLocaleString(i18n.resolvedLanguage, { dateStyle: "medium", timeStyle: "short" })}
-        </time>
-      ) : null}
-    </button>
-  );
-}
-
-/** Hidden tabs can only reach the user through the OS notification surface. */
-function SystemNotificationSettings() {
+/** Settings card for managing browser OS notifications on hidden tabs. */
+export function SystemNotificationSettingsCard() {
   const { t } = useTranslation();
   const permission = useSystemNotificationPermission((state) => state.permission);
   const refresh = useSystemNotificationPermission((state) => state.refresh);
   const request = useSystemNotificationPermission((state) => state.request);
-  // The browser can change permission outside this page (site settings, other
-  // tabs), so re-read it whenever the panel opens.
-  useEffect(() => { refresh(); }, [refresh]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
   if (permission === "unsupported") return null;
+
   return (
-    // No landmark role here: the panel is already the region, and a second
-    // named region (it would contain "Notifications") confuses region queries.
-    <section className="notification-system">
-      <h3>{t("notifications.system.title")}</h3>
-      {permission === "granted" ? <p>{t("notifications.system.enabled")}</p> : null}
-      {permission === "denied" ? <p>{t("notifications.system.blocked")}</p> : null}
+    <Card className="settings-card settings-primary-card notification-system">
+      <div className="settings-card-head">
+        <div>
+          <span className="eyebrow">{t("notifications.title")}</span>
+          <h2>{t("notifications.system.title")}</h2>
+        </div>
+      </div>
+      <p className="settings-muted">{t("notifications.system.hint")}</p>
+      {permission === "granted" ? (
+        <p className="settings-status-note is-enabled">{t("notifications.system.enabled")}</p>
+      ) : null}
+      {permission === "denied" ? (
+        <p className="settings-status-note is-blocked">{t("notifications.system.blocked")}</p>
+      ) : null}
       {permission === "default" ? (
-        <>
-          <p>{t("notifications.system.hint")}</p>
-          <Button variant="secondary" size="sm" onClick={() => { void request(); }}>
+        <div className="settings-actions-row">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => {
+              writePromptDismissed();
+              void request();
+            }}
+          >
             {t("notifications.system.enable")}
           </Button>
-        </>
+        </div>
       ) : null}
-    </section>
+    </Card>
   );
 }

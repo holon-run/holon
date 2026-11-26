@@ -2304,6 +2304,12 @@
               }
             ]
           },
+          "attached_workspaces": {
+            "items": {
+              "$ref": "#/components/schemas/AgentListWorkspaceEntry"
+            },
+            "type": "array"
+          },
           "current_run_id": {
             "type": [
               "string",
@@ -2493,6 +2499,39 @@
         },
         "title": "Array_of_AgentListEntry",
         "type": "array"
+      },
+      "AgentListWorkspaceEntry": {
+        "properties": {
+          "repo_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_alias": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_anchor": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "workspace_kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "workspace_id",
+          "workspace_anchor"
+        ],
+        "type": "object"
       },
       "AgentModelSource": {
         "enum": [
@@ -4772,6 +4811,42 @@
                   "null"
                 ]
               },
+              "attached_workspaces": {
+                "items": {
+                  "properties": {
+                    "repo_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "workspace_alias": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "workspace_anchor": {
+                      "type": "string"
+                    },
+                    "workspace_id": {
+                      "type": "string"
+                    },
+                    "workspace_kind": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "workspace_id",
+                    "workspace_anchor"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
               "current_run_id": {
                 "type": [
                   "string",
@@ -5627,6 +5702,42 @@
                         "object",
                         "null"
                       ]
+                    },
+                    "attached_workspaces": {
+                      "items": {
+                        "properties": {
+                          "repo_name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "workspace_alias": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "workspace_anchor": {
+                            "type": "string"
+                          },
+                          "workspace_id": {
+                            "type": "string"
+                          },
+                          "workspace_kind": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "workspace_id",
+                          "workspace_anchor"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
                     },
                     "current_run_id": {
                       "type": [
@@ -12774,6 +12885,12 @@
                   ],
                   "type": "string"
                 },
+                "summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "target": {
                   "properties": {
                     "agent_id": {
@@ -12790,6 +12907,12 @@
                     "agent_id"
                   ],
                   "type": "object"
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [

@@ -567,25 +567,102 @@ fn parse_skill_metadata(content: &str) -> ParsedSkillMetadata {
         return parsed;
     }
 
+    let mut frontmatter_lines = Vec::new();
     for line in lines {
         if line == "---" {
             break;
         }
-        let Some((key, value)) = line.split_once(':') else {
+        frontmatter_lines.push(line);
+    }
+
+    let mut index = 0;
+    while index < frontmatter_lines.len() {
+        let line = frontmatter_lines[index];
+        if line.starts_with(' ') || line.starts_with('\t') {
+            index += 1;
+            continue;
+        }
+        let Some((raw_key, raw_value)) = line.split_once(':') else {
+            index += 1;
             continue;
         };
-        let value = value
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .to_string();
-        match key.trim() {
+        let key = raw_key.trim();
+        let trimmed = raw_value.trim();
+        let is_literal_block = matches!(trimmed, "|" | "|-" | "|+");
+        let is_folded_block = matches!(trimmed, ">" | ">-" | ">+");
+
+        let value = if is_literal_block || is_folded_block || trimmed.is_empty() {
+            let mut block_lines = Vec::new();
+            let mut cursor = index + 1;
+            while cursor < frontmatter_lines.len() {
+                let next = frontmatter_lines[cursor];
+                if next.trim().is_empty() || next.starts_with(' ') || next.starts_with('\t') {
+                    block_lines.push(next);
+                    cursor += 1;
+                } else {
+                    break;
+                }
+            }
+            index = cursor;
+            collapse_yaml_block_scalar(&block_lines, is_literal_block)
+        } else {
+            index += 1;
+            trimmed
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim()
+                .to_string()
+        };
+
+        match key {
             "name" if !value.is_empty() => parsed.name = Some(value),
             "description" if !value.is_empty() => parsed.description = Some(value),
             _ => {}
         }
     }
     parsed
+}
+
+fn collapse_yaml_block_scalar(lines: &[&str], literal: bool) -> String {
+    let min_indent = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start_matches([' ', '\t']).len())
+        .min()
+        .unwrap_or(0);
+
+    let dedented: Vec<&str> = lines
+        .iter()
+        .map(|line| {
+            if line.trim().is_empty() {
+                ""
+            } else {
+                &line[min_indent.min(line.len())..]
+            }
+        })
+        .collect();
+
+    if literal {
+        return dedented.join("\n").trim().to_string();
+    }
+
+    let mut paragraphs = Vec::new();
+    let mut current = Vec::new();
+    for line in dedented {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(current.join(" "));
+                current.clear();
+            }
+        } else {
+            current.push(trimmed);
+        }
+    }
+    if !current.is_empty() {
+        paragraphs.push(current.join(" "));
+    }
+    paragraphs.join("\n\n").trim().to_string()
 }
 
 fn first_body_paragraph(content: &str) -> String {

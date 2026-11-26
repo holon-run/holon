@@ -99,6 +99,18 @@ pub fn record_cause(
     Ok(())
 }
 
+fn compact_notification_text(raw: Option<&str>, max_chars: usize) -> Option<String> {
+    let text = raw?.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= max_chars {
+        return Some(text);
+    }
+    let truncated: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    Some(format!("{}…", truncated.trim_end()))
+}
+
 pub fn recent(
     conn: &Connection,
     principal_id: &str,
@@ -107,10 +119,12 @@ pub fn recent(
 ) -> Result<Vec<InboxNotification>> {
     let cutoff = (now - chrono::Duration::days(30)).to_rfc3339_opts(SecondsFormat::Nanos, true);
     let mut stmt = conn.prepare_cached(
-        "SELECT r.brief_id, r.priority, r.created_at, r.agent_id, w.work_item_id
+        "SELECT r.brief_id, r.priority, r.created_at, r.agent_id, w.work_item_id,
+                w.objective, COALESCE(b.preview, json_extract(b.payload_json, '$.text'))
          FROM operator_inbox_recent r
          JOIN agent_identities i ON i.agent_id = r.agent_id AND i.status = 'active'
          LEFT JOIN work_items w ON w.work_item_id = r.work_item_id AND w.agent_id = r.agent_id
+         LEFT JOIN briefs b ON b.evidence_id = r.brief_id AND b.agent_id = r.agent_id
          WHERE r.principal_id = ?1 AND r.created_at >= ?2
            AND (i.visibility = 'public' OR ?3)
          ORDER BY r.created_at DESC, r.brief_id LIMIT 100",
@@ -124,6 +138,11 @@ pub fn recent(
             3 => NotificationKind::OperatorInputRequired,
             _ => anyhow::bail!("invalid operator inbox priority"),
         };
+        let objective: Option<String> = row.get(5)?;
+        let brief_text: Option<String> = row.get(6)?;
+        let title = compact_notification_text(objective.as_deref(), 160);
+        let summary = compact_notification_text(brief_text.as_deref(), 240)
+            .filter(|text| title.as_deref() != Some(text.as_str()));
         items.push(InboxNotification {
             id: row.get(0)?,
             kind,
@@ -132,6 +151,8 @@ pub fn recent(
                 agent_id: row.get(3)?,
                 work_item_id: row.get(4)?,
             },
+            title,
+            summary,
         });
     }
     Ok(items)
@@ -160,6 +181,10 @@ pub struct InboxNotification {
     pub kind: NotificationKind,
     pub created_at: DateTime<Utc>,
     pub target: NotificationTarget,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 pub struct WaitOrigin {
@@ -240,7 +265,8 @@ pub fn pending(
                      AND other.agent_id = w.agent_id
                     WHERE other.kind = 'operator_prompt'
                       AND other.evidence_id IS NOT t.trigger_message_id
-                )
+                ),
+                k.objective
          FROM wait_conditions w
          JOIN agent_identities i ON i.agent_id = w.agent_id AND i.status = 'active'
          LEFT JOIN agent_states a ON a.agent_id = w.agent_id
@@ -249,14 +275,14 @@ pub fn pending(
            ON m.evidence_id = t.trigger_message_id
           AND m.agent_id = w.agent_id
          LEFT JOIN operator_inbox_work_owners o ON o.work_item_id = w.work_item_id
+         LEFT JOIN work_items k
+           ON k.work_item_id = w.work_item_id
+          AND k.agent_id = w.agent_id
+          AND k.state = 'open'
          WHERE w.status = 'active' AND w.kind = 'operator' AND w.source = 'WaitFor'
            AND COALESCE(a.status, '') NOT IN ('stopped', 'paused')
            AND (i.visibility = 'public' OR ?1)
-           AND (w.work_item_id IS NULL OR EXISTS (
-                   SELECT 1 FROM work_items k
-                   WHERE k.work_item_id = w.work_item_id AND k.agent_id = w.agent_id
-                     AND k.state = 'open'
-               ))",
+           AND (w.work_item_id IS NULL OR k.work_item_id IS NOT NULL)",
     )?;
     let mut rows = stmt.query([local_control])?;
     let mut items = Vec::new();
@@ -272,9 +298,13 @@ pub fn pending(
             input.as_deref().map(serde_json::from_str).transpose()?;
         let owner: Option<String> = row.get(19)?;
         let has_other_operator_input: bool = row.get(20)?;
+        let work_objective: Option<String> = row.get(21)?;
         if !can_handle(input.as_ref(), owner.as_deref(), has_other_operator_input) {
             continue;
         }
+        let title = compact_notification_text(work_objective.as_deref(), 160);
+        let summary = compact_notification_text(Some(&wait.waiting_for), 240)
+            .filter(|text| title.as_deref() != Some(text.as_str()));
         items.push(InboxNotification {
             id: wait.id,
             kind: NotificationKind::OperatorInputRequired,
@@ -283,6 +313,8 @@ pub fn pending(
                 agent_id: wait.agent_id,
                 work_item_id: wait.work_item_id,
             },
+            title,
+            summary,
         });
     }
     items.sort_unstable_by(|left, right| {

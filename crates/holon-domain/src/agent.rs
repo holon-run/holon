@@ -1217,6 +1217,42 @@ pub enum AgentListObservationStatus {
     OwnerPending,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentListWorkspaceEntry {
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_alias: Option<String>,
+    pub workspace_anchor: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_name: Option<String>,
+}
+
+impl From<crate::WorkspaceEntry> for AgentListWorkspaceEntry {
+    fn from(entry: crate::WorkspaceEntry) -> Self {
+        Self {
+            workspace_id: entry.workspace_id,
+            workspace_alias: entry.workspace_alias,
+            workspace_anchor: entry.workspace_anchor,
+            workspace_kind: entry.workspace_kind,
+            repo_name: entry.repo_name,
+        }
+    }
+}
+
+impl From<&crate::WorkspaceEntry> for AgentListWorkspaceEntry {
+    fn from(entry: &crate::WorkspaceEntry) -> Self {
+        Self {
+            workspace_id: entry.workspace_id.clone(),
+            workspace_alias: entry.workspace_alias.clone(),
+            workspace_anchor: entry.workspace_anchor.clone(),
+            workspace_kind: entry.workspace_kind.clone(),
+            repo_name: entry.repo_name.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct AgentListEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1236,6 +1272,8 @@ pub struct AgentListEntry {
     pub model: AgentListModelSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_workspace_entry: Option<ActiveWorkspaceEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attached_workspaces: Vec<AgentListWorkspaceEntry>,
 }
 
 impl AgentListEntry {
@@ -1255,6 +1293,7 @@ impl AgentListEntry {
                 .active_workspace_entry
                 .clone()
                 .map(ActiveWorkspaceEntry::without_projection_metadata),
+            attached_workspaces: Vec::new(),
         }
     }
 
@@ -1264,6 +1303,11 @@ impl AgentListEntry {
         agent.pending = self.pending;
         agent.current_run_id = self.current_run_id;
         agent.active_workspace_entry = self.active_workspace_entry.clone();
+        agent.attached_workspaces = self
+            .attached_workspaces
+            .iter()
+            .map(|entry| entry.workspace_id.clone())
+            .collect();
         agent.model_override = self.model.override_model.clone();
         agent.model_override_reasoning_effort = self.model.override_reasoning_effort.clone();
 

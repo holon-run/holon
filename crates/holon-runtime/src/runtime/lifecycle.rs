@@ -1077,6 +1077,10 @@ impl RuntimeHandle {
         let model = self.model_state_for(&agent);
         let identity = self.agent_identity_view().await?;
         let waiting_reason = super::lightweight_agent_list_waiting_reason(&agent);
+        let attached_workspaces = self
+            .inner
+            .runtime_db
+            .agent_secondary_workspace_list_entries(&agent);
         Ok(AgentListEntry {
             observation: None,
             identity,
@@ -1093,6 +1097,7 @@ impl RuntimeHandle {
             active_workspace_entry: agent
                 .active_workspace_entry
                 .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
+            attached_workspaces,
         })
     }
 

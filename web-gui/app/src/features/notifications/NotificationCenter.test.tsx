@@ -15,14 +15,16 @@ const runtime = vi.hoisted(() => ({
 }));
 
 vi.mock("../../runtime/runtime-notifications", () => ({
-  runtimeNotificationSync: { dismiss: (id: string) => runtime.dismiss(id) },
+  runtimeNotificationSync: {
+    dismiss: (id: string) => runtime.dismiss(id),
+  },
   useRuntimeNotifications: () => runtime.snapshot,
   useSystemNotificationPermission: (
     selector: (state: { permission: string; request: () => Promise<void>; refresh: () => void }) => unknown,
   ) => selector({ permission: runtime.permission, request: runtime.request, refresh: runtime.refresh }),
 }));
 
-import { NotificationCenter } from "./NotificationCenter";
+import { NotificationCenter, SystemNotificationSettingsCard } from "./NotificationCenter";
 
 const item = (id: string, kind: RuntimeNotification["kind"] = "operator_first_brief"): RuntimeNotification => ({
   id,
@@ -38,10 +40,12 @@ const navigate = vi.fn();
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.useFakeTimers();
+  window.localStorage.clear();
   runtime.snapshot = { status: "ready", pending: [], recent: [], toasts: [] };
   runtime.permission = "default";
   runtime.dismiss.mockReset();
   runtime.request.mockReset();
+  navigate.mockReset();
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -53,9 +57,15 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-async function render() {
+async function renderCenter() {
   await act(async () => {
     root.render(<NotificationCenter onNavigate={navigate} />);
+  });
+}
+
+async function renderSettingsCard() {
+  await act(async () => {
+    root.render(<SystemNotificationSettingsCard />);
   });
 }
 
@@ -70,13 +80,15 @@ async function advance(ms: number) {
 }
 
 describe("notification toasts", () => {
-  it("portals one card per toast with the kind's tone, icon, and target", async () => {
+  it("portals one card per toast without rendering a topbar bell button", async () => {
+    runtime.permission = "granted";
     runtime.snapshot = {
       ...runtime.snapshot,
       toasts: [item("a", "operator_input_required"), item("b", "work_item_completed")],
     };
-    await render();
+    await renderCenter();
 
+    expect(host.querySelector(".notification-trigger")).toBeNull();
     const cards = document.querySelectorAll<HTMLElement>('[data-testid="notification-toast"]');
     expect(cards).toHaveLength(2);
     expect(cards[0].getAttribute("data-tone")).toBe("warning");
@@ -84,14 +96,14 @@ describe("notification toasts", () => {
     expect(cards[1].getAttribute("data-tone")).toBe("success");
     expect(cards[1].querySelector(".lucide-circle-check")).not.toBeNull();
     expect(cards[0].textContent).toContain("holon-web · work_1");
-    // The stack lives on body, not inside the topbar subtree.
     expect(document.body.contains(cards[0])).toBe(true);
     expect(host.contains(cards[0])).toBe(false);
   });
 
   it("dismisses itself after 8s and pauses while focused", async () => {
+    runtime.permission = "granted";
     runtime.snapshot = { ...runtime.snapshot, toasts: [item("a")] };
-    await render();
+    await renderCenter();
 
     await advance(7_000);
     expect(runtime.dismiss).not.toHaveBeenCalled();
@@ -108,8 +120,9 @@ describe("notification toasts", () => {
   });
 
   it("closes the card from its own button and follows the target on body click", async () => {
+    runtime.permission = "granted";
     runtime.snapshot = { ...runtime.snapshot, toasts: [item("a")] };
-    await render();
+    await renderCenter();
 
     await act(async () => { toast().querySelector<HTMLElement>(".notification-toast-main")?.click(); });
     expect(runtime.dismiss).toHaveBeenCalledWith("a");
@@ -117,22 +130,47 @@ describe("notification toasts", () => {
   });
 });
 
-describe("system notification settings", () => {
-  it("offers the permission request only while it is still undecided", async () => {
-    await render();
-    const button = Array.from(document.querySelectorAll("button"))
-      .find((element) => element.textContent?.includes("system notifications"));
-    expect(button).toBeDefined();
-    expect(document.querySelector(".notification-system")).not.toBeNull();
+describe("proactive system notification prompt and Settings card", () => {
+  it("proactively prompts once when permission is default and remembers Not now", async () => {
+    await renderCenter();
+
+    const prompt = document.querySelector<HTMLElement>('[data-testid="system-notification-prompt"]');
+    expect(prompt).not.toBeNull();
+    expect(prompt?.textContent).toContain("Enable system notifications?");
+
+    const buttons = Array.from(prompt?.querySelectorAll("button") ?? []);
+    const notNowButton = buttons.find((b) => b.textContent?.includes("Not now"));
+    expect(notNowButton).toBeDefined();
+
+    await act(async () => { notNowButton?.click(); });
+    expect(document.querySelector('[data-testid="system-notification-prompt"]')).toBeNull();
+    expect(window.localStorage.getItem("holon.webGui.systemNotificationPromptDismissed.v1")).toBe("1");
   });
 
-  it("reports the granted state and hides itself when unsupported", async () => {
+  it("triggers browser permission request on Enable click", async () => {
+    await renderCenter();
+
+    const prompt = document.querySelector<HTMLElement>('[data-testid="system-notification-prompt"]');
+    const enableButton = Array.from(prompt?.querySelectorAll("button") ?? [])
+      .find((b) => b.textContent?.includes("Enable system notifications"));
+    expect(enableButton).toBeDefined();
+
+    await act(async () => { enableButton?.click(); });
+    expect(runtime.request).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-testid="system-notification-prompt"]')).toBeNull();
+  });
+
+  it("renders system notification controls in the Settings card across permission states", async () => {
+    runtime.permission = "default";
+    await renderSettingsCard();
+    expect(host.querySelector(".notification-system")?.textContent).toContain("Enable system notifications");
+
     runtime.permission = "granted";
-    await render();
-    expect(document.querySelector(".notification-system")?.textContent).toContain("are on");
+    await renderSettingsCard();
+    expect(host.querySelector(".notification-system")?.textContent).toContain("are on");
 
     runtime.permission = "unsupported";
-    await render();
-    expect(document.querySelector(".notification-system")).toBeNull();
+    await renderSettingsCard();
+    expect(host.querySelector(".notification-system")).toBeNull();
   });
 });

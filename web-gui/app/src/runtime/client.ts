@@ -219,6 +219,13 @@ interface AgentListEntryDto {
       worktree_path?: string;
     };
   } | null;
+  attached_workspaces?: Array<{
+    workspace_id: string;
+    workspace_alias?: string | null;
+    workspace_anchor: string;
+    workspace_kind?: string | null;
+    repo_name?: string | null;
+  }>;
 }
 
 type AgentStateDto = components["schemas"]["AgentStateSnapshotDto"] & {
@@ -2526,21 +2533,37 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const activeWs = wsList.find((w) => w.is_active);
   // Fallback to list entry's active_workspace_entry when state hasn't loaded yet.
   const listEntry = activeWs ? undefined : entry.active_workspace_entry;
-  const workspace = activeWs
-    ? activeWs.workspace_alias ?? activeWs.workspace_id ?? activeWs.worktree?.branch ?? "not bound"
-    : listEntry?.workspace_alias ?? listEntry?.workspace_id ?? "not bound";
   const workspaceSummary = activeWs
     ? projectWorkspaceFromInfo(activeWs)
     : listEntry
       ? projectWorkspaceFromListEntry(listEntry)
       : undefined;
-  const attachedWorkspaces = wsList.map((w) => ({
-    workspaceId: w.workspace_id,
-    name: w.workspace_alias ?? basename(w.workspace_anchor ?? w.workspace_id) ?? w.workspace_id,
-    anchor: w.workspace_anchor ?? w.workspace_id,
-    executionRootId: w.execution_root_id ?? undefined,
-    repoName: w.repo_name ?? undefined,
-  }));
+  const workspace = workspaceSummary?.name
+    ?? (activeWs ? activeWs.worktree?.branch ?? "not bound" : "not bound");
+  const attachedWorkspaces = wsList.length > 0
+    ? wsList.map((w) => ({
+        workspaceId: w.workspace_id,
+        name: w.workspace_alias ?? basename(w.workspace_anchor ?? w.workspace_id) ?? w.workspace_id,
+        anchor: w.workspace_anchor ?? w.workspace_id,
+        executionRootId: w.execution_root_id ?? undefined,
+        repoName: w.repo_name ?? undefined,
+      }))
+    : [
+        ...(workspaceSummary && listEntry?.workspace_id
+          ? [{
+              workspaceId: workspaceSummary.id,
+              name: workspaceSummary.name,
+              anchor: workspaceSummary.anchor,
+              executionRootId: workspaceSummary.executionRootId,
+            }]
+          : []),
+        ...(entry.attached_workspaces ?? []).map((w) => ({
+          workspaceId: w.workspace_id,
+          name: w.workspace_alias ?? basename(w.workspace_anchor || w.workspace_id) ?? w.workspace_id,
+          anchor: w.workspace_anchor || w.workspace_id,
+          repoName: w.repo_name ?? undefined,
+        })),
+      ];
   const currentWork = selectCurrentWork(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const workItems = selectWorkItems(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const tasks = projectTasks(state?.tasks ?? []);

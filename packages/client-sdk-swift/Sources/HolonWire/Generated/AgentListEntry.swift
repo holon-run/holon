@@ -13,6 +13,7 @@ import AnyCodable
 public struct AgentListEntry: Codable, JSONEncodable {
 
     public var activeWorkspaceEntry: ActiveWorkspaceEntry?
+    public var attachedWorkspaces: [AgentListWorkspaceEntry]?
     public var currentRunId: String?
     public var identity: AgentIdentityView
     public var lifecycle: AgentLifecycleHint?
@@ -23,8 +24,9 @@ public struct AgentListEntry: Codable, JSONEncodable {
     public var status: AgentStatus
     public var waitingReason: WaitingReason?
 
-    public init(activeWorkspaceEntry: ActiveWorkspaceEntry? = nil, currentRunId: String? = nil, identity: AgentIdentityView, lifecycle: AgentLifecycleHint? = nil, model: AgentListModelSummary, observation: AgentListObservation? = nil, pending: Int? = 0, schedulingPosture: AgentPostureProjection? = nil, status: AgentStatus, waitingReason: WaitingReason? = nil) {
+    public init(activeWorkspaceEntry: ActiveWorkspaceEntry? = nil, attachedWorkspaces: [AgentListWorkspaceEntry]? = nil, currentRunId: String? = nil, identity: AgentIdentityView, lifecycle: AgentLifecycleHint? = nil, model: AgentListModelSummary, observation: AgentListObservation? = nil, pending: Int? = 0, schedulingPosture: AgentPostureProjection? = nil, status: AgentStatus, waitingReason: WaitingReason? = nil) {
         self.activeWorkspaceEntry = activeWorkspaceEntry
+        self.attachedWorkspaces = attachedWorkspaces
         self.currentRunId = currentRunId
         self.identity = identity
         self.lifecycle = lifecycle
@@ -38,6 +40,7 @@ public struct AgentListEntry: Codable, JSONEncodable {
 
     public enum CodingKeys: String, CodingKey, CaseIterable {
         case activeWorkspaceEntry = "active_workspace_entry"
+        case attachedWorkspaces = "attached_workspaces"
         case currentRunId = "current_run_id"
         case identity
         case lifecycle
@@ -54,6 +57,7 @@ public struct AgentListEntry: Codable, JSONEncodable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(activeWorkspaceEntry, forKey: .activeWorkspaceEntry)
+        try container.encodeIfPresent(attachedWorkspaces, forKey: .attachedWorkspaces)
         try container.encodeIfPresent(currentRunId, forKey: .currentRunId)
         try container.encode(identity, forKey: .identity)
         try container.encodeIfPresent(lifecycle, forKey: .lifecycle)
