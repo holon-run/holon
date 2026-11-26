@@ -92,11 +92,20 @@ impl PermissionResponse {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ElicitationRequest {
     pub session_id: String,
+    /// Elicitation mode advertised by the peer: `form`, `url`, or another
+    /// reserved value. Holon only answers `form`.
+    pub mode: String,
     pub message: String,
     pub requested_schema: Option<Value>,
+    pub tool_call_id: Option<String>,
 }
 
 impl ElicitationRequest {
+    /// Whether this is a form elicitation the client can render and answer.
+    pub fn is_form(&self) -> bool {
+        self.mode.is_empty() || self.mode == "form"
+    }
+
     pub fn from_params(params: Option<&Value>) -> Result<Self, AcpError> {
         let params = params
             .and_then(Value::as_object)
@@ -104,6 +113,11 @@ impl ElicitationRequest {
         Ok(Self {
             session_id: params
                 .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            mode: params
+                .get("mode")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
@@ -116,7 +130,41 @@ impl ElicitationRequest {
                 .get("requestedSchema")
                 .or_else(|| params.get("requested_schema"))
                 .cloned(),
+            tool_call_id: params
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
         })
+    }
+}
+
+/// The client's answer to an `elicitation/create` request.
+///
+/// The wire shape is `{ "action": "accept", "content": { ... } }`,
+/// `{ "action": "decline" }`, or `{ "action": "cancel" }`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ElicitationResponse {
+    #[serde(rename_all = "camelCase")]
+    Accept {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<Value>,
+    },
+    Decline,
+    Cancel,
+}
+
+impl ElicitationResponse {
+    pub fn accept(content: Value) -> Self {
+        Self::Accept {
+            content: Some(content),
+        }
+    }
+
+    pub fn to_value(&self) -> Result<Value, AcpError> {
+        serde_json::to_value(self)
+            .map_err(|error| AcpError::protocol(format!("invalid elicitation response: {error}")))
     }
 }
 
@@ -131,7 +179,10 @@ pub trait AcpClientHandler: Send + Sync {
 
     /// Answer an elicitation request. The default rejects it because the
     /// trimmed client capability set does not advertise elicitation.
-    async fn create_elicitation(&self, _request: ElicitationRequest) -> Result<Value, AcpError> {
+    async fn create_elicitation(
+        &self,
+        _request: ElicitationRequest,
+    ) -> Result<ElicitationResponse, AcpError> {
         Err(AcpError::UnsupportedCapability {
             capability: "elicitation".to_string(),
         })

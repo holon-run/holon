@@ -859,6 +859,8 @@ struct RuntimeInner {
     // Boxed: the resident handle is carried across retirement awaits, and
     // inlining it would widen every frame that holds the taken session.
     acp_session: Mutex<Option<Box<acp::AcpResidentSession>>>,
+    /// Pending operator-facing ACP permission and elicitation requests.
+    acp_interactions: Mutex<std::collections::BTreeMap<String, acp::PendingAcpInteraction>>,
     #[cfg(test)]
     acp_test_harness: Mutex<Option<acp::AcpTestHarnessFactory>>,
     // Fault/cancellation fixtures block the original post-SQL install seam.

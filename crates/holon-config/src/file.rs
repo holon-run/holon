@@ -704,17 +704,28 @@ pub struct AcpConfigFile {
     /// Harness profile used when an ACP-driven agent does not name one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_harness_profile: Option<String>,
+    /// How long an interactive approval or elicitation may wait for an operator
+    /// answer before the driver applies its unattended fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interaction_timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profiles: BTreeMap<String, AcpHarnessProfileConfigFile>,
 }
 
 impl AcpConfigFile {
     pub fn is_empty(&self) -> bool {
-        self.default_harness_profile.is_none() && self.profiles.is_empty()
+        self.default_harness_profile.is_none()
+            && self.interaction_timeout_ms.is_none()
+            && self.profiles.is_empty()
     }
 
     pub fn profile(&self, name: &str) -> Option<&AcpHarnessProfileConfigFile> {
         self.profiles.get(name)
+    }
+
+    /// Effective interaction timeout. Zero is rejected by the caller.
+    pub fn interaction_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.interaction_timeout_ms.unwrap_or(120_000))
     }
 }
 
@@ -736,6 +747,10 @@ pub struct AcpHarnessProfileConfigFile {
     /// Role text delivered through the negotiated persona channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// `unattended` (default) never waits for an operator. `interactive`
+    /// surfaces permission and elicitation prompts through the control plane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 impl AcpHarnessProfileConfigFile {
@@ -745,6 +760,7 @@ impl AcpHarnessProfileConfigFile {
             && self.sandbox.is_none()
             && self.env.is_empty()
             && self.role.is_none()
+            && self.permission_mode.is_none()
     }
 }
 

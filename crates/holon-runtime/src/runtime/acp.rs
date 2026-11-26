@@ -23,8 +23,8 @@ use holon_acp::protocol::{
     ToolCallUpdate,
 };
 use holon_acp::{
-    AcpClient, AcpClientHandler, AcpError, CancelHandle, ElicitationRequest, PermissionOutcome,
-    PermissionRequest,
+    AcpClient, AcpClientHandler, AcpError, CancelHandle, ElicitationRequest, ElicitationResponse,
+    PermissionOutcome, PermissionRequest,
 };
 use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
@@ -83,6 +83,190 @@ impl AcpPermissionDecision {
     }
 }
 
+/// How the driver treats permission and elicitation prompts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AcpPermissionMode {
+    /// Never wait for an operator; apply the static gate and its fallbacks.
+    Unattended,
+    /// Surface the request through the control plane and wait, bounded by the
+    /// configured interaction timeout.
+    Interactive,
+}
+
+impl AcpPermissionMode {
+    fn parse(value: Option<&str>) -> Result<Self> {
+        match value.unwrap_or("unattended") {
+            "unattended" => Ok(Self::Unattended),
+            "interactive" => Ok(Self::Interactive),
+            other => Err(anyhow!(
+                "unknown ACP permission mode `{other}`; expected `unattended` or `interactive`"
+            )),
+        }
+    }
+
+    fn is_interactive(self) -> bool {
+        self == Self::Interactive
+    }
+}
+
+/// A decision an operator can return for a pending permission request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AcpPermissionDecisionKind {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+    RejectAlways,
+}
+
+/// What the gate is waiting for.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum AcpInteractionRequest {
+    Permission {
+        tool_call: Value,
+        options: Vec<holon_acp::PermissionOption>,
+        scope: AcpGrantScope,
+    },
+    Elicitation {
+        message: String,
+        requested_schema: Option<Value>,
+        tool_call_id: Option<String>,
+    },
+}
+
+impl AcpInteractionRequest {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Permission { .. } => "permission",
+            Self::Elicitation { .. } => "elicitation",
+        }
+    }
+}
+
+/// The operator answer that resolves a pending interaction.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum AcpInteractionResolution {
+    Permission(AcpPermissionDecisionKind),
+    Elicitation(ElicitationResponse),
+}
+
+/// Parse an operator-supplied interaction resolution body.
+pub(crate) fn parse_interaction_resolution(body: &Value) -> Result<AcpInteractionResolution> {
+    if let Some(decision) = body.get("decision").and_then(Value::as_str) {
+        let decision = match decision {
+            "allow_once" => AcpPermissionDecisionKind::AllowOnce,
+            "allow_always" => AcpPermissionDecisionKind::AllowAlways,
+            "reject_once" => AcpPermissionDecisionKind::RejectOnce,
+            "reject_always" => AcpPermissionDecisionKind::RejectAlways,
+            other => {
+                return Err(anyhow!(
+                    "unknown permission decision `{other}`; expected allow_once, allow_always, reject_once, or reject_always"
+                ));
+            }
+        };
+        return Ok(AcpInteractionResolution::Permission(decision));
+    }
+    if let Some(action) = body.get("action").and_then(Value::as_str) {
+        let response = match action {
+            "accept" => ElicitationResponse::Accept {
+                content: body
+                    .get("content")
+                    .cloned()
+                    .filter(|content| !content.is_null()),
+            },
+            "decline" => ElicitationResponse::Decline,
+            "cancel" => ElicitationResponse::Cancel,
+            other => {
+                return Err(anyhow!(
+                    "unknown elicitation action `{other}`; expected accept, decline, or cancel"
+                ));
+            }
+        };
+        return Ok(AcpInteractionResolution::Elicitation(response));
+    }
+    Err(anyhow!(
+        "interaction resolution requires `decision` or `action`"
+    ))
+}
+
+/// One pending interaction and the channel that delivers its answer.
+#[derive(Debug)]
+pub(crate) struct PendingAcpInteraction {
+    pub(crate) id: String,
+    pub(crate) agent_id: String,
+    pub(crate) session_id: String,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) request: AcpInteractionRequest,
+    pub(crate) responder: tokio::sync::oneshot::Sender<AcpInteractionResolution>,
+}
+
+impl PendingAcpInteraction {
+    /// Operator-facing view. Never carries the response channel.
+    pub(crate) fn to_value(&self) -> Value {
+        let mut value = json!({
+            "interaction_id": self.id,
+            "agent_id": self.agent_id,
+            "session_id": self.session_id,
+            "kind": self.request.kind(),
+            "created_at": self.created_at,
+        });
+        if let AcpInteractionRequest::Permission {
+            tool_call,
+            options,
+            scope,
+        } = &self.request
+        {
+            value["tool_call"] = tool_call.clone();
+            value["options"] = serde_json::to_value(options).unwrap_or(Value::Null);
+            value["scope"] = scope.to_value();
+        }
+        if let AcpInteractionRequest::Elicitation {
+            message,
+            requested_schema,
+            tool_call_id,
+        } = &self.request
+        {
+            value["message"] = json!(message);
+            value["requested_schema"] = requested_schema.clone().unwrap_or(Value::Null);
+            value["tool_call_id"] = json!(tool_call_id);
+        }
+        value
+    }
+}
+
+/// Scope key for one `allow_always` grant.
+///
+/// The key is deliberately conservative: the same normalized tool kind and the
+/// exact set of claimed paths must repeat inside the same session and trust
+/// domain. A request without a path claim never widens a path grant.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AcpGrantScope {
+    pub(crate) tool_kind: Option<String>,
+    pub(crate) path_scope: Option<String>,
+}
+
+impl AcpGrantScope {
+    fn to_value(&self) -> Value {
+        json!({
+            "tool_kind": self.tool_kind,
+            "path_scope": self.path_scope,
+        })
+    }
+
+    fn matches_grant(&self, grant: &crate::types::AcpSessionGrant, trust_domain: &str) -> bool {
+        grant.trust_domain == trust_domain
+            && grant.tool_kind == self.tool_kind
+            && grant.path_scope == self.path_scope
+    }
+
+    fn to_grant(&self, trust_domain: &str) -> crate::types::AcpSessionGrant {
+        crate::types::AcpSessionGrant {
+            tool_kind: self.tool_kind.clone(),
+            path_scope: self.path_scope.clone(),
+            trust_domain: trust_domain.to_string(),
+        }
+    }
+}
+
 /// Static gate for `session/request_permission`.
 ///
 /// The gate never asks a human: an unattended turn must not hang on a prompt
@@ -91,11 +275,19 @@ struct AcpPermissionGate {
     roots: Vec<PathBuf>,
     writable: bool,
     process_execution_exposed: bool,
+    mode: AcpPermissionMode,
+    trust_domain: String,
+    grants: Mutex<Vec<crate::types::AcpSessionGrant>>,
     decisions: Mutex<Vec<AcpPermissionDecision>>,
+    interaction: Option<Arc<dyn AcpInteractionChannel>>,
 }
 
 impl AcpPermissionGate {
-    fn new(execution: &EffectiveExecution) -> Self {
+    fn new(
+        execution: &EffectiveExecution,
+        mode: AcpPermissionMode,
+        interaction: Option<Arc<dyn AcpInteractionChannel>>,
+    ) -> Self {
         let mut roots = vec![execution.workspace.execution_root().to_path_buf()];
         roots.extend(
             execution
@@ -103,6 +295,11 @@ impl AcpPermissionGate {
                 .iter()
                 .map(|(_, path)| path.clone()),
         );
+        let trust_domain = roots
+            .iter()
+            .map(|root| root.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
         Self {
             roots,
             writable: matches!(
@@ -110,8 +307,27 @@ impl AcpPermissionGate {
                 Some(crate::system::WorkspaceAccessMode::ExclusiveWrite)
             ),
             process_execution_exposed: execution.profile.process_execution_exposed,
+            mode,
+            trust_domain,
+            grants: Mutex::new(Vec::new()),
             decisions: Mutex::new(Vec::new()),
+            interaction,
         }
+    }
+
+    /// Load persisted session grants. Only the same logical session may carry
+    /// them: a rebuilt or newly created session starts with an empty set.
+    fn load_grants(&self, grants: &[crate::types::AcpSessionGrant]) {
+        if let Ok(mut current) = self.grants.lock() {
+            *current = grants.to_vec();
+        }
+    }
+
+    fn grants(&self) -> Vec<crate::types::AcpSessionGrant> {
+        self.grants
+            .lock()
+            .map(|grants| grants.clone())
+            .unwrap_or_default()
     }
 
     fn record(&self, decision: AcpPermissionDecision) {
@@ -149,7 +365,10 @@ impl AcpPermissionGate {
     }
 
     /// Decide one request against the bound execution scope.
-    fn decide(&self, request: &PermissionRequest) -> PermissionOutcome {
+    ///
+    /// Policy rejection always wins. Only a request that passes policy may be
+    /// answered by a cached session grant or by an operator decision.
+    async fn decide(&self, request: &PermissionRequest) -> PermissionOutcome {
         let tool_call_id = string_field(&request.tool_call, "toolCallId");
         let kind = string_field(&request.tool_call, "kind");
         let title = string_field(&request.tool_call, "title");
@@ -197,26 +416,143 @@ impl AcpPermissionGate {
             );
         }
 
-        match allow_once_option(request) {
-            Some(option_id) => {
-                self.record(AcpPermissionDecision {
-                    outcome: "allow_once",
-                    reason: "request_stays_inside_the_bound_execution_scope".to_string(),
-                    tool_call_id,
-                    kind,
-                    path: None,
-                });
-                PermissionOutcome::Selected { option_id }
+        let Some(allow_option) = allow_once_option(request) else {
+            self.record(AcpPermissionDecision {
+                outcome: "reject",
+                reason: "no_allow_option_in_request".to_string(),
+                tool_call_id,
+                kind,
+                path: None,
+            });
+            return PermissionOutcome::Cancelled;
+        };
+
+        let scope = self.request_scope(request);
+        if self.grant_matches(&scope) {
+            self.record(AcpPermissionDecision {
+                outcome: "allow_always",
+                reason: "session_grant_matches".to_string(),
+                tool_call_id,
+                kind,
+                path: scope.path_scope.clone(),
+            });
+            return PermissionOutcome::Selected {
+                option_id: allow_option,
+            };
+        }
+
+        if self.mode.is_interactive() {
+            if let Some(interaction) = self.interaction.as_ref() {
+                match interaction
+                    .ask_permission(&request.session_id, request, scope.clone())
+                    .await
+                {
+                    Some(AcpPermissionDecisionKind::AllowOnce) => {
+                        self.record(AcpPermissionDecision {
+                            outcome: "allow_once",
+                            reason: "operator_approved_once".to_string(),
+                            tool_call_id,
+                            kind,
+                            path: None,
+                        });
+                        return PermissionOutcome::Selected {
+                            option_id: allow_option,
+                        };
+                    }
+                    Some(AcpPermissionDecisionKind::AllowAlways) => {
+                        self.record(AcpPermissionDecision {
+                            outcome: "allow_always",
+                            reason: "operator_approved_for_session".to_string(),
+                            tool_call_id,
+                            kind,
+                            path: scope.path_scope.clone(),
+                        });
+                        self.record_grant(scope);
+                        return PermissionOutcome::Selected {
+                            option_id: allow_always_option(request).unwrap_or(allow_option),
+                        };
+                    }
+                    Some(AcpPermissionDecisionKind::RejectOnce) => {
+                        return self.reject(
+                            request,
+                            AcpPermissionDecision {
+                                outcome: "reject",
+                                reason: "operator_rejected".to_string(),
+                                tool_call_id,
+                                kind,
+                                path: None,
+                            },
+                        );
+                    }
+                    Some(AcpPermissionDecisionKind::RejectAlways) => {
+                        return self.reject(
+                            request,
+                            AcpPermissionDecision {
+                                outcome: "reject",
+                                reason: "operator_rejected_always".to_string(),
+                                tool_call_id,
+                                kind,
+                                path: None,
+                            },
+                        );
+                    }
+                    None => {
+                        return self.reject(
+                            request,
+                            AcpPermissionDecision {
+                                outcome: "reject",
+                                reason: "interaction_timeout_or_cancelled".to_string(),
+                                tool_call_id,
+                                kind,
+                                path: None,
+                            },
+                        );
+                    }
+                }
             }
-            None => {
-                self.record(AcpPermissionDecision {
-                    outcome: "reject",
-                    reason: "no_allow_option_in_request".to_string(),
-                    tool_call_id,
-                    kind,
-                    path: None,
-                });
-                PermissionOutcome::Cancelled
+        }
+
+        self.record(AcpPermissionDecision {
+            outcome: "allow_once",
+            reason: "request_stays_inside_the_bound_execution_scope".to_string(),
+            tool_call_id,
+            kind,
+            path: None,
+        });
+        PermissionOutcome::Selected {
+            option_id: allow_option,
+        }
+    }
+
+    fn request_scope(&self, request: &PermissionRequest) -> AcpGrantScope {
+        let kind = string_field(&request.tool_call, "kind")
+            .map(|kind| kind.to_ascii_lowercase())
+            .filter(|kind| !kind.is_empty());
+        let mut paths = candidate_paths(&request.tool_call);
+        paths.sort();
+        paths.dedup();
+        AcpGrantScope {
+            tool_kind: kind,
+            path_scope: (!paths.is_empty()).then(|| paths.join("\n")),
+        }
+    }
+
+    fn grant_matches(&self, scope: &AcpGrantScope) -> bool {
+        self.grants
+            .lock()
+            .map(|grants| {
+                grants
+                    .iter()
+                    .any(|grant| scope.matches_grant(grant, &self.trust_domain))
+            })
+            .unwrap_or(false)
+    }
+
+    fn record_grant(&self, scope: AcpGrantScope) {
+        if let Ok(mut grants) = self.grants.lock() {
+            let grant = scope.to_grant(&self.trust_domain);
+            if !grants.iter().any(|existing| *existing == grant) {
+                grants.push(grant);
             }
         }
     }
@@ -253,16 +589,40 @@ impl AcpPermissionGate {
 #[async_trait::async_trait]
 impl AcpClientHandler for AcpPermissionGate {
     async fn request_permission(&self, request: PermissionRequest) -> PermissionOutcome {
-        self.decide(&request)
+        self.decide(&request).await
     }
 
     async fn create_elicitation(
         &self,
-        _request: ElicitationRequest,
-    ) -> Result<Value, holon_acp::AcpError> {
-        Err(holon_acp::AcpError::UnsupportedCapability {
-            capability: "elicitation".to_string(),
-        })
+        request: ElicitationRequest,
+    ) -> Result<holon_acp::ElicitationResponse, holon_acp::AcpError> {
+        if !request.is_form() {
+            return Err(holon_acp::AcpError::UnsupportedCapability {
+                capability: "elicitation.url".to_string(),
+            });
+        }
+        if !self.mode.is_interactive() {
+            return Err(holon_acp::AcpError::UnsupportedCapability {
+                capability: "elicitation".to_string(),
+            });
+        }
+        let Some(interaction) = self.interaction.as_ref() else {
+            return Err(holon_acp::AcpError::UnsupportedCapability {
+                capability: "elicitation".to_string(),
+            });
+        };
+        match interaction
+            .ask_elicitation(&request.session_id, &request)
+            .await
+        {
+            Some(AcpInteractionResolution::Elicitation(response)) => Ok(response),
+            Some(AcpInteractionResolution::Permission(_)) => Err(holon_acp::AcpError::Protocol(
+                "permission decision resolved an elicitation request".to_string(),
+            )),
+            // Timeout and cancellation both fall back to a structured decline,
+            // never to an unbounded wait.
+            None => Ok(holon_acp::ElicitationResponse::Decline),
+        }
     }
 }
 
@@ -350,6 +710,29 @@ fn allow_once_option(request: &PermissionRequest) -> Option<String> {
         .map(|option| option.option_id.clone())
 }
 
+/// The request option that grants the same approval for the rest of the
+/// session. The gate only records a session grant when an operator explicitly
+/// chose this option.
+fn allow_always_option(request: &PermissionRequest) -> Option<String> {
+    request
+        .options
+        .iter()
+        .find(|option| {
+            let id = option.option_id.to_ascii_lowercase();
+            let name = option.name.to_ascii_lowercase();
+            (id.contains("allow")
+                || id.contains("approve")
+                || name.contains("allow")
+                || name.contains("approve"))
+                && (id.contains("always")
+                    || id.contains("session")
+                    || id.contains("persist")
+                    || name.contains("always")
+                    || name.contains("session"))
+        })
+        .map(|option| option.option_id.clone())
+}
+
 /// The request option that denies a single execution.
 fn reject_option(request: &PermissionRequest) -> Option<String> {
     request
@@ -361,6 +744,245 @@ fn reject_option(request: &PermissionRequest) -> Option<String> {
             id.contains("reject") || id.contains("deny") || name.contains("reject")
         })
         .map(|option| option.option_id.clone())
+}
+
+/// Operator-facing channel for one interactive ACP turn.
+#[async_trait::async_trait]
+pub(crate) trait AcpInteractionChannel: Send + Sync {
+    async fn ask_permission(
+        &self,
+        session_id: &str,
+        request: &PermissionRequest,
+        scope: AcpGrantScope,
+    ) -> Option<AcpPermissionDecisionKind>;
+
+    async fn ask_elicitation(
+        &self,
+        session_id: &str,
+        request: &ElicitationRequest,
+    ) -> Option<AcpInteractionResolution>;
+}
+
+/// Bridges ACP reverse requests to the runtime's pending-interaction registry.
+///
+pub(crate) struct AcpInteractionBroker {
+    runtime: std::sync::Weak<super::RuntimeInner>,
+    agent_id: String,
+    timeout: Duration,
+}
+
+impl AcpInteractionBroker {
+    pub(crate) fn new(
+        runtime: std::sync::Weak<super::RuntimeInner>,
+        agent_id: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            runtime,
+            agent_id: agent_id.into(),
+            timeout,
+        }
+    }
+
+    fn runtime(&self) -> Option<super::RuntimeHandle> {
+        self.runtime
+            .upgrade()
+            .map(|inner| super::RuntimeHandle { inner })
+    }
+
+    async fn broker_permission(
+        &self,
+        session_id: &str,
+        request: &PermissionRequest,
+        scope: AcpGrantScope,
+    ) -> Option<AcpPermissionDecisionKind> {
+        match self
+            .ask(
+                session_id,
+                AcpInteractionRequest::Permission {
+                    tool_call: request.tool_call.clone(),
+                    options: request.options.clone(),
+                    scope,
+                },
+            )
+            .await
+        {
+            Some(AcpInteractionResolution::Permission(decision)) => Some(decision),
+            Some(AcpInteractionResolution::Elicitation(_)) | None => None,
+        }
+    }
+
+    async fn broker_elicitation(
+        &self,
+        session_id: &str,
+        request: &ElicitationRequest,
+    ) -> Option<AcpInteractionResolution> {
+        self.ask(
+            session_id,
+            AcpInteractionRequest::Elicitation {
+                message: request.message.clone(),
+                requested_schema: request.requested_schema.clone(),
+                tool_call_id: request.tool_call_id.clone(),
+            },
+        )
+        .await
+    }
+
+    async fn ask(
+        &self,
+        session_id: &str,
+        request: AcpInteractionRequest,
+    ) -> Option<AcpInteractionResolution> {
+        let runtime = self.runtime()?;
+        let (responder, receiver) = tokio::sync::oneshot::channel();
+        let pending = PendingAcpInteraction {
+            id: crate::ids::runtime_id("acpint"),
+            agent_id: self.agent_id.clone(),
+            session_id: session_id.to_string(),
+            created_at: chrono::Utc::now(),
+            request,
+            responder,
+        };
+        if let Err(error) = runtime.register_acp_interaction(pending).await {
+            tracing::warn!(%error, "failed to register ACP interaction");
+            return None;
+        }
+        match tokio::time::timeout(self.timeout, receiver).await {
+            Ok(Ok(resolution)) => Some(resolution),
+            // Operator channel closed or the bound elapsed: apply the
+            // unattended fallback instead of hanging the turn.
+            Ok(Err(_)) | Err(_) => None,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AcpInteractionChannel for AcpInteractionBroker {
+    async fn ask_permission(
+        &self,
+        session_id: &str,
+        request: &PermissionRequest,
+        scope: AcpGrantScope,
+    ) -> Option<AcpPermissionDecisionKind> {
+        self.broker_permission(session_id, request, scope).await
+    }
+
+    async fn ask_elicitation(
+        &self,
+        session_id: &str,
+        request: &ElicitationRequest,
+    ) -> Option<AcpInteractionResolution> {
+        self.broker_elicitation(session_id, request).await
+    }
+}
+
+impl super::RuntimeHandle {
+    async fn register_acp_interaction(&self, pending: PendingAcpInteraction) -> Result<()> {
+        let interaction_id = pending.id.clone();
+        let view = pending.to_value();
+        self.inner
+            .acp_interactions
+            .lock()
+            .await
+            .insert(interaction_id.clone(), pending);
+        self.append_audit_event(
+            "acp_interaction_requested",
+            json!({
+                "driver": "acp",
+                "interaction_id": interaction_id,
+                "interaction": view,
+            }),
+        )
+        .await
+    }
+
+    /// Pending operator-facing ACP interactions for this agent.
+    pub async fn pending_acp_interactions(&self) -> Vec<Value> {
+        let interactions = self.inner.acp_interactions.lock().await;
+        interactions
+            .values()
+            .map(PendingAcpInteraction::to_value)
+            .collect()
+    }
+
+    /// Resolve a pending interaction from an operator-facing JSON body.
+    ///
+    /// Permission bodies use `{"decision": "allow_once" | "allow_always" |
+    /// "reject_once" | "reject_always"}`. Elicitation bodies use
+    /// `{"action": "accept", "content": {...}}`, `{"action": "decline"}`, or
+    /// `{"action": "cancel"}`.
+    pub async fn resolve_acp_interaction_decision(
+        &self,
+        interaction_id: &str,
+        body: &Value,
+    ) -> Result<bool> {
+        let resolution = parse_interaction_resolution(body)?;
+        self.resolve_acp_interaction(interaction_id, resolution)
+            .await
+    }
+
+    /// Resolve one pending ACP interaction.
+    ///
+    /// Returns `false` when the id is unknown or already settled. A late
+    /// resolution never creates authority; the gate has already applied its
+    /// timeout fallback.
+    pub(crate) async fn resolve_acp_interaction(
+        &self,
+        interaction_id: &str,
+        resolution: AcpInteractionResolution,
+    ) -> Result<bool> {
+        {
+            let interactions = self.inner.acp_interactions.lock().await;
+            let Some(existing) = interactions.get(interaction_id) else {
+                return Ok(false);
+            };
+            let expected_kind = existing.request.kind();
+            let actual_kind = match &resolution {
+                AcpInteractionResolution::Permission(_) => "permission",
+                AcpInteractionResolution::Elicitation(_) => "elicitation",
+            };
+            if expected_kind != actual_kind {
+                return Err(anyhow!(
+                    "interaction `{interaction_id}` is `{expected_kind}`, not `{actual_kind}`"
+                ));
+            }
+        }
+        let pending = self
+            .inner
+            .acp_interactions
+            .lock()
+            .await
+            .remove(interaction_id);
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        let accepted = pending.responder.send(resolution.clone()).is_ok();
+        self.append_audit_event(
+            "acp_interaction_resolved",
+            json!({
+                "driver": "acp",
+                "interaction_id": interaction_id,
+                "resolution": match &resolution {
+                    AcpInteractionResolution::Permission(decision) => json!({
+                        "kind": "permission",
+                        "decision": match decision {
+                            AcpPermissionDecisionKind::AllowOnce => "allow_once",
+                            AcpPermissionDecisionKind::AllowAlways => "allow_always",
+                            AcpPermissionDecisionKind::RejectOnce => "reject_once",
+                            AcpPermissionDecisionKind::RejectAlways => "reject_always",
+                        },
+                    }),
+                    AcpInteractionResolution::Elicitation(response) => json!({
+                        "kind": "elicitation",
+                        "response": response.to_value().unwrap_or(Value::Null),
+                    }),
+                },
+                "accepted": accepted,
+            }),
+        )
+        .await?;
+        Ok(accepted)
+    }
 }
 
 /// Ledger projection of one ACP turn.
@@ -431,6 +1053,26 @@ fn project_updates(updates: &[SessionUpdate]) -> AcpTurnProjection {
                     "format": ACP_PROVIDER_DATA_FORMAT,
                     "kind": "plan",
                     "entries": entries,
+                }));
+            }
+            SessionUpdate::SubagentUpdate {
+                session_id,
+                title,
+                description,
+                state,
+            } => {
+                // Patch evidence only. The harness owns these child sessions;
+                // Holon never mirrors them into its own supervision tree.
+                projection.evidence.push(json!({
+                    "format": ACP_PROVIDER_DATA_FORMAT,
+                    "kind": "subagents",
+                    "session_update": "subagent_update",
+                    "update": {
+                        "sessionId": session_id,
+                        "title": title,
+                        "description": description,
+                        "state": state,
+                    },
                 }));
             }
             SessionUpdate::CurrentModeUpdate { current_mode_id } => {
@@ -531,6 +1173,8 @@ struct ResolvedProfile {
     role: Option<String>,
     env: BTreeMap<String, String>,
     sandbox: SandboxMode,
+    permission_mode: AcpPermissionMode,
+    interaction_timeout: Duration,
 }
 
 /// Resolve the harness profile, its overrides, and the injected environment.
@@ -574,11 +1218,22 @@ fn resolve_profile(
         }
     }
 
+    let permission_mode =
+        AcpPermissionMode::parse(overrides.and_then(|profile| profile.permission_mode.as_deref()))?;
+    let interaction_timeout = config.interaction_timeout();
+    if interaction_timeout.is_zero() {
+        return Err(anyhow!(
+            "ACP interaction_timeout_ms must be greater than zero"
+        ));
+    }
+
     Ok(ResolvedProfile {
         spec,
         role,
         env,
         sandbox,
+        permission_mode,
+        interaction_timeout,
     })
 }
 
@@ -854,6 +1509,7 @@ pub(crate) struct AcpResidentSession {
     /// inheriting a gate from an earlier, more permissive execution profile.
     bound_writable: bool,
     bound_process_execution_exposed: bool,
+    bound_interactive: bool,
     pub(crate) last_used: Instant,
 }
 
@@ -1035,12 +1691,40 @@ impl super::RuntimeHandle {
         let bound_execution_root = bound_execution_root.to_string();
         let bound_additional_dirs = bound_additional_dirs.to_vec();
         self.update_agent_state(|state| {
+            // Resuming the same logical session keeps its grants. A different
+            // session id starts with none.
+            let session_grants = state
+                .acp_session_state
+                .as_ref()
+                .filter(|existing| existing.resume_session_id == session_id)
+                .map(|existing| existing.session_grants.clone())
+                .unwrap_or_default();
             state.acp_session_state = Some(Box::new(crate::types::AcpSessionState {
                 acp_profile: profile,
                 resume_session_id: session_id,
                 bound_execution_root,
                 bound_additional_dirs,
+                session_grants,
             }));
+            Ok(())
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Persist the session grants recorded during one turn.
+    async fn persist_acp_session_grants(
+        &self,
+        session_id: &str,
+        grants: Vec<crate::types::AcpSessionGrant>,
+    ) -> Result<()> {
+        let session_id = session_id.to_string();
+        self.update_agent_state(|state| {
+            if let Some(existing) = state.acp_session_state.as_mut() {
+                if existing.resume_session_id == session_id {
+                    existing.session_grants = grants;
+                }
+            }
             Ok(())
         })
         .await?;
@@ -1074,6 +1758,7 @@ impl super::RuntimeHandle {
                 &bound_additional_dirs,
             ) && resident.bound_writable == gate.writable
                 && resident.bound_process_execution_exposed == gate.process_execution_exposed
+                && resident.bound_interactive == gate.mode.is_interactive()
                 && acp_resident_is_alive(&resident).await
             {
                 return Ok(AcpSessionAcquire {
@@ -1113,10 +1798,15 @@ impl super::RuntimeHandle {
             process,
             group,
         } = spawned;
-        let handshake = match client
-            .initialize(InitializeParams::new(ClientCapabilities::trimmed()))
-            .await
-        {
+        // Plan and subagents are read-only observation. Elicitation is only
+        // advertised when this turn can actually wait for an operator answer.
+        let mut capabilities = ClientCapabilities::trimmed()
+            .with_plan_observation()
+            .with_subagent_observation();
+        if gate.mode.is_interactive() {
+            capabilities = capabilities.with_elicitation_form();
+        }
+        let handshake = match client.initialize(InitializeParams::new(capabilities)).await {
             Ok(handshake) => handshake,
             Err(error) => {
                 reap_process(&process, group.as_ref()).await;
@@ -1263,8 +1953,24 @@ impl super::RuntimeHandle {
             return Err(error.context("persist ACP session state"));
         }
 
+        // Grants belong to the logical session credential. A resumed session
+        // keeps them; a new or rebuilt session starts empty so `allow_always`
+        // can never transfer across a rotation.
+        let session_grants = if !new_session {
+            state
+                .acp_session_state
+                .as_ref()
+                .filter(|persisted| persisted.resume_session_id == session.session_id)
+                .map(|persisted| persisted.session_grants.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        gate.load_grants(&session_grants);
+
         let bound_writable = gate.writable;
         let bound_process_execution_exposed = gate.process_execution_exposed;
+        let bound_interactive = gate.mode.is_interactive();
         Ok(AcpSessionAcquire {
             session: AcpResidentSession {
                 client,
@@ -1277,6 +1983,7 @@ impl super::RuntimeHandle {
                 bound_additional_dirs,
                 bound_writable,
                 bound_process_execution_exposed,
+                bound_interactive,
                 last_used: Instant::now(),
             },
             new_session,
@@ -1348,7 +2055,19 @@ impl super::RuntimeHandle {
         let config = self.inner.config_snapshot.load().acp.clone();
         let acp_config = &config;
         let profile = resolve_profile(acp_config, binding, execution)?;
-        let gate = Arc::new(AcpPermissionGate::new(execution));
+        let interaction: Option<Arc<dyn AcpInteractionChannel>> =
+            profile.permission_mode.is_interactive().then(|| {
+                Arc::new(AcpInteractionBroker::new(
+                    Arc::downgrade(&self.inner),
+                    agent_id,
+                    profile.interaction_timeout,
+                )) as Arc<dyn AcpInteractionChannel>
+            });
+        let gate = Arc::new(AcpPermissionGate::new(
+            execution,
+            profile.permission_mode,
+            interaction,
+        ));
         let previous_state = self.agent_state().await?;
         let acquired = self
             .acquire_acp_session(&profile, binding, execution, gate)
@@ -1397,6 +2116,24 @@ impl super::RuntimeHandle {
         if !matches!(&outcome, Outcome::Settled(Ok(_))) {
             control.cancel_and_reap().await;
         }
+        if let Err(error) = self
+            .persist_acp_session_grants(session_id.as_str(), session.gate.grants())
+            .await
+        {
+            if matches!(&outcome, Outcome::Settled(Ok(_))) {
+                control.cancel_and_reap().await;
+            }
+            return Err(error);
+        }
+        if let Err(error) = self
+            .record_acp_projection_events(agent_id, session_id.as_str(), &projection)
+            .await
+        {
+            if matches!(&outcome, Outcome::Settled(Ok(_))) {
+                control.cancel_and_reap().await;
+            }
+            return Err(error);
+        }
         let transcript_entry_id = match self
             .persist_acp_evidence(
                 agent_id,
@@ -1439,6 +2176,64 @@ impl super::RuntimeHandle {
             text: projection.text,
             transcript_entry_id,
         })
+    }
+
+    /// Append one event per observable ACP update family.
+    ///
+    /// Plan, subagent, and usage updates are evidence only. They never create
+    /// model blocks, tool dispatch, or Holon supervision. The audited payload
+    /// keeps the `acp_v1` marker so consumers can apply the wire contract.
+    async fn record_acp_projection_events(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        projection: &AcpTurnProjection,
+    ) -> Result<()> {
+        for evidence in &projection.evidence {
+            match evidence.get("kind").and_then(Value::as_str) {
+                Some("plan") => {
+                    self.append_audit_event(
+                        "acp_plan_updated",
+                        json!({
+                            "driver": "acp",
+                            "format": ACP_PROVIDER_DATA_FORMAT,
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "plan": evidence.get("entries").cloned().unwrap_or(Value::Null),
+                        }),
+                    )
+                    .await?;
+                }
+                Some("subagents") => {
+                    self.append_audit_event(
+                        "acp_subagents_updated",
+                        json!({
+                            "driver": "acp",
+                            "format": ACP_PROVIDER_DATA_FORMAT,
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "subagent": evidence.get("update").cloned().unwrap_or(Value::Null),
+                        }),
+                    )
+                    .await?;
+                }
+                _ => {}
+            }
+        }
+        if let Some(usage) = &projection.usage {
+            self.append_audit_event(
+                "acp_usage_updated",
+                json!({
+                    "driver": "acp",
+                    "format": ACP_PROVIDER_DATA_FORMAT,
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "usage": usage,
+                }),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Append the ACP turn evidence to the agent ledger.
@@ -1552,6 +2347,10 @@ mod acp_driver_tests {
         }
     }
 
+    fn unattended_gate(execution: &EffectiveExecution) -> AcpPermissionGate {
+        AcpPermissionGate::new(execution, AcpPermissionMode::Unattended, None)
+    }
+
     #[test]
     fn projects_thought_tool_and_session_usage_without_token_deltas() {
         let projection = project_updates(&[
@@ -1600,30 +2399,32 @@ mod acp_driver_tests {
             .any(|item| item["kind"] == "plan"));
     }
 
-    #[test]
-    fn permission_gate_rejects_paths_outside_the_bound_root() {
+    #[tokio::test]
+    async fn permission_gate_rejects_paths_outside_the_bound_root() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let gate = AcpPermissionGate::new(&execution(dir.path(), true));
-        let outside = gate.decide(&PermissionRequest {
-            session_id: "s".into(),
-            tool_call: json!({
-                "toolCallId": "call-1",
-                "kind": "read",
-                "rawInput": {"path": "/etc/passwd"}
-            }),
-            options: vec![
-                PermissionOption {
-                    option_id: "allow_once".into(),
-                    name: "Allow once".into(),
-                    kind: None,
-                },
-                PermissionOption {
-                    option_id: "reject_once".into(),
-                    name: "Reject".into(),
-                    kind: None,
-                },
-            ],
-        });
+        let gate = unattended_gate(&execution(dir.path(), true));
+        let outside = gate
+            .decide(&PermissionRequest {
+                session_id: "s".into(),
+                tool_call: json!({
+                    "toolCallId": "call-1",
+                    "kind": "read",
+                    "rawInput": {"path": "/etc/passwd"}
+                }),
+                options: vec![
+                    PermissionOption {
+                        option_id: "allow_once".into(),
+                        name: "Allow once".into(),
+                        kind: None,
+                    },
+                    PermissionOption {
+                        option_id: "reject_once".into(),
+                        name: "Reject".into(),
+                        kind: None,
+                    },
+                ],
+            })
+            .await;
         assert!(
             matches!(outside, PermissionOutcome::Selected { option_id } if option_id == "reject_once")
         );
@@ -1633,19 +2434,21 @@ mod acp_driver_tests {
         );
 
         let traversal = format!("{}/../etc/passwd", dir.path().display());
-        let rejected_traversal = gate.decide(&PermissionRequest {
-            session_id: "s".into(),
-            tool_call: json!({
-                "toolCallId": "call-traversal",
-                "kind": "read",
-                "rawInput": {"path": traversal}
-            }),
-            options: vec![PermissionOption {
-                option_id: "reject_once".into(),
-                name: "Reject".into(),
-                kind: None,
-            }],
-        });
+        let rejected_traversal = gate
+            .decide(&PermissionRequest {
+                session_id: "s".into(),
+                tool_call: json!({
+                    "toolCallId": "call-traversal",
+                    "kind": "read",
+                    "rawInput": {"path": traversal}
+                }),
+                options: vec![PermissionOption {
+                    option_id: "reject_once".into(),
+                    name: "Reject".into(),
+                    kind: None,
+                }],
+            })
+            .await;
         assert!(
             matches!(rejected_traversal, PermissionOutcome::Selected { option_id } if option_id == "reject_once")
         );
@@ -1655,37 +2458,41 @@ mod acp_driver_tests {
         );
 
         let inside = dir.path().join("src/lib.rs");
-        let allowed = gate.decide(&PermissionRequest {
-            session_id: "s".into(),
-            tool_call: json!({
-                "toolCallId": "call-2",
-                "kind": "read",
-                "rawInput": {"path": inside}
-            }),
-            options: vec![PermissionOption {
-                option_id: "allow_once".into(),
-                name: "Allow once".into(),
-                kind: None,
-            }],
-        });
+        let allowed = gate
+            .decide(&PermissionRequest {
+                session_id: "s".into(),
+                tool_call: json!({
+                    "toolCallId": "call-2",
+                    "kind": "read",
+                    "rawInput": {"path": inside}
+                }),
+                options: vec![PermissionOption {
+                    option_id: "allow_once".into(),
+                    name: "Allow once".into(),
+                    kind: None,
+                }],
+            })
+            .await;
         assert!(
             matches!(allowed, PermissionOutcome::Selected { option_id } if option_id == "allow_once")
         );
     }
 
-    #[test]
-    fn read_only_scope_rejects_write_kinds() {
+    #[tokio::test]
+    async fn read_only_scope_rejects_write_kinds() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let gate = AcpPermissionGate::new(&execution(dir.path(), false));
-        let outcome = gate.decide(&PermissionRequest {
-            session_id: "s".into(),
-            tool_call: json!({"toolCallId": "call-3", "kind": "edit"}),
-            options: vec![PermissionOption {
-                option_id: "reject_once".into(),
-                name: "Reject".into(),
-                kind: None,
-            }],
-        });
+        let gate = unattended_gate(&execution(dir.path(), false));
+        let outcome = gate
+            .decide(&PermissionRequest {
+                session_id: "s".into(),
+                tool_call: json!({"toolCallId": "call-3", "kind": "edit"}),
+                options: vec![PermissionOption {
+                    option_id: "reject_once".into(),
+                    name: "Reject".into(),
+                    kind: None,
+                }],
+            })
+            .await;
         assert!(matches!(
             outcome,
             PermissionOutcome::Selected { .. } | PermissionOutcome::Cancelled
@@ -1768,6 +2575,7 @@ mod acp_driver_tests {
             resume_session_id: "sess-1".into(),
             bound_execution_root: "/root".into(),
             bound_additional_dirs: vec!["/srv/shared".into()],
+            session_grants: Vec::new(),
         };
         let encoded = serde_json::to_value(&state).expect("encode");
         let decoded: crate::types::AcpSessionState =
@@ -2429,10 +3237,10 @@ mod acp_driver_tests {
         assert_eq!(peer.prompts()[1].0, persisted.resume_session_id);
     }
 
-    #[test]
-    fn permission_gate_drains_recorded_decisions_between_turns() {
+    #[tokio::test]
+    async fn permission_gate_drains_recorded_decisions_between_turns() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let gate = AcpPermissionGate::new(&execution(dir.path(), true));
+        let gate = unattended_gate(&execution(dir.path(), true));
         let request = PermissionRequest {
             session_id: "s".into(),
             tool_call: json!({"toolCallId": "call-1", "kind": "read"}),
@@ -2444,11 +3252,11 @@ mod acp_driver_tests {
         };
 
         assert!(matches!(
-            gate.decide(&request),
+            gate.decide(&request).await,
             PermissionOutcome::Selected { .. }
         ));
         assert!(matches!(
-            gate.decide(&request),
+            gate.decide(&request).await,
             PermissionOutcome::Selected { .. }
         ));
         assert_eq!(gate.drain().len(), 2, "one turn sees only its decisions");
@@ -2456,5 +3264,157 @@ mod acp_driver_tests {
             gate.drain().is_empty(),
             "a resident gate must not replay earlier turns"
         );
+    }
+
+    fn read_request(id: &str, path: &std::path::Path) -> PermissionRequest {
+        PermissionRequest {
+            session_id: "s".into(),
+            tool_call: json!({
+                "toolCallId": id,
+                "kind": "read",
+                "rawInput": {"path": path},
+            }),
+            options: vec![
+                PermissionOption {
+                    option_id: "allow_once".into(),
+                    name: "Allow once".into(),
+                    kind: None,
+                },
+                PermissionOption {
+                    option_id: "allow_always".into(),
+                    name: "Allow for session".into(),
+                    kind: None,
+                },
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn session_grant_matches_only_the_same_tool_kind_and_path_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gate = unattended_gate(&execution(dir.path(), true));
+        let inside = dir.path().join("src/lib.rs");
+        let first = read_request("call-1", &inside);
+        let _ = gate.decide(&first).await;
+        gate.record_grant(gate.request_scope(&first));
+
+        let repeated = read_request("call-2", &inside);
+        assert!(matches!(
+            gate.decide(&repeated).await,
+            PermissionOutcome::Selected { .. }
+        ));
+        let decisions = gate.drain();
+        assert_eq!(decisions.last().unwrap()["reason"], "session_grant_matches");
+        assert_eq!(gate.grants().len(), 1);
+
+        // A different path is a different scope, so it falls back to the
+        // ordinary inside-root decision instead of reusing the grant.
+        let other = read_request("call-3", &dir.path().join("src/other.rs"));
+        assert!(matches!(
+            gate.decide(&other).await,
+            PermissionOutcome::Selected { .. }
+        ));
+        assert_eq!(
+            gate.drain()[0]["reason"],
+            "request_stays_inside_the_bound_execution_scope"
+        );
+    }
+
+    struct FakeInteraction {
+        permission: Option<AcpPermissionDecisionKind>,
+        elicitation: Option<AcpInteractionResolution>,
+        permission_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl AcpInteractionChannel for FakeInteraction {
+        async fn ask_permission(
+            &self,
+            _session_id: &str,
+            _request: &PermissionRequest,
+            _scope: AcpGrantScope,
+        ) -> Option<AcpPermissionDecisionKind> {
+            self.permission_calls.fetch_add(1, Ordering::SeqCst);
+            self.permission
+        }
+
+        async fn ask_elicitation(
+            &self,
+            _session_id: &str,
+            _request: &ElicitationRequest,
+        ) -> Option<AcpInteractionResolution> {
+            self.elicitation.clone()
+        }
+    }
+
+    fn interactive_gate(
+        execution: &EffectiveExecution,
+        interaction: Arc<FakeInteraction>,
+    ) -> AcpPermissionGate {
+        AcpPermissionGate::new(execution, AcpPermissionMode::Interactive, Some(interaction))
+    }
+
+    #[tokio::test]
+    async fn interactive_allow_always_records_one_session_grant() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let interaction = Arc::new(FakeInteraction {
+            permission: Some(AcpPermissionDecisionKind::AllowAlways),
+            elicitation: None,
+            permission_calls: AtomicUsize::new(0),
+        });
+        let gate = interactive_gate(&execution(dir.path(), true), Arc::clone(&interaction));
+        let request = read_request("call-1", &dir.path().join("src/lib.rs"));
+        assert!(matches!(
+            gate.decide(&request).await,
+            PermissionOutcome::Selected { option_id } if option_id == "allow_always"
+        ));
+        assert_eq!(gate.grants().len(), 1);
+
+        let repeated = read_request("call-2", &dir.path().join("src/lib.rs"));
+        assert!(matches!(
+            gate.decide(&repeated).await,
+            PermissionOutcome::Selected { .. }
+        ));
+        assert_eq!(
+            interaction.permission_calls.load(Ordering::SeqCst),
+            1,
+            "a session grant must settle without asking again"
+        );
+    }
+
+    #[tokio::test]
+    async fn interactive_timeout_falls_back_to_rejection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let interaction = Arc::new(FakeInteraction {
+            permission: None,
+            elicitation: None,
+            permission_calls: AtomicUsize::new(0),
+        });
+        let gate = interactive_gate(&execution(dir.path(), true), interaction);
+        let outcome = gate
+            .decide(&read_request("call-1", &dir.path().join("src/lib.rs")))
+            .await;
+        assert_eq!(outcome, PermissionOutcome::Cancelled);
+        assert_eq!(
+            gate.drain()[0]["reason"],
+            "interaction_timeout_or_cancelled"
+        );
+    }
+
+    #[test]
+    fn parses_operator_interaction_resolution_bodies() {
+        assert_eq!(
+            parse_interaction_resolution(&json!({"decision": "allow_always"})).unwrap(),
+            AcpInteractionResolution::Permission(AcpPermissionDecisionKind::AllowAlways)
+        );
+        assert_eq!(
+            parse_interaction_resolution(&json!({"action": "accept", "content": {"a": 1}}))
+                .unwrap(),
+            AcpInteractionResolution::Elicitation(ElicitationResponse::Accept {
+                content: Some(json!({"a": 1})),
+            })
+        );
+        assert!(parse_interaction_resolution(&json!({"decision": "maybe"})).is_err());
+        assert!(parse_interaction_resolution(&json!({})).is_err());
     }
 }

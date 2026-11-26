@@ -615,6 +615,14 @@ pub fn router(state: AppState) -> Router {
             post(control::abort_current_run),
         )
         .route(
+            "/control/agents/{agent_id}/acp-interactions",
+            get(control::list_acp_interactions),
+        )
+        .route(
+            "/control/agents/{agent_id}/acp-interactions/{interaction_id}",
+            post(control::resolve_acp_interaction),
+        )
+        .route(
             "/control/agents/{agent_id}/prompt",
             post(control::control_prompt).layer(from_fn_with_state(
                 Arc::new(state.clone()),

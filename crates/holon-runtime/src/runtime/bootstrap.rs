@@ -947,6 +947,7 @@ impl RuntimeHandle {
                     _queue_budget_view: Some(queue_budget_view),
                 }),
                 acp_session: Mutex::new(None),
+                acp_interactions: Mutex::new(std::collections::BTreeMap::new()),
                 #[cfg(test)]
                 acp_test_harness: Mutex::new(None),
                 #[cfg(test)]

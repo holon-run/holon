@@ -377,7 +377,10 @@ async fn dispatch_reverse_request(
         },
         "elicitation/create" => match ElicitationRequest::from_params(params) {
             Ok(request) => match handler.create_elicitation(request).await {
-                Ok(value) => ReverseReply::Result(value),
+                Ok(response) => match response.to_value() {
+                    Ok(value) => ReverseReply::Result(value),
+                    Err(error) => ReverseReply::Error(RpcError::new(-32603, error.to_string())),
+                },
                 Err(error) => {
                     ReverseReply::Error(RpcError::new(METHOD_NOT_FOUND, error.to_string()))
                 }
