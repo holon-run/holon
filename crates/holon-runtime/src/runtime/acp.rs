@@ -132,6 +132,22 @@ impl AcpPermissionGate {
             .unwrap_or_default()
     }
 
+    /// Take the decisions recorded so far, leaving the gate empty.
+    ///
+    /// A resident gate outlives a single turn, so each turn must consume only
+    /// its own decisions instead of re-reporting earlier ones.
+    fn drain(&self) -> Vec<Value> {
+        self.decisions
+            .lock()
+            .map(|mut decisions| {
+                decisions
+                    .drain(..)
+                    .map(|decision| decision.to_value())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Decide one request against the bound execution scope.
     fn decide(&self, request: &PermissionRequest) -> PermissionOutcome {
         let tool_call_id = string_field(&request.tool_call, "toolCallId");
@@ -833,7 +849,18 @@ pub(crate) struct AcpResidentSession {
     pub(crate) profile: String,
     pub(crate) bound_execution_root: String,
     pub(crate) bound_additional_dirs: Vec<String>,
+    /// Permission posture the resident connection was opened with. The ACP
+    /// handler is bound at connect time, so a reuse must re-check it instead of
+    /// inheriting a gate from an earlier, more permissive execution profile.
+    bound_writable: bool,
+    bound_process_execution_exposed: bool,
     pub(crate) last_used: Instant,
+}
+
+/// Whether a resident harness process is still running.
+async fn acp_resident_is_alive(session: &AcpResidentSession) -> bool {
+    let mut process = session.process.lock().await;
+    matches!(process.try_status().await, Ok(None))
 }
 
 /// A spawned harness process and its bridged ACP client.
@@ -1045,7 +1072,10 @@ impl super::RuntimeHandle {
                 &binding.profile,
                 &bound_execution_root,
                 &bound_additional_dirs,
-            ) {
+            ) && resident.bound_writable == gate.writable
+                && resident.bound_process_execution_exposed == gate.process_execution_exposed
+                && acp_resident_is_alive(&resident).await
+            {
                 return Ok(AcpSessionAcquire {
                     session: resident,
                     new_session: false,
@@ -1053,6 +1083,10 @@ impl super::RuntimeHandle {
                     prompt_role: None,
                 });
             }
+            // The connection is dead, or the execution profile no longer grants
+            // the permission posture it was opened with. Either way the handler
+            // cannot be replaced, so drop the resident and rebuild it; the
+            // persisted session id still resumes below.
             reap_process(&resident.process, resident.group.as_ref()).await;
         }
 
@@ -1105,6 +1139,7 @@ impl super::RuntimeHandle {
                     Ok(session) => session,
                     Err(AcpError::SessionNotFound { .. }) => {
                         rebuilt_session = true;
+                        new_session = true;
                         self.rotate_acp_session_state(
                             binding,
                             &persisted.resume_session_id,
@@ -1196,6 +1231,7 @@ impl super::RuntimeHandle {
                 }
             } else {
                 rebuilt_session = true;
+                new_session = true;
                 self.rotate_acp_session_state(
                     binding,
                     &persisted.resume_session_id,
@@ -1227,6 +1263,8 @@ impl super::RuntimeHandle {
             return Err(error.context("persist ACP session state"));
         }
 
+        let bound_writable = gate.writable;
+        let bound_process_execution_exposed = gate.process_execution_exposed;
         Ok(AcpSessionAcquire {
             session: AcpResidentSession {
                 client,
@@ -1237,6 +1275,8 @@ impl super::RuntimeHandle {
                 profile: binding.profile.clone(),
                 bound_execution_root,
                 bound_additional_dirs,
+                bound_writable,
+                bound_process_execution_exposed,
                 last_used: Instant::now(),
             },
             new_session,
@@ -1362,7 +1402,7 @@ impl super::RuntimeHandle {
                 agent_id,
                 &projection,
                 &stop_reason,
-                session.gate.recorded(),
+                session.gate.drain(),
                 session_id.as_str(),
             )
             .await
@@ -1834,6 +1874,8 @@ mod acp_driver_tests {
     /// Stand-in for the spawned `agy acp` process.
     struct TestHarnessProcess {
         group: Arc<TestProcessGroup>,
+        /// Simulates a resident harness that exited on its own.
+        exited: bool,
     }
 
     #[async_trait::async_trait]
@@ -1859,7 +1901,9 @@ mod acp_driver_tests {
         }
 
         async fn try_status(&mut self) -> Result<Option<RunningProcessExitStatus>> {
-            Ok(None)
+            Ok(self
+                .exited
+                .then(|| RunningProcessExitStatus::new(Some(0), None)))
         }
 
         async fn stop(&mut self, signal: StopSignal) -> Result<()> {
@@ -1891,9 +1935,20 @@ mod acp_driver_tests {
         runtime: &RuntimeHandle,
         config: TestPeerConfig,
     ) -> Arc<TestPeerLog> {
+        install_test_peer_with(runtime, config, 0).await
+    }
+
+    /// Install a mock peer whose first `exited_processes` harness spawns report
+    /// a dead process, simulating a resident harness that exited on its own.
+    async fn install_test_peer_with(
+        runtime: &RuntimeHandle,
+        config: TestPeerConfig,
+        exited_processes: usize,
+    ) -> Arc<TestPeerLog> {
         let log = Arc::new(TestPeerLog::default());
         let factory_log = Arc::clone(&log);
         let config = Arc::new(config);
+        let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         runtime
             .install_acp_test_harness(Arc::new(move |handler| {
                 let (client_io, server_io) = tokio::io::duplex(64 * 1024);
@@ -1904,9 +1959,11 @@ mod acp_driver_tests {
                 ));
                 let client = Arc::new(AcpClient::new(client_io, handler));
                 let group = Arc::new(TestProcessGroup::default());
+                let spawn_index = spawns.fetch_add(1, Ordering::SeqCst);
                 let process: Arc<tokio::sync::Mutex<Box<dyn RunningProcess>>> =
                     Arc::new(tokio::sync::Mutex::new(Box::new(TestHarnessProcess {
                         group: Arc::clone(&group),
+                        exited: spawn_index < exited_processes,
                     })));
                 AcpTestHarness {
                     client,
@@ -2301,5 +2358,103 @@ mod acp_driver_tests {
             )
             .unwrap();
         assert_eq!(rotations, 1, "the rotation is audited");
+    }
+
+    #[tokio::test]
+    async fn permission_downgrade_rebuilds_the_resident_and_resumes_the_session() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        let peer = install_test_peer(
+            &runtime,
+            TestPeerConfig {
+                supports_resume: true,
+                supports_load: false,
+                resume_missing: false,
+            },
+        )
+        .await;
+        let root = tempdir().unwrap();
+        let writable = execution(root.path(), true);
+        let read_only = execution(root.path(), false);
+
+        turn(&runtime, &writable, "first request").await;
+        let persisted = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .acp_session_state
+            .expect("session state is persisted");
+        turn(&runtime, &read_only, "second request").await;
+
+        assert_eq!(
+            peer.handshakes(),
+            2,
+            "a downgraded permission posture must not reuse the old gate"
+        );
+        assert_eq!(
+            peer.method_count("session/new"),
+            1,
+            "the conversation continues instead of restarting"
+        );
+        assert_eq!(peer.method_count("session/resume"), 1);
+        assert_eq!(peer.prompts()[1].0, persisted.resume_session_id);
+    }
+
+    #[tokio::test]
+    async fn dead_resident_process_is_replaced_and_the_session_resumes() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        let peer = install_test_peer_with(
+            &runtime,
+            TestPeerConfig {
+                supports_resume: true,
+                supports_load: false,
+                resume_missing: false,
+            },
+            1,
+        )
+        .await;
+        let root = tempdir().unwrap();
+        let execution = execution(root.path(), true);
+
+        turn(&runtime, &execution, "first request").await;
+        let persisted = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .acp_session_state
+            .expect("session state is persisted");
+        turn(&runtime, &execution, "second request").await;
+
+        assert_eq!(peer.handshakes(), 2, "a dead resident is replaced");
+        assert_eq!(peer.method_count("session/resume"), 1);
+        assert_eq!(peer.prompts()[1].0, persisted.resume_session_id);
+    }
+
+    #[test]
+    fn permission_gate_drains_recorded_decisions_between_turns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gate = AcpPermissionGate::new(&execution(dir.path(), true));
+        let request = PermissionRequest {
+            session_id: "s".into(),
+            tool_call: json!({"toolCallId": "call-1", "kind": "read"}),
+            options: vec![PermissionOption {
+                option_id: "allow_once".into(),
+                name: "Allow once".into(),
+                kind: None,
+            }],
+        };
+
+        assert!(matches!(
+            gate.decide(&request),
+            PermissionOutcome::Selected { .. }
+        ));
+        assert!(matches!(
+            gate.decide(&request),
+            PermissionOutcome::Selected { .. }
+        ));
+        assert_eq!(gate.drain().len(), 2, "one turn sees only its decisions");
+        assert!(
+            gate.drain().is_empty(),
+            "a resident gate must not replay earlier turns"
+        );
     }
 }
