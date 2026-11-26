@@ -4194,6 +4194,22 @@ impl RuntimeHost {
             Err(error) => return Err(error),
         };
         let incarnation = runtime.instance_incarnation();
+        // Bootstrap mode has no usable provider, and only the serve listener
+        // can publish one. The default agent's activation is exempt from the
+        // readiness gate above, but its bootstrap gate still cannot settle
+        // before bind. Hand that gate to `prepare_default_runtime_for_serve`
+        // instead of blocking startup, which would keep the listener closed
+        // forever.
+        if self.bootstrap_mode_active() {
+            tracing::info!(
+                startup_id = %observation.startup_id,
+                agent_id,
+                outcome = "deferred",
+                reason = "bootstrap_provider_not_ready",
+                "startup recovery candidate deferred until onboarding completes"
+            );
+            return Ok(false);
+        }
         match agent_observation
             .observe(
                 "bootstrap_wait",

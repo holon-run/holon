@@ -178,6 +178,56 @@ impl RuntimeHost {
             .await
     }
 
+    /// Defer one default agent's bootstrap-gate wait past serve bind.
+    ///
+    /// Bootstrap mode has no usable provider, and HTTP onboarding over the
+    /// serve listener is the only publication path, so the gate cannot settle
+    /// before bind. Activation and construction already succeeded before this
+    /// is called, so real activation failures still abort bind; only the
+    /// gate's outcome is reported after serve is reachable.
+    fn spawn_deferred_bootstrap_gate(
+        &self,
+        observation: &StartupObservation,
+        runtime: crate::runtime::RuntimeHandle,
+        agent_id: String,
+    ) {
+        let host = self.clone();
+        let observation = observation.clone();
+        tokio::spawn(async move {
+            let incarnation = runtime.instance_incarnation();
+            match host
+                .await_bootstrap_isolating_local_failure(&runtime, &agent_id, incarnation)
+                .await
+            {
+                Ok(()) => tracing::info!(
+                    startup_id = %observation.startup_id,
+                    "default agent activation settled after bootstrap serve bind"
+                ),
+                Err(error)
+                    if error
+                        .downcast_ref::<super::RuntimeAdmissionClosed>()
+                        .is_some() =>
+                {
+                    tracing::debug!(
+                        startup_id = %observation.startup_id,
+                        "default agent activation stopped during shutdown"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(
+                        startup_id = %observation.startup_id,
+                        error = %error,
+                        "default agent activation failed after bootstrap serve bind"
+                    );
+                    // A certified local failure already persisted its
+                    // quarantine entry inside `await_bootstrap_isolating_local_failure`;
+                    // republish so the diagnostic report reflects this boot.
+                    host.publish_quarantine_report().await;
+                }
+            }
+        });
+    }
+
     async fn prepare_default_runtime_for_serve(
         &self,
         observation: &StartupObservation,
@@ -193,6 +243,14 @@ impl RuntimeHost {
             Err(error) if error.downcast_ref::<AgentQuarantined>().is_some() => return Ok(()),
             Err(error) => return Err(error),
         };
+        // Bootstrap mode has no usable provider; the serve listener is the
+        // only onboarding path that can publish one, and the bootstrap gate
+        // cannot settle before bind. Defer only the gate so construction and
+        // admission failures above still abort bind.
+        if self.bootstrap_mode_active() {
+            self.spawn_deferred_bootstrap_gate(observation, runtime, agent_id);
+            return Ok(());
+        }
         // Only a certified local startup-recovery failure isolates the default
         // agent; every other late bootstrap failure still aborts binding.
         match self

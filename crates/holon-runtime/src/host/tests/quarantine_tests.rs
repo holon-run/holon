@@ -332,6 +332,8 @@ async fn quarantine_default_certified_local_missing_start_can_bind() {
     host.shutdown().await.unwrap();
 }
 
+// Non-bootstrap mode: no onboarding deadlock exists, so an unclassified
+// activation or bootstrap-gate failure still aborts bind before serve is up.
 #[tokio::test]
 async fn quarantine_default_unclassified_bootstrap_failure_still_aborts_bind() {
     let (_home, host) = canonical_test_host();
@@ -351,6 +353,158 @@ async fn quarantine_default_unclassified_bootstrap_failure_still_aborts_bind() {
         .await
         .err()
         .expect("unclassified bootstrap failure must abort binding");
+    assert!(error.to_string().contains("unclassified"), "{error:#}");
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn bootstrap_recovered_default_owner_does_not_block_serve_bind() {
+    let (_home, host) = canonical_test_host();
+    let agent_id = host.config().default_agent_id.clone();
+    // Seed durable startup-recovery ownership for the *default* agent, which
+    // is the one activation path exempt from the pre-bind readiness gate.
+    {
+        let runtime = host.default_runtime().await.unwrap();
+        crate::runtime::tests::support::persist_timer_creation_for_restart(
+            &runtime,
+            &startup_timer_fixture(
+                "timer-bootstrap-default",
+                &agent_id,
+                TimerStatus::Active,
+                None,
+                Some(Utc::now() + chrono::Duration::hours(1)),
+            ),
+        )
+        .await
+        .unwrap();
+        crate::runtime::tests::support::persist_task_transition(
+            &runtime,
+            &TaskRecord {
+                id: "task-bootstrap-default".into(),
+                agent_id: agent_id.clone(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: None,
+                detail: None,
+                recovery: None,
+            },
+            "startup_original_task_fixture",
+        )
+        .await
+        .unwrap();
+        drop(runtime);
+        host.unload_runtime(&agent_id).await;
+    }
+    let host = restart_fixture_host(host).await;
+    host.inner
+        .bootstrap_provider_active
+        .store(true, std::sync::atomic::Ordering::Release);
+    let observation = StartupObservation::with_id("startup_bootstrap_recovered_default".into());
+    host.begin_quarantine_report(&observation).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        host.recover_startup_observed(&observation),
+    )
+    .await
+    .expect("startup recovery must not wait for bootstrap readiness before serve binds")
+    .expect("startup recovery must succeed");
+    assert!(
+        host.try_get_loaded_runtime(&agent_id).await.is_some(),
+        "recovered default owner stays activated while its gate is deferred"
+    );
+    let listener = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        host.bind_primary_for_serve(&observation, "127.0.0.1:0"),
+    )
+    .await
+    .expect("serve bind must not wait for the deferred default gate")
+    .expect("bootstrap serve bind must succeed");
+    assert!(listener.local_addr().unwrap().ip().is_loopback());
+    // Onboarding publishes the provider through the now-bound listener.
+    host.inner
+        .bootstrap_provider_active
+        .store(false, std::sync::atomic::Ordering::Release);
+    host.inner.bootstrap_ready_notify.notify_waiters();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let runtime = host.try_get_loaded_runtime(&agent_id).await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+    })
+    .await
+    .expect("deferred default gate must resume once a provider is published");
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn bootstrap_default_activation_does_not_block_serve_bind() {
+    let (_home, host) = canonical_test_host();
+    // Bootstrap mode with a durable Active default agent but no usable
+    // provider: the default agent can only be released through onboarding,
+    // which needs the HTTP listener bound here. Activation still runs before
+    // bind; only the blocking bootstrap-gate wait is deferred.
+    host.inner
+        .bootstrap_provider_active
+        .store(true, std::sync::atomic::Ordering::Release);
+    let observation = StartupObservation::with_id("startup_bootstrap_bind".into());
+    host.begin_quarantine_report(&observation).await;
+
+    let listener = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        host.bind_primary_for_serve(&observation, "127.0.0.1:0"),
+    )
+    .await
+    .expect("serve bind must not wait for bootstrap default activation")
+    .expect("bootstrap serve bind must succeed");
+    assert!(listener.local_addr().unwrap().ip().is_loopback());
+    assert!(
+        host.bootstrap_mode_active(),
+        "binding must not publish a provider by itself"
+    );
+
+    // Publishing a provider through onboarding releases the deferred
+    // activation instead of dropping it.
+    host.inner
+        .bootstrap_provider_active
+        .store(false, std::sync::atomic::Ordering::Release);
+    host.inner.bootstrap_ready_notify.notify_waiters();
+    let agent_id = host.config().default_agent_id.clone();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(runtime) = host.try_get_loaded_runtime(&agent_id).await {
+                runtime.wait_for_bootstrap().await.unwrap();
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("deferred default activation must resume once a provider is published");
+    host.shutdown().await.unwrap();
+}
+
+// Bootstrap mode defers only the bootstrap gate. Activation and construction
+// failures still abort bind, so a broken default agent never silently serves.
+#[tokio::test]
+async fn bootstrap_mode_activation_failure_still_aborts_bind() {
+    let (_home, host) = canonical_test_host();
+    host.inner
+        .bootstrap_provider_active
+        .store(true, std::sync::atomic::Ordering::Release);
+    let agent_id = host.config().default_agent_id.clone();
+    host.inner.test_constructor_outcomes.lock().unwrap().insert(
+        agent_id,
+        anyhow!("synthetic unclassified constructor failure"),
+    );
+    let observation = StartupObservation::with_id("startup_bootstrap_activation_failure".into());
+    host.begin_quarantine_report(&observation).await;
+    let error = host
+        .bind_primary_for_serve(&observation, "127.0.0.1:0")
+        .await
+        .err()
+        .expect("bootstrap mode must still abort bind on an activation failure");
     assert!(error.to_string().contains("unclassified"), "{error:#}");
     host.shutdown().await.unwrap();
 }
