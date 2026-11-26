@@ -55,11 +55,16 @@ order: 11
 | 命令 | 参数 | 选项 | 输出 | 初始稳定性 | 备注 |
 |---|---|---|---|---:|---|
 | `holon serve` | none | `--access <local\|tunnel\|lan\|tailnet>` 默认 `local`；`--host <HOST>`；`--listen <LISTEN>`；`--port <PORT>`；`--advertise <ADVERTISE>`；`--token <TOKEN>`；`--token-file <TOKEN_FILE>` | 长期运行的服务器；启动摘要在 stdout；日志/tracing 在 stderr | `experimental` | 非 loopback/tailnet/lan 访问需要通过标志、文件或 `HOLON_CONTROL_TOKEN` 提供控制令牌。 |
-| `holon daemon start` | none | 与 `serve` 相同的 `ServeOptions` | JSON 守护进程生命周期响应 | `stable` 候选 | 内联令牌通过环境变量传给子进程，而非 argv。 |
-| `holon daemon stop` | none | none | JSON 守护进程生命周期响应 | `stable` 候选 | 使用本地守护进程生命周期辅助函数。 |
-| `holon daemon status` | none | none | JSON 守护进程状态响应 | `stable` 候选 | 重要的本地检查接口。 |
-| `holon daemon restart` | none | 与 `serve` 相同的 `ServeOptions` | JSON 守护进程生命周期响应 | `stable` 候选 | 与 `serve` 相同的访问/令牌校验。 |
-| `holon daemon logs` | none | `--tail <TAIL>` 默认 `80` | JSON 守护进程日志响应 | `stable` 候选 | `daemon logs` 被记录为本地故障排查接口。 |
+| `holon daemon start` | none | `--json`；与 `serve` 相同的 `ServeOptions` | daemon 信封（`--json`）或有界人类摘要 | `stable` 候选 | 内联令牌通过环境变量传给子进程，而非 argv。 |
+| `holon daemon stop` | none | `--json` | daemon 信封（`--json`）或有界人类摘要 | `stable` 候选 | 使用本地守护进程生命周期辅助函数。 |
+| `holon daemon status` | none | `--json` | daemon 信封（`--json`）或有界人类摘要 | `stable` 候选 | 重要的本地检查接口。 |
+| `holon daemon restart` | none | `--json`；与 `serve` 相同的 `ServeOptions` | daemon 信封（`--json`）或有界人类摘要 | `stable` 候选 | 与 `serve` 相同的访问/令牌校验。 |
+| `holon daemon logs` | none | `--json`；`--tail <TAIL>` 默认 `80` | daemon 信封（`--json`）或有界人类摘要 | `stable` 候选 | `daemon logs` 被记录为本地故障排查接口。 |
+| `holon daemon validate-startup` | none | `--json`；`--migrate` | daemon 信封（`--json`）或有界人类摘要 | `stable` 候选 | 默认离线只读启动兼容性检查（需要迁移时返回退出码 `22`）；停机状态下加 `--migrate` 可应用待处理迁移。 |
+
+所有 daemon 子命令共用一个 `{ schema_version, command, status, data, error }`
+信封与 `0/1/20/21/22` 退出码映射；详见
+[CLI 退出码](./cli-exit-codes.md)。
 
 ### 离线配置
 
@@ -117,8 +122,11 @@ order: 11
 | `holon work-item list` | none | `--limit <LIMIT>` 默认 `50`；`--agent <AGENT>` | `WorkItemRecord` 的美化 JSON 数组 | `experimental` | JSON schema 归属为 HTTP/API `WorkItemRecord` 读模型，由 `/agents/:agent_id/work-items` 返回。 |
 | `holon work-item get` | `<WORK_ITEM_ID>` | `--agent <AGENT>` | 美化 JSON `WorkItemRecord` | `experimental` | 通过 `/agents/:agent_id/work-items/:work_item_id` 读取单个工作项；`create`、`pick`、`update`、`complete` 子命令已存在，但其变更 API 契约仍在稳定中。 |
 | `holon timer` | none | 旧式创建语法：必填 `--after-ms <MS>`；`--every-ms <MS>`；`--summary <SUMMARY>`；`--agent <AGENT>` | 美化 JSON `TimerRecord` | `experimental` | `holon timer create` 的向后兼容别名。 |
-| `holon timer create` | none | 必填 `--after-ms <MS>`；`--every-ms <MS>`；`--summary <SUMMARY>`；`--agent <AGENT>` | 美化 JSON `TimerRecord` | `experimental` | 通过控制平面创建一次性或重复定时器。 |
+| `holon timer create` | none | `--after-ms <MS>` 或 `--calendar-expression <CRON>` + `--timezone <TZ>`；`--every-ms <MS>`；`--title <TITLE>`；`--instruction <TEXT>`（或旧版 `--summary`）；`--agent <AGENT>` | 美化 JSON `TimerRecord` | `experimental` | 通过控制平面创建一次性、固定间隔或日历定时器。 |
 | `holon timer list` | none | `--limit <LIMIT>` 默认 `50`；`--agent <AGENT>` | `TimerRecord` 的美化 JSON 数组 | `experimental` | 通过 agent 定时器 API 读取近期定时器。 |
+| `holon timer pause` | `<TIMER_ID>` | `--agent <AGENT>` | 美化 JSON `TimerRecord` | `experimental` | 冻结定时器；重复执行会保留冻结的剩余延迟。对已取消或已完成定时器返回冲突。 |
+| `holon timer resume` | `<TIMER_ID>` | `--agent <AGENT>` | 美化 JSON `TimerRecord` | `experimental` | 恢复定时器；重复执行会保留原有调度。对已取消或已完成定时器返回冲突。 |
+| `holon timer edit` | `<TIMER_ID>` | `--title <TITLE>` \| `--clear-title`；`--instruction <TEXT>` \| `--clear-instruction`（兼容旧版 `--summary` / `--clear-summary`）；`--agent <AGENT>` | 美化 JSON `TimerRecord` | `experimental` | 更新展示标题或后续触发指令，不改变调度计划。 |
 | `holon timer cancel` | `<TIMER_ID>` | `--agent <AGENT>` | 美化 JSON `TimerRecord` | `experimental` | 取消活跃定时器；已取消的定时器操作幂等。 |
 
 ### Agent 生命周期与模型选择
@@ -133,6 +141,7 @@ order: 11
 | `holon agent start` | 可选 `[AGENT_ID]` | none | JSON 生命周期控制响应 | `stable` 候选 | 已废弃 `control start` 的替代。 |
 | `holon agent stop` | 可选 `[AGENT_ID]` | none | JSON 生命周期控制响应 | `stable` 候选 | 已废弃 `control stop` 的替代。 |
 | `holon agent abort` | 可选 `[AGENT_ID]` | none | 美化 JSON 控制平面响应 | `stable` 候选 | 已废弃 `control abort` 的替代；与 start/stop 共用生命周期 JSON 输出路径。 |
+| `holon agent delete` | `<AGENT_ID>` | `-y`/`--yes`；`--cascade-private-children`；`--archive`；`--wait`；`--timeout <SECS>`；`--resolve abandon`；`--json` | 人类摘要或 JSON 删除作业状态 | `stable` 候选 | 调度持久化删除；`--resolve abandon` 可将停在 `needs_attention` 的删除恢复为 `Active`。 |
 | `holon agent model get` | 可选 `[AGENT_ID]` | none | JSON 模型覆盖/状态片段 | `stable` 候选 | 从 agent 状态读取 `summary.model`。 |
 | `holon agent model set` | `<MODEL> [AGENT_ID]` | none | JSON 模型覆盖响应 | `stable` 候选 | 位置参数 `AGENT_ID` 已测试。 |
 | `holon agent model clear` | 可选 `[AGENT_ID]` | none | JSON 模型覆盖响应 | `stable` 候选 | 应与 set/get 共享契约。 |

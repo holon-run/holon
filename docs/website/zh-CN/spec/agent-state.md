@@ -124,7 +124,7 @@ Agent 级的投影按以下优先级判定：
 | `WaitingForTask` | 某个 WorkItem 有活跃的任务等待条件 |
 | `WaitingForExternal` | 某个 WorkItem 有活跃的外部等待意图 |
 | `WaitingForOperator` | WorkItem 的 `plan_status=needs_input`，或有活跃的操作者等待 |
-| `Blocked` | WorkItem 设置了 `blocked_by`，或有活跃的定时器/系统/非操作者等待 |
+| `Blocked` | WorkItem 有活跃的定时器、系统或非操作者等待 |
 | `Idle` | 无入队输入、无可运行工作、无阻塞条件 |
 | `Unknown` | 首次投影前的默认值；不属于稳定契约 |
 

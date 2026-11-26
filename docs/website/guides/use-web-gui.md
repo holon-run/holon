@@ -107,14 +107,17 @@ The Dashboard provides a runtime overview:
 - **Task list** — click a task to open its detail panel showing status,
   command, workdir, and output. Task events (creation, status updates,
   completion) refresh the list in real time.
-- **Quick actions** — create agents, attach workspaces, and view agent detail.
+- **Quick actions** — create a blank agent or instantiate one from a template,
+  attach workspaces, and view agent detail.
 - **Agent lifecycle** — start, stop, and delete agents from the dashboard.
   Creation shows progress and any failure. Before deleting, preserve needed
   results and review the confirmation and any blockers. Include private
   children only when you intend to remove them.
 - **Timer overview** — View active and paused relative and calendar timers (with
   cron rules and timezones), check upcoming fire times, and pause, resume, or
-  cancel timers in the agent detail panel.
+  edit titles/instructions, or cancel timers in the agent detail panel.
+- **Notifications** — receive in-app reminders and optional browser notifications
+  when an agent replies, finishes a WorkItem, or waits for operator input.
 
 ### Agent Conversation
 

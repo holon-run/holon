@@ -89,6 +89,7 @@ order: 260
 ```bash
 holon daemon status
 holon daemon logs
+holon daemon validate-startup
 ```
 
 先查看真实启动报错：常见原因包括已有进程占用端口、监听地址冲突、配置文件语法错误、磁盘空间不足，或者当前 shell 与守护进程使用了不同的 `HOLON_HOME`：

@@ -63,9 +63,12 @@ when the agent is restarted.
 
 | Operation | Operator CLI | Agent tool |
 |---|---|---|
-| Create | `holon timer create --after-ms N [--every-ms N] [--summary TEXT] [--agent ID]` or `holon timer create --calendar-expression "M H * * *" --timezone AREA/LOCATION` | `CreateTimer(duration_ms?, interval_ms?, calendar_expression?, timezone?, summary?)` |
+| Create | `holon timer create --after-ms N [--every-ms N] [--title TITLE] [--instruction TEXT] [--agent ID]` or `holon timer create --calendar-expression "M H * * *" --timezone AREA/LOCATION` | `CreateTimer(duration_ms?, interval_ms?, calendar_expression?, timezone?, summary?)` |
 | List | `holon timer list [--limit N] [--agent ID]` | `ListTimers(limit?)` |
 | Read | HTTP detail route below | `GetTimer(timer_id)` |
+| Pause | `holon timer pause TIMER_ID [--agent ID]` | HTTP control route below |
+| Resume | `holon timer resume TIMER_ID [--agent ID]` | HTTP control route below |
+| Edit content | `holon timer edit TIMER_ID [--title TITLE \| --clear-title] [--instruction TEXT \| --clear-instruction] [--agent ID]` | `EditTimerContent(timer_id, title?, instruction?)` |
 | Cancel | `holon timer cancel TIMER_ID [--agent ID]` | `CancelTimer(timer_id)` |
 
 The legacy `holon timer --after-ms N` creation form remains supported. Agent
@@ -84,9 +87,10 @@ together and cannot be combined with `duration_ms` or `interval_ms`.
 
 | HTTP route | Contract |
 |---|---|
-| `POST /api/control/agents/:id/timers` | Create with either `duration_ms`/`interval_ms` or `calendar_expression`/`timezone`, plus `summary` and control `authority_class` metadata |
+| `POST /api/control/agents/:id/timers` | Create with either `duration_ms`/`interval_ms` or `calendar_expression`/`timezone`, plus optional `title`, `instruction` (or legacy `summary`), and control `authority_class` metadata |
 | `GET /api/agents/:id/timers` | List recent timer records |
 | `GET /api/agents/:id/timers/:timer_id` | Read an owned timer or return a not-found error |
+| `PATCH /api/control/agents/:id/timers/:timer_id` | Partially edit `title` or `instruction` (legacy `summary` alias) on an active or paused timer without changing its schedule or wakes already queued |
 | `POST /api/control/agents/:id/timers/:timer_id/pause` | Pause an active timer, preserving its ID, schedule, history, and waits; idempotent when already paused |
 | `POST /api/control/agents/:id/timers/:timer_id/resume` | Resume a paused timer; idempotent when already active |
 | `POST /api/control/agents/:id/timers/:timer_id/cancel` | Cancel the timer; optional control `authority_class` metadata |
@@ -112,7 +116,8 @@ Conflict`; pausing does not retract wakes already queued or claimed.
 | `interval_ms` | Optional recurrence interval |
 | `repeat` | Whether the timer repeats |
 | `status` | `active`, `paused`, `completed`, or `cancelled`; legacy `scheduled` deserializes as `active` |
-| `summary` | Optional reminder description |
+| `title` | Optional display label shown in UI lists |
+| `instruction`, `summary` | Prompt text delivered when the timer fires (`summary` is preserved as a legacy alias for `instruction`) |
 | `next_fire_at`, `last_fired_at` | Next scheduled and most recent firing timestamps |
 | `paused_remaining_ms` | Frozen remaining delay in milliseconds while paused for relative or fixed-interval timers |
 | `calendar` | Optional normalized five-field expression and IANA timezone for calendar timers |

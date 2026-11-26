@@ -89,6 +89,7 @@ When the daemon will not start, no model is reachable, or you are debugging a he
 ```bash
 holon daemon status
 holon daemon logs
+holon daemon validate-startup
 ```
 
 Check the actual startup error before changing ports or touching `~/.holon/`: an existing daemon instance, a bound port conflict, invalid config syntax, disk space exhaustion, or a mismatched `HOLON_HOME`:

@@ -396,6 +396,11 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 { "template": null, "authority_class": "operator_instruction" }
 ```
 
+可选字段 `initial_response_language`（BCP-47 标签或 POSIX locale）是针对新 Agent
+首次默认引导回复语言的一次性提示。该端点始终通过默认引导轮次创建 Agent 且拒绝未知请求字段，
+因此不接受显式 `initial_message`，该提示会直接作用于首次回复。它作为运行时自有的引导元数据
+保存，不会成为 Agent 偏好、身份字段或持久化沟通指引；无法映射的值会被直接忽略，不会导致请求失败。
+
 创建某个删除任务已完全完成的 id 会开启一个新化身
 （`identity.incarnation` 递增；旧状态绝不会被复活）。当删除仍在进行中或已失败时，
 请求会以 `409` / `deletion_incomplete` 失败。
@@ -426,14 +431,25 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 
 **`GET /api/control/agents/:id/delete-status`** — 查询删除作业状态
 
-返回 Agent 删除作业的生命周期进度。
+返回当前 `identity` 与删除 `job`（`pending`、`running`、`retryable_failed`、
+`needs_attention`、`completed` 或 `abandoned`）。当作业停在 `needs_attention` 时，
+可查看 `job.required_input` 了解需要操作者做出的决策。
+
+**`POST /api/control/agents/:id/deletion/resolve`** — 处理已暂停的删除作业
+
+处理停在 `needs_attention` 的 Agent 删除作业。当前唯一支持的决策是 `"abandon"`，
+会将删除作业标记为 `abandoned`、把 Agent 身份恢复为 `Active`，并返回仍需手动清理的 `cleanup` 范围。
+
+```json
+{ "decision": "abandon" }
+```
 
 **`POST /api/control/agents/:id/timers`** — 创建定时器
 
 为该 Agent 创建持久的延时或周期性定时器。
 
 ```json
-{ "after_ms": 60000, "every_ms": null, "summary": "心跳检查" }
+{ "duration_ms": 60000, "interval_ms": null, "title": "心跳", "instruction": "执行心跳检查" }
 ```
 
 **`POST /api/control/agents/:id/timers/:timer_id/pause`** — 暂停定时器
@@ -501,9 +517,9 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 
 **`PATCH /api/control/agents/:id/work-items/:work_item_id`** — 更新工作项
 
-修改一个或多个 WorkItem 字段。空更新会被拒绝。`blocked_by`
-使用嵌套的可选结构：字符串设置阻塞项，`null` 清除它，省略该字段则保持不变。
-`recheck_after` 以毫秒为单位，且要求非空阻塞项。
+修改一个或多个 WorkItem 字段。空更新会被拒绝。`blocked_by` 仅作说明备注
+（字符串设置说明，`null` 清除，省略则保持不变），不会暂停或恢复调度。传入
+`recheck_after`（包括 `null`）会被 `400 Bad Request` 拒绝；请改用带 `recheck_after_ms` 的 `WaitFor`。
 
 ```json
 {
@@ -511,7 +527,6 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
   "plan_status": "ready",
   "todo_list": [{ "text": "Run cargo check", "state": "completed" }],
   "blocked_by": "waiting for CI",
-  "recheck_after": 600000,
   "authority_class": "operator_instruction"
 }
 ```
@@ -538,10 +553,18 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 {
   "duration_ms": 60000,
   "interval_ms": null,
-  "summary": "reminder",
+  "title": "心跳",
+  "instruction": "reminder",
   "authority_class": "operator_instruction"
 }
 ```
+
+`summary` 仍作为 `instruction` 的旧别名被接受（切勿同时发送两者）。
+
+**`PATCH /api/control/agents/:id/timers/:timer_id`** — 编辑定时器标题或触发指令
+
+对活跃或已暂停的定时器局部更新 `title` 与/或 `instruction`（兼容旧别名 `summary`；传 `null` 清除），
+不改变调度计划，也不影响已入队的唤醒。
 
 **`POST /api/control/agents/:id/timers/:timer_id/pause`** — 暂停 timer
 
@@ -568,6 +591,18 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 ```json
 { "text": "debug instruction", "authority_class": "operator_instruction" }
 ```
+
+**`GET /api/agents/:id/turns/:turn_id/deletion-preview`** — 预览轮次内容删除范围
+
+在删除某个轮次已记录的对话内容前返回影响范围预览。
+
+**`DELETE /api/agents/:id/turns/:turn_id/content`** — 删除轮次内容
+
+删除已结算轮次存储的对话内容（可选通过 `?expected_revision=<N>` 做版本校验）。被删除的轮次内容会从 transcript、事件与导出读取中屏蔽。
+
+**`POST /api/agents/:id/messages/:message_id/withdraw`** — 撤回未执行的输入消息
+
+在操作者提交的排队消息尚未被认领执行前将其撤回。已被认领或非操作者提交的消息会返回 `409 Conflict`。
 
 **`POST /api/control/agents/:id/operator-bindings`** — 创建 operator 传输绑定
 

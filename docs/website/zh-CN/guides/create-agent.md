@@ -83,7 +83,7 @@ holon run --agent reviewer-demo "阅读你的角色契约，列出你的审查�
 
 ### 使用本地目录或自定义 GitHub 模板源
 
-未指定 `--template` 时，`holon agent create` 会使用通用默认角色。如需直接从审阅过的本地目录或第三方仓库创建：
+未指定 `--template` 时，`holon agent create` 会执行空白初始化，为新 Agent 写入最小化、角色中立的 `AGENTS.md`，而不分配预设角色模板。如需直接从审阅过的本地目录或第三方仓库创建：
 
 ```bash
 holon agent create my-agent --template /path/to/my-template

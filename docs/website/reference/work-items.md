@@ -77,9 +77,9 @@ those are not interchangeable with the stored lifecycle `state`.
 | `plan_artifact` | Optional plan descriptor with owner/workspace identity, relative and absolute paths, hash, byte count, timestamp, preview, and preview completeness |
 | `todo_list` | Entries containing `text` and `state`: `pending`, `in_progress`, or `completed` |
 | `work_refs` | Evidence references with kind, reference, reason, status, timestamp, and optional title/source/metadata |
-| `blocked_by` | Current blocker, if any |
-| `blocked_by_wait_id` | Wait that established the blocker; absent for independent or older blockers |
-| `recheck_at`, `recheck_consumed_at` | Fallback recheck deadline and its consumption timestamp |
+| `blocked_by` | Optional descriptive blocker note; never gates or pauses scheduling |
+| `blocked_by_wait_id` | Historical wait-derived blocker metadata; new waits do not write it |
+| `recheck_at`, `recheck_consumed_at` | Historical fallback recheck fields; no longer scheduled |
 | `result_brief_id`, `result_summary` | Canonical completion report linkage and summary |
 | `completion_intent` | Completion source/revision, required report state, and report linkage |
 | `created_at`, `updated_at`, `turn_id` | Record timestamps and optional associated turn |
@@ -100,10 +100,9 @@ Typical work-item operations:
 - `CompleteWorkItem` — mark the objective done
 - `WaitFor` — record an explicit wait without changing the task's ownership
 
-Edit the plan file for plan-body changes. Use `WaitFor` for agent waits, not
-blocker fields on `UpdateWorkItem`. Operator HTTP PATCH has separate
-`blocked_by`/`recheck_after` controls documented in the
-[HTTP reference](http-control-plane.md); those are not agent-tool arguments.
+Edit the plan file for plan-body changes. Use `WaitFor` (with optional
+`recheck_after_ms`) whenever an agent must pause until a wake arrives;
+`blocked_by` is only a descriptive note.
 
 `PickWorkItem` can yield the current execution through a continuation to another
 item. `clear_blocker=true` requires evidence that the blocker is resolved and a

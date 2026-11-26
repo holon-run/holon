@@ -34,8 +34,8 @@ order: 20
 | `plan_status` | `draft`、`ready` 或 `needs_input` |
 | `plan_artifact` | agent home 中持久 plan.md 工件的路径 |
 | `todo_list` | 进度清单快照 |
-| `blocked_by` | 供展示的人类可读等待/阻塞描述 |
-| `recheck_at` | 阻塞项重新评估的遗留回退截止时间 |
+| `blocked_by` | 供展示的阻塞说明备注，不门控调度 |
+| `recheck_at` | 历史回退截止时间，不再调度 |
 | `recheck_consumed_at` | 标记当前 recheck 提醒已投递 |
 | `result_brief_id` | 已完成工作项报告的规范结果 `BriefRecord` id |
 | `result_summary` | 遗留的完成摘要回退；新的完成提升不应把重复的报告文本写到这里 |
@@ -80,7 +80,7 @@ Rust 枚举 `WorkItemPlanStatus` 使用 PascalCase 变体（`Draft`、`Ready`、
 
 ## 就绪状态与调度
 
-工作项就绪状态由 `state`、`plan_status`、`blocked_by`、活跃等待状态以及
+工作项就绪状态由 `state`、`plan_status`、活跃等待状态以及
 延续挂起状态派生：
 
 | `WorkItemSchedulingState` | 条件 |
@@ -92,7 +92,7 @@ Rust 枚举 `WorkItemPlanStatus` 使用 PascalCase 变体（`Draft`、`Ready`、
 | `WaitingExternal` | 活跃等待外部事件 |
 | `WaitingTimer` | 活跃等待定时器 |
 | `WaitingSystem` | 活跃等待系统 tick |
-| `Blocked` | 设置了 `blocked_by`，且没有活跃等待 |
+| `Blocked` | 遗留或显式的不可运行阻塞状态 |
 | `Completing` | `state=Completing` |
 | `Completed` | `state=Completed` |
 
@@ -150,7 +150,7 @@ Rust 枚举 `WorkItemPlanStatus` 使用 PascalCase 变体（`Draft`、`Ready`、
   如果要等待的是别的工作项，先切换过去。
 - 阻塞的工作项可以被选中用于检查，但不会因此变为可运行。只有在确认阻塞项已解决
   后，才使用 `PickWorkItem(clear_blocker=true, reason=...)`；它会清除 `blocked_by`、
-  回退 recheck 字段，以及工作项范围内的活跃等待。
+  以及工作项范围内的活跃等待。
 - `CompleteWorkItem` 的文本提升：面向操作者的完成报告可以在同一 assistant 轮次中、
   调用工具之前立即写出。只调用工具的话，会返回 `awaiting_completion_report` 回执，
   并要求一次纯文本的后续轮次。
