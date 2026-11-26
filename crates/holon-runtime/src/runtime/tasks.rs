@@ -52,6 +52,10 @@ pub(super) enum ReplyReconciliation {
 mod output;
 pub(crate) use output::{RunOnceTaskOutputRetention, RunOnceTaskOutputs, TaskOutputResultRead};
 
+#[path = "task_message_wait_monitor.rs"]
+mod message_wait_monitor;
+use message_wait_monitor::{MessageWaitMonitorFailure, MessageWaitMonitorRetry};
+
 const TASK_OUTPUT_POLL_INTERVAL_MS: u64 = 100;
 const TASK_OUTPUT_PREVIEW_CHAR_BUDGET: usize = 8_000;
 const SPAWN_AGENT_TASK_LABEL_CHAR_BUDGET: usize = 120;
@@ -1538,6 +1542,7 @@ impl RuntimeHandle {
             let _ = self.enqueue(running_message).await;
         }
 
+        let mut retry = MessageWaitMonitorRetry::new(tokio::time::Instant::now());
         let result = loop {
             match bridge
                 .await_agent_message(
@@ -1553,9 +1558,34 @@ impl RuntimeHandle {
                     if error.downcast_ref::<crate::host::ChildInvocationReason>()
                         != Some(&crate::host::ChildInvocationReason::IdentityMismatch) =>
                 {
+                    if self.message_wait_task_withdrawn(&task_record.id).await {
+                        tracing::warn!(task_id = %task_record.id,
+                            "message wait reply read stopped; durable task record no longer exists");
+                        return Ok(());
+                    }
+                    match MessageWaitMonitorFailure::classify(&error) {
+                        // Neither failure can be read or finished here. The
+                        // durable task stays with the successor owner.
+                        MessageWaitMonitorFailure::OwnerReplaced
+                        | MessageWaitMonitorFailure::TaskWithdrawn => {
+                            tracing::warn!(task_id = %task_record.id, error = %error,
+                                "message wait reply read stopped; durable task retained for owner recovery");
+                            return Ok(());
+                        }
+                        MessageWaitMonitorFailure::CanonicalChanged
+                        | MessageWaitMonitorFailure::Retryable => {}
+                    }
+                    let Some(delay) = retry.next_delay(tokio::time::Instant::now()) else {
+                        // A reply that can never be read converges the wait as
+                        // failed instead of leaving an orphan monitor.
+                        tracing::error!(task_id = %task_record.id, error = %error,
+                            "message wait reply read retry budget exhausted; converging wait as failed");
+                        break Err(error);
+                    };
                     tracing::warn!(task_id = %task_record.id, error = %error,
-                        "message wait reply read failed; monitor retains recovery responsibility");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                        retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                        "message wait reply read failed; retrying");
+                    tokio::time::sleep(delay).await;
                 }
                 result => break result,
             }
@@ -1580,24 +1610,8 @@ impl RuntimeHandle {
                 task_detail,
             ),
         };
-        loop {
-            match self
-                .finish_agent_message_wait(
-                    &task_record,
-                    status.clone(),
-                    terminal_detail.clone(),
-                    text.clone(),
-                )
-                .await
-            {
-                Err(error) => {
-                    tracing::warn!(task_id = %task_record.id, error = %error,
-                        "message wait result commit failed; monitor retains recovery responsibility");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-                result => return result,
-            }
-        }
+        self.commit_message_wait_result(&task_record, status, terminal_detail, text)
+            .await
     }
 
     pub(super) async fn finish_agent_message_wait(
@@ -1609,6 +1623,72 @@ impl RuntimeHandle {
     ) -> Result<()> {
         self.finish_agent_message_wait_with_material(task, status, detail, failure_text, (0, 0))
             .await
+    }
+
+    /// Commit one wait result under the monitor convergence policy.
+    ///
+    /// The commit is retried with bounded exponential backoff instead of an
+    /// unconditional one-second spin. Failures that can never be committed by
+    /// this instance stop the monitor and leave the durable Task record to the
+    /// successor owner; an exhausted transient budget releases the monitor with
+    /// the record intact so a later recovery can reattach it (#4601).
+    pub(super) async fn commit_message_wait_result(
+        &self,
+        task_record: &TaskRecord,
+        status: TaskStatus,
+        terminal_detail: serde_json::Value,
+        text: String,
+    ) -> Result<()> {
+        let mut retry = MessageWaitMonitorRetry::new(tokio::time::Instant::now());
+        loop {
+            // A withdrawn Task record has no target this monitor may commit.
+            // The resident Task domain can report a missing key as merely
+            // unprepared, so durability is checked explicitly (#4601).
+            if self.message_wait_task_withdrawn(&task_record.id).await {
+                tracing::warn!(task_id = %task_record.id,
+                    "message wait result commit stopped; durable task record no longer exists");
+                return Ok(());
+            }
+            let error = match self
+                .finish_agent_message_wait(
+                    task_record,
+                    status.clone(),
+                    terminal_detail.clone(),
+                    text.clone(),
+                )
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            };
+            match MessageWaitMonitorFailure::classify(&error) {
+                MessageWaitMonitorFailure::OwnerReplaced => {
+                    tracing::warn!(task_id = %task_record.id, error = %error,
+                        "message wait result commit stopped; mutation owner was replaced and the durable task is retained for the successor owner");
+                    return Ok(());
+                }
+                MessageWaitMonitorFailure::TaskWithdrawn => {
+                    tracing::warn!(task_id = %task_record.id, error = %error,
+                        "message wait result commit stopped; durable task record no longer exists");
+                    return Ok(());
+                }
+                MessageWaitMonitorFailure::CanonicalChanged => {
+                    tracing::warn!(task_id = %task_record.id, error = %error,
+                        "message wait result commit stopped; persisted task no longer describes this wait");
+                    return Ok(());
+                }
+                MessageWaitMonitorFailure::Retryable => {}
+            }
+            let Some(delay) = retry.next_delay(tokio::time::Instant::now()) else {
+                tracing::error!(task_id = %task_record.id, error = %error,
+                    "message wait result commit retry budget exhausted; monitor released with the durable task retained for later recovery");
+                return Err(error);
+            };
+            tracing::warn!(task_id = %task_record.id, error = %error,
+                retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                "message wait result commit failed; retrying");
+            tokio::time::sleep(delay).await;
+        }
     }
 
     async fn finish_agent_message_wait_with_material(
@@ -3076,6 +3156,12 @@ impl RuntimeHandle {
         let db = self.inner.runtime_db.clone();
         let task_id = task_id.to_owned();
         tokio::task::spawn_blocking(move || db.tasks().latest(&task_id)).await?
+    }
+
+    /// Durable absence, which no monitor retry can repair. A read failure is
+    /// not proof of withdrawal, so only an explicit `None` reports it.
+    async fn message_wait_task_withdrawn(&self, task_id: &str) -> bool {
+        matches!(self.task_record(task_id).await, Ok(None))
     }
 
     pub async fn task_status_snapshot(&self, task_id: &str) -> Result<TaskStatusSnapshot> {

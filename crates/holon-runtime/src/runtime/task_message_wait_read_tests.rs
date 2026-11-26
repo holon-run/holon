@@ -5,6 +5,66 @@ use crate::types::{
     AgentMessagePrincipalKind, AgentMessageSendRequest, TaskKind, TaskRecoverySpec, TaskStatus,
 };
 
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn commit_result_stops_when_the_durable_task_record_is_gone() -> Result<()> {
+    // A withdrawn Task record has no commit target. The monitor must converge
+    // instead of retrying a permanent task_not_found forever (#4601).
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    // Preparing one resident Task keeps the absence below a real withdrawal
+    // rather than an unprepared Task domain.
+    let prepared = waiting_task(runtime, "message-wait-domain-prepared");
+    runtime
+        .persist_task_transition(&prepared, "message_wait_domain_prepared")
+        .await?;
+    let withdrawn = waiting_task(runtime, "message-wait-withdrawn");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.commit_message_wait_result(
+            &withdrawn,
+            TaskStatus::Completed,
+            serde_json::json!({}),
+            "reply".into(),
+        ),
+    )
+    .await
+    .expect("withdrawn wait must not retry forever")?;
+    // Convergence released the monitor without writing a record.
+    assert!(runtime.task_record(&withdrawn.id).await?.is_none());
+    Ok(())
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn commit_result_stops_when_the_persisted_task_no_longer_describes_the_wait() -> Result<()> {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let mut repurposed = waiting_task(runtime, "message-wait-repurposed");
+    repurposed.kind = TaskKind::CommandTask;
+    repurposed.recovery = None;
+    runtime
+        .persist_task_transition(&repurposed, "message_wait_repurposed")
+        .await?;
+    let wait = waiting_task(runtime, "message-wait-repurposed");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.commit_message_wait_result(
+            &wait,
+            TaskStatus::Completed,
+            serde_json::json!({}),
+            "reply".into(),
+        ),
+    )
+    .await
+    .expect("repurposed task must not retry forever")?;
+    let current = runtime.capture_current_task_record(&wait.id)?;
+    let current = current.record().unwrap();
+    assert_eq!(current.kind, TaskKind::CommandTask);
+    assert_eq!(current.status, TaskStatus::Running);
+    Ok(())
+}
+
 fn waiting_task(runtime: &RuntimeHandle, id: &str) -> TaskRecord {
     let at = runtime.now();
     TaskRecord {
