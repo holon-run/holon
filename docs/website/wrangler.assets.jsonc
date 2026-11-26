@@ -1,0 +1,18 @@
+{
+  // Dedicated origin for the docs site's images, diagrams and PDFs.
+  // Pages reference it after `.tools/rewrite-asset-host.mjs` rewrites
+  // site-internal `/assets/` paths (see .tools/README.md).
+  "$schema": "./.tools/node_modules/wrangler/config-schema.json",
+  "name": "holon-docs-assets",
+  "main": "./asset-worker.mjs",
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".tools/dist/cloudflare/assets",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "routes": [{ "pattern": "assets.holon.run/*", "zone_name": "holon.run" }],
+  "compatibility_date": "2026-03-25",
+  "workers_dev": false
+}

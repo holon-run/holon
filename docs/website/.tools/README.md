@@ -64,6 +64,31 @@ serves it with `content-type` alone — no `cache-control`, no `etag`, no edge
 cache — so every visit re-downloads every image. Keep the flag; the assets
 directory must also stay in `../wrangler.jsonc`.
 
+## Asset host
+
+Pages are served by the `holon.run` Worker; media is also served by a second
+Worker on `https://assets.holon.run` (`../wrangler.assets.jsonc`,
+`../asset-worker.mjs`). A separate origin gives media its own TCP/TLS
+connection, so a slow or lossy image download cannot stall the page connection,
+and HTTP/1.1 clients get a second connection pool instead of the six-per-host
+limit.
+
+`rewrite-asset-host.mjs` runs inside `build:cloudflare` and rewrites media
+references (images, PDFs, video, fonts) in `dist/content` to the asset host
+before mdorigin builds the bundle; its `--check` form then fails the build if
+the emitted bundle still has same-origin media references. Scripts,
+stylesheets and JSON fetched by page code stay on the page origin: they are on
+the critical path, CSP expects them same-origin, and they reuse the page
+connection anyway. Set `ASSET_HOST=none` to skip the rewrite: that is the
+rollback switch, and pages return to same-origin media after the page Worker is
+rebuilt and redeployed.
+
+The zone needs one proxied placeholder record, `assets.holon.run AAAA 100::`:
+a Worker route only matches a hostname that already resolves through
+Cloudflare. CI deploys the asset Worker first and the page Worker second, so
+page HTML never points at a host that is not serving yet. The page Worker keeps
+the same binaries as a fallback for anything still using a relative path.
+
 ## Local native-search limitation
 
 If indexbind's native addon cannot load on an older Linux host, do not report

@@ -8,14 +8,16 @@
     "dev": "npm run prepare:content && mdorigin dev --root ./dist/content --config ./dist/content/mdorigin.config.mjs",
     "build:index": "mdorigin build index --root ./dist/content --config ./dist/content/mdorigin.config.mjs",
     "build:search": "mdorigin build search --root ./dist/content --config ./dist/content/mdorigin.config.mjs --out ./dist/search",
-    "build:cloudflare": "mdorigin build cloudflare --root ./dist/content --config ./dist/content/mdorigin.config.mjs --search ./dist/search --binary-mode external --out ./dist/cloudflare && node check-template-bundle.mjs && node check-docs-layout.mjs",
+    "build:cloudflare": "node rewrite-asset-host.mjs && mdorigin build cloudflare --root ./dist/content --config ./dist/content/mdorigin.config.mjs --search ./dist/search --binary-mode external --out ./dist/cloudflare && node check-template-bundle.mjs && node check-docs-layout.mjs && node rewrite-asset-host.mjs --check",
     "check:docs-layout": "node check-docs-layout.mjs",
+    "check:asset-host": "node rewrite-asset-host.mjs --check",
     "check:templates": "node check-template-bundle.mjs",
     "check:content": "python3 check-links.py --root ./dist/content",
     "check:blog": "python3 check-blog.py",
     "check:directories": "python3 test-check-directories.py && python3 check-directories.py --root ./dist/content",
     "build": "npm run prepare:content && npm run build:index && npm run check:content && npm run check:blog && npm run check:directories && npm run build:search && npm run build:cloudflare",
-    "deploy": "wrangler deploy --config ../wrangler.jsonc"
+    "deploy": "wrangler deploy --config ../wrangler.jsonc",
+    "deploy:assets": "wrangler deploy --config ../wrangler.assets.jsonc"
   },
   "devDependencies": {
     "gray-matter": "^4.0.3",
