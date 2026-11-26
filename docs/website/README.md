@@ -33,25 +33,84 @@ order: 1
 </div>
 
 </div>
-<div class="home-runtime" aria-label="Within the roles and permissions you define, tasks, system events, and schedules trigger agents to start or resume work. Agents save progress, wait for results, and ask for decisions or approval when needed.">
-<div class="home-runtime__top"><span>Act on events · Keep track of progress</span><span class="home-runtime__status">illustration</span></div>
-<div class="home-followup__entry"><strong>You define the role, permissions, and outcome</strong><span>Start or resume work with these inputs ↓</span></div>
-<div class="home-trigger-sources" role="group" aria-label="Ways to trigger work"><div><strong>Your input</strong><span>Tasks · Feedback</span></div><div><strong>System events</strong><span>Email · Orders · CI</span></div><div><strong>Schedules</strong><span>Checks · Reports</span></div></div>
-<div class="home-followup">
-<div class="home-followup__cycle" role="group" aria-label="Clockwise cycle: do the work, save progress, wait for changes, resume work">
-<div class="home-followup__step home-followup__step--work"><strong>Do the work</strong><small>Real tools and workspaces</small></div>
-<span class="home-followup__arrow home-followup__arrow--top" aria-hidden="true">→</span>
-<div class="home-followup__step home-followup__step--record"><strong>Save progress</strong><small>State and next steps</small></div>
-<span class="home-followup__arrow home-followup__arrow--right" aria-hidden="true">↓</span>
-<div class="home-followup__center"><strong>Agents follow through</strong><span>Continue the same work</span></div>
-<div class="home-followup__step home-followup__step--wait"><strong>Wait for changes</strong><small>Results or agreed conditions</small></div>
-<span class="home-followup__arrow home-followup__arrow--bottom" aria-hidden="true">←</span>
-<div class="home-followup__step home-followup__step--resume"><strong>Resume work</strong><small>When conditions are met</small></div>
-<span class="home-followup__arrow home-followup__arrow--left" aria-hidden="true">↑</span>
+<div class="home-stage" data-stage-tabs>
+<div class="home-stage__bar">
+<div class="home-stage-tablist" role="tablist" aria-label="Workbench interfaces" hidden>
+<button type="button" role="tab" data-stage-tab="web" aria-selected="true">Web Workbench</button>
+<button type="button" role="tab" data-stage-tab="tui" aria-selected="false">Terminal · TUI &amp; CLI</button>
+<button type="button" role="tab" data-stage-tab="mobile" aria-selected="false">Mobile · iOS &amp; Android</button>
 </div>
-<aside class="home-followup__human"><span aria-hidden="true">⇄</span><strong>You step in</strong><p>For decisions<br>or approval</p><small>Then work<br>continues</small></aside>
 </div>
-<p class="home-followup__note">Start or resume when an event arrives or a task is due.<br><span>Deliver results when the task is complete.</span></p>
+<div class="home-stage__panel" data-stage-panel="web">
+<a class="home-stage__shot" href="/assets/lite-paper/web-gui-review-en.webp" aria-label="View the Holon web workbench screenshot at full size">
+<img src="/assets/lite-paper/web-gui-review-en.webp" width="1600" height="1003" alt="Holon web workbench: role-scoped agents on the left, PR review progress and next steps in the center, and the saved WorkItem plan, waiting condition, and checklist on the right." fetchpriority="high" decoding="async">
+</a>
+</div>
+<div class="home-stage__panel" data-stage-panel="tui" hidden>
+<div class="home-terminal" role="region" aria-label="Terminal CLI and TUI session inspecting the same PR review WorkItem">
+<div class="home-terminal__chrome" aria-hidden="true"><span class="home-terminal__dots"><i></i><i></i><i></i></span><span class="home-terminal__title">holon — local daemon · 127.0.0.1:7878</span></div>
+<div class="home-terminal__body">
+<div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon work-item list</span></div>
+<div class="home-terminal__line home-terminal__line--head">WORK ITEM              AGENT          STATUS    TITLE</div>
+<div class="home-terminal__line">demo-reviewer-work     code-reviewer  <span class="home-terminal__badge home-terminal__badge--wait">blocked</span>   Follow PR #42: fix skipped pages</div>
+<div class="home-terminal__spacer"></div>
+<div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon tail --agent code-reviewer --include-progress</span></div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:12</span> <span class="home-terminal__tag">webhook</span>  GitHub push on PR #42 · commit 8f3c1a2</div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:14</span> <span class="home-terminal__tag home-terminal__tag--ok">done</span>     Checked pagination fix and empty-list regression tests</div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:15</span> <span class="home-terminal__tag home-terminal__tag--wait">parked</span>   Waiting for CI on current commit (0 tokens while idle)</div>
+<div class="home-terminal__spacer"></div>
+<div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon tui</span></div>
+<div class="home-terminal__line home-terminal__line--muted">▸ Attached to local runtime · 3 agents active · 2 todos done, 2 pending CI</div>
+</div>
+</div>
+</div>
+<div class="home-stage__panel" data-stage-panel="mobile" hidden>
+<div class="home-mobile-stage" role="region" aria-label="Holon mobile client connected to the same running daemon">
+<div class="home-phones" aria-hidden="true">
+<div class="home-phone">
+<div class="home-phone__notch"><span>9:41</span><i></i><span>5G</span></div>
+<div class="home-phone__top"><strong>Holon</strong><span class="home-phone__live">dev-server</span></div>
+<div class="home-phone__search">Filter agents...</div>
+<div class="home-phone__list">
+<div class="home-phone__row"><span class="home-phone__dot"></span><div><strong>Investigation</strong><small>Idle · Last brief 09:48</small></div></div>
+<div class="home-phone__row home-phone__row--active"><span class="home-phone__dot home-phone__dot--wait"></span><div><strong>Code review</strong><small>Follow PR #42: fix skipped...</small></div><em>CI</em></div>
+<div class="home-phone__row"><span class="home-phone__dot home-phone__dot--ok"></span><div><strong>Verification</strong><small>Ready · 1 workspace</small></div></div>
+</div>
+</div>
+<div class="home-phone">
+<div class="home-phone__notch"><span>9:42</span><i></i><span>5G</span></div>
+<div class="home-phone__top"><span>‹ Code review</span><span class="home-phone__chip">Files</span></div>
+<div class="home-phone__card">
+<span class="home-phone__kicker">PR #42 · COMPLETION BRIEF</span>
+<strong>Changes reviewed; waiting for CI</strong>
+<p>Verified pagination fix and empty-list regression tests on commit 8f3c1a2.</p>
+<div class="home-phone__trace">▸ 4 tool checks &amp; diff output collapsed</div>
+</div>
+<div class="home-phone__wait">Waiting on GitHub CI · Reply to steer</div>
+<div class="home-phone__composer"><span>Merge once CI turns green</span><b>↑</b></div>
+</div>
+</div>
+<div class="home-mobile-stage__info">
+<span class="home-mobile-stage__kicker">HOLON AGENT REMOTE · IOS &amp; ANDROID</span>
+<h3>Step away from your desk without pausing the work.</h3>
+<ul class="home-mobile-stage__list">
+<li><strong>QR code pairing</strong> — Scan once from Web UI or macOS menu bar; revocable credentials stay in system Keychain.</li>
+<li><strong>Result-first timeline</strong> — Read Markdown briefs and workspace files while noisy tool traces stay collapsed.</li>
+<li><strong>Unblock in one reply</strong> — Answer approval questions or send links via Share Sheet to resume a parked WorkItem.</li>
+</ul>
+<div class="home-mobile-stage__links">
+<a href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS App Store ↗</a>
+<a href="https://github.com/holon-run/holon/releases/download/v0.61.1/holon-android-v0.61.1.apk">Android APK ↗</a>
+<a href="/guides/connect-ios-client">iOS pairing guide →</a>
+</div>
+</div>
+</div>
+</div>
+<div class="home-stage__callouts">
+<div class="home-stage__callout"><span>01 · ROLES</span><strong>Dedicated, lasting agents</strong><p>Give investigation, code review, and verification their own skills, instructions, and memory.</p></div>
+<div class="home-stage__callout"><span>02 · WORKITEM</span><strong>Saved plan &amp; checklist</strong><p>Goals, completed checks, and next steps stay attached to the task across multiple turns and days.</p></div>
+<div class="home-stage__callout"><span>03 · WAIT / WAKE</span><strong>Park on CI or human input</strong><p>Agents sleep cleanly while waiting for webhooks, schedules, or approvals, then resume in place.</p></div>
+</div>
 </div>
 </section>
 
@@ -145,20 +204,23 @@ Some work takes several rounds of action and waiting. Holon saves progress so ag
 <div class="home-section__intro home-section__intro--narrow">
 <p class="home-kicker">For you and your team</p>
 
-## Check progress. Keep your team’s work moving.
+## One runtime. Any client. Shared across your team.
 
-Use the web or terminal interface (TUI) to check tasks, add information, and change direction. On a team server, teammates can assign tasks to the same agent, share results, and continue from the saved progress.
-
-Keep project files and outputs in separate workspaces. Agents work in the background while you and your team check in as needed.
+Run Holon on your laptop or a shared Linux server. Connect from the browser, terminal (TUI), or phone to inspect progress, supply context, and steer ongoing work without losing state.
 
 </div>
-<figure class="home-workbench-preview">
-<a href="/assets/lite-paper/web-gui-review-en.webp" aria-label="View the web workbench screenshot at full size">
-<img src="/assets/lite-paper/web-gui-review-en.webp" width="1600" height="1003" alt="Holon web workbench: agents organized by role on the left, review progress and next steps in the center, and the current task, pending results, and checklist on the right." loading="lazy" decoding="async">
-</a>
-<figcaption>See what’s done, what’s pending, and what happens next. Screenshot uses demo data. Click to enlarge.</figcaption>
+<figure class="home-architecture-figure">
+<picture class="home-architecture">
+<source media="(max-width: 640px)" srcset="/assets/runtime-architecture-en-narrow.png" width="480" height="550">
+<img src="/assets/runtime-architecture-en.png" width="1200" height="350" alt="Holon runtime architecture: TUI, Web UI, and Mobile interfaces connect to the Holon service on your host machine, managing Agents, WorkItems, and Wait/Wake lifecycles while executing inside authorized project workspaces." loading="lazy" decoding="async">
+</picture>
 </figure>
-<p class="home-product__caption">Ongoing work requires the computer or server and the Holon background service to stay running. Your configuration determines which files and tools agents can use.</p>
+<div class="home-team-points">
+<div><h3>Switch interfaces freely</h3><p>Start a task in the terminal, check status from iOS or Android while away, and review diffs in the Web UI—all against the same live daemon.</p></div>
+<div><h3>Collaborate on shared agents</h3><p>On a team server, teammates can assign tasks to a shared agent, drop in test results, and continue from the saved WorkItem history.</p></div>
+<div><h3>Scoped project workspaces</h3><p>Keep repositories, files, and outputs separated per workspace. Your configuration controls which tools and directories each agent can touch.</p></div>
+</div>
+<p class="home-product__caption">Ongoing work requires the host computer or server and the Holon background daemon to stay running.</p>
 </section>
 
 <!-- TEMPLATES:START -->

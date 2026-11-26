@@ -2,38 +2,43 @@
 (() => {
   const zh = document.documentElement.lang === "zh-CN";
 
-  // 1. Multi-platform quickstart tabs on homepages.
-  for (const container of document.querySelectorAll("[data-install-tabs]")) {
-    const tablist = container.querySelector(".home-install-tablist");
-    const tabs = [...container.querySelectorAll("[data-install-tab]")];
-    const panels = [...container.querySelectorAll("[data-install-panel]")];
-    if (!tablist || tabs.length === 0 || panels.length === 0) continue;
-    tablist.hidden = false;
-    container.dataset.tabsReady = "true";
+  // 1. Accessible tab groups (Quickstart install tabs and Hero workbench/terminal stage tabs).
+  const bindTabGroup = (rootSelector, tablistSelector, tabAttr, panelAttr) => {
+    for (const container of document.querySelectorAll(rootSelector)) {
+      const tablist = container.querySelector(tablistSelector);
+      const tabs = [...container.querySelectorAll(`[${tabAttr}]`)];
+      const panels = [...container.querySelectorAll(`[${panelAttr}]`)];
+      if (!tablist || tabs.length === 0 || panels.length === 0) continue;
+      tablist.hidden = false;
+      container.dataset.tabsReady = "true";
 
-    const activate = (id, focusTab = false) => {
-      for (const tab of tabs) {
-        const selected = tab.dataset.installTab === id;
-        tab.setAttribute("aria-selected", String(selected));
-        tab.tabIndex = selected ? 0 : -1;
-        if (selected && focusTab) tab.focus();
-      }
-      for (const panel of panels) {
-        panel.hidden = panel.dataset.installPanel !== id;
-      }
-    };
-    activate(tabs[0].dataset.installTab);
+      const activate = (id, focusTab = false) => {
+        for (const tab of tabs) {
+          const selected = tab.getAttribute(tabAttr) === id;
+          tab.setAttribute("aria-selected", String(selected));
+          tab.tabIndex = selected ? 0 : -1;
+          if (selected && focusTab) tab.focus();
+        }
+        for (const panel of panels) {
+          panel.hidden = panel.getAttribute(panelAttr) !== id;
+        }
+      };
+      activate(tabs[0].getAttribute(tabAttr));
 
-    for (let i = 0; i < tabs.length; i++) {
-      tabs[i].addEventListener("click", () => activate(tabs[i].dataset.installTab));
-      tabs[i].addEventListener("keydown", (event) => {
-        if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-        event.preventDefault();
-        const next = (i + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length;
-        activate(tabs[next].dataset.installTab, true);
-      });
+      for (let i = 0; i < tabs.length; i++) {
+        tabs[i].addEventListener("click", () => activate(tabs[i].getAttribute(tabAttr)));
+        tabs[i].addEventListener("keydown", (event) => {
+          if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+          event.preventDefault();
+          const next = (i + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length;
+          activate(tabs[next].getAttribute(tabAttr), true);
+        });
+      }
     }
-  }
+  };
+
+  bindTabGroup("[data-install-tabs]", ".home-install-tablist", "data-install-tab", "data-install-panel");
+  bindTabGroup("[data-stage-tabs]", ".home-stage-tablist", "data-stage-tab", "data-stage-panel");
 
   // 2. One-click copy buttons on code blocks (skipping template detail commands that already have one).
   if (navigator.clipboard?.writeText) {

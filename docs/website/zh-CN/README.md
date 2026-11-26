@@ -33,25 +33,84 @@ order: 1
 </div>
 
 </div>
-<div class="home-runtime" aria-label="在约定的职责与权限内，任务安排、系统事件和定时安排触发 Agent 开始或继续工作；Agent 保留进度，等待结果，需要判断或授权时请你参与。">
-<div class="home-runtime__top"><span>按约定行动 · 沿着进度继续</span><span class="home-runtime__status">示意图</span></div>
-<div class="home-followup__entry"><strong>你设定职责、权限与交付要求</strong><span>以下输入可触发开始或继续工作 ↓</span></div>
-<div class="home-trigger-sources" role="group" aria-label="工作触发方式"><div><strong>任务与反馈</strong><span>安排任务 · 补充信息</span></div><div><strong>系统事件</strong><span>接入邮件 · 订单 · CI</span></div><div><strong>定时安排</strong><span>定期检查 · 汇总跟进</span></div></div>
-<div class="home-followup">
-<div class="home-followup__cycle" role="group" aria-label="顺时针循环：推进工作，记录进展，等待变化，接着推进">
-<div class="home-followup__step home-followup__step--work"><strong>推进工作</strong><small>在实际环境里做事</small></div>
-<span class="home-followup__arrow home-followup__arrow--top" aria-hidden="true">→</span>
-<div class="home-followup__step home-followup__step--record"><strong>记录进展</strong><small>保留状态与下一步</small></div>
-<span class="home-followup__arrow home-followup__arrow--right" aria-hidden="true">↓</span>
-<div class="home-followup__center"><strong>Agent 持续跟进</strong><span>沿着同一项工作继续</span></div>
-<div class="home-followup__step home-followup__step--wait"><strong>等待变化</strong><small>等结果或约定条件</small></div>
-<span class="home-followup__arrow home-followup__arrow--bottom" aria-hidden="true">←</span>
-<div class="home-followup__step home-followup__step--resume"><strong>接着推进</strong><small>条件满足后继续</small></div>
-<span class="home-followup__arrow home-followup__arrow--left" aria-hidden="true">↑</span>
+<div class="home-stage" data-stage-tabs>
+<div class="home-stage__bar">
+<div class="home-stage-tablist" role="tablist" aria-label="工作台界面切换" hidden>
+<button type="button" role="tab" data-stage-tab="web" aria-selected="true">Web 工作台</button>
+<button type="button" role="tab" data-stage-tab="tui" aria-selected="false">终端 · TUI 与 CLI</button>
+<button type="button" role="tab" data-stage-tab="mobile" aria-selected="false">手机端 · iOS 与 Android</button>
 </div>
-<aside class="home-followup__human"><span aria-hidden="true">⇄</span><strong>你按需参与</strong><p>需要判断<br>或授权时</p><small>确认后<br>回到工作中</small></aside>
 </div>
-<p class="home-followup__note">收到事件或到了约定时间，按需开始或继续。<br><span>任务完成后，交付结果。</span></p>
+<div class="home-stage__panel" data-stage-panel="web">
+<a class="home-stage__shot" href="/assets/lite-paper/web-gui-review-zh-CN.webp" aria-label="查看 Holon Web 工作台截图大图">
+<img src="/assets/lite-paper/web-gui-review-zh-CN.webp" width="1600" height="1003" alt="Holon Web 工作台：左侧按职责列出常驻 Agent，中间展示 PR 审阅进展与下一步，右侧显示已保存的 WorkItem 计划、等待原因与待办清单。" fetchpriority="high" decoding="async">
+</a>
+</div>
+<div class="home-stage__panel" data-stage-panel="tui" hidden>
+<div class="home-terminal" role="region" aria-label="在终端通过 CLI 与 TUI 查看同一个 PR 审阅工作项">
+<div class="home-terminal__chrome" aria-hidden="true"><span class="home-terminal__dots"><i></i><i></i><i></i></span><span class="home-terminal__title">holon — 本地后台服务 · 127.0.0.1:7878</span></div>
+<div class="home-terminal__body">
+<div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon work-item list</span></div>
+<div class="home-terminal__line home-terminal__line--head">WORK ITEM              AGENT          STATUS    TITLE</div>
+<div class="home-terminal__line">demo-reviewer-work     code-reviewer  <span class="home-terminal__badge home-terminal__badge--wait">blocked</span>   跟进 PR #42：修复分页遗漏问题</div>
+<div class="home-terminal__spacer"></div>
+<div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon tail --agent code-reviewer --include-progress</span></div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:12</span> <span class="home-terminal__tag">webhook</span>  收到 PR #42 新提交 · commit 8f3c1a2</div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:14</span> <span class="home-terminal__tag home-terminal__tag--ok">done</span>     已核对分页修复代码与空列表回归测试</div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:15</span> <span class="home-terminal__tag home-terminal__tag--wait">parked</span>   等待当前提交的 CI 结果（挂起期间 0 Token 消耗）</div>
+<div class="home-terminal__spacer"></div>
+<div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon tui</span></div>
+<div class="home-terminal__line home-terminal__line--muted">▸ 已连接本地运行时 · 3 个常驻 Agent 在线 · 2 项已完成，2 项等待 CI</div>
+</div>
+</div>
+</div>
+<div class="home-stage__panel" data-stage-panel="mobile" hidden>
+<div class="home-mobile-stage" role="region" aria-label="连接到同一常驻服务的 Holon 手机客户端界面示意">
+<div class="home-phones" aria-hidden="true">
+<div class="home-phone">
+<div class="home-phone__notch"><span>9:41</span><i></i><span>5G</span></div>
+<div class="home-phone__top"><strong>Holon</strong><span class="home-phone__live">dev-server</span></div>
+<div class="home-phone__search">搜索常驻 Agent…</div>
+<div class="home-phone__list">
+<div class="home-phone__row"><span class="home-phone__dot"></span><div><strong>问题调查</strong><small>空闲 · 上次简报 09:48</small></div></div>
+<div class="home-phone__row home-phone__row--active"><span class="home-phone__dot home-phone__dot--wait"></span><div><strong>代码审阅</strong><small>跟进 PR #42：修复分页遗漏…</small></div><em>等 CI</em></div>
+<div class="home-phone__row"><span class="home-phone__dot home-phone__dot--ok"></span><div><strong>验证测试</strong><small>就绪 · 1 个工作区</small></div></div>
+</div>
+</div>
+<div class="home-phone">
+<div class="home-phone__notch"><span>9:42</span><i></i><span>5G</span></div>
+<div class="home-phone__top"><span>‹ 代码审阅</span><span class="home-phone__chip">文件</span></div>
+<div class="home-phone__card">
+<span class="home-phone__kicker">PR #42 · 阶段简报</span>
+<strong>新提交已复核，正在等待 CI</strong>
+<p>已核对 commit 8f3c1a2 的分页修复与空列表回归测试。</p>
+<div class="home-phone__trace">▸ 已折叠 4 次工具调用与 Diff 记录</div>
+</div>
+<div class="home-phone__wait">等待 GitHub CI · 可随时回复调整要求</div>
+<div class="home-phone__composer"><span>保留旧接口，CI 通过后合并</span><b>↑</b></div>
+</div>
+</div>
+<div class="home-mobile-stage__info">
+<span class="home-mobile-stage__kicker">HOLON AGENT REMOTE · IOS &amp; ANDROID</span>
+<h3>离开工位，也能随时查看简报、拍板放行。</h3>
+<ul class="home-mobile-stage__list">
+<li><strong>扫码一键配对</strong> — 扫描 Web 工作台或 macOS 菜单栏二维码即可连接，可吊销凭据安全存入系统钥匙串。</li>
+<li><strong>结果优先时间线</strong> — 直接阅读清晰的交付简报与工作区文件，底层冗长的工具日志默认折叠不刷屏。</li>
+<li><strong>一句话恢复推进</strong> — 在路上回复关键取舍，或通过系统分享菜单把链接直接派发给指定 Agent。</li>
+</ul>
+<div class="home-mobile-stage__links">
+<a href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS App Store ↗</a>
+<a href="https://github.com/holon-run/holon/releases/download/v0.61.1/holon-android-v0.61.1.apk">下载 Android APK ↗</a>
+<a href="/zh-CN/guides/connect-ios-client">iOS 配对指南 →</a>
+</div>
+</div>
+</div>
+</div>
+<div class="home-stage__callouts">
+<div class="home-stage__callout"><span>01 · 长期职责</span><strong>按角色常驻的 Agent</strong><p>问题调查、代码审阅、测试验证各自拥有独立的技能、指令与记忆。</p></div>
+<div class="home-stage__callout"><span>02 · WORKITEM</span><strong>保存计划与核对清单</strong><p>目标、已完成检查和下一步进展绑定在同一工作项上，跨多轮对话与多天不丢失。</p></div>
+<div class="home-stage__callout"><span>03 · 等待与唤醒</span><strong>等 CI、等事件、按需人工拍板</strong><p>等待外部结果或人工确认时安静挂起，事件到达后沿着已有进度原地恢复。</p></div>
+</div>
 </div>
 </section>
 
@@ -145,20 +204,23 @@ holon onboard && holon daemon start
 <div class="home-section__intro home-section__intro--narrow">
 <p class="home-kicker">个人使用，也能团队共享</p>
 
-## 随时查看进展，一起把工作往前推。
+## 一个常驻运行时，<span class="home-nowrap">多端随时接入，</span><span class="home-nowrap">支持团队协作。</span>
 
-通过 Web 界面或终端界面（TUI）查看任务、补充信息、调整方向。部署到团队服务器后，成员可以向同一个 Agent 安排任务、反馈结果，沿着已有进度继续工作。
-
-多个工作区分别存放不同项目的文件与产物。Agent 在后台跟进，你和团队按需回来查看与参与。
+在个人电脑或团队 Linux 服务器上运行 Holon。无论通过浏览器、终端（TUI）还是手机连接，看到的都是同一份实时任务进度与上下文。
 
 </div>
-<figure class="home-workbench-preview">
-<a href="/assets/lite-paper/web-gui-review-zh-CN.webp" aria-label="查看 Web 工作台截图大图">
-<img src="/assets/lite-paper/web-gui-review-zh-CN.webp" width="1600" height="1003" alt="Holon Web 工作台：左侧按职责列出 Agent，中间展示审阅进展与下一步，右侧显示当前任务、等待原因与待办。" loading="lazy" decoding="async">
-</a>
-<figcaption>Web 工作台：查看已完成的工作、正在等待的结果和下一步。截图使用演示数据，点击可查看大图。</figcaption>
+<figure class="home-architecture-figure">
+<picture class="home-architecture">
+<source media="(max-width: 640px)" srcset="/assets/runtime-architecture-zh-narrow.png" width="480" height="550">
+<img src="/assets/runtime-architecture-zh.png" width="1200" height="350" alt="Holon 运行时架构：TUI、Web UI 与手机端连接到你的机器或服务器上的 Holon 服务，统一管理常驻 Agents、WorkItems 与等待唤醒机制，并在明确授权的工作区内执行。" loading="lazy" decoding="async">
+</picture>
 </figure>
-<p class="home-product__caption">持续跟进需要运行 Holon 的电脑或服务器及后台服务保持开启。Agent 可使用的文件与工具取决于你的配置。</p>
+<div class="home-team-points">
+<div><h3>多端自由切换</h3><p>在终端发起任务，外出时用 iOS 或 Android 查看进展、回复确认，回到电脑在 Web 工作台核对细节。</p></div>
+<div><h3>团队共享常驻 Agent</h3><p>部署到团队服务器后，成员可以向同一个 Agent 补充测试反馈或交接问题，沿着已有 WorkItem 继续推进。</p></div>
+<div><h3>工作区与权限边界清晰</h3><p>不同项目的文件与产物隔离在各自工作区中，Agent 可访问的目录与工具链完全由你的配置决定。</p></div>
+</div>
+<p class="home-product__caption">持续跟进需要运行 Holon 的电脑或服务器及后台服务保持开启。</p>
 </section>
 
 <!-- TEMPLATES:START -->

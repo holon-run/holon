@@ -73,13 +73,13 @@ Holon 将这份完成报告与内部执行轨迹分开。你可以从报告进�
 
 ### 工作环境常驻，操作入口可以更换
 
-Holon 的后台 Runtime 管理 Agent 的执行和工作状态，终端 TUI 与 Web GUI 是连接它的入口。项目和工具跟着运行环境走，而不是跟着某个客户端窗口走。
+Holon 的后台 Runtime 管理 Agent 的执行和工作状态，Web UI、终端 TUI/CLI 与手机客户端都是连接它的入口。项目和工具跟着运行环境走，而不是跟着某个客户端窗口走。
 
-这对远程开发很直接：编译器、仓库和测试环境已经在开发机上，就让 Agent 在那里运行。你从浏览器查看结果，或通过终端继续交代要求，连接的仍是同一个后台。
+这对远程开发很直接：编译器、仓库和测试环境已经在开发机上，就让 Agent 在那里运行。无论你从浏览器查看结果、通过终端继续交代要求，还是在外出时用手机查看简报，连接的都是同一个后台。
 
 <picture class="home-architecture">
 <source media="(max-width: 640px)" srcset="/assets/runtime-architecture-zh-narrow.png" width="480" height="550">
-<img class="article-architecture" src="/assets/runtime-architecture-zh.png" width="1200" height="350" alt="终端 TUI 与 Web UI 连接同一个常驻 Holon，手机入口以虚线边框和连线表示。Holon 支持持续工作、状态保存与事件唤醒，管理 Agent 和工作项，在宿主机上使用工作区、文件和工具链。" loading="lazy" decoding="async">
+<img class="article-architecture" src="/assets/runtime-architecture-zh.png" width="1200" height="350" alt="Web UI、终端 TUI/CLI 与手机端连接同一个常驻 Holon 服务。Holon 支持持续工作、状态保存与事件唤醒，管理常驻 Agents 和 WorkItems，并在明确授权范围内执行本地工作区、文件与工具链。" loading="lazy" decoding="async">
 </picture>
 
 后台与宿主机需要保持可用，关闭客户端和关闭运行环境是两回事。图中的机器边界说明运行位置，不代表额外的权限隔离。

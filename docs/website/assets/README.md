@@ -67,8 +67,10 @@ It requires CairoSVG and Noto Sans CJK SC.
 Keep HTML image dimensions synchronized with the selected layout.
 The host boundary contains the runtime and execution resources, not interfaces;
 it describes execution location, not a security sandbox.
-Mobile uses a dashed outline and connector. Thin internal rules separate the
-Holon heading and its three parallel responsibilities, without a workflow arrow.
+Web UI, TUI & CLI, and Mobile all use solid cards and connectors as shipped
+first-class clients. Soft tonal rows present Holon's three parallel
+responsibilities (`Agents`, `WorkItems`, `Wait / Wake`) alongside the workspace
+execution zone.
 The heading avoids runtime terminology; its subtitle describes ongoing work,
 saved state and event wakeups. Technical terminology in article prose is unchanged.
 
