@@ -8,7 +8,7 @@
     "dev": "npm run prepare:content && mdorigin dev --root ./dist/content --config ./dist/content/mdorigin.config.mjs",
     "build:index": "mdorigin build index --root ./dist/content --config ./dist/content/mdorigin.config.mjs",
     "build:search": "mdorigin build search --root ./dist/content --config ./dist/content/mdorigin.config.mjs --out ./dist/search",
-    "build:cloudflare": "node rewrite-asset-host.mjs && mdorigin build cloudflare --root ./dist/content --config ./dist/content/mdorigin.config.mjs --search ./dist/search --binary-mode external --out ./dist/cloudflare && node check-template-bundle.mjs && node check-docs-layout.mjs && node rewrite-asset-host.mjs --check",
+    "build:cloudflare": "node rewrite-asset-host.mjs && mdorigin build cloudflare --root ./dist/content --config ./dist/content/mdorigin.config.mjs --search ./dist/search --binary-mode external --out ./dist/cloudflare && node stage-referenced-assets.mjs && node check-template-bundle.mjs && node check-docs-layout.mjs && node rewrite-asset-host.mjs --check && node stage-referenced-assets.mjs --check",
     "check:docs-layout": "node check-docs-layout.mjs",
     "check:asset-host": "node rewrite-asset-host.mjs --check",
     "check:templates": "node check-template-bundle.mjs",

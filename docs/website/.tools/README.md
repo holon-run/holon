@@ -83,6 +83,15 @@ connection anyway. Set `ASSET_HOST=none` to skip the rewrite: that is the
 rollback switch, and pages return to same-origin media after the page Worker is
 rebuilt and redeployed.
 
+`stage-referenced-assets.mjs` runs right after the bundle is built. mdorigin
+counts `image/svg+xml` as text, so diagrams stay inside the page Worker bundle
+and are never staged into the asset directory; the script copies every media
+file that pages now reference on `assets.holon.run` into
+`dist/cloudflare/assets` when mdorigin has not staged it, and its `--check` form
+fails the build when a rewritten reference has no staged file. Adding a new
+text-based media type therefore needs no extra step, but removing this script
+brings back `404` responses for diagrams on the asset host.
+
 The zone needs one proxied placeholder record, `assets.holon.run AAAA 100::`:
 a Worker route only matches a hostname that already resolves through
 Cloudflare. The `assets.holon.run/*` route itself is configured once in the
