@@ -34,6 +34,7 @@ pub mod storage_domain;
 pub mod task;
 pub mod turn;
 pub mod unread;
+pub mod usage;
 pub mod wait;
 pub mod work_item;
 pub mod workspace_context;

@@ -601,6 +601,8 @@ DeepSeek、Z.AI 与 BigModel 的独立搜索服务同样支持零配置发现。
 | `runtime.retention.transcript_entries_min_rows` | positive integer | `20000` | 全局保留的最小对话记录行数。 |
 | `runtime.retention.tool_executions_days` | positive integer | `90` | 工具执行保留的天数窗口。 |
 | `runtime.retention.tool_executions_min_rows` | positive integer | `15000` | 全局保留的最小工具执行行数。 |
+| `runtime.retention.usage_attempts_days` | positive integer | `400` | attempt 级用量账本保留的天数窗口，与 trace 保留窗口相互独立。 |
+| `runtime.retention.usage_attempts_min_rows` | positive integer | `20000` | 全局保留的最小 usage attempt 行数。 |
 | `runtime.retention.incremental_vacuum_pages` | positive integer | `256` | 保留清理后向 SQLite 增量 vacuum 请求的最大页数。 |
 
 ## 命令任务输出安全

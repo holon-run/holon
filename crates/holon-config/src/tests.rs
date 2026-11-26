@@ -3109,3 +3109,62 @@ kind = "none"
     assert_eq!(discovery.path, None);
     assert_eq!(discovery.decoder, None);
 }
+
+#[test]
+fn runtime_retention_usage_ledger_keys_round_trip_defaults_and_bounds() {
+    let mut config = HolonConfigFile::default();
+    let defaults = resolve_runtime_db_retention_policy(&config).unwrap();
+    assert_eq!(defaults.usage_attempts_days, 400);
+    assert_eq!(defaults.usage_attempts_min_rows, 20_000);
+    assert_eq!(
+        get_config_key(&config, "runtime.retention.usage_attempts_days").unwrap(),
+        serde_json::Value::Null
+    );
+
+    set_config_key(&mut config, "runtime.retention.usage_attempts_days", "730").unwrap();
+    set_config_key(
+        &mut config,
+        "runtime.retention.usage_attempts_min_rows",
+        "5000",
+    )
+    .unwrap();
+    assert_eq!(
+        get_config_key(&config, "runtime.retention.usage_attempts_days").unwrap(),
+        serde_json::json!(730)
+    );
+    let resolved = resolve_runtime_db_retention_policy(&config).unwrap();
+    assert_eq!(resolved.usage_attempts_days, 730);
+    assert_eq!(resolved.usage_attempts_min_rows, 5_000);
+
+    assert!(set_config_key(&mut config, "runtime.retention.usage_attempts_days", "0").is_err());
+    assert!(set_config_key(
+        &mut config,
+        "runtime.retention.usage_attempts_min_rows",
+        "0"
+    )
+    .is_err());
+
+    // 3650 is the shared age ceiling for retention windows.
+    assert!(set_config_key(&mut config, "runtime.retention.usage_attempts_days", "3651").is_err());
+
+    set_config_key(&mut config, "runtime.retention.usage_attempts_days", "3650").unwrap();
+    assert_eq!(
+        resolve_runtime_db_retention_policy(&config)
+            .unwrap()
+            .usage_attempts_days,
+        3650
+    );
+
+    unset_config_key(&mut config, "runtime.retention.usage_attempts_days").unwrap();
+    unset_config_key(&mut config, "runtime.retention.usage_attempts_min_rows").unwrap();
+    assert_eq!(
+        get_config_key(&config, "runtime.retention.usage_attempts_days").unwrap(),
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        resolve_runtime_db_retention_policy(&config)
+            .unwrap()
+            .usage_attempts_days,
+        400
+    );
+}

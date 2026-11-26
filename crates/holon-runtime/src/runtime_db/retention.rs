@@ -65,6 +65,7 @@ pub struct RuntimeDbRetentionReport {
     pub audit_events: RuntimeDbRetentionTableReport,
     pub transcript_entries: RuntimeDbRetentionTableReport,
     pub tool_executions: RuntimeDbRetentionTableReport,
+    pub usage_attempts: RuntimeDbRetentionTableReport,
     pub audit_scopes_observed: u64,
     pub audit_scopes_skipped_below_minimum_rows: u64,
     pub page_size: u64,
@@ -427,6 +428,13 @@ fn build_retention_commit(
         &mut removed_tool_executions,
         None,
     )?;
+    let usage_attempts = plan_usage_attempts(
+        connection,
+        delete_tx,
+        now - retention_days(policy.usage_attempts_days)?,
+        policy.usage_attempts_min_rows,
+        dry_run,
+    )?;
     let report = RuntimeDbRetentionReport {
         dry_run,
         enabled: policy.enabled,
@@ -436,6 +444,7 @@ fn build_retention_commit(
         audit_events,
         transcript_entries,
         tool_executions,
+        usage_attempts,
         audit_scopes_observed,
         audit_scopes_skipped_below_minimum_rows: audit_scopes_skipped,
         page_size: stats.page_size,
@@ -656,6 +665,58 @@ fn delete_audit_prefix(
         )?;
     }
     Ok(deleted)
+}
+
+/// Plan and apply age-based retention for the attempt-level usage ledger.
+///
+/// The ledger is append-only runtime state with no strong roots: rows are
+/// protected only by `usage_attempts_min_rows`, so a configured minimum keeps
+/// older billing baselines even when they are outside the age window.
+fn plan_usage_attempts(
+    connection: &Connection,
+    delete_tx: Option<&Transaction<'_>>,
+    cutoff: DateTime<Utc>,
+    minimum_rows: usize,
+    dry_run: bool,
+) -> Result<RuntimeDbRetentionTableReport> {
+    let mut report = RuntimeDbRetentionTableReport::default();
+    report.observed_rows =
+        connection.query_row("SELECT COUNT(*) FROM usage_attempts", [], |row| row.get(0))?;
+    if report.observed_rows <= minimum_rows as u64 {
+        report.skipped_below_minimum_rows = true;
+        return Ok(report);
+    }
+    let removable_capacity = report.observed_rows.saturating_sub(minimum_rows as u64);
+    let mut statement = connection.prepare(
+        "SELECT attempt_id FROM usage_attempts
+          WHERE started_at < ?1
+          ORDER BY started_at ASC, attempt_id ASC",
+    )?;
+    let rows = statement.query_map(params![timestamp(cutoff)], |row| row.get::<_, String>(0))?;
+    let mut deletions = Vec::new();
+    for row in rows {
+        let attempt_id = row?;
+        report.candidate_rows = report.candidate_rows.saturating_add(1);
+        if deletions.len() < RETENTION_DELETE_BATCH_ROWS
+            && deletions.len() < removable_capacity as usize
+        {
+            deletions.push(attempt_id);
+        }
+    }
+    report.planned_delete_rows = deletions.len() as u64;
+    if dry_run || deletions.is_empty() {
+        return Ok(report);
+    }
+    let tx =
+        delete_tx.ok_or_else(|| anyhow!("usage_attempts retention delete requires transaction"))?;
+    for attempt_id in &deletions {
+        let deleted = tx.execute(
+            "DELETE FROM usage_attempts WHERE attempt_id = ?1",
+            params![attempt_id],
+        )?;
+        report.deleted_rows = report.deleted_rows.saturating_add(deleted as u64);
+    }
+    Ok(report)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1159,6 +1220,8 @@ mod tests {
             audit_events_min_rows_per_scope: holon_domain::MAX_EVENT_STREAM_WINDOW,
             transcript_entries_min_rows: 1,
             tool_executions_min_rows: 1,
+            usage_attempts_days: 30,
+            usage_attempts_min_rows: 1,
             interval_hours: 1,
             incremental_vacuum_pages: 1,
         }
@@ -1183,6 +1246,80 @@ mod tests {
             call_binding: None,
             invocation_surface: None,
         }
+    }
+
+    fn usage_attempt(
+        id: &str,
+        started_at: DateTime<Utc>,
+        uncached_input_tokens: Option<u64>,
+    ) -> crate::runtime_db::usage::UsageAttemptRecord {
+        crate::runtime_db::usage::UsageAttemptRecord {
+            attempt_id: id.into(),
+            agent_id: "agent-a".into(),
+            turn_id: Some("turn-a".into()),
+            work_item_id: None,
+            task_id: None,
+            round_index: Some(0),
+            attempt_index: 1,
+            started_at,
+            provider: "opencode-go".into(),
+            endpoint: "default".into(),
+            model_id: "kimi-k2".into(),
+            model_ref: "opencode-go@default/kimi-k2".into(),
+            transport: Some("openai_chat".into()),
+            service_tier: None,
+            outcome: crate::runtime_db::usage::UsageAttemptOutcome::Success,
+            failure_category: None,
+            token_usage: uncached_input_tokens.map(|tokens| {
+                crate::runtime_db::usage::UsageTokenCounts {
+                    uncached_input_tokens: tokens,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    output_tokens: 1,
+                    reasoning_tokens: None,
+                }
+            }),
+            trace_id: None,
+            span_id: None,
+        }
+    }
+
+    #[test]
+    fn usage_attempt_retention_honors_age_window_and_row_floor() -> Result<()> {
+        let (_directory, db) = runtime_db()?;
+        let now = Utc::now();
+        db.append_usage_attempts(&[
+            usage_attempt("old-a", now - Duration::days(60), Some(10)),
+            usage_attempt("old-b", now - Duration::days(60), None),
+            usage_attempt("new-a", now - Duration::days(1), Some(5)),
+        ])?;
+
+        let mut disabled = policy();
+        disabled.enabled = false;
+        let report = db.run_retention_pass(disabled, now)?;
+        assert_eq!(report.usage_attempts.observed_rows, 3);
+        assert_eq!(report.usage_attempts.deleted_rows, 0);
+        assert_eq!(db.usage_attempt_count(None)?, 3);
+
+        let enabled = policy();
+        let report = db.run_retention_pass(enabled.clone(), now)?;
+        assert_eq!(report.usage_attempts.candidate_rows, 2);
+        assert_eq!(report.usage_attempts.deleted_rows, 2);
+        assert_eq!(db.usage_attempt_count(None)?, 1);
+
+        // The row floor keeps older rows even when the age window would delete
+        // them, so a configured minimum cannot be eaten by one long window.
+        db.append_usage_attempts(&[
+            usage_attempt("old-c", now - Duration::days(60), None),
+            usage_attempt("old-d", now - Duration::days(60), None),
+        ])?;
+        let mut floored = enabled;
+        floored.usage_attempts_min_rows = 3;
+        let report = db.run_retention_pass(floored, now)?;
+        assert!(report.usage_attempts.skipped_below_minimum_rows);
+        assert_eq!(report.usage_attempts.deleted_rows, 0);
+        assert_eq!(db.usage_attempt_count(None)?, 3);
+        Ok(())
     }
 
     #[test]

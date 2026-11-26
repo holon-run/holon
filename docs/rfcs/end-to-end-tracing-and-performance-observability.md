@@ -54,6 +54,9 @@ not the basis of the normal performance trace.
 - recording prompts, responses, tool input/output, file contents, or HTTP
   bodies in normal traces;
 - replacing audit, transcript, turn, tool evidence, or runtime state tables;
+- serving as a usage or cost ledger: attempt-level token usage is persisted as
+  runtime state under [`runtime-usage-ledger`](runtime-usage-ledger.md), so
+  trace sampling and trace retention never govern whether usage is recorded;
 - automatically tracing every Rust function;
 - requiring Jaeger, Tempo, Prometheus, or another external backend;
 - allowing exporter or diagnostics-writer failure to fail runtime work.

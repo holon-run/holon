@@ -823,6 +823,9 @@ const RETAINED_TABLES: &[&str] = &[
     "agent_deletion_jobs",
     "agent_lineages",
     "agent_supervisions",
+    // Append-only usage history: the ledger spec keeps attempts out of the
+    // agent's private history and only bounds them through retention.
+    "usage_attempts",
     "workspace_entries",
 ];
 
@@ -2816,6 +2819,46 @@ mod tests {
         })?;
         purge_private_history(&db, "a", 1, Utc::now())?;
         settle_execution(&db, "a", 1, Utc::now())
+    }
+
+    #[test]
+    fn retained_usage_ledger_rows_do_not_block_agent_deletion() -> Result<()> {
+        use holon_storage::usage::{UsageAttemptOutcome, UsageAttemptRecord};
+
+        let (_dir, db) = fixture()?;
+        db.append_usage_attempts(&[UsageAttemptRecord {
+            attempt_id: "attempt-a".into(),
+            agent_id: "a".into(),
+            turn_id: Some("turn-a".into()),
+            work_item_id: None,
+            task_id: None,
+            round_index: Some(0),
+            attempt_index: 1,
+            started_at: Utc::now(),
+            provider: "opencode-go".into(),
+            endpoint: "default".into(),
+            model_id: "kimi-k2".into(),
+            model_ref: "opencode-go@default/kimi-k2".into(),
+            transport: None,
+            service_tier: None,
+            outcome: UsageAttemptOutcome::FailedTerminal,
+            failure_category: Some("server_error".into()),
+            token_usage: None,
+            trace_id: None,
+            span_id: None,
+        }])?;
+        fence(&db)?;
+        settle_execution(&db, "a", 1, Utc::now())?;
+        purge_private_history(&db, "a", 1, Utc::now())?;
+        db.transaction(|tx| {
+            assert_private_history_cleared_tx(tx, "a")?;
+            assert!(exists(
+                tx,
+                "SELECT EXISTS(SELECT 1 FROM usage_attempts WHERE agent_id = ?1)",
+                "a"
+            )?);
+            Ok(())
+        })
     }
 
     #[test]

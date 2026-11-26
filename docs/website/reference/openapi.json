@@ -16709,6 +16709,16 @@
                     "format": "uint",
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "usage_attempts_days": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "usage_attempts_min_rows": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -16719,6 +16729,8 @@
                   "audit_events_min_rows_per_scope",
                   "transcript_entries_min_rows",
                   "tool_executions_min_rows",
+                  "usage_attempts_days",
+                  "usage_attempts_min_rows",
                   "interval_hours",
                   "incremental_vacuum_pages"
                 ],
@@ -17451,6 +17463,16 @@
                     "format": "uint",
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "usage_attempts_days": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "usage_attempts_min_rows": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -17461,6 +17483,8 @@
                   "audit_events_min_rows_per_scope",
                   "transcript_entries_min_rows",
                   "tool_executions_min_rows",
+                  "usage_attempts_days",
+                  "usage_attempts_min_rows",
                   "interval_hours",
                   "incremental_vacuum_pages"
                 ],

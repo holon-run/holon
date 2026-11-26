@@ -135,11 +135,22 @@ async fn startup_retires_legacy_destructive_operations_without_executing_them() 
             .find(|migration| migration.name == "destructive_operation_fences")
             .unwrap();
         db.execute_batch(migration.sql)?;
+        // Roll migration history back to just before the retire migration so
+        // startup replays it, instead of leaving a hole when newer migrations
+        // exist beyond it.
+        let retire_version = holon_storage::migrations::MIGRATIONS
+            .iter()
+            .find(|migration| migration.name == "retire_destructive_operation_scheduler")
+            .expect("retire migration is published")
+            .version;
         db.execute_batch(
             "ALTER TABLE destructive_operations ADD COLUMN command_digest TEXT NOT NULL DEFAULT '';
-             DELETE FROM schema_migrations WHERE name = 'retire_destructive_operation_scheduler';
              INSERT INTO runtime_metadata (key, value, created_at, updated_at)
              VALUES ('destructive_operation_closed:old-closed', '1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);",
+        )?;
+        db.execute(
+            "DELETE FROM schema_migrations WHERE version >= ?1",
+            [retire_version],
         )?;
         for (id, phase) in legacy {
             db.execute(

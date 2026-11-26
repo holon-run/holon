@@ -7848,6 +7848,10 @@ export interface components {
                     transcript_entries_days: number;
                     /** Format: uint */
                     transcript_entries_min_rows: number;
+                    /** Format: uint64 */
+                    usage_attempts_days: number;
+                    /** Format: uint */
+                    usage_attempts_min_rows: number;
                 };
                 /** Format: uint32 */
                 runtime_max_output_tokens: number;
@@ -8061,6 +8065,10 @@ export interface components {
                     transcript_entries_days: number;
                     /** Format: uint */
                     transcript_entries_min_rows: number;
+                    /** Format: uint64 */
+                    usage_attempts_days: number;
+                    /** Format: uint */
+                    usage_attempts_min_rows: number;
                 };
                 /** Format: uint32 */
                 runtime_max_output_tokens: number;

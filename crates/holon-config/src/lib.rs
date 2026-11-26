@@ -267,6 +267,12 @@ pub fn resolve_runtime_db_retention_policy(
         tool_executions_min_rows: configured
             .tool_executions_min_rows
             .unwrap_or(defaults.tool_executions_min_rows),
+        usage_attempts_days: configured
+            .usage_attempts_days
+            .unwrap_or(defaults.usage_attempts_days),
+        usage_attempts_min_rows: configured
+            .usage_attempts_min_rows
+            .unwrap_or(defaults.usage_attempts_min_rows),
         interval_hours: configured.interval_hours.unwrap_or(defaults.interval_hours),
         incremental_vacuum_pages: configured
             .incremental_vacuum_pages
