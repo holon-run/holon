@@ -81,6 +81,7 @@ struct SettingsView: View {
 struct LoginSharingConsentSection: View {
     let apiBaseURL: URL
     @Binding var agreed: Bool
+    var showsHeader = true
     @AppStorage("ui.language") private var language = "system"
 
     private var policyURL: URL {
@@ -88,18 +89,20 @@ struct LoginSharingConsentSection: View {
     }
 
     var body: some View {
-        Section("privacy.title") {
+        Section {
             Text(verbatim: PrivacyDisclosure.text(for: apiBaseURL)).font(.footnote)
-            Text(verbatim: apiBaseURL.absoluteString).font(.footnote)
+            Text(verbatim: apiBaseURL.absoluteString).font(.footnote.monospaced()).foregroundStyle(.secondary)
                 .accessibilityIdentifier("privacy.target")
             Link("privacy.policy", destination: policyURL)
                 .accessibilityIdentifier("privacy.policy")
             Toggle("privacy.agree", isOn: $agreed)
                 .accessibilityIdentifier("privacy.accept")
-            Text("privacy.withdrawal").font(.footnote)
+            Text("privacy.withdrawal").font(.footnote).foregroundStyle(.secondary)
             if SharingConsent.shared.defaults == nil {
                 Text("privacy.storageUnavailable").foregroundStyle(.red)
             }
+        } header: {
+            if showsHeader { Text("privacy.title") }
         }
     }
 }
@@ -115,15 +118,27 @@ struct ConnectionSharingConsentView: View {
         NavigationStack {
             Form {
                 LoginSharingConsentSection(apiBaseURL: apiBaseURL, agreed: $agreed)
-                Button("privacy.continue") {
-                    guard agreed else { return }
-                    SharingConsent.shared.approve(apiBaseURL)
-                    if SharingConsent.shared.approved(apiBaseURL) { onApproved() }
+                Section {
+                    Button {
+                        guard agreed else { return }
+                        SharingConsent.shared.approve(apiBaseURL)
+                        if SharingConsent.shared.approved(apiBaseURL) { onApproved() }
+                    } label: {
+                        Text("privacy.continue")
+                            .frame(maxWidth: .infinity, minHeight: 32)
+                            .multilineTextAlignment(.center)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!agreed || SharingConsent.shared.defaults == nil)
+                    .accessibilityIdentifier("privacy.continue")
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
                 }
-                .disabled(!agreed || SharingConsent.shared.defaults == nil)
-                .accessibilityIdentifier("privacy.continue")
-                Button("onboarding.otherConnection", action: onChangeConnection)
-                    .accessibilityIdentifier("privacy.otherConnection")
+                Section {
+                    Button("onboarding.otherConnection", action: onChangeConnection)
+                        .accessibilityIdentifier("privacy.otherConnection")
+                }
             }
             .navigationTitle("onboarding.loginStep")
         }

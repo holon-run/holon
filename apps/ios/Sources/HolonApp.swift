@@ -118,17 +118,20 @@ struct HolonApp: App {
                                             destination(route, connection: coordinator)
                                         }
                                 }
-                                .tint(.primary)
                                 .safeAreaInset(edge: .top, spacing: 0) {
                                     if !imports.pending.isEmpty, router.path.last != .tools {
                                         Button {
                                             router.path.append(.tools)
                                         } label: {
-                                            HStack {
+                                            HStack(spacing: 8) {
                                                 Image(systemName: "square.and.arrow.down")
+                                                    .foregroundStyle(Color.accentColor)
                                                 Text("share.pending \(imports.pending.count)")
+                                                    .foregroundStyle(.primary)
                                                 Spacer()
-                                                Image(systemName: "chevron.right").font(.caption)
+                                                Image(systemName: "chevron.right")
+                                                    .font(.caption.weight(.semibold))
+                                                    .foregroundStyle(.tertiary)
                                             }.font(.callout).padding(.horizontal, 16).frame(minHeight: 44)
                                         }
                                         .background(.bar)

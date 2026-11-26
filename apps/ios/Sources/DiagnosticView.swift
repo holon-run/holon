@@ -43,6 +43,9 @@ struct DiagnosticView: View {
             if !report.isEmpty {
                 Text(report).font(.body.monospaced()).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                     .accessibilityIdentifier("diagnostics.report")
                 ShareLink(item: report) {
                     Label("diagnostics.export", systemImage: "square.and.arrow.up")

@@ -30,6 +30,7 @@ struct AgentStatusLabel: View {
                 Image(systemName: presentation.icon.systemName)
             }
         }
+        .labelStyle(.titleAndIcon)
         .foregroundStyle(color)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(LocalizedStringKey(presentation.statusKey)))

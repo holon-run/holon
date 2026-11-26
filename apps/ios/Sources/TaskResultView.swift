@@ -4,17 +4,35 @@ import HolonClient
 struct TaskResultLabel: View {
     let result: TaskResultInput
     var showReason = false
+
+    private var conciseTitle: String? {
+        guard let raw = result.title else { return nil }
+        var cleaned = raw
+        if cleaned.hasPrefix("Run command: ") {
+            cleaned = String(cleaned.dropFirst("Run command: ".count))
+        }
+        for boilerplate in ["set -euo pipefail; ", "set -eu; ", "set -e; "] {
+            if cleaned.hasPrefix(boilerplate) {
+                cleaned = String(cleaned.dropFirst(boilerplate.count))
+            }
+        }
+        return cleaned.isEmpty ? raw : cleaned
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Image(systemName: result.isFailure ? "exclamationmark.circle" : result.status == "completed" ? "checkmark.circle" : "clock")
-                if let title = result.title { Text(verbatim: title).lineLimit(1) }
+                Image(systemName: result.isFailure ? "exclamationmark.triangle" : result.status == "completed" ? "checkmark.circle" : "clock")
+                if let title = conciseTitle { Text(verbatim: title).lineLimit(1) }
                 else if result.responseMessageID == nil { Text("reading.taskResult") }
                 Text(LocalizedStringKey(result.statusKey)).lineLimit(1)
             }
-            if showReason, let reason = result.reason, !reason.isEmpty { Text(verbatim: reason).lineLimit(1) }
+            if showReason, let reason = result.reason, !reason.isEmpty {
+                Text(verbatim: reason).lineLimit(1)
+            }
         }
-        .font(.caption).foregroundStyle(result.isFailure ? Color.red : Color.secondary)
+        .font(.caption)
+        .foregroundStyle(result.isFailure ? Color.orange : Color.secondary)
     }
 }
 

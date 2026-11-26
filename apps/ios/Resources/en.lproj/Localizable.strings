@@ -69,6 +69,13 @@
 "reading.history" = "Load earlier turns";
 "reading.newerTurns" = "Read newer turns";
 "reading.turn" = "Turn";
+"reading.source.operator" = "Operator message";
+"reading.source.task" = "Task result";
+"reading.source.external" = "External message";
+"reading.source.timer" = "Scheduled check";
+"reading.source.internal" = "Background continuation";
+"reading.source.system" = "System wake";
+"reading.source.operational" = "Runtime action";
 "reading.operator" = "Operator";
 "reading.brief" = "Brief";
 "reading.brief.unloaded" = "Brief not loaded";
@@ -144,7 +151,10 @@
 
 /* Native sending editor */
 "sending.draft" = "Draft";
+"sending.expandEditor" = "Expand editor";
 "sending.queue" = "Outbox";
+"sending.queue.empty" = "Outbox is empty";
+"sending.model.reset" = "Reset to default model";
 "sending.stop" = "Stop current run";
 "sending.stop.confirm" = "Stop the current agent run?";
 "sending.stop.explanation" = "This stops the server run, not just a local HTTP request.";

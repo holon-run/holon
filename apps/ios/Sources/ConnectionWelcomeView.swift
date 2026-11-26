@@ -30,10 +30,11 @@ struct ConnectionWelcomeView: View {
             Group {
                 if step == .address {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 24) {
+                        VStack(alignment: .leading, spacing: 20) {
                             addressEntry
                         }
-                        .padding()
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 16)
                     }
                     .background(Color(uiColor: .systemGroupedBackground))
                 } else {
@@ -101,18 +102,15 @@ struct ConnectionWelcomeView: View {
 
     private var addressEntry: some View {
         Group {
-            // Mirrors the audited welcome layout: ScrollView cards, no Form rows.
-            VStack(alignment: .leading, spacing: 16) {
-                Image(systemName: "server.rack").font(.largeTitle)
-                    .foregroundStyle(Color.accentColor).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 14) {
+                Image(systemName: "server.rack")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(12)
+                    .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                    .accessibilityHidden(true)
                 LocalizedMultilineText(key: "onboarding.welcome", isHeading: true)
                 LocalizedMultilineText(key: "onboarding.purpose")
-                TextField("profiles.address", text: $address)
-                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .submitLabel(.next).onSubmit { connectAddress() }
-                    .focused($addressFocused)
-                    .accessibilityIdentifier("onboarding.address")
-                Text("onboarding.addressExample").font(.subheadline).foregroundStyle(.secondary)
                 Button {
                     addressFocused = false
                     pairingAttempt = false
@@ -120,25 +118,59 @@ struct ConnectionWelcomeView: View {
                 } label: {
                     actionLabel("onboarding.scan", image: "qrcode.viewfinder")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .accessibilityIdentifier("onboarding.scan")
-                DisclosureGroup("onboarding.advanced") {
-                    TextField("profiles.name", text: $name)
-                    Text("profiles.addressHelp").font(.subheadline).foregroundStyle(.secondary)
-                    Text("onboarding.noLocalhost").font(.subheadline).foregroundStyle(.secondary)
+            }
+            .disabled(coordinator.isBusy)
+
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("profiles.address", text: $address)
+                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .submitLabel(.next).onSubmit { connectAddress() }
+                        .focused($addressFocused)
+                        .accessibilityIdentifier("onboarding.address")
+                    Rectangle()
+                        .fill(addressFocused ? Color.accentColor : Color.secondary.opacity(0.28))
+                        .frame(height: addressFocused ? 1.5 : 1)
+                        .accessibilityHidden(true)
                 }
+                Text("onboarding.addressExample").font(.caption).foregroundStyle(.secondary)
                 if insecureAddressNeedsConfirmation {
-                    Toggle("connection.allowHTTP", isOn: $allowHTTP)
-                        .accessibilityIdentifier("onboarding.allowHTTP")
-                    Text("connection.httpWarning").font(.subheadline).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("connection.allowHTTP", isOn: $allowHTTP)
+                            .accessibilityIdentifier("onboarding.allowHTTP")
+                        Text("connection.httpWarning").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(12)
+                    .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                }
+                DisclosureGroup("onboarding.advanced") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            TextField("profiles.name", text: $name)
+                            Rectangle()
+                                .fill(Color.secondary.opacity(0.25))
+                                .frame(height: 1)
+                                .accessibilityHidden(true)
+                        }
+                        Text("profiles.addressHelp").font(.caption).foregroundStyle(.secondary)
+                        Text("onboarding.noLocalhost").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 8)
                 }
                 Button { connectAddress() } label: { actionLabel("onboarding.checkAddress") }
                     .buttonStyle(.borderedProminent)
                     .disabled(coordinator.isBusy || !canAdvanceAddress)
                     .accessibilityIdentifier("onboarding.checkAddress")
-                Text("onboarding.methodNote").font(.subheadline).foregroundStyle(.secondary)
+                Text("onboarding.methodNote").font(.caption).foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 16)
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
             .disabled(coordinator.isBusy)
+
             if !coordinator.profiles.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("profiles.title").font(.headline)
@@ -148,19 +180,29 @@ struct ConnectionWelcomeView: View {
                         }
                     }
                     if coordinator.selectedProfile != nil {
-                        ConnectionStatusView(coordinator: coordinator)
+                        Divider()
+                        ConnectionStatusView(coordinator: coordinator, showsProfileIdentity: false)
                     }
                 }
-                .padding().background(Color(uiColor: .secondarySystemGroupedBackground),
-                                      in: RoundedRectangle(cornerRadius: 16))
+                .padding(16)
+                .background(Color(uiColor: .secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 16))
             }
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
                 DisclosureGroup("onboarding.getCode") {
-                    Text("onboarding.getCodeHelp").padding(.top, 8)
-                    Text("connection.localNetworkHelp").padding(.top, 8)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("onboarding.getCodeHelp")
+                        Text("connection.localNetworkHelp")
+                    }
+                    .padding(.top, 8)
                 }
-                DisclosureGroup("settings.title") { ConnectionSettings(showsHeading: false) }
+                DisclosureGroup("settings.title") {
+                    ConnectionSettings(showsHeading: false)
+                        .padding(.top, 8)
+                }
             }
+            .padding(16)
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
             .font(.subheadline).foregroundStyle(.secondary)
         }
     }
@@ -222,26 +264,33 @@ struct ConnectionWelcomeView: View {
         }
     }
 
+    @ViewBuilder
     private var pairing: some View {
-        Section("pairing.title") {
-            if let invitation = coordinator.pendingPairing {
+        if let invitation = coordinator.pendingPairing {
+            Section("pairing.title") {
                 Text("pairing.confirmHelp")
                 Text(verbatim: coordinator.pairingTargetURL?.absoluteString ?? invitation.apiBaseURL.absoluteString)
-                    .textSelection(.enabled).accessibilityIdentifier("onboarding.pairingTarget")
+                    .font(.subheadline.monospaced())
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("onboarding.pairingTarget")
                 if invitation.apiBaseURL.scheme == "http" {
                     Toggle("connection.allowHTTP", isOn: $allowHTTP)
                         .accessibilityIdentifier("onboarding.pairingHTTP")
-                    Text("connection.httpWarning").font(.caption)
+                    Text("connection.httpWarning").font(.caption).foregroundStyle(.secondary)
                 }
+            }
+            Section {
                 Button {
                     let target = coordinator.pairingTargetURL ?? invitation.apiBaseURL
                     beginConnection(.pairing(allowInsecureHTTP: allowHTTP), url: target)
                 } label: { actionLabel("pairing.confirm") }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                     .disabled(coordinator.isBusy ||
                               (invitation.apiBaseURL.scheme == "http" && !allowHTTP))
                     .accessibilityIdentifier("onboarding.confirmPairing")
-                Button("pairing.cancel", role: .cancel) { back() }
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
             }
         }
     }
@@ -300,7 +349,7 @@ struct ConnectionWelcomeView: View {
     /// host is probed for its sign-in method.
     private func connectAddress() {
         addressFocused = false
-        guard !coordinator.isBusy else { return }
+        guard !coordinator.isBusy, canAdvanceAddress else { return }
         do {
             switch try ConnectionInput(address) {
             case .pairing:
@@ -391,14 +440,24 @@ struct LoginConsentSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                LoginSharingConsentSection(apiBaseURL: apiBaseURL, agreed: $agreed)
-                Button("privacy.continueLogin") {
-                    SharingConsent.shared.approve(apiBaseURL)
-                    guard SharingConsent.shared.approved(apiBaseURL) else { return }
-                    onApproved()
+                LoginSharingConsentSection(apiBaseURL: apiBaseURL, agreed: $agreed, showsHeader: false)
+                Section {
+                    Button {
+                        SharingConsent.shared.approve(apiBaseURL)
+                        guard SharingConsent.shared.approved(apiBaseURL) else { return }
+                        onApproved()
+                    } label: {
+                        Text("privacy.continueLogin")
+                            .frame(maxWidth: .infinity, minHeight: 32)
+                            .multilineTextAlignment(.center)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!agreed || SharingConsent.shared.defaults == nil)
+                    .accessibilityIdentifier("privacy.continueLogin")
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
                 }
-                .disabled(!agreed || SharingConsent.shared.defaults == nil)
-                .accessibilityIdentifier("privacy.continueLogin")
             }
             .navigationTitle("privacy.title")
             .navigationBarTitleDisplayMode(.inline)
@@ -414,19 +473,39 @@ struct LoginConsentSheet: View {
 
 struct ConnectionStatusView: View {
     @Bindable var coordinator: ConnectionCoordinator
+    var showsProfileIdentity = true
+
+    private var statusColor: Color {
+        switch coordinator.status {
+        case .connected: .accentColor
+        case .connecting: .secondary
+        case .needsLogin, .sessionExpired, .timedOut: .orange
+        case .networkError, .loginFailed, .permissionDenied, .incompatible, .storageError: .red
+        case .disconnected: .secondary
+        }
+    }
 
     var body: some View {
-        if let profile = coordinator.selectedProfile {
-            Text(verbatim: profile.name).font(.headline)
-            Text(verbatim: profile.apiBaseURL.absoluteString).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            if showsProfileIdentity, let profile = coordinator.selectedProfile {
+                Text(verbatim: profile.name).font(.headline)
+                Text(verbatim: profile.apiBaseURL.absoluteString).font(.caption).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                if coordinator.isBusy {
+                    ProgressView().controlSize(.small).accessibilityLabel(Text("connection.working"))
+                } else {
+                    Circle().fill(statusColor).frame(width: 8, height: 8).accessibilityHidden(true)
+                }
+                Text(LocalizedStringKey("status." + coordinator.status.rawValue))
+                    .font(.subheadline.weight(.medium))
+                    .accessibilityIdentifier("connection.status")
+            }
+            if !coordinator.isBusy {
+                Text(LocalizedStringKey("onboarding.recovery." + coordinator.status.rawValue))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
-        Text(LocalizedStringKey("status." + coordinator.status.rawValue))
-            .accessibilityIdentifier("connection.status")
-        if coordinator.isBusy {
-            ProgressView().accessibilityLabel(Text("connection.working"))
-        } else {
-            Text(LocalizedStringKey("onboarding.recovery." + coordinator.status.rawValue))
-                .font(.caption).foregroundStyle(.secondary)
-        }
+        .padding(.vertical, 2)
     }
 }

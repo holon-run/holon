@@ -16,11 +16,16 @@ struct WorkView: View {
                     .onDisappear { coordinator.setDetailVisible(false, route: route) }
             } else {
             List {
-                Picker("work.filter", selection: $filter) {
-                    Text("work.filter.all").tag("all")
-                    Text("work.filter.active").tag("active")
-                    Text("work.filter.completed").tag("completed")
-                }.pickerStyle(.segmented)
+                Section {
+                    Picker("work.filter", selection: $filter) {
+                        Text("work.filter.all").tag("all")
+                        Text("work.filter.active").tag("active")
+                        Text("work.filter.completed").tag("completed")
+                    }
+                    .pickerStyle(.segmented)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 8, trailing: 0))
+                    .listRowBackground(Color.clear)
+                }
                 Section("work.items") {
                     state(coordinator.itemsState, empty: coordinator.items.isEmpty)
                     ForEach(coordinator.items.filter { filter == "all" || ($0.completed == (filter == "completed")) }) { item in
@@ -35,18 +40,20 @@ struct WorkView: View {
                         else { Text("work.windowLimit").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
-                Section("work.tasks") {
-                    state(coordinator.tasksState, empty: coordinator.tasks.isEmpty)
-                    ForEach(coordinator.tasks) { task in
-                        NavigationLink(value: AppRoute.workDetail(coordinator.selectedAgentID ?? "", .task(task.id))) { row(task) }
-                            .accessibilityIdentifier("work.task." + task.id)
-                    }
-                    if coordinator.tasks.count == coordinator.taskLimit {
-                        if coordinator.taskLimit < 400 {
-                            Button("work.loadMore") { coordinator.loadMoreTasks() }
-                                .accessibilityIdentifier("work.moreTasks")
+                if filter != "completed" {
+                    Section("work.tasks") {
+                        state(coordinator.tasksState, empty: coordinator.tasks.isEmpty)
+                        ForEach(coordinator.tasks) { task in
+                            NavigationLink(value: AppRoute.workDetail(coordinator.selectedAgentID ?? "", .task(task.id))) { row(task) }
+                                .accessibilityIdentifier("work.task." + task.id)
                         }
-                        else { Text("work.windowLimit").font(.caption).foregroundStyle(.secondary) }
+                        if coordinator.tasks.count == coordinator.taskLimit {
+                            if coordinator.taskLimit < 400 {
+                                Button("work.loadMore") { coordinator.loadMoreTasks() }
+                                    .accessibilityIdentifier("work.moreTasks")
+                            }
+                            else { Text("work.windowLimit").font(.caption).foregroundStyle(.secondary) }
+                        }
                     }
                 }
             }
@@ -59,10 +66,34 @@ struct WorkView: View {
     }
 
     private func row(_ record: WorkRecord) -> some View {
-        VStack(alignment: .leading) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(record.title).lineLimit(3)
             if let step = record.nextStep { Text(step).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
-            Text(LocalizedStringKey(record.stateKey)).font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 5) {
+                Image(systemName: stateIcon(record.state))
+                Text(LocalizedStringKey(record.stateKey))
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(stateColor(record.state))
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func stateIcon(_ state: String) -> String {
+        switch state {
+        case "completed": "checkmark.circle.fill"
+        case "active", "running": "arrow.triangle.2.circlepath"
+        case "failed", "interrupted": "exclamationmark.circle"
+        case "cancelled", "cancelling": "xmark.circle"
+        default: "clock"
+        }
+    }
+
+    private func stateColor(_ state: String) -> Color {
+        switch state {
+        case "active", "running": .accentColor
+        case "failed", "interrupted": .red
+        default: .secondary
         }
     }
 
@@ -95,9 +126,9 @@ struct WorkView: View {
                     if !record.todos.isEmpty {
                         Section("work.steps") {
                             ForEach(Array(record.todos.enumerated()), id: \.offset) { _, todo in
-                                HStack(alignment: .top) {
-                                    Image(systemName: todo["state"] == .string("completed") ? "checkmark.circle" : "circle")
-                                        .foregroundStyle(.secondary)
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: todo["state"] == .string("completed") ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(todo["state"] == .string("completed") ? Color.accentColor : .secondary)
                                     Text(verbatim: todo["text"]?.workString ?? "").textSelection(.enabled)
                                 }
                             }
