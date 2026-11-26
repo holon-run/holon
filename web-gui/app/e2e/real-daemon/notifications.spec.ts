@@ -108,21 +108,17 @@ test("the real daemon delivers inbox changes and recovers them without replaying
       return (await response.json() as { items: { id: string; kind: string }[] }).items;
     };
     const kinds = async () => (await list("recent")).map((item) => item.kind);
-    const trigger = page.getByLabel(/^Notifications \(/);
+    const navBadge = page.locator(".primary-global-nav .nav-attention-badge");
+    const inboxPanel = page.locator(".dashboard-triage-panel");
     const toasts = page.getByTestId("notification-toast");
-    const recent = page.getByRole("region", { name: "Recent" });
-    const pending = page.getByRole("region", { name: "Needs your input" });
 
     expect((await fetch(`${daemon.baseUrl}/api/notifications/recent`)).status).toBe(401);
     const stream = page.waitForResponse((response) =>
       new URL(response.url()).pathname === "/api/events/stream" && response.ok());
-    await page.goto(`${daemon.baseUrl}/settings`);
+    await page.goto(`${daemon.baseUrl}/`);
     await stream;
-    await expect(trigger).toHaveAccessibleName("Notifications (0 need your input)");
-    await trigger.click();
-    await expect(recent).toBeVisible();
+    await expect(navBadge).toHaveCount(0);
     await expect(page.getByText("Notifications may be out of date.")).toHaveCount(0);
-    await trigger.click();
     await send(REPLY);
     await expect.poll(kinds, { timeout: 15_000 }).toEqual(["operator_first_brief"]);
     await expect(toasts).toHaveText(/New reply/, { timeout: 15_000 });
@@ -141,24 +137,26 @@ test("the real daemon delivers inbox changes and recovers them without replaying
     expect(completed.ok, await completed.text()).toBe(true);
     await expect.poll(kinds, { timeout: 25_000 }).toEqual(["work_item_completed", "operator_first_brief"]);
     await context.setOffline(false);
-    await trigger.click();
-    await expect(recent.getByText("Result ready")).toBeVisible();
-    await expect(recent.getByText("New reply")).toBeVisible();
+    await inboxPanel.getByRole("tab", { name: /Recent/ }).click();
+    await expect(inboxPanel.getByText("Result ready")).toBeVisible();
+    await expect(inboxPanel.getByText("New reply")).toBeVisible();
     await expect(toasts).toHaveCount(0);
 
     await send(WAIT);
     await expect.poll(async () => (await list("pending")).length, { timeout: 15_000 }).toBe(1);
-    await expect(trigger).toHaveAccessibleName("Notifications (1 needs your input)");
-    await expect(recent.getByText("Needs your input")).toHaveCount(1);
+    await expect(navBadge).toHaveText("1");
+    await inboxPanel.getByRole("tab", { name: /Recent/ }).click();
+    await expect(inboxPanel.locator(".dashboard-triage-list").getByText("Needs your input")).toHaveCount(1);
     await expect.poll(kinds).toEqual(["operator_input_required", "work_item_completed", "operator_first_brief"]);
-    await pending.getByRole("button").click();
+    await inboxPanel.getByRole("tab", { name: /Needs your action/ }).click();
+    await inboxPanel.locator(".dashboard-triage-main").first().click();
     await expect(page).toHaveURL(new RegExp(`/agents/${daemon.agentId}/conversation`));
-    await expect(trigger).toHaveAccessibleName("Notifications (1 needs your input)");
+    await expect(navBadge).toHaveText("1");
 
     const pendingBefore = await list("pending");
     await daemon.restart();
     await page.reload();
-    await expect(trigger).toHaveAccessibleName("Notifications (1 needs your input)");
+    await expect(navBadge).toHaveText("1");
     expect(await list("pending")).toEqual(pendingBefore);
     expect(await kinds()).toEqual(["operator_input_required", "work_item_completed", "operator_first_brief"]);
     await expect(toasts).toHaveCount(0);
@@ -177,13 +175,13 @@ test("a silent operator wait appears only in Needs your input", async ({ daemonF
     });
     await installLocalToken(page, daemon.token);
     await page.goto(`${daemon.baseUrl}/settings`);
-    const trigger = page.getByLabel(/^Notifications \(/);
-    await expect(trigger).toHaveAccessibleName("Notifications (0 need your input)");
+    const navBadge = page.locator(".primary-global-nav .nav-attention-badge");
+    await expect(navBadge).toHaveCount(0);
     const sent = await daemon.api(`/control/agents/${daemon.agentId}/prompt`, {
       method: "POST", body: JSON.stringify({ text: SILENT }),
     });
     expect(sent.ok, await sent.text()).toBe(true);
-    await expect(trigger).toHaveAccessibleName("Notifications (1 needs your input)", { timeout: 15_000 });
+    await expect(navBadge).toHaveText("1", { timeout: 15_000 });
     const recent = await daemon.api("/notifications/recent");
     expect(recent.ok).toBe(true);
     expect(await recent.json()).toEqual({ items: [] });

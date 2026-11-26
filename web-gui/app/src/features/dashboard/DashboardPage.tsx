@@ -138,6 +138,7 @@ export function DashboardPage({
   onOpenAgent,
 }: DashboardPageProps) {
   const { t, i18n } = useTranslation();
+  const storeNotificationStatus = useRuntimeNotifications((state) => state.status);
   const storeRecentNotifications = useRuntimeNotifications((state) => state.recent);
   const effectiveRecentNotifications = recentNotifications ?? storeRecentNotifications;
 
@@ -247,7 +248,10 @@ export function DashboardPage({
 
   const hasPendingItems = triageItems.length > 0;
   const hasRecentItems = recentItems.length > 0;
-  const showInboxPanel = hasAgents && (hasPendingItems || hasRecentItems);
+  const showInboxPanel =
+    hasAgents
+    && storeNotificationStatus !== "unavailable"
+    && (hasPendingItems || hasRecentItems || storeNotificationStatus === "stale");
   const resolvedInboxTab: DashboardInboxTab =
     inboxTab === "recent" && hasRecentItems
       ? "recent"
@@ -418,7 +422,7 @@ export function DashboardPage({
                   {modelLabel}
                 </div>
                 <div className="agent-compact-actions">
-                  {unreadCount > 0 ? <span className="agent-row-unread">{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
+                  {unreadCount > 0 ? <span className="agent-card-unread">{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
                   <AgentStatusIndicator className="state-chip" status={status} />
                   <Button
                     size="icon"
@@ -463,7 +467,7 @@ export function DashboardPage({
                 </div>
                 <div className="agent-card-status">
                   {unreadCount > 0 ? (
-                    <span className="agent-row-unread" title={t("app.unreadUpdates", { count: unreadCount })}>
+                    <span className="agent-card-unread" title={t("app.unreadUpdates", { count: unreadCount })}>
                       {unreadCount > 99 ? "99+" : unreadCount}
                     </span>
                   ) : null}
@@ -640,6 +644,11 @@ export function DashboardPage({
                   ) : null}
                 </div>
               </header>
+              {storeNotificationStatus === "stale" ? (
+                <p className="dashboard-triage-stale" role="status">
+                  {t("notifications.stale")}
+                </p>
+              ) : null}
               {isInboxExpanded ? (
                 activeInboxItems.length > 0 ? (
                   <div className="dashboard-triage-list" role="list">
@@ -677,9 +686,11 @@ export function DashboardPage({
                                   </time>
                                 ) : null}
                               </div>
-                              <div className="dashboard-triage-title" title={item.title}>
-                                {item.title}
-                              </div>
+                              {item.title !== item.kindLabel ? (
+                                <div className="dashboard-triage-title" title={item.title}>
+                                  {item.title}
+                                </div>
+                              ) : null}
                               {item.summary ? (
                                 <p className="dashboard-triage-summary" title={item.summary}>
                                   {item.summary}

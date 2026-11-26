@@ -9707,15 +9707,12 @@ code {
   background: color-mix(in srgb, var(--sidebar) 92%, var(--surface));
   color: var(--muted);
   opacity: 0;
-  pointer-events: none;
   cursor: pointer;
-  transition: opacity 120ms ease;
 }
 
 .agent-list-entry:hover .agent-id-copy,
 .agent-list-entry:focus-within .agent-id-copy {
   opacity: 1;
-  pointer-events: auto;
 }
 
 .agent-id-copy:hover {

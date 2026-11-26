@@ -52,7 +52,7 @@ const fallbackPresentation: ToastPresentation = { tone: "accent", Icon: Bell };
 
 interface Props {
   onNavigate: (target: NotificationTarget) => void;
-  onOpenSettings?: () => void;
+  allowPermissionPrompt?: boolean;
 }
 
 /**
@@ -60,7 +60,7 @@ interface Props {
  * browser notification opt-in card. Persistent pending/recent lists live on
  * Dashboard, and permanent system notification settings live on Settings.
  */
-export function NotificationCenter({ onNavigate }: Props) {
+export function NotificationCenter({ onNavigate, allowPermissionPrompt = true }: Props) {
   const { t } = useTranslation();
   const { status, toasts } = useRuntimeNotifications();
   const permission = useSystemNotificationPermission((state) => state.permission);
@@ -87,7 +87,7 @@ export function NotificationCenter({ onNavigate }: Props) {
     return null;
   }
 
-  const showPermissionPrompt = permission === "default" && !promptDismissed;
+  const showPermissionPrompt = allowPermissionPrompt && permission === "default" && !promptDismissed;
 
   const dismissPrompt = () => {
     writePromptDismissed();

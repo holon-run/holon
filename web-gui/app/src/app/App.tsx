@@ -449,22 +449,14 @@ export function App() {
   const sortedSidebarAgents = useMemo(() => {
     const normalizedFilter = agentFilter.trim().toLowerCase();
     return visibleAgents.filter((agent) => {
-      if (navCollapsed) return true;
+      if (navCollapsed && !mobileNavOpen) return true;
       if (!agentMatchesWorkspaceFilter(agent, sidebarWorkspaceFilter)) return false;
       if (!normalizedFilter) return true;
       return `${agent.name ?? ""} ${agent.id} ${agent.workspaceSummary?.name ?? agent.workspace}`
         .toLowerCase()
         .includes(normalizedFilter);
     });
-  }, [agentFilter, navCollapsed, sidebarWorkspaceFilter, visibleAgents]);
-
-  // On narrow viewports where the right panel covers the conversation as an
-  // overlay, start in the conversation rather than behind an inert sheet.
-  useEffect(() => {
-    if (computePanelLayout(window.innerWidth, true, false, false, PANEL_DEFAULT).full) {
-      setRightPanelOpen(false);
-    }
-  }, [setRightPanelOpen]);
+  }, [agentFilter, mobileNavOpen, navCollapsed, sidebarWorkspaceFilter, visibleAgents]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -764,9 +756,7 @@ export function App() {
                 {formatUnreadBadge(unreadView.count, false)}
               </span>
             ) : null}
-            {status.kind !== "ready" ? (
-              <AgentStatusIndicator className="agent-row-status-dot" status={status} />
-            ) : null}
+            <AgentStatusIndicator className="agent-row-status-dot" status={status} />
           </span>
         </button>
         <AgentIdCopyButton agentId={agent.id} />
@@ -955,7 +945,7 @@ export function App() {
       ) : null}
 
       <main className="main-shell" inert={effectiveRightPanelOpen && panelLayout.full}>
-        <NotificationCenter onNavigate={openNotificationTarget} />
+        <NotificationCenter onNavigate={openNotificationTarget} allowPermissionPrompt={route === "dashboard"} />
         <header className="topbar">
           <div className="topbar-primary">
             <div className="top-title">

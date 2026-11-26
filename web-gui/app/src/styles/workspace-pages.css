@@ -718,6 +718,34 @@
   .workspace-page .skills-actions { min-width: 0; }
   .workspace-page :is(.skills-hero, .skill-detail-hero) { flex-wrap: wrap; }
   .workspace-page .search-result-details div { grid-template-columns: minmax(0, 1fr); }
+  .app-shell .sidebar .agent-sidebar-filters {
+    display: grid;
+    margin: 0 8px 7px;
+  }
+  .app-shell .sidebar .agent-sidebar-filters .agent-filter {
+    width: 100%;
+    margin: 0;
+  }
+}
+
+.workspace-page .agent-card-unread {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.workspace-page .dashboard-triage-stale {
+  margin: 0;
+  font-size: 12px;
+  color: var(--warning);
 }
 
 /* Global toast enrichments, proactive system notification prompt, and Settings status */
