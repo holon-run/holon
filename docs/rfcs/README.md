@@ -81,6 +81,8 @@ implementation and tests.
 - [Agent Home Directory Layout](./agent-home-directory-layout.md)
 - [Workspace Binding and Execution Roots](./workspace-binding-and-execution-roots.md)
 - [Instruction Loading](./instruction-loading.md)
+- [Shared System Prompt Prefix](./shared-system-prompt-prefix.md)
+- [Prompt Single-Owner Architecture and Tool Surface Convergence (draft)](./prompt-ownership-and-tool-surface-convergence.md)
 - [Agent Workspace Switching](./workspace-entry-and-projection.md)
 - [Agent Workspace Tool Surface](./agent-workspace-tool-surface.md)
 - [Execution Root Registry](./workspace-execution-root-registry.md)
