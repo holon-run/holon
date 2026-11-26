@@ -1223,7 +1223,11 @@ mod tests {
             frozen_recent_message_limit: None,
             _resource_read_material: None,
         };
-        assert!(prompt.clone().with_media_tool_defaults(&[]).system_sections.is_empty());
+        assert!(prompt
+            .clone()
+            .with_media_tool_defaults(&[])
+            .system_sections
+            .is_empty());
         let media_tools = crate::tool::ToolRegistry::new(".".into())
             .tool_specs()
             .unwrap()
@@ -1271,7 +1275,10 @@ mod tests {
             }
             let repeated = first.clone().with_media_tool_defaults(&tools);
             assert_eq!(repeated.system_sections.len(), 1);
-            assert_eq!(first.rendered_system_prompt, repeated.rendered_system_prompt);
+            assert_eq!(
+                first.rendered_system_prompt,
+                repeated.rendered_system_prompt
+            );
             assert_eq!(
                 first.cache_identity.prompt_cache_key,
                 repeated.cache_identity.prompt_cache_key
