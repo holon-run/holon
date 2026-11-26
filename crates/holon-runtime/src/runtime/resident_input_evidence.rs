@@ -55,11 +55,8 @@ pub(crate) fn safe_command_preview(command: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InputEvidenceScope {
-    pub agent_id: String,
-    pub identity_incarnation: u64,
-}
+pub use holon_domain::InputEvidenceScope;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum InputEvidenceFamily {

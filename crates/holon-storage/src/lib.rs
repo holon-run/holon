@@ -15,6 +15,7 @@ pub mod episode_continuity;
 pub mod evidence;
 pub mod execution;
 pub mod index_outbox;
+pub mod input_mutation_receipts;
 #[doc(hidden)]
 pub mod legacy_scheduler_wire;
 pub mod maintenance;

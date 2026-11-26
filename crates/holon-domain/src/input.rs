@@ -2,6 +2,12 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputEvidenceScope {
+    pub agent_id: String,
+    pub identity_incarnation: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct IdleInputBatchRecord {
     pub anchor_message_id: String,
