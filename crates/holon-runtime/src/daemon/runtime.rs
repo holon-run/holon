@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use holon_daemon::{state::merge_latest_failure, DaemonConfig};
+use holon_storage::connection::is_retryable_db_error;
 use sha2::{Digest, Sha256};
 use tracing::info;
 
@@ -9,7 +10,7 @@ use crate::{
     client::ConnectionConfig,
     config::{AppConfig, ControlAuthMode, ControlTransportKind},
     host::RuntimeHost,
-    runtime_db::{RuntimeDb, RuntimeDbLock},
+    runtime_db::{RuntimeDb, RuntimeDbLock, RuntimeDbRetryableError},
     startup::StartupObservation,
     storage::AppStorage,
     types::{AgentRegistryStatus, AgentVisibility, RuntimeFailureSummary},
@@ -21,6 +22,46 @@ use super::{RuntimeServiceHandle, RuntimeStatusResponse};
 static PREPARE_RUNTIME_BEFORE_SERVER_HOOK: std::sync::Mutex<
     Option<Box<dyn Fn(&AppConfig) -> Result<()> + Send + Sync>>,
 > = std::sync::Mutex::new(None);
+
+/// Pre-server preparation runs before the control surface exists, so transient
+/// runtime database contention can only be absorbed here. Three bounded
+/// attempts keep the restart responsive; non-busy failures are never retried.
+const PRE_SERVER_BUSY_RETRY_ATTEMPTS: u32 = 3;
+const PRE_SERVER_BUSY_RETRY_DELAYS_MS: [u64; 2] = [100, 300];
+
+fn prepare_with_bounded_busy_retry(
+    runtime_db_path: &Path,
+    mut prepare: impl FnMut() -> Result<()>,
+) -> Result<()> {
+    let mut attempt = 1;
+    loop {
+        match prepare() {
+            Ok(()) => return Ok(()),
+            Err(error) if is_retryable_db_error(&error) => {
+                if attempt >= PRE_SERVER_BUSY_RETRY_ATTEMPTS {
+                    let message = error.to_string();
+                    return Err(error.context(RuntimeDbRetryableError::new(
+                        "pre-server storage preparation",
+                        runtime_db_path,
+                        message,
+                    )));
+                }
+                let delay_ms = PRE_SERVER_BUSY_RETRY_DELAYS_MS[(attempt - 1) as usize];
+                tracing::warn!(
+                    target: "holon::daemon::lifecycle",
+                    attempt,
+                    max_attempts = PRE_SERVER_BUSY_RETRY_ATTEMPTS,
+                    delay_ms,
+                    error = %error,
+                    "pre-server runtime preparation hit retryable storage contention"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 
 pub fn prepare_runtime_before_server(config: &AppConfig) -> Result<()> {
     prepare_runtime_before_server_observed(config, &crate::startup::StartupObservation::new())
@@ -62,21 +103,17 @@ pub fn prepare_runtime_before_server_observed_with_maintenance_lease(
             home_dir = %config.home_dir.display(),
             "starting pre-server runtime preparation"
         );
-        #[cfg(test)]
-        if let Some(hook) = PREPARE_RUNTIME_BEFORE_SERVER_HOOK.lock().unwrap().as_ref() {
-            hook(config).with_context(|| {
-            "pre-server runtime preparation failed; fix the reported storage domain error and retry"
-        })?;
-            info!(
-            target: "holon::daemon::lifecycle",
-                startup_id = %startup.startup_id,
-                home_dir = %config.home_dir.display(),
-                "finished pre-server runtime preparation"
-            );
-            return Ok(());
-        }
-        RuntimeHost::prepare_runtime_storage_with_maintenance_lease(config, lease).with_context(|| {
-            "pre-server runtime preparation failed; fix the reported storage domain error and retry"
+        prepare_with_bounded_busy_retry(&config.runtime_db_path(), || {
+            #[cfg(test)]
+            if let Some(hook) = PREPARE_RUNTIME_BEFORE_SERVER_HOOK.lock().unwrap().as_ref() {
+                hook(config).with_context(|| {
+                    "pre-server runtime preparation failed; fix the reported storage domain error and retry"
+                })?;
+                return Ok(());
+            }
+            RuntimeHost::prepare_runtime_storage_with_maintenance_lease(config, lease).with_context(|| {
+                "pre-server runtime preparation failed; fix the reported storage domain error and retry"
+            })
         })?;
         info!(
             target: "holon::daemon::lifecycle",

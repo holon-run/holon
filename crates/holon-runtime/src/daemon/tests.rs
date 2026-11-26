@@ -538,3 +538,77 @@ fn pre_server_preparation_failure_is_retryable() {
     second.unwrap();
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
+
+fn busy_retryable_preparation_error() -> anyhow::Error {
+    anyhow::Error::new(crate::runtime_db::RuntimeDbRetryableError::new(
+        "pre-server storage preparation",
+        std::path::Path::new("runtime.sqlite"),
+        "database is locked: Error code 517: Cannot promote read transaction to write transaction",
+    ))
+}
+
+#[test]
+fn pre_server_preparation_retries_retryable_busy_within_bound() {
+    let _guard = PREPARE_HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let config = test_config();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let hook_attempts = attempts.clone();
+    let _hook_guard = set_prepare_hook(move |_config| {
+        hook_attempts.fetch_add(1, Ordering::SeqCst);
+        Err(busy_retryable_preparation_error())
+    });
+
+    let started = std::time::Instant::now();
+    let error = prepare_runtime_before_server(&config).unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert!(elapsed < std::time::Duration::from_secs(2));
+    let descriptor = crate::runtime_error::describe_runtime_error(&error);
+    assert_eq!(descriptor.code, "runtime_db_busy");
+    assert!(descriptor.retryable);
+    assert!(error
+        .to_string()
+        .contains("pre-server runtime preparation failed"));
+}
+
+#[test]
+fn pre_server_preparation_stops_after_retry_succeeds() {
+    let _guard = PREPARE_HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let config = test_config();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let hook_attempts = attempts.clone();
+    let _hook_guard = set_prepare_hook(move |_config| {
+        if hook_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err(busy_retryable_preparation_error())
+        } else {
+            Ok(())
+        }
+    });
+
+    prepare_runtime_before_server(&config).unwrap();
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn pre_server_preparation_does_not_retry_non_busy_failure() {
+    let _guard = PREPARE_HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let config = test_config();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let hook_attempts = attempts.clone();
+    let _hook_guard = set_prepare_hook(move |_config| {
+        hook_attempts.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("test storage domain incomplete")
+    });
+
+    let error = prepare_runtime_before_server(&config).unwrap_err();
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let descriptor = crate::runtime_error::describe_runtime_error(&error);
+    assert_ne!(descriptor.code, "runtime_db_busy");
+}
