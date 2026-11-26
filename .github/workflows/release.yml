@@ -970,6 +970,9 @@ jobs:
   smoke:
     name: Smoke published release
     needs: release
+    # Beta trains skip the signed app jobs upstream; a skipped `needs` job
+    # would normally skip this one too, so re-gate explicitly.
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     uses: ./.github/workflows/release-smoke.yml
     with:
       version: ${{ github.ref_name }}
@@ -982,6 +985,8 @@ jobs:
     needs:
       - release
       - e2e-gate
+    # Same re-gating as above so the beta train still publishes its image.
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.e2e-gate.result == 'success' }}
     permissions:
       contents: read
       packages: write
