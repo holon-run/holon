@@ -1361,42 +1361,23 @@ async fn p2_repeated_lifecycle_restart_restores_mixed_operator_and_live_inputs()
     Box::pin(assert_mixed_operator_live_restart(None, true)).await;
 }
 
-/// Runs on an explicit stack: the admission-evidence recovery chain polls a deep
-/// async state machine, so the default 2 MiB libtest stack sits at the overflow
-/// threshold and shifts with codegen layout. The scenario is still single-flow;
-/// only the stack size differs from a plain `#[tokio::test]`.
-#[test]
-fn p2_mixed_operator_recovery_requires_admission_evidence() {
-    let thread = std::thread::Builder::new()
-        .name("p2-admission-evidence".into())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build p2 admission evidence runtime")
-                .block_on(async {
-                    for defect in [
-                        "missing_transcript",
-                        "foreign_transcript",
-                        "queued",
-                        "wrong_authority",
-                    ] {
-                        Box::pin(assert_mixed_operator_live_restart(Some(defect), false)).await;
-                        if defect != "queued" {
-                            Box::pin(assert_mixed_operator_live_restart_with_evidence(
-                                Some(defect),
-                                false,
-                                true,
-                            ))
-                            .await;
-                        }
-                    }
-                });
-        })
-        .expect("spawn p2 admission evidence thread");
-    if let Err(panic) = thread.join() {
-        std::panic::resume_unwind(panic);
+#[tokio::test]
+async fn p2_mixed_operator_recovery_requires_admission_evidence() {
+    for defect in [
+        "missing_transcript",
+        "foreign_transcript",
+        "queued",
+        "wrong_authority",
+    ] {
+        Box::pin(assert_mixed_operator_live_restart(Some(defect), false)).await;
+        if defect != "queued" {
+            Box::pin(assert_mixed_operator_live_restart_with_evidence(
+                Some(defect),
+                false,
+                true,
+            ))
+            .await;
+        }
     }
 }
 

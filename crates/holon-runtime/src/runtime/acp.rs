@@ -1035,12 +1035,12 @@ impl super::RuntimeHandle {
         let bound_execution_root = bound_execution_root.to_string();
         let bound_additional_dirs = bound_additional_dirs.to_vec();
         self.update_agent_state(|state| {
-            state.acp_session_state = Some(crate::types::AcpSessionState {
+            state.acp_session_state = Some(Box::new(crate::types::AcpSessionState {
                 acp_profile: profile,
                 resume_session_id: session_id,
                 bound_execution_root,
                 bound_additional_dirs,
-            });
+            }));
             Ok(())
         })
         .await?;
@@ -1077,7 +1077,7 @@ impl super::RuntimeHandle {
                 && acp_resident_is_alive(&resident).await
             {
                 return Ok(AcpSessionAcquire {
-                    session: resident,
+                    session: *resident,
                     new_session: false,
                     rebuilt_session: false,
                     prompt_role: None,
@@ -1292,7 +1292,7 @@ impl super::RuntimeHandle {
     async fn store_acp_session(&self, mut session: AcpResidentSession) {
         let session_id = session.session_id.clone();
         session.last_used = Instant::now();
-        *self.inner.acp_session.lock().await = Some(session);
+        *self.inner.acp_session.lock().await = Some(Box::new(session));
         self.schedule_acp_idle_retirement(session_id);
     }
 

@@ -241,8 +241,10 @@ pub struct AgentState {
     pub execution_profile: ExecutionProfile,
     #[serde(default)]
     pub execution_driver: AgentExecutionDriver,
+    /// Boxed so the (rarely populated) ACP binding does not widen every
+    /// `AgentState` copy that deep recovery chains hold across awaits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acp_session_state: Option<AcpSessionState>,
+    pub acp_session_state: Option<Box<AcpSessionState>>,
     #[serde(default)]
     pub pending_wake_hint: Option<PendingWakeHint>,
     #[serde(default)]
