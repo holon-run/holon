@@ -92,6 +92,10 @@ lifecycle protections beyond the row floor. Turn, WorkItem, or agent deletion
 does not rewrite history: `turn_id`, `work_item_id`, and `task_id` are soft
 references.
 
+Agent deletion therefore treats `usage_attempts` as retained history, not as
+private history to archive or purge, so an agent with recorded attempts can
+still be deleted without an ownership decision.
+
 ## Read surface
 
 `RuntimeDb::append_usage_attempts` writes rows; `RuntimeDb::usage_daily_totals`
