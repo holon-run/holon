@@ -10,7 +10,7 @@ const models = [
   { model: "dashscope/shared-model", provider: "dashscope", provider_family: "dashscope", route_provider: "dashscope-coding-plan", endpoint: "coding", display_name: "Shared Model", available: true },
   { model: "deepseek/hidden-model", provider: "deepseek", endpoint: "default", display_name: "Unavailable Model", available: false, unavailable_reason: "Missing credentials" },
 ];
-async function setup(page: Page, routeDefaultTier?: string) {
+async function setup(page: Page, routeDefaultTier?: string, rejection?: string) {
   let selection = primary;
   let source = "runtime_default";
   let tier: string | undefined;
@@ -20,8 +20,14 @@ async function setup(page: Page, routeDefaultTier?: string) {
   const modelState = () => ({ active_model: primary, effective_model: selection, runtime_default_model: primary, source, override_service_tier: tier, effective_service_tier: selection === primary ? tier ?? routeDefaultTier : undefined, override_reasoning_effort: effort });
   await page.route("**/api/models", (route) => route.fulfill({ json: { available_models: models.slice(0, 2), model_availability: models } }));
   await page.route("**/api/control/runtime/config", async (route) => {
-    if (route.request().method() === "PATCH") updates.push(...route.request().postDataJSON().updates);
-    await route.fulfill({ json: { ok: true, changed: true, runtime_surface: { model_default: primary, model_fallbacks: [], providers, web_search_providers: [] } } });
+    const batch: { key: string; value?: unknown }[] = route.request().method() === "PATCH" ? route.request().postDataJSON().updates : [];
+    updates.push(...batch);
+    const surface = { model_default: primary, model_fallbacks: [], providers, web_search_providers: [] };
+    await route.fulfill({
+      json: rejection
+        ? { ok: true, changed: false, results: batch.map((entry) => ({ key: entry.key, effect: "rejected", reason: rejection })), runtime_surface: surface }
+        : { ok: true, changed: true, runtime_surface: surface },
+    });
   });
   await page.route("**/api/agents/snapshot", async (route) => {
     const response = await route.fetch(); const roster = await response.json();
@@ -380,4 +386,77 @@ test("provider discovery kind, path and decoder persist from the settings editor
   expect(updates).toContainEqual({ key: "providers.openai.discovery.kind", value: "openai_models" });
   expect(updates).toContainEqual({ key: "providers.openai.discovery.path", value: "/v1/models" });
   expect(updates).toContainEqual({ key: "providers.openai.discovery.decoder", value: "magpie" });
+});
+
+test("add provider declares a custom provider in one batch", async ({ page }) => {
+  const { updates } = await setup(page);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/settings");
+  await page.locator("#settings-tab-models").click();
+  await page.getByRole("button", { name: "Connect a service", exact: true }).click();
+  await page.getByRole("button", { name: "Add provider", exact: true }).click();
+  const form = page.locator(".model-services-card .settings-provider-editor");
+  await form.getByLabel("Provider id", { exact: true }).fill("self-hosted-gw");
+  await form.getByRole("combobox", { name: "Transport" }).selectOption("openai_chat_completions");
+  await form.getByLabel("Base URL", { exact: true }).fill("https://gw.example/v1");
+  await form.getByRole("combobox", { name: "Model discovery" }).selectOption("openai_models");
+  await form.getByLabel("Discovery path", { exact: true }).fill("/v1/models");
+  await form.getByRole("button", { name: "Create provider", exact: true }).click();
+  await expect.poll(() => updates.length).toBeGreaterThan(0);
+  // Transport declares the provider, so the batch carries it with base_url and
+  // an explicit none/none auth when no key was entered.
+  expect(updates).toEqual([
+    { key: "providers.self-hosted-gw.transport", value: "openai_chat_completions" },
+    { key: "providers.self-hosted-gw.base_url", value: "https://gw.example/v1" },
+    { key: "providers.self-hosted-gw.auth.source", value: "none" },
+    { key: "providers.self-hosted-gw.auth.kind", value: "none" },
+    { key: "providers.self-hosted-gw.discovery.kind", value: "openai_models" },
+    { key: "providers.self-hosted-gw.discovery.path", value: "/v1/models" },
+  ]);
+  await expect(page.locator(".model-services-card .settings-save-message")).toContainText("self-hosted-gw");
+  await page.screenshot({ path: "/tmp/holon-model-add-provider.png", fullPage: true });
+});
+
+test("add provider blocks invalid input before writing config", async ({ page }) => {
+  const { updates } = await setup(page);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/settings");
+  await page.locator("#settings-tab-models").click();
+  await page.getByRole("button", { name: "Connect a service", exact: true }).click();
+  await page.getByRole("button", { name: "Add provider", exact: true }).click();
+  const form = page.locator(".model-services-card .settings-provider-editor");
+  await form.getByLabel("Provider id", { exact: true }).fill("Bad Id");
+  await form.getByLabel("Base URL", { exact: true }).fill("not-a-url");
+  await form.getByRole("button", { name: "Create provider", exact: true }).click();
+  await expect(page.locator(".model-services-card .settings-save-message")).toContainText("lowercase letters");
+  expect(updates).toHaveLength(0);
+
+  await form.getByLabel("Provider id", { exact: true }).fill("good-id");
+  await form.getByRole("button", { name: "Create provider", exact: true }).click();
+  await expect(page.locator(".model-services-card .settings-save-message")).toContainText("absolute http or https URL");
+  expect(updates).toHaveLength(0);
+
+  await form.getByLabel("Base URL", { exact: true }).fill("https://gw.example/v1");
+  await form.getByRole("combobox", { name: "Model discovery" }).selectOption("disabled");
+  await expect(form.getByLabel("Discovery path", { exact: true })).toBeDisabled();
+  expect(updates).toHaveLength(0);
+});
+
+test("add provider surfaces a rejected batch and keeps the directory unchanged", async ({ page }) => {
+  const rejection = "provider orphan was created by this update batch but requires providers.orphan.base_url";
+  await setup(page, undefined, rejection);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/settings");
+  await page.locator("#settings-tab-models").click();
+  await page.getByRole("button", { name: "Connect a service", exact: true }).click();
+  const directory = page.locator(".provider-directory");
+  await expect(directory.locator("[data-provider]")).toHaveCount(43);
+  await page.getByRole("button", { name: "Add provider", exact: true }).click();
+  const form = page.locator(".model-services-card .settings-provider-editor");
+  await form.getByLabel("Provider id", { exact: true }).fill("orphan");
+  await form.getByLabel("Base URL", { exact: true }).fill("https://gw.example/v1");
+  await form.getByRole("button", { name: "Create provider", exact: true }).click();
+  await expect(page.locator(".model-services-card .settings-save-message")).toContainText("requires providers.orphan.base_url");
+  await expect(directory.locator("[data-provider]")).toHaveCount(43);
+  await expect(form).toHaveCount(1);
 });

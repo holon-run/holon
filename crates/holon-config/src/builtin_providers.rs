@@ -65,6 +65,35 @@ pub(crate) fn persisted_provider_config_by_id_mut(
         .ok_or_else(|| anyhow!("provider {} not found", id.as_str()))
 }
 
+/// Create a custom provider stub when `providers.<id>.transport` names an id
+/// that is neither configured in `config.json` nor a built-in provider.
+///
+/// The declared transport is the only field this stub carries: `base_url` stays
+/// empty and `auth` is the `none/none` default, so the batch that created it
+/// still has to carry a valid `providers.<id>.base_url` and is rejected
+/// otherwise. Returns `true` when the stub was created, `false` when the id was
+/// already configured or is built-in (both keep their existing behaviour).
+pub fn create_custom_provider_stub(
+    config: &mut HolonConfigFile,
+    id: &ProviderId,
+    transport: ProviderTransportKind,
+) -> Result<bool> {
+    if config.providers.contains_key(id) {
+        return Ok(false);
+    }
+    if built_in_provider_default_config(id)?.is_some() {
+        return Ok(false);
+    }
+    config.providers.insert(
+        id.clone(),
+        ProviderConfigFile {
+            transport,
+            ..Default::default()
+        },
+    );
+    Ok(true)
+}
+
 fn provider_endpoint_key<'a>(rest: &'a str, suffix: &str) -> Option<(&'a str, &'a str)> {
     let rest = rest.strip_suffix(suffix)?;
     rest.split_once(".endpoints.")
@@ -444,8 +473,10 @@ pub(crate) fn set_provider_config_key(
         return Ok(());
     }
     if key.ends_with(".transport") {
-        persisted_provider_config_mut(config, key, ".transport")?.transport =
-            ProviderTransportKind::parse(raw_value)?;
+        // Parse before resolving the provider so an invalid transport reports the
+        // accepted vocabulary instead of an unknown-provider error.
+        let transport = ProviderTransportKind::parse(raw_value)?;
+        persisted_provider_config_mut(config, key, ".transport")?.transport = transport;
         return Ok(());
     }
     if key.ends_with(".base_url") {
