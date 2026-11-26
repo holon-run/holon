@@ -1,9 +1,33 @@
-import { Bell, X } from "lucide-react";
-import { useId, useRef } from "react";
+import {
+  CircleCheck, Bell, MessageSquare, TriangleAlert, X, type LucideProps,
+} from "lucide-react";
+import { useEffect, useId, useRef, useState, type ComponentType } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
-import type { NotificationTarget, RuntimeNotification } from "../../runtime/notification-sync";
-import { runtimeNotificationSync, useRuntimeNotifications } from "../../runtime/runtime-notifications";
+import { Button } from "../../components/ui/Button";
+import type { NotificationKind, NotificationTarget, RuntimeNotification } from "../../runtime/notification-sync";
+import {
+  runtimeNotificationSync,
+  useRuntimeNotifications,
+  useSystemNotificationPermission,
+} from "../../runtime/runtime-notifications";
+
+/** Long enough to read the card and reach for it, short enough not to pile up. */
+const TOAST_TTL_MS = 8_000;
+
+interface ToastPresentation {
+  tone: "warning" | "accent" | "success";
+  Icon: ComponentType<LucideProps>;
+}
+
+// Server data is untrusted, so unknown kinds fall back instead of throwing.
+const toastPresentation: Partial<Record<NotificationKind, ToastPresentation>> = {
+  operator_input_required: { tone: "warning", Icon: TriangleAlert },
+  operator_first_brief: { tone: "accent", Icon: MessageSquare },
+  work_item_completed: { tone: "success", Icon: CircleCheck },
+};
+const fallbackPresentation: ToastPresentation = { tone: "accent", Icon: Bell };
 
 interface Props {
   onNavigate: (target: NotificationTarget) => void;
@@ -47,30 +71,77 @@ export function NotificationCenter({ onNavigate }: Props) {
             close();
             onNavigate(target);
           }} />
+          <SystemNotificationSettings />
         </div>
       </details>
-      <div className="notification-toasts">
-        <div role="status" className="sr-only">
-          {toasts[0] ? t("notifications.announcement", {
-            kind: t(`notifications.kinds.${toasts[0].kind}`), agent: toasts[0].target.agent_id,
-          }) : ""}
-        </div>
-        {toasts.map((item) => (
-          <div className="notification-toast" key={item.id} data-testid="notification-toast">
-            <NotificationLink item={item} onNavigate={(target) => {
-              runtimeNotificationSync.dismiss(item.id);
-              onNavigate(target);
-            }} />
-            <button className="notification-dismiss" type="button" aria-label={t("notifications.dismiss")}
-              onClick={() => {
-                runtimeNotificationSync.dismiss(item.id);
-                trigger.current?.focus();
-              }}>
-              <X size={16} aria-hidden="true" />
-            </button>
+      {/* The topbar's backdrop-filter would anchor a fixed child, so the stack
+          lives on body; the sr-only region stays mounted for announcements. */}
+      {typeof document === "undefined" ? null : createPortal(
+        <div className="notification-toasts">
+          <div role="status" className="sr-only">
+            {toasts[0] ? t("notifications.announcement", {
+              kind: t(`notifications.kinds.${toasts[0].kind}`), agent: toasts[0].target.agent_id,
+            }) : ""}
           </div>
-        ))}
-      </div>
+          {toasts.map((item) => (
+            <NotificationToast key={item.id} item={item} onDismiss={runtimeNotificationSync.dismiss}
+              onNavigate={onNavigate} />
+          ))}
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
+function NotificationToast({ item, onNavigate, onDismiss }: {
+  item: RuntimeNotification;
+  onNavigate: (target: NotificationTarget) => void;
+  onDismiss: (id: string) => void;
+}) {
+  const { t, i18n } = useTranslation();
+  const [paused, setPaused] = useState(false);
+  const { tone, Icon } = toastPresentation[item.kind] ?? fallbackPresentation;
+  const timestamp = new Date(item.created_at);
+
+  // Hover and focus both pause, so the card only disappears untouched.
+  useEffect(() => {
+    if (paused) return;
+    const timer = setTimeout(() => onDismiss(item.id), TOAST_TTL_MS);
+    return () => clearTimeout(timer);
+  }, [item.id, onDismiss, paused]);
+
+  return (
+    <div className="notification-toast" data-testid="notification-toast" data-kind={item.kind} data-tone={tone}
+      onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)}
+      onFocusCapture={() => setPaused(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPaused(false);
+      }}>
+      <span className="notification-toast-tone" aria-hidden="true" />
+      <button type="button" className="notification-toast-main" onClick={() => {
+        onDismiss(item.id);
+        onNavigate(item.target);
+      }}>
+        <span className="notification-toast-title">
+          <Icon size={15} aria-hidden="true" />
+          {t(`notifications.kinds.${item.kind}`)}
+        </span>
+        <span className="notification-toast-meta">
+          <span className="notification-toast-target">
+            {item.target.agent_id}{item.target.work_item_id ? ` · ${item.target.work_item_id}` : ""}
+          </span>
+          {Number.isFinite(timestamp.getTime()) ? (
+            <time dateTime={item.created_at}>
+              {timestamp.toLocaleTimeString(i18n.resolvedLanguage, { hour: "2-digit", minute: "2-digit" })}
+            </time>
+          ) : null}
+        </span>
+      </button>
+      <button type="button" className="notification-toast-dismiss" aria-label={t("notifications.dismiss")}
+        onClick={() => onDismiss(item.id)}>
+        <X size={14} aria-hidden="true" />
+      </button>
     </div>
   );
 }
@@ -103,5 +174,34 @@ function NotificationLink({ item, onNavigate }: Props & { item: RuntimeNotificat
         </time>
       ) : null}
     </button>
+  );
+}
+
+/** Hidden tabs can only reach the user through the OS notification surface. */
+function SystemNotificationSettings() {
+  const { t } = useTranslation();
+  const permission = useSystemNotificationPermission((state) => state.permission);
+  const refresh = useSystemNotificationPermission((state) => state.refresh);
+  const request = useSystemNotificationPermission((state) => state.request);
+  // The browser can change permission outside this page (site settings, other
+  // tabs), so re-read it whenever the panel opens.
+  useEffect(() => { refresh(); }, [refresh]);
+  if (permission === "unsupported") return null;
+  return (
+    // No landmark role here: the panel is already the region, and a second
+    // named region (it would contain "Notifications") confuses region queries.
+    <section className="notification-system">
+      <h3>{t("notifications.system.title")}</h3>
+      {permission === "granted" ? <p>{t("notifications.system.enabled")}</p> : null}
+      {permission === "denied" ? <p>{t("notifications.system.blocked")}</p> : null}
+      {permission === "default" ? (
+        <>
+          <p>{t("notifications.system.hint")}</p>
+          <Button variant="secondary" size="sm" onClick={() => { void request(); }}>
+            {t("notifications.system.enable")}
+          </Button>
+        </>
+      ) : null}
+    </section>
   );
 }

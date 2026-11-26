@@ -20,6 +20,13 @@ const zh: Record<string, any> = {
       work_item_completed: "有结果",
       operator_input_required: "等你处理",
     },
+    system: {
+      title: "系统通知",
+      hint: "页面在后台标签页时，新提醒改用系统通知。",
+      enable: "开启系统通知",
+      enabled: "后台标签页已启用系统通知。",
+      blocked: "浏览器站点设置里已屏蔽系统通知。",
+    },
   },
   providerCooldown: {
     title: "正在等待共享 Provider 冷却",

@@ -29,6 +29,8 @@ interface NotificationDependencies {
   isHidden: () => boolean;
   isViewing: (target: NotificationTarget) => boolean;
   publish: (snapshot: NotificationSnapshot) => void;
+  /** Delivers OS notifications for items found while the page is hidden. */
+  notify?: (items: RuntimeNotification[]) => void;
 }
 
 export const emptyNotifications: NotificationSnapshot = {
@@ -79,7 +81,7 @@ export function createNotificationSync(deps: NotificationDependencies) {
   }
 
   function schedule() {
-    if (!active || flight || !dirty || deps.isHidden() || timer !== undefined) return;
+    if (!active || flight || !dirty || timer !== undefined) return;
     const delay = nextReadAt - Date.now();
     if (delay > 0) {
       timer = setTimeout(() => {
@@ -107,17 +109,19 @@ export function createNotificationSync(deps: NotificationDependencies) {
       const lists = await deps.load(controller.signal);
       if (flight !== controller) return;
       const known = new Set(snapshot.recent.map(({ id }) => id));
-      const canToast = mode === "live" && connected && hasBaseline
-        && requestContinuity === continuity && !deps.isHidden();
-      const newToasts = canToast
+      const live = mode === "live" && connected && hasBaseline && requestContinuity === continuity;
+      const fresh = live
         ? lists.recent.filter((item) => !known.has(item.id) && !deps.isViewing(item.target))
         : [];
+      const hidden = deps.isHidden();
       hasBaseline = true;
       failureCount = 0;
+      if (hidden && fresh.length) deps.notify?.(fresh);
       publish({
         ...lists,
         status: connected ? "ready" : "stale",
-        toasts: [...newToasts, ...snapshot.toasts].slice(0, MAX_TOASTS),
+        // A hidden tab keeps no toasts; its reminders go through the OS instead.
+        toasts: hidden ? [] : [...fresh, ...snapshot.toasts].slice(0, MAX_TOASTS),
       });
     } catch (error) {
       if (flight !== controller) return;
@@ -164,12 +168,13 @@ export function createNotificationSync(deps: NotificationDependencies) {
       }
     },
     hint() {
-      if (snapshot.status !== "unavailable") request(deps.isHidden() ? "catchup" : "live");
+      // A hidden tab still reads, otherwise nothing could reach the OS. Catchup
+      // stays reserved for reconnects and for the read after visibility returns.
+      if (snapshot.status !== "unavailable") request("live");
     },
     visibilityChanged() {
       continuity += 1;
       if (deps.isHidden()) {
-        clearTimer();
         if (snapshot.toasts.length) publish({ ...snapshot, toasts: [] });
       } else {
         request("catchup");

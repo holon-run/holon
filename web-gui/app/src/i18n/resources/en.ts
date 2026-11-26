@@ -17,6 +17,13 @@ const en = {
       work_item_completed: "Result ready",
       operator_input_required: "Needs your input",
     },
+    system: {
+      title: "System notifications",
+      hint: "Route new notifications to a system notification while this page is in a hidden tab.",
+      enable: "Enable system notifications",
+      enabled: "System notifications are on for hidden tabs.",
+      blocked: "System notifications are blocked in your browser's site settings.",
+    },
   },
   providerCooldown: {
     title: "Waiting for shared provider cooldown",
