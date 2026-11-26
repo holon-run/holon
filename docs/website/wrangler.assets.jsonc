@@ -2,6 +2,10 @@
   // Dedicated origin for the docs site's images, diagrams and PDFs.
   // Pages reference it after `.tools/rewrite-asset-host.mjs` rewrites
   // site-internal `/assets/` paths (see .tools/README.md).
+  //
+  // The `assets.holon.run/*` route is configured once in the Cloudflare
+  // dashboard, the same way the page Worker's route is, so the deploy token
+  // does not need zone route access.
   "$schema": "./.tools/node_modules/wrangler/config-schema.json",
   "name": "holon-docs-assets",
   "main": "./asset-worker.mjs",
@@ -12,7 +16,6 @@
     "html_handling": "none",
     "not_found_handling": "none"
   },
-  "routes": [{ "pattern": "assets.holon.run/*", "zone_name": "holon.run" }],
   "compatibility_date": "2026-03-25",
   "workers_dev": false
 }

@@ -85,9 +85,12 @@ rebuilt and redeployed.
 
 The zone needs one proxied placeholder record, `assets.holon.run AAAA 100::`:
 a Worker route only matches a hostname that already resolves through
-Cloudflare. CI deploys the asset Worker first and the page Worker second, so
-page HTML never points at a host that is not serving yet. The page Worker keeps
-the same binaries as a fallback for anything still using a relative path.
+Cloudflare. The `assets.holon.run/*` route itself is configured once in the
+Cloudflare dashboard, like the page Worker's route, because the CI deploy token
+has no zone route access. CI deploys the asset Worker first and the page Worker
+second, so page HTML never points at a host that is not serving yet. The page
+Worker keeps the same binaries as a fallback for anything still using a
+relative path.
 
 ## Local native-search limitation
 
