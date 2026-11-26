@@ -100,7 +100,16 @@ jobs:
           # The bundle lives under hidden .tools; upload only this generated subtree.
           include-hidden-files: true
 
-      - name: Deploy to Cloudflare Workers
+      - name: Deploy asset host Worker
+        if: github.event_name != 'pull_request'
+        # Assets deploy first so page HTML never points at a host that is not
+        # serving yet. The page Worker keeps the same files as a fallback.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm --prefix .tools run deploy:assets
+
+      - name: Deploy docs site Worker
         if: github.event_name != 'pull_request'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
