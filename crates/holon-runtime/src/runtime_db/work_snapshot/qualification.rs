@@ -149,7 +149,14 @@ pub(super) fn validate_member(
         let expected = eligible_digest(tx, seed, key)?
             .ok_or_else(|| WorkSnapshotError::NeedsPreparation(key.clone()))?;
         if expected != stored.digest() {
-            return Err(WorkSnapshotError::CanonicalChanged(key.clone()).into());
+            return Err(WorkSnapshotError::CanonicalChanged {
+                key: key.clone(),
+                seed: seed.map(str::to_owned),
+                record: key.id.clone(),
+                expected,
+                actual: stored.digest(),
+            }
+            .into());
         }
         Ok(1)
     }

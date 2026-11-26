@@ -106,8 +106,16 @@ pub(crate) enum WorkSnapshotError {
     NeedsPreparation(WorkKey),
     #[error("Work selected coverage requires preparation")]
     CoverageNeedsPreparation,
-    #[error("qualified Work canonical record changed outside its original transaction: {0:?}")]
-    CanonicalChanged(WorkKey),
+    #[error(
+        "qualified Work canonical record changed outside its original transaction: {key:?} seed={seed:?} record={record} expected={expected} actual={actual}"
+    )]
+    CanonicalChanged {
+        key: WorkKey,
+        seed: Option<String>,
+        record: String,
+        expected: String,
+        actual: String,
+    },
     #[error("Work scope is retired")]
     RetiredScope,
     #[error("Work domain revision mismatch: expected={expected}, actual={actual}")]

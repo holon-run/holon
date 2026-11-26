@@ -1389,3 +1389,7 @@ fn original_work_ack_keeps_written_terminal_roots_without_display_history_roots(
         Ok(())
     })
 }
+
+#[cfg(holon_lib_test_shard = "b")]
+#[path = "blocker_provenance_tests.rs"]
+mod blocker_provenance_tests;

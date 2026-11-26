@@ -8029,30 +8029,42 @@ pub fn backfill_wait_condition_payload_columns(connection: &Connection) -> Resul
 /// the same work item whose `waiting_for` equals the blocker text; blockers
 /// without a matching wait keep `None` (independent). Idempotent: payloads
 /// that already carry provenance are left untouched.
-pub fn backfill_work_item_blocker_wait_provenance(connection: &Connection) -> Result<()> {
-    let work_items_exists: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_items')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !work_items_exists {
-        return Ok(());
+///
+/// The payload rewrite and the matching Work eligibility digest move in one
+/// `IMMEDIATE` transaction: v94 captured the payload digest before this
+/// backfill, so a rewritten payload without the refreshed digest would fail
+/// the startup qualification check.
+pub fn backfill_work_item_blocker_wait_provenance(connection: &mut Connection) -> Result<()> {
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let updates = backfill_work_item_blocker_wait_provenance_tx(&transaction)?;
+    let reconciled = reconcile_work_domain_eligibility_tx(&transaction)?;
+    transaction.commit()?;
+    if updates > 0 {
+        tracing::info!(updates, "backfilled work item blocker wait provenance");
     }
-    let wait_conditions_exists: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'wait_conditions')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !wait_conditions_exists {
-        return Ok(());
+    if reconciled > 0 {
+        tracing::info!(
+            reconciled,
+            "refreshed work domain eligibility for backfilled blockers"
+        );
     }
-    let rows: Vec<(String, String)> = connection
+    Ok(())
+}
+
+fn backfill_work_item_blocker_wait_provenance_tx(transaction: &Transaction<'_>) -> Result<usize> {
+    if !table_exists_tx(transaction, "work_items")?
+        || !table_exists_tx(transaction, "wait_conditions")?
+    {
+        return Ok(0);
+    }
+    let rows: Vec<(String, String)> = transaction
         .prepare("SELECT work_item_id, payload_json FROM work_items WHERE blocked_by IS NOT NULL")?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut updates = 0usize;
     for (work_item_id, payload) in rows {
-        let mut record: holon_domain::WorkItemRecord = serde_json::from_str(&payload)
+        let mut record: WorkItemRecord = serde_json::from_str(&payload)
             .context("decoding work item payload for blocker provenance backfill")?;
         if record.blocked_by_wait_id.is_some() {
             continue;
@@ -8060,30 +8072,132 @@ pub fn backfill_work_item_blocker_wait_provenance(connection: &Connection) -> Re
         let Some(blocked_by) = record.blocked_by.clone() else {
             continue;
         };
-        let owner_wait_id: Option<String> = connection
-            .query_row(
-                "SELECT wait_condition_id FROM wait_conditions
-                 WHERE work_item_id = ?1 AND waiting_for = ?2
-                 ORDER BY updated_at DESC
-                 LIMIT 1",
-                params![work_item_id, blocked_by],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(owner_wait_id) = owner_wait_id else {
+        let Some(owner_wait_id) = blocker_wait_id_tx(transaction, &work_item_id, &blocked_by)?
+        else {
             continue;
         };
         record.blocked_by_wait_id = Some(owner_wait_id);
-        connection.execute(
+        transaction.execute(
             "UPDATE work_items SET payload_json = ?1 WHERE work_item_id = ?2",
             params![serde_json::to_string(&record)?, work_item_id],
         )?;
         updates += 1;
     }
-    if updates > 0 {
-        tracing::info!(updates, "backfilled work item blocker wait provenance");
+    Ok(updates)
+}
+
+/// Blocker-to-wait attribution shared by the backfill and its eligibility
+/// reconciliation so both agree on which wait owns a `blocked_by` value.
+fn blocker_wait_id_tx(
+    transaction: &Transaction<'_>,
+    work_item_id: &str,
+    blocked_by: &str,
+) -> Result<Option<String>> {
+    transaction
+        .query_row(
+            "SELECT wait_condition_id FROM wait_conditions
+             WHERE work_item_id = ?1 AND waiting_for = ?2
+             ORDER BY updated_at DESC
+             LIMIT 1",
+            params![work_item_id, blocked_by],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Moves `work_domain_eligibility.content_digest` to the rewritten payload for
+/// records whose captured bytes differ from the current payload only by the
+/// backfilled `blocked_by_wait_id`. Idempotent and fail-closed: a digest that
+/// cannot be attributed to this exact rewrite is left for the startup
+/// qualification check to reject instead of being rewritten.
+fn reconcile_work_domain_eligibility_tx(transaction: &Transaction<'_>) -> Result<usize> {
+    if !table_exists_tx(transaction, "work_items")?
+        || !table_exists_tx(transaction, "wait_conditions")?
+        || !table_exists_tx(transaction, "work_domain_eligibility")?
+    {
+        return Ok(0);
     }
-    Ok(())
+    let aliases_available = table_exists_tx(transaction, "work_domain_records")?;
+    let rows: Vec<(String, String, String)> = transaction
+        .prepare(
+            "SELECT work_item_id, payload_json, blocked_by FROM work_items
+             WHERE blocked_by IS NOT NULL",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut updated = 0usize;
+    for (work_item_id, payload, blocked_by) in rows {
+        let record: WorkItemRecord = serde_json::from_str(&payload)
+            .context("decoding work item payload for eligibility reconciliation")?;
+        let (Some(wait_id), Some(record_blocked_by)) =
+            (record.blocked_by_wait_id.clone(), record.blocked_by.clone())
+        else {
+            continue;
+        };
+        // The wait is attributed to the stored blocker, not to a payload that
+        // disagrees with the stored blocker.
+        if record_blocked_by != blocked_by {
+            continue;
+        }
+        let current_digest = bytes_sha256_hex(payload.as_bytes());
+        let mut captured = record;
+        captured.blocked_by_wait_id = None;
+        let captured_digest = bytes_sha256_hex(serde_json::to_vec(&captured)?.as_slice());
+        if captured_digest == current_digest {
+            continue;
+        }
+        if blocker_wait_id_tx(transaction, &work_item_id, &blocked_by)?.as_deref()
+            != Some(wait_id.as_str())
+        {
+            continue;
+        }
+        if aliases_available
+            && transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM work_domain_records
+                 WHERE family = 'work' AND record_id = ?1 AND availability = 'present')",
+                [&work_item_id],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            continue;
+        }
+        let targets: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM work_domain_eligibility
+             WHERE family = 'work' AND record_id = ?1 AND content_digest = ?2",
+            params![work_item_id, captured_digest],
+            |row| row.get(0),
+        )?;
+        if targets == 0 {
+            let already_current: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM work_domain_eligibility
+                 WHERE family = 'work' AND record_id = ?1 AND content_digest = ?2)",
+                params![work_item_id, current_digest],
+                |row| row.get(0),
+            )?;
+            if !already_current {
+                tracing::warn!(
+                    work_item_id,
+                    captured_digest,
+                    current_digest,
+                    "work domain eligibility diverges beyond blocker provenance; leaving it to startup qualification"
+                );
+            }
+            continue;
+        }
+        let moved = transaction.execute(
+            "UPDATE work_domain_eligibility SET content_digest = ?1
+             WHERE family = 'work' AND record_id = ?2 AND content_digest = ?3",
+            params![current_digest, work_item_id, captured_digest],
+        )?;
+        if moved == 0 {
+            bail!(
+                "blocker provenance eligibility update matched 0 rows for {work_item_id}; refusing to report success"
+            );
+        }
+        updated += usize::try_from(moved)?;
+    }
+    Ok(updated)
 }
 
 pub fn backfill_work_item_recheck_columns(connection: &Connection) -> Result<()> {
