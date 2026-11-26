@@ -46,6 +46,7 @@ mod skills;
 mod state;
 mod task;
 pub mod task_generation;
+pub mod task_result_settlement;
 pub mod task_transition;
 mod templates;
 mod tool;

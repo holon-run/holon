@@ -33,6 +33,7 @@ pub mod schema;
 pub mod sequences;
 pub mod storage_domain;
 pub mod task;
+pub mod task_result_settlement;
 pub mod turn;
 pub mod unread;
 pub mod usage;
