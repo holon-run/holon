@@ -170,15 +170,15 @@ pub fn tool_sections_with_context(
             ApplyPatchSurface::CodexDslFreeform
         ) {
             (
-                "express ordinary file mutation as Codex DSL with `*** Add File`, `*** Delete File`, or `*** Update File` hunks",
+                "express ordinary file mutation as Codex DSL with `*** Add File: `, `*** Delete File: `, or `*** Update File: ` hunks",
                 "Current ApplyPatch surface is Codex DSL freeform: send raw `*** Begin Patch` / `*** End Patch` text directly. Do not wrap it in JSON, and do not use `patch` or `input` fields.",
-                "Use Codex DSL file hunks: `*** Add File`, `*** Delete File`, `*** Update File`, optional `*** Move to`, and `@@` chunk separators when useful. Prefer focused chunks with unambiguous context, and keep a single space prefix on blank context lines.",
+                "Use Codex DSL file hunks: `*** Add File: `, `*** Delete File: `, `*** Update File: `, optional `*** Move to: `, and `@@` chunk separators when useful. Prefer focused chunks with unambiguous context, and keep a single space prefix on blank context lines.",
             )
         } else {
             (
                 "express ordinary file mutation as unified diff text",
                 "Current ApplyPatch surface is a JSON/function tool: call it with exactly `{\"patch\":\"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}`. Do not use `input`, and do not send a raw freeform diff body.",
-                "Use unified diff `---`/`+++` file headers and `@@` hunks: write `--- a/relative/path` for workspace-relative paths and `--- /abs/path` (without `a/`) for explicit absolute paths outside the workspace. Keep `--- a/path` and `+++ b/path` identical unless performing a move with `rename from`/`rename to`, include at least 3 context lines (5-10 around repeated patterns), and keep a space prefix on blank context lines.",
+                "Use unified diff `---`/`+++` file headers and `@@` hunks: write `--- a/relative/path` for workspace-relative paths and `--- /abs/path` (without `a/`) for explicit absolute paths outside the workspace. Keep `--- a/path` and `+++ b/path` identical unless performing a move with `rename from`/`rename to`, include at least 3 context lines before and after each changed line (5-10 around repeated patterns), and keep a space prefix on blank context lines.",
             )
         };
         sections.push(section(

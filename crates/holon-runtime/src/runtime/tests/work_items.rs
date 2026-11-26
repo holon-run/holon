@@ -458,6 +458,9 @@ fn assert_complete_work_item_deferred_result(conversation: &[ConversationMessage
     assert!(deferred_summary.contains(
         "do not call CompleteWorkItem, WaitFor, PickWorkItem, or Sleep while this report is pending"
     ));
+    assert!(deferred_summary.contains(
+        "changes to its revision or the execution binding invalidate this pending completion"
+    ));
 }
 
 fn assert_detached_followup_completion_sequence(conversation: &[ConversationMessage]) {

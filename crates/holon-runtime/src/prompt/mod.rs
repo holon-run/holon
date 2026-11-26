@@ -148,11 +148,7 @@ pub(crate) enum HistoryReprojectionOutcome {
 }
 
 impl EffectivePrompt {
-    pub(crate) fn with_media_tool_defaults(
-        mut self,
-        _defaults: &crate::provider::media::MediaToolDefaults,
-        available_tools: &[ToolSpec],
-    ) -> Self {
+    pub(crate) fn with_media_tool_defaults(mut self, available_tools: &[ToolSpec]) -> Self {
         let view = available_tools
             .iter()
             .any(|tool| tool.name == crate::tool::names::VIEW_IMAGE);
@@ -1227,16 +1223,7 @@ mod tests {
             frozen_recent_message_limit: None,
             _resource_read_material: None,
         };
-        let defaults = crate::provider::media::MediaToolDefaults {
-            view_image: Some("test@default/vision-a".into()),
-            generate_image: Some("test@default/image-a".into()),
-            output_format: "png".into(),
-        };
-        assert!(prompt
-            .clone()
-            .with_media_tool_defaults(&defaults, &[])
-            .system_sections
-            .is_empty());
+        assert!(prompt.clone().with_media_tool_defaults(&[]).system_sections.is_empty());
         let media_tools = crate::tool::ToolRegistry::new(".".into())
             .tool_specs()
             .unwrap()
@@ -1260,9 +1247,7 @@ mod tests {
                 .filter(|tool| visible_tools.contains(&tool.name.as_str()))
                 .cloned()
                 .collect::<Vec<_>>();
-            let first = prompt.clone().with_media_tool_defaults(&defaults, &tools);
-            assert!(!first.rendered_system_prompt.contains("vision-a"));
-            assert!(!first.rendered_system_prompt.contains("image-a"));
+            let first = prompt.clone().with_media_tool_defaults(&tools);
             assert!(first.context_sections.is_empty());
             assert!(first
                 .rendered_system_prompt
@@ -1284,44 +1269,16 @@ mod tests {
                     .rendered_system_prompt
                     .contains("final output_format defaults to PNG"));
             }
-            let renamed = crate::provider::media::MediaToolDefaults {
-                view_image: Some("test@plan/vision-b".into()),
-                generate_image: Some("test@plan/image-b".into()),
-                ..defaults.clone()
-            };
-            let second = first.clone().with_media_tool_defaults(&renamed, &tools);
-            assert_eq!(second.system_sections.len(), 1);
-            assert_eq!(first.rendered_system_prompt, second.rendered_system_prompt);
+            let repeated = first.clone().with_media_tool_defaults(&tools);
+            assert_eq!(repeated.system_sections.len(), 1);
+            assert_eq!(first.rendered_system_prompt, repeated.rendered_system_prompt);
             assert_eq!(
                 first.cache_identity.prompt_cache_key,
-                second.cache_identity.prompt_cache_key
+                repeated.cache_identity.prompt_cache_key
             );
             assert_eq!(
                 first.cache_identity.context_fingerprint,
-                second.cache_identity.context_fingerprint
-            );
-            let unavailable = crate::provider::media::MediaToolDefaults::default();
-            let third = second
-                .clone()
-                .with_media_tool_defaults(&unavailable, &tools);
-            assert_eq!(third.system_sections.len(), 1);
-            assert_eq!(second.rendered_system_prompt, third.rendered_system_prompt);
-            assert_eq!(
-                second.cache_identity.prompt_cache_key,
-                third.cache_identity.prompt_cache_key
-            );
-            assert_eq!(
-                second.cache_identity.context_fingerprint,
-                third.cache_identity.context_fingerprint
-            );
-            let repeated = third.clone().with_media_tool_defaults(&unavailable, &tools);
-            assert_eq!(
-                third.cache_identity.context_fingerprint,
                 repeated.cache_identity.context_fingerprint
-            );
-            assert_eq!(
-                third.cache_identity.prompt_cache_key,
-                repeated.cache_identity.prompt_cache_key
             );
         }
         let mut canonical = prompt;
@@ -1336,7 +1293,7 @@ mod tests {
             ToolPromptContext::default(),
         );
         let prefix = shared_prefix_fingerprint(&canonical.system_sections);
-        let updated = canonical.with_media_tool_defaults(&defaults, &media_tools);
+        let updated = canonical.with_media_tool_defaults(&media_tools);
         assert_eq!(
             updated.system_sections.last().unwrap().name,
             "response_language"

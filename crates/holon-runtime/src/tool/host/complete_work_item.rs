@@ -83,7 +83,7 @@ pub(crate) async fn execute(
                 "warnings": warnings_json(&warnings),
             }),
             Some(
-                "Awaiting the final operator-facing completion report: completion is not committed yet. Finish any remaining authorized cleanup or verification with ordinary tools, then provide non-empty operator-facing final text; do not call CompleteWorkItem, WaitFor, PickWorkItem, or Sleep while this report is pending.".into(),
+                "Awaiting the final operator-facing completion report: completion is not committed yet. Finish any remaining authorized cleanup or verification with ordinary tools, then provide non-empty operator-facing final text; do not call CompleteWorkItem, WaitFor, PickWorkItem, or Sleep while this report is pending, and do not mutate the target WorkItem (changes to its revision or the execution binding invalidate this pending completion).".into(),
             ),
             ToolLoopDirective::AwaitCompletionReport(AwaitCompletionReportDirective {
                 request_id,

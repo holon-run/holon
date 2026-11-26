@@ -3,11 +3,11 @@
     {
       "apply_patch_surface": null,
       "profile": "zero-tools",
-      "rendered_system_chars": 12752,
-      "rendered_system_estimated_tokens": 3188,
-      "shared_prefix_chars": 10121,
-      "shared_prefix_estimated_tokens": 2531,
-      "shared_prefix_fingerprint": "515620cea44f48e35a9a22738ede654472ea8c8caef30b4e816263f420769299",
+      "rendered_system_chars": 13577,
+      "rendered_system_estimated_tokens": 3395,
+      "shared_prefix_chars": 10946,
+      "shared_prefix_estimated_tokens": 2737,
+      "shared_prefix_fingerprint": "f0600bffae5d64f76d4b734080e98ee0b8cf1b1879fcbcaf6389bcbb7c86d13e",
       "shared_prefix_sections": 7,
       "system_sections": [
         {
@@ -59,8 +59,8 @@
           "stability": "stable"
         },
         {
-          "chars": 1992,
-          "estimated_tokens": 498,
+          "chars": 2817,
+          "estimated_tokens": 705,
           "id": "delivery_contract",
           "layout": "shared_prefix",
           "name": "delivery_contract",
@@ -99,11 +99,11 @@
     {
       "apply_patch_surface": null,
       "profile": "no-shell-steward",
-      "rendered_system_chars": 27470,
-      "rendered_system_estimated_tokens": 6868,
-      "shared_prefix_chars": 23663,
-      "shared_prefix_estimated_tokens": 5916,
-      "shared_prefix_fingerprint": "1b4ae3552acba150c46fbb5d8f2e30dc361a6eb523e7b32482f345d5b6615533",
+      "rendered_system_chars": 28762,
+      "rendered_system_estimated_tokens": 7191,
+      "shared_prefix_chars": 24955,
+      "shared_prefix_estimated_tokens": 6239,
+      "shared_prefix_fingerprint": "0c98a1404270cd114cb1daf4069e7d4ea76cc116013ada098075edd56cc08c41",
       "shared_prefix_sections": 14,
       "system_sections": [
         {
@@ -155,8 +155,8 @@
           "stability": "stable"
         },
         {
-          "chars": 1992,
-          "estimated_tokens": 498,
+          "chars": 2817,
+          "estimated_tokens": 705,
           "id": "delivery_contract",
           "layout": "shared_prefix",
           "name": "delivery_contract",
@@ -203,16 +203,16 @@
           "stability": "stable"
         },
         {
-          "chars": 1220,
-          "estimated_tokens": 305,
+          "chars": 1474,
+          "estimated_tokens": 369,
           "id": "tool_work_item_write",
           "layout": "shared_prefix",
           "name": "tool_work_item_write",
           "stability": "stable"
         },
         {
-          "chars": 594,
-          "estimated_tokens": 149,
+          "chars": 807,
+          "estimated_tokens": 202,
           "id": "tool_work_item_read",
           "layout": "shared_prefix",
           "name": "tool_work_item_read",
@@ -294,11 +294,11 @@
     {
       "apply_patch_surface": "unified_diff_json",
       "profile": "coding-shell-patch-json",
-      "rendered_system_chars": 27410,
-      "rendered_system_estimated_tokens": 6853,
-      "shared_prefix_chars": 23941,
-      "shared_prefix_estimated_tokens": 5986,
-      "shared_prefix_fingerprint": "2b3f8054ceadb9b766f7c301cad7df901618f2420c04ef9abe49d0f46b20a9cc",
+      "rendered_system_chars": 29064,
+      "rendered_system_estimated_tokens": 7266,
+      "shared_prefix_chars": 25595,
+      "shared_prefix_estimated_tokens": 6399,
+      "shared_prefix_fingerprint": "be9ce41dc6836ce0cb6e614a7ecbc06861e06c2850be95aca30ef4aa27f6d2f0",
       "shared_prefix_sections": 17,
       "system_sections": [
         {
@@ -350,8 +350,8 @@
           "stability": "stable"
         },
         {
-          "chars": 1992,
-          "estimated_tokens": 498,
+          "chars": 2817,
+          "estimated_tokens": 705,
           "id": "delivery_contract",
           "layout": "shared_prefix",
           "name": "delivery_contract",
@@ -374,32 +374,32 @@
           "stability": "stable"
         },
         {
-          "chars": 1220,
-          "estimated_tokens": 305,
+          "chars": 1474,
+          "estimated_tokens": 369,
           "id": "tool_work_item_write",
           "layout": "shared_prefix",
           "name": "tool_work_item_write",
           "stability": "stable"
         },
         {
-          "chars": 594,
-          "estimated_tokens": 149,
+          "chars": 807,
+          "estimated_tokens": 202,
           "id": "tool_work_item_read",
           "layout": "shared_prefix",
           "name": "tool_work_item_read",
           "stability": "stable"
         },
         {
-          "chars": 738,
-          "estimated_tokens": 185,
+          "chars": 808,
+          "estimated_tokens": 202,
           "id": "tool_task_control",
           "layout": "shared_prefix",
           "name": "tool_task_control",
           "stability": "stable"
         },
         {
-          "chars": 883,
-          "estimated_tokens": 221,
+          "chars": 980,
+          "estimated_tokens": 245,
           "id": "tool_exec_command",
           "layout": "shared_prefix",
           "name": "tool_exec_command",
@@ -414,16 +414,16 @@
           "stability": "stable"
         },
         {
-          "chars": 534,
-          "estimated_tokens": 134,
+          "chars": 694,
+          "estimated_tokens": 174,
           "id": "tool_exec_command_batch",
           "layout": "shared_prefix",
           "name": "tool_exec_command_batch",
           "stability": "stable"
         },
         {
-          "chars": 1554,
-          "estimated_tokens": 389,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_apply_patch",
           "layout": "shared_prefix",
           "name": "tool_apply_patch",
@@ -501,11 +501,11 @@
     {
       "apply_patch_surface": "codex_dsl_freeform",
       "profile": "coding-shell-patch-dsl",
-      "rendered_system_chars": 27270,
-      "rendered_system_estimated_tokens": 6818,
-      "shared_prefix_chars": 23801,
-      "shared_prefix_estimated_tokens": 5951,
-      "shared_prefix_fingerprint": "0e0683c93abb05e0eed327c9544ed864a04481a600646bd1506bd0677f8d0e31",
+      "rendered_system_chars": 28903,
+      "rendered_system_estimated_tokens": 7226,
+      "shared_prefix_chars": 25434,
+      "shared_prefix_estimated_tokens": 6359,
+      "shared_prefix_fingerprint": "62a7e4c859988bbaba065a9d8c325096ba5c9de4e933267e00bea3f95eb76641",
       "shared_prefix_sections": 17,
       "system_sections": [
         {
@@ -557,8 +557,8 @@
           "stability": "stable"
         },
         {
-          "chars": 1992,
-          "estimated_tokens": 498,
+          "chars": 2817,
+          "estimated_tokens": 705,
           "id": "delivery_contract",
           "layout": "shared_prefix",
           "name": "delivery_contract",
@@ -581,32 +581,32 @@
           "stability": "stable"
         },
         {
-          "chars": 1220,
-          "estimated_tokens": 305,
+          "chars": 1474,
+          "estimated_tokens": 369,
           "id": "tool_work_item_write",
           "layout": "shared_prefix",
           "name": "tool_work_item_write",
           "stability": "stable"
         },
         {
-          "chars": 594,
-          "estimated_tokens": 149,
+          "chars": 807,
+          "estimated_tokens": 202,
           "id": "tool_work_item_read",
           "layout": "shared_prefix",
           "name": "tool_work_item_read",
           "stability": "stable"
         },
         {
-          "chars": 738,
-          "estimated_tokens": 185,
+          "chars": 808,
+          "estimated_tokens": 202,
           "id": "tool_task_control",
           "layout": "shared_prefix",
           "name": "tool_task_control",
           "stability": "stable"
         },
         {
-          "chars": 883,
-          "estimated_tokens": 221,
+          "chars": 980,
+          "estimated_tokens": 245,
           "id": "tool_exec_command",
           "layout": "shared_prefix",
           "name": "tool_exec_command",
@@ -621,16 +621,16 @@
           "stability": "stable"
         },
         {
-          "chars": 534,
-          "estimated_tokens": 134,
+          "chars": 694,
+          "estimated_tokens": 174,
           "id": "tool_exec_command_batch",
           "layout": "shared_prefix",
           "name": "tool_exec_command_batch",
           "stability": "stable"
         },
         {
-          "chars": 1414,
-          "estimated_tokens": 354,
+          "chars": 1428,
+          "estimated_tokens": 357,
           "id": "tool_apply_patch",
           "layout": "shared_prefix",
           "name": "tool_apply_patch",
@@ -708,11 +708,11 @@
     {
       "apply_patch_surface": "unified_diff_json",
       "profile": "delegated-child",
-      "rendered_system_chars": 30740,
-      "rendered_system_estimated_tokens": 7685,
-      "shared_prefix_chars": 27049,
-      "shared_prefix_estimated_tokens": 6763,
-      "shared_prefix_fingerprint": "e36a670287d3a98dfc1653043d6dd6205a732e85bd7453687489244c80586751",
+      "rendered_system_chars": 31697,
+      "rendered_system_estimated_tokens": 7925,
+      "shared_prefix_chars": 28006,
+      "shared_prefix_estimated_tokens": 7002,
+      "shared_prefix_fingerprint": "db9224cdbf68a1407b3446fe89e5a0379352c1f60cb1dff94b0f1162e7fb55d0",
       "shared_prefix_sections": 12,
       "system_sections": [
         {
@@ -764,8 +764,8 @@
           "stability": "stable"
         },
         {
-          "chars": 1992,
-          "estimated_tokens": 498,
+          "chars": 2817,
+          "estimated_tokens": 705,
           "id": "delivery_contract",
           "layout": "shared_prefix",
           "name": "delivery_contract",
@@ -788,8 +788,8 @@
           "stability": "stable"
         },
         {
-          "chars": 883,
-          "estimated_tokens": 221,
+          "chars": 980,
+          "estimated_tokens": 245,
           "id": "tool_exec_command",
           "layout": "shared_prefix",
           "name": "tool_exec_command",
@@ -804,8 +804,8 @@
           "stability": "stable"
         },
         {
-          "chars": 1554,
-          "estimated_tokens": 389,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_apply_patch",
           "layout": "shared_prefix",
           "name": "tool_apply_patch",
@@ -857,11 +857,11 @@
     {
       "apply_patch_surface": "unified_diff_json",
       "profile": "full-surface",
-      "rendered_system_chars": 38832,
-      "rendered_system_estimated_tokens": 9708,
-      "shared_prefix_chars": 33854,
-      "shared_prefix_estimated_tokens": 8464,
-      "shared_prefix_fingerprint": "490207dafdcac570309761997ab4413cfc4950d7eac1f8852c939abe49708861",
+      "rendered_system_chars": 40486,
+      "rendered_system_estimated_tokens": 10122,
+      "shared_prefix_chars": 35508,
+      "shared_prefix_estimated_tokens": 8877,
+      "shared_prefix_fingerprint": "eddc2171acc46303f94c73a30b4f32789ac17928ad3850e8bd78c025ec4b61e0",
       "shared_prefix_sections": 21,
       "system_sections": [
         {
@@ -913,8 +913,8 @@
           "stability": "stable"
         },
         {
-          "chars": 1992,
-          "estimated_tokens": 498,
+          "chars": 2817,
+          "estimated_tokens": 705,
           "id": "delivery_contract",
           "layout": "shared_prefix",
           "name": "delivery_contract",
@@ -969,32 +969,32 @@
           "stability": "stable"
         },
         {
-          "chars": 1220,
-          "estimated_tokens": 305,
+          "chars": 1474,
+          "estimated_tokens": 369,
           "id": "tool_work_item_write",
           "layout": "shared_prefix",
           "name": "tool_work_item_write",
           "stability": "stable"
         },
         {
-          "chars": 594,
-          "estimated_tokens": 149,
+          "chars": 807,
+          "estimated_tokens": 202,
           "id": "tool_work_item_read",
           "layout": "shared_prefix",
           "name": "tool_work_item_read",
           "stability": "stable"
         },
         {
-          "chars": 738,
-          "estimated_tokens": 185,
+          "chars": 808,
+          "estimated_tokens": 202,
           "id": "tool_task_control",
           "layout": "shared_prefix",
           "name": "tool_task_control",
           "stability": "stable"
         },
         {
-          "chars": 883,
-          "estimated_tokens": 221,
+          "chars": 980,
+          "estimated_tokens": 245,
           "id": "tool_exec_command",
           "layout": "shared_prefix",
           "name": "tool_exec_command",
@@ -1009,16 +1009,16 @@
           "stability": "stable"
         },
         {
-          "chars": 534,
-          "estimated_tokens": 134,
+          "chars": 694,
+          "estimated_tokens": 174,
           "id": "tool_exec_command_batch",
           "layout": "shared_prefix",
           "name": "tool_exec_command_batch",
           "stability": "stable"
         },
         {
-          "chars": 1554,
-          "estimated_tokens": 389,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_apply_patch",
           "layout": "shared_prefix",
           "name": "tool_apply_patch",
