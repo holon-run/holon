@@ -176,9 +176,27 @@ holon config set image_generation.default "openai@default/dall-e-3"
 
 这些设置完全独立，不会影响日常文本对话模型的路由。关于图像工具的具体用法，请参阅[检查与分析图像](./inspect-image.md)与[生成图像](./generate-image.md)。
 
-### 场景六：接入自托管 OpenAI 兼容网关（Magpie、LiteLLM 等）
+### 场景六：Magpie（内置）与自托管 OpenAI 兼容网关
 
-暴露 OpenAI 兼容 `GET /v1/models` 接口的自托管网关可以参与模型自动发现，不必为每个模型手写 `models.catalog` 条目。
+**Magpie 已内置。** 当 Magpie 运行在默认端口时无需任何 provider 配置：内置 `magpie` 条目指向 `http://127.0.0.1:3425`，使用 Anthropic Messages 传输（`POST /v1/messages`），通过 Magpie 解码器从 `GET /v1/models` 发现模型，且不需要 API key。
+
+```bash
+# 仅在 Magpie 监听非默认端口时需要。
+holon config set providers.magpie.base_url http://127.0.0.1:4325
+holon config models refresh --provider magpie
+```
+
+本机 loopback 上的 Magpie 接受任意 key，因此凭据是可选的。只有需要按应用计量（`Authorization: Bearer magpie-<app-id>`）或连接远程共享网关时才显式配置；Holon 不内置默认 key：
+
+```bash
+holon config set providers.magpie.auth.source env
+holon config set providers.magpie.auth.kind api_key
+holon config set providers.magpie.auth.env MAGPIE_API_KEY
+```
+
+内置条目只声明 Anthropic Messages 端点。如需通过 Holon 调用 Magpie 的 OpenAI Chat Completions 或 Gemini 协议，按[多协议网关](#multi-protocol-gateways)添加 `endpoints.*`/`plans.*`；OpenAI 客户端 base 为 `http://127.0.0.1:3425/v1`，Anthropic 与 Gemini 使用 `http://127.0.0.1:3425`。
+
+**其他自托管网关**暴露 OpenAI 兼容 `GET /v1/models` 接口时也可以参与模型自动发现，不必为每个模型手写 `models.catalog` 条目。
 
 1. **注册网关**，只需一个 base URL 和凭据来源：
    ```bash
@@ -221,30 +239,30 @@ holon config set models.catalog '{"my-gateway@default/my-model":{"context_window
 
 Magpie、LiteLLM 等网关通常用一个模型列表服务多个协议端点，而 OpenAI 兼容端点的
 `base_url` 往往与 Anthropic 或 Gemini 端点不同。因此 `discovery` 支持分别在
-provider 级和端点级配置：
+provider 级和端点级配置（内置 `magpie` 条目使用 `providers.magpie` 下的同一组键）：
 
 ```bash
 # Provider 级默认值：作用于该 provider 下的所有端点。
-holon config set providers.magpie.discovery.kind openai_models
-holon config set providers.magpie.discovery.path /models
+holon config set providers.my-gateway.discovery.kind openai_models
+holon config set providers.my-gateway.discovery.path /models
 
 # OpenAI 客户端 base_url（带 /v1）—— 解析为 GET /v1/models。
-holon config set providers.magpie.transport openai_chat_completions
-holon config set providers.magpie.base_url http://gateway.internal:3425/v1
+holon config set providers.my-gateway.transport openai_chat_completions
+holon config set providers.my-gateway.base_url http://gateway.internal:8080/v1
 
 # Anthropic 客户端 base_url（不带 /v1）及其单独的发现路径。
-holon config set providers.magpie.endpoints.anthropic.transport anthropic_messages
-holon config set providers.magpie.endpoints.anthropic.base_url http://gateway.internal:3425
-holon config set providers.magpie.endpoints.anthropic.discovery.path /v1/models
-holon config set providers.magpie.plans.anthropic.endpoint anthropic
+holon config set providers.my-gateway.endpoints.anthropic.transport anthropic_messages
+holon config set providers.my-gateway.endpoints.anthropic.base_url http://gateway.internal:8080
+holon config set providers.my-gateway.endpoints.anthropic.discovery.path /v1/models
+holon config set providers.my-gateway.plans.anthropic.endpoint anthropic
 ```
 
 网关返回 **Magpie 形态**列表（包含 `display_name`/`owned_by`/`context_window`/`kind`
 等扩展字段）时，选择 Magpie 解码器即可直接读取上下文窗口、模态与最大输出 token，
-无需退回通用 OpenAI 兼容结果：
+无需退回通用 OpenAI 兼容结果。内置 `magpie` 条目默认就使用该解码器，其他网关需显式开启：
 
 ```bash
-holon config set providers.magpie.discovery.decoder magpie
+holon config set providers.my-gateway.discovery.decoder magpie
 ```
 
 `decoder` 默认为 `openai_compatible`（保持原有行为）；`ollama` 不可配置，未知值或
@@ -255,14 +273,14 @@ holon config set providers.magpie.discovery.decoder magpie
 ```json
 {
   "providers": {
-    "magpie": {
+    "my-gateway": {
       "transport": "openai_chat_completions",
-      "base_url": "http://gateway.internal:3425/v1",
+      "base_url": "http://gateway.internal:8080/v1",
       "discovery": { "kind": "openai_models", "path": "/models" },
       "endpoints": {
         "anthropic": {
           "transport": "anthropic_messages",
-          "base_url": "http://gateway.internal:3425",
+          "base_url": "http://gateway.internal:8080",
           "discovery": { "kind": "openai_models", "path": "/v1/models" }
         }
       },

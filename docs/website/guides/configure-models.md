@@ -184,9 +184,27 @@ holon config set image_generation.default "openai@default/dall-e-3"
 
 These settings do not affect your chat model. For details, see [Inspect Images](./inspect-image.md) and [Generate Images](./generate-image.md).
 
-### Scenario 6: Self-Hosted OpenAI-Compatible Gateways (Magpie, LiteLLM, etc.)
+### Scenario 6: Magpie (Built-In) and Self-Hosted OpenAI-Compatible Gateways
 
-Self-hosted gateways that expose the OpenAI-compatible `GET /v1/models` endpoint can participate in model discovery without hand-writing a `models.catalog` entry for every model.
+**Magpie is built in.** When Magpie runs on its default port it needs no provider configuration: the built-in `magpie` entry points at `http://127.0.0.1:3425` with the Anthropic Messages transport (`POST /v1/messages`), discovers models from `GET /v1/models` with the Magpie decoder, and works without an API key.
+
+```bash
+# Only needed when Magpie listens on a non-default port.
+holon config set providers.magpie.base_url http://127.0.0.1:4325
+holon config models refresh --provider magpie
+```
+
+Loopback Magpie accepts any key, so a credential is optional. Configure one explicitly only for usage attribution (`Authorization: Bearer magpie-<app-id>`) or a shared/remote gateway; there is no built-in default key:
+
+```bash
+holon config set providers.magpie.auth.source env
+holon config set providers.magpie.auth.kind api_key
+holon config set providers.magpie.auth.env MAGPIE_API_KEY
+```
+
+The built-in entry declares only the Anthropic Messages endpoint. To call Magpie's OpenAI Chat Completions or Gemini protocols through Holon, add `endpoints.*`/`plans.*` as shown in [Multi-protocol gateways](#multi-protocol-gateways); the OpenAI client base is `http://127.0.0.1:3425/v1`, while the Anthropic and Gemini bases use `http://127.0.0.1:3425`.
+
+**Other self-hosted gateways** that expose the OpenAI-compatible `GET /v1/models` endpoint can participate in model discovery without hand-writing a `models.catalog` entry for every model.
 
 1. **Register the gateway** with one base URL and a credential source:
    ```bash
@@ -230,28 +248,29 @@ holon config set models.catalog '{"my-gateway@default/my-model":{"context_window
 Gateways such as Magpie or LiteLLM serve one model list but several protocol
 endpoints, and the OpenAI-compatible base often differs from the base of the
 Anthropic or Gemini endpoint. `discovery` is therefore configurable per
-provider and per endpoint:
+provider and per endpoint (the built-in `magpie` entry uses the same keys under
+`providers.magpie`):
 
 ```bash
 # Provider-level default: applies to every endpoint of this provider.
-holon config set providers.magpie.discovery.kind openai_models
-holon config set providers.magpie.discovery.path /models
+holon config set providers.my-gateway.discovery.kind openai_models
+holon config set providers.my-gateway.discovery.path /models
 
 # OpenAI client base (ends with /v1) — resolves to GET /v1/models.
-holon config set providers.magpie.transport openai_chat_completions
-holon config set providers.magpie.base_url http://gateway.internal:3425/v1
+holon config set providers.my-gateway.transport openai_chat_completions
+holon config set providers.my-gateway.base_url http://gateway.internal:8080/v1
 
 # Anthropic client base (no /v1 prefix) with its own discovery path.
-holon config set providers.magpie.endpoints.anthropic.transport anthropic_messages
-holon config set providers.magpie.endpoints.anthropic.base_url http://gateway.internal:3425
-holon config set providers.magpie.endpoints.anthropic.discovery.path /v1/models
-holon config set providers.magpie.plans.anthropic.endpoint anthropic
+holon config set providers.my-gateway.endpoints.anthropic.transport anthropic_messages
+holon config set providers.my-gateway.endpoints.anthropic.base_url http://gateway.internal:8080
+holon config set providers.my-gateway.endpoints.anthropic.discovery.path /v1/models
+holon config set providers.my-gateway.plans.anthropic.endpoint anthropic
 ```
 
-If the gateway returns a **Magpie-shaped** list (with `display_name`/`owned_by`/`context_window`/`kind` extension fields), select the Magpie decoder so context window, modalities and max output tokens are picked up instead of the generic OpenAI-compatible result:
+If the gateway returns a **Magpie-shaped** list (with `display_name`/`owned_by`/`context_window`/`kind` extension fields), select the Magpie decoder so context window, modalities and max output tokens are picked up instead of the generic OpenAI-compatible result. The built-in `magpie` provider already uses this decoder by default; other gateways opt in explicitly:
 
 ```bash
-holon config set providers.magpie.discovery.decoder magpie
+holon config set providers.my-gateway.discovery.decoder magpie
 ```
 
 `decoder` defaults to `openai_compatible` (unchanged behavior); `ollama` is not configurable, and unknown values or `disabled`+`decoder` are rejected by config validation.
@@ -261,14 +280,14 @@ The same declared block in `config.json`:
 ```json
 {
   "providers": {
-    "magpie": {
+    "my-gateway": {
       "transport": "openai_chat_completions",
-      "base_url": "http://gateway.internal:3425/v1",
+      "base_url": "http://gateway.internal:8080/v1",
       "discovery": { "kind": "openai_models", "path": "/models" },
       "endpoints": {
         "anthropic": {
           "transport": "anthropic_messages",
-          "base_url": "http://gateway.internal:3425",
+          "base_url": "http://gateway.internal:8080",
           "discovery": { "kind": "openai_models", "path": "/v1/models" }
         }
       },

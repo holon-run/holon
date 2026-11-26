@@ -374,6 +374,13 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         DiscoveryOnly
     ),
     provider!(
+        "magpie" => "magpie" @ "default",
+        AnthropicMessages, "http://127.0.0.1:3425", [],
+        Generic, AnthropicCompatibleImplicitCache, None, None,
+        discovery!(Optional, ModelDiscoveryRoute::OpenAiV1, Magpie),
+        DiscoveryOnly
+    ),
+    provider!(
         "mistral" => "mistral" @ "default",
         OpenAiChatCompletions, "https://api.mistral.ai/v1", ["MISTRAL_API_KEY"],
         Generic, Default, None, None, None, StaticOnly
