@@ -3,10 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
-use sha2::{Digest, Sha256};
 
 use crate::domain::execution_protocol::{
-    self, ExecutionAttempt, ExecutionProtocolCommand, ExecutionProtocolState, ExecutionTransition,
+    self, ExecutionAttempt, ExecutionProtocolCommand, ExecutionProtocolState,
     WorkItemExecutionState,
 };
 use crate::runtime_db::transitions::{
@@ -16,7 +15,8 @@ use crate::runtime_db::transitions::{
 pub(in crate::runtime_db) use holon_storage::execution::closure_protocol_material_tx;
 pub(crate) use holon_storage::execution::ValidatedClosureProtocol;
 use holon_storage::execution::{
-    self as execution_storage, partition_exists_on as partition_exists_tx,
+    self as execution_storage, partition_exists_on as partition_exists_tx, ExecutionCommandReceipt,
+    ExecutionRowKind,
 };
 
 const EXECUTION_READ_MATERIAL: execution_storage::ExecutionReadMaterial =
@@ -29,7 +29,7 @@ pub(crate) struct PreparedExecutionProtocolCommands {
     state: ExecutionProtocolState,
     touched_keys: BTreeSet<crate::runtime::resident_input_evidence::InputEvidenceKey>,
     initialized_partition: bool,
-    results: Vec<PreparedCommandResult>,
+    results: Vec<ExecutionCommandReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -48,13 +48,6 @@ impl PreparedExecutionProtocolCommands {
     pub(super) fn has_writes(&self) -> bool {
         self.initialized_partition || !self.results.is_empty()
     }
-}
-
-struct PreparedCommandResult {
-    command_kind: &'static str,
-    command_identity: String,
-    payload_hash: String,
-    references: Vec<String>,
 }
 
 pub(crate) fn validate_execution_commands_tx(
@@ -87,10 +80,10 @@ pub(crate) fn validate_execution_commands_tx(
     let mut touched_keys = BTreeSet::new();
 
     for command in commands {
-        let (command_kind, command_identity) = command_identity(command);
-        let payload_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(command)?));
+        let (command_kind, command_identity) = command.identity();
+        let payload_hash = execution_protocol::command_payload_hash(command)?;
         if let Some(stored_hash) =
-            stored_command_hash_tx(tx, agent_id, command_kind, command_identity)?
+            execution_storage::stored_command_hash_tx(tx, agent_id, command_kind, command_identity)?
         {
             if stored_hash != payload_hash {
                 bail!(
@@ -204,7 +197,8 @@ pub(crate) fn validate_execution_commands_tx(
         if let ExecutionProtocolCommand::CompleteWorkItem(command) = command {
             validate_complete_work_item(command, work_item_mutations)?;
         }
-        let transition = reduce(&state, command)
+        let transition = command
+            .reduce(&state)
             .map_err(|error| anyhow!("execution protocol command rejected: {error}"))?;
         use crate::runtime::resident_input_evidence::{
             InputEvidenceFamily as Family, InputEvidenceKey as Key,
@@ -225,7 +219,7 @@ pub(crate) fn validate_execution_commands_tx(
             }
         }
         state = transition.state;
-        results.push(PreparedCommandResult {
+        results.push(ExecutionCommandReceipt {
             command_kind,
             command_identity: command_identity.to_owned(),
             payload_hash,
@@ -523,30 +517,22 @@ pub(crate) fn persist_execution_commands_tx(
     let Some(prepared) = prepared else {
         return Ok(());
     };
-    if prepared.initialized_partition {
-        persist_state_tx(tx, &prepared.state)?;
-    } else {
-        // These keys come from the actual before/reducer-state diff above,
-        // rather than from command arguments. Unchanged legacy bytes stay put.
-        persist_state_inner_tx(tx, &prepared.state, None, Some(&prepared.touched_keys))?;
-    }
-    for result in prepared.results {
-        tx.execute(
-            "INSERT INTO execution_protocol_command_results (
-               agent_id, command_kind, command_identity,
-               payload_hash, references_json, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                prepared.state.agent_id,
-                result.command_kind,
-                result.command_identity,
-                result.payload_hash,
-                serde_json::to_string(&result.references)?,
-                Utc::now().to_rfc3339(),
-            ],
-        )?;
-    }
-    Ok(())
+    use crate::runtime::resident_input_evidence::{InputEvidenceFamily, InputEvidenceKey};
+
+    crate::runtime_db::reclamation::ensure_work_admission_tx(tx, &prepared.state.agent_id)?;
+    let includes = |kind, id: &str| {
+        let family = match kind {
+            ExecutionRowKind::WorkItem => InputEvidenceFamily::WorkExecution,
+            ExecutionRowKind::Attempt => InputEvidenceFamily::Attempt,
+            ExecutionRowKind::Outcome => InputEvidenceFamily::Outcome,
+        };
+        // The reducer diff selects changed rows and preserves unchanged legacy bytes.
+        prepared.initialized_partition
+            || prepared
+                .touched_keys
+                .contains(&InputEvidenceKey::new(family, id))
+    };
+    execution_storage::persist_command_batch_tx(tx, &prepared.state, &includes, &prepared.results)
 }
 
 /// Returns the canonical aggregate from the same transaction after persistence.
@@ -684,17 +670,10 @@ pub(in crate::runtime_db) fn acknowledge_persisted_work_executions_tx(
             key.family == Family::WorkExecution,
             "timer source-revision ACK cannot omit a touched non-work execution"
         );
-        let payload: String = tx
-            .query_row(
-                "SELECT payload_json FROM execution_protocol_work_items
-                 WHERE agent_id=?1 AND work_item_id=?2",
-                params![agent_id, key.id],
-                |row| row.get(0),
-            )
-            .context("committed touched work execution disappeared")?;
+        let record = execution_storage::load_committed_work_item_tx(tx, agent_id, &key.id)?;
         facts.push(Fact::WorkExecution {
             work_item_id: key.id,
-            record: serde_json::from_str(&payload)?,
+            record,
         });
     }
     if facts.is_empty() {
@@ -703,116 +682,6 @@ pub(in crate::runtime_db) fn acknowledge_persisted_work_executions_tx(
     crate::runtime_db::input_evidence_snapshot::register_committed_input_evidence_tx(
         tx, scope, &facts,
     )
-}
-
-fn reduce(
-    state: &ExecutionProtocolState,
-    command: &ExecutionProtocolCommand,
-) -> Result<ExecutionTransition, String> {
-    match command {
-        ExecutionProtocolCommand::RegisterWorkItem(command) => {
-            execution_protocol::register_work_item_execution(state, command)
-        }
-        ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) => {
-            execution_protocol::advance_work_item_source_revision(state, command)
-        }
-        ExecutionProtocolCommand::ReconcileWorkItemSourceRevision(command) => {
-            execution_protocol::reconcile_work_item_source_revision(state, command)
-        }
-        ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
-            execution_protocol::set_work_item_readiness(state, command)
-        }
-        ExecutionProtocolCommand::RecheckContextBudgetStop(command) => {
-            execution_protocol::recheck_context_budget_stop(state, command)
-        }
-        ExecutionProtocolCommand::SuspendWorkItemContinuation(command) => {
-            execution_protocol::suspend_work_item_continuation(state, command)
-        }
-        ExecutionProtocolCommand::ResumeWorkItemContinuation(command) => {
-            execution_protocol::resume_work_item_continuation(state, command)
-        }
-        ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(command) => {
-            execution_protocol::reconcile_work_item_continuation_yield(state, command)
-        }
-        ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
-            execution_protocol::set_work_item_waiting(state, command)
-        }
-        ExecutionProtocolCommand::CompleteWorkItem(command) => {
-            execution_protocol::complete_work_item_execution(state, command)
-        }
-        ExecutionProtocolCommand::Admit(command) => {
-            execution_protocol::admit_execution(state, command)
-        }
-        ExecutionProtocolCommand::Settle(command) => {
-            execution_protocol::settle_execution(state, command)
-        }
-        ExecutionProtocolCommand::Interrupt(command) => {
-            execution_protocol::interrupt_execution(state, command)
-        }
-        ExecutionProtocolCommand::FinalizeInterrupted(command) => {
-            execution_protocol::finalize_interrupted_execution(state, command)
-        }
-        ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) => {
-            execution_protocol::recover_interrupted_task_result_claim(state, command)
-        }
-        ExecutionProtocolCommand::RecoverUnadvancedTaskResultClaim(command) => {
-            execution_protocol::recover_unadvanced_task_result_claim(state, command)
-        }
-    }
-}
-
-fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) {
-    match command {
-        ExecutionProtocolCommand::RegisterWorkItem(command) => {
-            ("register_work_item_execution", &command.work_item_id)
-        }
-        ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) => {
-            ("advance_work_item_source_revision", &command.command_id)
-        }
-        ExecutionProtocolCommand::ReconcileWorkItemSourceRevision(command) => {
-            ("reconcile_work_item_source_revision", &command.command_id)
-        }
-        ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
-            ("set_work_item_readiness", &command.command_id)
-        }
-        ExecutionProtocolCommand::RecheckContextBudgetStop(command) => {
-            ("recheck_context_budget_stop", &command.command_id)
-        }
-        ExecutionProtocolCommand::SuspendWorkItemContinuation(command) => {
-            ("suspend_work_item_continuation", &command.command_id)
-        }
-        ExecutionProtocolCommand::ResumeWorkItemContinuation(command) => {
-            ("resume_work_item_continuation", &command.command_id)
-        }
-        ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(command) => (
-            "reconcile_work_item_continuation_yield",
-            &command.command_id,
-        ),
-        ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
-            ("set_work_item_waiting", &command.command_id)
-        }
-        ExecutionProtocolCommand::CompleteWorkItem(command) => {
-            ("complete_work_item_execution", &command.command_id)
-        }
-        ExecutionProtocolCommand::Admit(command) => {
-            ("admit_execution", &command.attempt.attempt_id)
-        }
-        ExecutionProtocolCommand::Settle(command) => {
-            ("settle_execution", &command.outcome.outcome_id)
-        }
-        ExecutionProtocolCommand::Interrupt(command) => {
-            ("interrupt_execution", &command.outcome_id)
-        }
-        ExecutionProtocolCommand::FinalizeInterrupted(command) => {
-            ("finalize_interrupted_execution", &command.command_id)
-        }
-        ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) => {
-            ("recover_interrupted_task_result_claim", &command.command_id)
-        }
-        ExecutionProtocolCommand::RecoverUnadvancedTaskResultClaim(command) => {
-            ("recover_unadvanced_task_result_claim", &command.command_id)
-        }
-    }
 }
 
 fn validate_recover_interrupted_task_result_claim(
@@ -1797,27 +1666,9 @@ impl RuntimeTransitionRepository<'_> {
     }
 }
 
-fn stored_command_hash_tx(
-    tx: &Transaction<'_>,
-    agent_id: &str,
-    command_kind: &str,
-    command_identity: &str,
-) -> Result<Option<String>> {
-    tx.query_row(
-        "SELECT payload_hash
-         FROM execution_protocol_command_results
-         WHERE agent_id = ?1
-           AND command_kind = ?2
-           AND command_identity = ?3",
-        params![agent_id, command_kind, command_identity],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(Into::into)
-}
-
 pub(crate) fn persist_state_tx(tx: &Transaction<'_>, state: &ExecutionProtocolState) -> Result<()> {
-    persist_state_inner_tx(tx, state, None, None)
+    crate::runtime_db::reclamation::ensure_work_admission_tx(tx, &state.agent_id)?;
+    execution_storage::persist_state_rows_tx(tx, state, None, &|_, _| true)
 }
 
 /// A repair loaded this complete prior aggregate in the same transaction. Keep
@@ -1843,28 +1694,8 @@ pub(crate) fn persist_repaired_state_tx(
                 .all(|id| state.outcomes.contains_key(id)),
         "execution repair cannot remove or replace a partition"
     );
-    persist_state_inner_tx(tx, state, Some(previous), None)
-}
-
-fn persist_state_inner_tx(
-    tx: &Transaction<'_>,
-    state: &ExecutionProtocolState,
-    previous: Option<&ExecutionProtocolState>,
-    touched: Option<&BTreeSet<crate::runtime::resident_input_evidence::InputEvidenceKey>>,
-) -> Result<()> {
     crate::runtime_db::reclamation::ensure_work_admission_tx(tx, &state.agent_id)?;
-    let includes = |kind, id: &str| {
-        use crate::runtime::resident_input_evidence::{InputEvidenceFamily, InputEvidenceKey};
-        let family = match kind {
-            holon_storage::execution::ExecutionRowKind::WorkItem => {
-                InputEvidenceFamily::WorkExecution
-            }
-            holon_storage::execution::ExecutionRowKind::Attempt => InputEvidenceFamily::Attempt,
-            holon_storage::execution::ExecutionRowKind::Outcome => InputEvidenceFamily::Outcome,
-        };
-        touched.is_none_or(|keys| keys.contains(&InputEvidenceKey::new(family, id)))
-    };
-    holon_storage::execution::persist_state_rows_tx(tx, state, previous, &includes)
+    execution_storage::persist_state_rows_tx(tx, state, Some(previous), &|_, _| true)
 }
 
 pub(super) fn validate_agent_deletion_retirement_tx(

@@ -9842,7 +9842,13 @@ mod tests {
         ))?;
         let transition =
             execution_admission("message-execution", "attempt-execution", "work-execution");
-        for message_id in ["queue-write-1", "queue-write-2"] {
+        let conflicting =
+            execution_admission("different-message", "attempt-execution", "work-execution");
+        for (message_id, transition) in [
+            ("queue-write-1", &transition),
+            ("queue-write-2", &transition),
+            ("queue-write-conflict", &conflicting),
+        ] {
             let now = Utc::now();
             let commit = db.transitions().commit_queue_with_execution_protocol(
                 &QueueTransitionCommand {
@@ -9866,9 +9872,17 @@ mod tests {
                     fault: None,
                     brief_evidence: Vec::new(),
                 },
-                &transition,
-            )?;
-            assert!(commit.applied);
+                transition,
+            );
+            if message_id == "queue-write-conflict" {
+                let error = commit.expect_err("the same command identity has a different payload");
+                assert!(
+                    format!("{error:#}").contains("execution protocol command identity conflict"),
+                    "unexpected error: {error:#}"
+                );
+            } else {
+                assert!(commit?.applied);
+            }
         }
 
         let connection = db.connection()?;

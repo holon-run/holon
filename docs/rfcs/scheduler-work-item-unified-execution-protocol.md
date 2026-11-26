@@ -27,6 +27,11 @@ Runtime binds closure reads to the admitted transaction and Agent scope and
 charges the read material before decoding. Closure retains the WorkItem map
 and validates Attempt and Outcome history one row at a time.
 
+Runtime validates command authority and selects changed rows from the reducer's
+before and after state. Storage writes those rows and command receipts on the
+same transaction as the caller's other writes. Runtime qualifies InputEvidence
+from SQL readback before committing.
+
 This RFC supersedes the control-state model in
 [Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)
 where activation slot, dispatch reservation, WorkDemand, scheduler wait

@@ -1,7 +1,7 @@
 //! The exclusive startup actor may advance only a fixed unbound seed's exact
 //! members, plus Outcomes actually produced by its canonical recovery commands.
 use super::*;
-use crate::domain::execution_protocol::ExecutionProtocolCommand;
+use crate::domain::execution_protocol::{command_payload_hash, ExecutionProtocolCommand};
 use crate::runtime_db::{RuntimeDb, RuntimeDbLock};
 use std::path::{Path, PathBuf};
 use tokio::sync::MutexGuard;
@@ -206,7 +206,12 @@ pub(crate) fn register_unbound_seed_recovery_tx(
                 .iter()
                 .find(|w| w.outcome == outcome.outcome_id && w.attempt == outcome.attempt_id)
                 .context("new legacy Outcome is not produced by this recovery")?;
-            let actual:Option<String>=tx.query_row("SELECT payload_hash FROM execution_protocol_command_results WHERE agent_id=?1 AND command_kind=?2 AND command_identity=?3",params![agent,witness.kind,witness.identity],|r|r.get(0)).optional()?;
+            let actual = holon_storage::execution::stored_command_hash_tx(
+                tx,
+                agent,
+                witness.kind,
+                &witness.identity,
+            )?;
             ensure!(
                 actual.as_deref() == Some(witness.hash.as_str()),
                 "legacy recovery command witness missing or changed"
@@ -255,33 +260,23 @@ struct RecoveryWitness {
     hash: String,
 }
 fn recovery_witness(command: &ExecutionProtocolCommand) -> Result<RecoveryWitness> {
-    let (attempt, outcome, kind, identity) = match command {
-        ExecutionProtocolCommand::Interrupt(c) => (
-            &c.attempt_id,
-            &c.outcome_id,
-            "interrupt_execution",
-            &c.outcome_id,
-        ),
-        ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(c) => (
-            &c.attempt_id,
-            &c.outcome_id,
-            "recover_interrupted_task_result_claim",
-            &c.command_id,
-        ),
-        ExecutionProtocolCommand::RecoverUnadvancedTaskResultClaim(c) => (
-            &c.attempt_id,
-            &c.outcome_id,
-            "recover_unadvanced_task_result_claim",
-            &c.command_id,
-        ),
+    let (attempt, outcome) = match command {
+        ExecutionProtocolCommand::Interrupt(c) => (&c.attempt_id, &c.outcome_id),
+        ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(c) => {
+            (&c.attempt_id, &c.outcome_id)
+        }
+        ExecutionProtocolCommand::RecoverUnadvancedTaskResultClaim(c) => {
+            (&c.attempt_id, &c.outcome_id)
+        }
         _ => anyhow::bail!("unbound seed actor accepts only canonical startup recovery commands"),
     };
+    let (kind, identity) = command.identity();
     Ok(RecoveryWitness {
         attempt: attempt.clone(),
         outcome: outcome.clone(),
         kind,
-        identity: identity.clone(),
-        hash: bytes_digest(&serde_json::to_vec(command)?),
+        identity: identity.to_owned(),
+        hash: command_payload_hash(command)?,
     })
 }
 
