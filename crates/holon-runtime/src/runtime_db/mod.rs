@@ -1491,7 +1491,7 @@ impl RuntimeDb {
         ensure_runtime_identity_metadata(&connection)?;
         backfill_wait_condition_payload_columns(&connection)?;
         backfill_work_item_recheck_columns(&connection)?;
-        backfill_work_item_blocker_wait_provenance(&connection)?;
+        backfill_work_item_blocker_wait_provenance(&mut connection)?;
         observer_sync::verify_observer_sync_foundations(&mut connection)?;
         Ok(())
     }
