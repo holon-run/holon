@@ -1362,9 +1362,12 @@ async fn p2_repeated_lifecycle_restart_restores_mixed_operator_and_live_inputs()
 }
 
 /// Runs on an explicit stack: the admission-evidence recovery chain polls a deep
-/// async state machine, so the default 2 MiB libtest stack sits at the overflow
-/// threshold and shifts with codegen layout. The scenario is still single-flow;
-/// only the stack size differs from a plain `#[tokio::test]`.
+/// async state machine whose frame sizes follow codegen layout. Boxing the ACP
+/// session state narrowed it enough for the default 2 MiB libtest stack under a
+/// local default profile, but the CI test profile (`line-tables-only` debug,
+/// `codegen-units=16`, debug assertions) still overflows, so the stack margin
+/// stays expressed here instead of depending on the build profile. The scenario
+/// is still single-flow; only the stack size differs from a plain `#[tokio::test]`.
 #[test]
 fn p2_mixed_operator_recovery_requires_admission_evidence() {
     let thread = std::thread::Builder::new()
