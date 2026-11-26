@@ -338,10 +338,10 @@ private struct AgentConversationTitle: View {
     let presentation: AgentIdentityPresentation
 
     var body: some View {
-        HStack(spacing: 6) {
-            AgentAvatarView(store: store, agentID: agent.id, presentation: presentation, size: 24)
+        HStack(spacing: 8) {
+            AgentAvatarView(store: store, agentID: agent.id, presentation: presentation, size: 28)
             VStack(alignment: .leading, spacing: 1) {
-                Text(verbatim: agent.name).font(.footnote.weight(.semibold)).lineLimit(1)
+                Text(verbatim: agent.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                 AgentStatusLabel(presentation: presentation)
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -644,16 +644,19 @@ struct ConversationReadingView: View {
                     .layoutPriority(1)
                 }
             }
-            ToolbarItemGroup(placement: .primaryAction) {
-                    if reader.status == .live, let agent = reader.selectedAgentID {
-                        NavigationLink(value: AppRoute.work(agent)) { Label("work.title", systemImage: "checklist") }
-                            .labelStyle(.iconOnly)
-                            .accessibilityIdentifier("conversation.work")
-                        NavigationLink(value: AppRoute.files(agent)) { Label("files.title", systemImage: "folder") }
-                            .labelStyle(.iconOnly)
-                            .accessibilityIdentifier("conversation.files")
-                    }
+            ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    if reader.status == .live, let agent = reader.selectedAgentID {
+                        NavigationLink(value: AppRoute.work(agent)) {
+                            Label("work.title", systemImage: "checklist")
+                        }
+                        .accessibilityIdentifier("conversation.work")
+                        NavigationLink(value: AppRoute.files(agent)) {
+                            Label("files.title", systemImage: "folder")
+                        }
+                        .accessibilityIdentifier("conversation.files")
+                        Divider()
+                    }
                     Button { Task { await reader.refresh() } } label: {
                         Label("reading.refresh", systemImage: "arrow.clockwise")
                     }
