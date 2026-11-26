@@ -1,9 +1,1 @@
-Use GetAgent for agent-plane inspection. It returns the current agent when
-`agent_id` is omitted, or the requested agent when `agent_id` is provided.
-The summary includes identity, active work focus, waiting state, execution
-snapshot, and child-agent lineage. This is a read-only query and does not start
-an unloaded target runtime. Prefer TaskStatus for exact task state when inspecting
-a managed task handle such as a command task or an InvokeAgent result. Do not use
-GetAgent as a transcript dump or to read output bodies. Use bounded agent tail for
-agent progress; for command output, confirm reported file paths and availability
-in TaskStatus command runtime metadata before bounded file reads.
+Use `GetAgent` for read-only agent-plane inspection (current agent when `agent_id` is omitted): identity, focus, waiting state, execution snapshot, and child lineage without starting an unloaded runtime. Prefer `TaskStatus` for exact task-handle state, and never use `GetAgent` for transcript dumps or command output.

@@ -451,6 +451,13 @@ fn assert_complete_work_item_deferred_result(conversation: &[ConversationMessage
         deferred_result["result"]["disposition"].as_str(),
         Some("awaiting_completion_report")
     );
+    let deferred_summary = deferred_result["summary_text"]
+        .as_str()
+        .expect("deferred CompleteWorkItem summary_text");
+    assert!(deferred_summary.contains("completion is not committed yet"));
+    assert!(deferred_summary.contains(
+        "do not call CompleteWorkItem, WaitFor, PickWorkItem, or Sleep while this report is pending"
+    ));
 }
 
 fn assert_detached_followup_completion_sequence(conversation: &[ConversationMessage]) {

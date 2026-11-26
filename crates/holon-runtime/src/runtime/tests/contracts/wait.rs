@@ -825,6 +825,15 @@ async fn wait_tool_classifies_before_requesting_final_report_without_mutation() 
                     result.envelope.result.as_ref().unwrap()["disposition"],
                     "awaiting_final_report"
                 );
+                let deferred_summary = result
+                    .envelope
+                    .summary_text
+                    .as_deref()
+                    .expect("deferred WaitFor summary_text");
+                assert!(deferred_summary.contains("no wait is registered yet"));
+                assert!(deferred_summary.contains(
+                    "do not call WaitFor, CompleteWorkItem, PickWorkItem, or Sleep while this report is pending"
+                ));
                 assert!(result
                     .envelope
                     .result

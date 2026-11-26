@@ -77,14 +77,58 @@ fn sample_execution_snapshot() -> ExecutionSnapshot {
 }
 
 #[test]
-fn system_prompt_includes_holon_app_mechanism_contract() {
-    let section = holon_app_mechanism_section();
-    assert_eq!(section.stability, PromptStability::Stable);
-    assert!(section.content.contains("/apps/{agent_id}/{app_id}/"));
-    assert!(section.content.contains("does not grant extra authority"));
-    assert!(section
-        .content
-        .contains("same-origin plus runtime authentication and CSP"));
+fn system_prompt_consolidates_shared_core_into_seven_l3a_sections() {
+    use crate::shared_prefix_len;
+
+    let sections = build_system_sections(
+        &sample_identity(),
+        &sample_message(),
+        Path::new("/repo"),
+        &LoadedAgentsMd::default(),
+        &LoadedAgentMemory::default(),
+        &SkillsRuntimeView::default(),
+        &[],
+        ToolPromptContext::default(),
+    );
+    let boundary = shared_prefix_len(&sections);
+    let shared_names = sections[..boundary]
+        .iter()
+        .map(|section| section.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        shared_names,
+        vec![
+            "identity",
+            "authority_and_trust",
+            "work_and_verification",
+            "agent_home_boundary",
+            "durable_work_tracking",
+            "runtime_scheduling_contract",
+            "delivery_contract",
+        ]
+    );
+    for retired in [
+        "core_contract",
+        "tool_use_contract",
+        "engineering_guardrails",
+        "instruction_precedence",
+        "agent_home_contract",
+        "context_completion",
+        "reporting_contract",
+        "file_reference_contract",
+        "exploration_discipline",
+        "planning_discipline",
+        "work_item_first_execution",
+        "trust_boundary",
+        "verification",
+        "execution_environment_contract",
+        "holon_app_mechanism",
+    ] {
+        assert!(
+            !sections.iter().any(|section| section.name == retired),
+            "retired split section `{retired}` must not be emitted"
+        );
+    }
 }
 
 #[test]
@@ -183,13 +227,15 @@ fn shared_contract_bytes_survive_independent_agent_workspace_task_and_source_inp
         assert_eq!(sections.last().unwrap().name, "response_language");
         for name in [
             "identity",
-            "core_contract",
-            "instruction_precedence",
-            "trust_boundary",
+            "authority_and_trust",
+            "work_and_verification",
+            "agent_home_boundary",
+            "durable_work_tracking",
+            "runtime_scheduling_contract",
+            "delivery_contract",
             "tool_wait_for",
             "tool_exec_command",
             "holon_cli_contract",
-            "holon_app_mechanism",
         ] {
             assert!(sections[..boundary]
                 .iter()
@@ -303,18 +349,13 @@ fn prefix_observation_tracks_contracts_and_tool_surfaces_but_not_scoped_content(
         shared_prefix_fingerprint(&with_empty_guidance)
     );
     assert!(tools::tool_sections_with_context(&[], ToolPromptContext::default()).is_empty());
-    assert_eq!(
-        empty
-            .iter()
-            .filter(|section| section.name.starts_with("tool_"))
-            .map(|section| section.name.as_str())
-            .collect::<Vec<_>>(),
-        ["tool_use_contract"]
-    );
+    assert!(empty
+        .iter()
+        .all(|section| !section.name.starts_with("tool_")));
     assert!(empty
         .iter()
         .take(shared_prefix_len(&empty))
-        .any(|section| section.name == "holon_app_mechanism"));
+        .any(|section| section.name == "authority_and_trust"));
 
     let tools = [ToolSpec {
         name: "ApplyPatch".into(),
@@ -353,7 +394,7 @@ fn prefix_observation_tracks_contracts_and_tool_surfaces_but_not_scoped_content(
         shared_prefix_fingerprint(&json),
         shared_prefix_fingerprint(&scoped_change)
     );
-    for name in ["core_contract", "tool_apply_patch"] {
+    for name in ["work_and_verification", "tool_apply_patch"] {
         let mut changed = json.clone();
         changed
             .iter_mut()
@@ -590,7 +631,7 @@ fn identity_skeleton_and_scoped_workspace_preserve_default_context_contract() {
 }
 
 #[test]
-fn core_contract_includes_stable_anti_reread_guidance() {
+fn work_and_verification_preserves_tool_exploration_and_guardrail_invariants() {
     let sections = build_system_sections(
         &sample_identity(),
         &sample_message(),
@@ -603,19 +644,35 @@ fn core_contract_includes_stable_anti_reread_guidance() {
     );
     let section = sections
         .iter()
-        .find(|section| section.name == "core_contract")
-        .expect("core contract section");
+        .find(|section| section.name == "work_and_verification")
+        .expect("work_and_verification section");
 
-    assert!(section
-        .content
-        .contains("Do not re-read files, AGENTS guidance, or command output"));
-    assert!(section
-        .content
-        .contains("unless a concrete changed-state question requires it"));
+    for required in [
+        "Read before changing",
+        "external reference or indirect task entry point",
+        "one concrete missing fact",
+        "Do not re-read files",
+        "refresh only the smallest relevant slice",
+        "only fields from that tool's input schema",
+        "WaitFor(wake=task_result",
+        "No in-turn blocking output wait is provided",
+        "TaskStatus",
+        "bounded read-only agent tail",
+        "never `GetAgent` for transcript dumps",
+        "semantic contract or state-transition layer",
+        "real repository/CI build or test targets",
+        "remove temporary artifacts",
+        "report verification failures honestly",
+    ] {
+        assert!(
+            section.content.contains(required),
+            "work_and_verification missing invariant: {required}"
+        );
+    }
 }
 
 #[test]
-fn system_prompt_includes_tool_use_contract() {
+fn authority_and_trust_preserves_precedence_app_and_refusal_boundary_invariants() {
     let sections = build_system_sections(
         &sample_identity(),
         &sample_message(),
@@ -628,35 +685,32 @@ fn system_prompt_includes_tool_use_contract() {
     );
     let section = sections
         .iter()
-        .find(|section| section.name == "tool_use_contract")
-        .expect("tool use contract section");
+        .find(|section| section.name == "authority_and_trust")
+        .expect("authority_and_trust section");
 
-    assert!(section
-        .content
-        .contains("Tool startup input must contain only fields from that tool's input schema"));
-    assert!(section.content.contains("Do not pass result metadata"));
-    assert!(section
-        .content
-        .contains("Treat structured tool results as evidence"));
-    assert!(section.content.contains("Do not repeat reads"));
-    assert!(section.content.contains("WaitFor(wake=task_result"));
-    assert!(section.content.contains("TaskStatus for exact task state"));
-    assert!(section
-        .content
-        .contains("Confirm command runtime file paths and availability"));
-    assert!(section
-        .content
-        .contains("bounded read-only agent tail for agent progress"));
-    assert!(section
-        .content
-        .contains("No in-turn blocking output wait is provided"));
-    assert!(section
-        .content
-        .contains("only for active supervision or bounded current-turn inspection"));
+    for required in [
+        "Trusted operator instructions define the task scope",
+        "delegated_task",
+        "constrained_repair",
+        "Scoped `AGENTS.md` guidance",
+        "local backend for shell and file operations",
+        "binding instructions even when not hard-enforced",
+        "never as operator-equivalent authority",
+        "/apps/{agent_id}/{app_id}/",
+        "same-origin, runtime authentication, and CSP",
+        "does not grant extra authority",
+        "Never echo credentials or secrets",
+        "refusals as explicit boundaries to report",
+    ] {
+        assert!(
+            section.content.contains(required),
+            "authority_and_trust missing invariant: {required}"
+        );
+    }
 }
 
 #[test]
-fn system_prompt_includes_context_completion_principle() {
+fn delivery_contract_preserves_brief_centric_and_file_reference_invariants() {
     let sections = build_system_sections(
         &sample_identity(),
         &sample_message(),
@@ -669,177 +723,36 @@ fn system_prompt_includes_context_completion_principle() {
     );
     let section = sections
         .iter()
-        .find(|section| section.name == "context_completion")
-        .expect("context completion section");
+        .find(|section| section.name == "delivery_contract")
+        .expect("delivery_contract section");
 
-    assert!(section
-        .content
-        .contains("external reference or another indirect task entry point"));
-    assert!(section.content.contains("available local or network tools"));
-    assert!(section.content.contains("minimum context needed"));
-    assert!(section.content.contains("stop expanding context"));
-    assert!(section.content.contains("one concrete missing fact"));
-    assert!(section
-        .content
-        .contains("refresh only the smallest relevant slice"));
-    assert!(section
-        .content
-        .contains("formatter, or user edit touched the file"));
-}
-
-#[test]
-fn system_prompt_includes_reporting_contract() {
-    let sections = build_system_sections(
-        &sample_identity(),
-        &sample_message(),
-        Path::new("."),
-        &LoadedAgentsMd::default(),
-        &LoadedAgentMemory::default(),
-        &SkillsRuntimeView::default(),
-        &[],
-        ToolPromptContext::default(),
-    );
-    let section = sections
-        .iter()
-        .find(|section| section.name == "reporting_contract")
-        .expect("reporting contract section");
-
-    assert!(section
-        .content
-        .contains("Prefer durable action over narration"));
-    assert!(section.content.contains("at most 1-2 short sentences"));
-    assert!(section.content.contains("full reasoning"));
-    assert!(section.content.contains("material state changed"));
-    assert!(section
-        .content
-        .contains("Do not restate known context, prior reports"));
-    assert!(section
-        .content
-        .contains("File entry points supplement rather than replace"));
-    assert!(section.content.contains("Follow surface-specific guidance"));
-    assert!(section.content.contains(
-        "project documents, local records, Holon brief/assistant text, and public channels"
-    ));
-    assert!(section.content.contains("descriptive Markdown links"));
-    assert!(section.content.contains("confirmed location metadata"));
-    assert!(section
-        .content
-        .contains("preserving the source execution root"));
-    assert!(section
-        .content
-        .contains("Do not invent workspace IDs, root IDs, local paths, or URLs"));
-    assert!(section
-        .content
-        .contains("if an access link still cannot be confirmed"));
-    assert!(section.content.contains("After updating a plan"));
-    assert!(section.content.contains("whether it has been implemented"));
-    assert!(section
-        .content
-        .contains("whether operator confirmation is required"));
-    assert!(section
-        .content
-        .contains("code, diffs, tool output, logs, WorkItems, plans, or tests"));
-    assert!(section
-        .content
-        .contains("When the task is satisfied and relevant verification is known"));
-    assert!(section
-        .content
-        .contains("operator-facing delivery is brief-centric"));
-    assert!(section
-        .content
-        .contains("intermediate assistant progress may be hidden"));
-    assert!(section
-        .content
-        .contains("This does not relax `response_language`"));
-    assert!(section.content.contains("transient progress text"));
-    assert!(section
-        .content
-        .contains("promoted as the WorkItem result brief"));
-    assert!(section
-        .content
-        .contains("required operator action only in intermediate progress text"));
-    assert!(section.content.contains("Final delivery should be concise"));
-    assert!(section.content.contains("verification status"));
-    assert!(section.content.contains("avoid fixed templates"));
-    assert!(!sections
-        .iter()
-        .any(|section| section.name == "progress_reporting"));
-    assert!(!sections.iter().any(|section| section.name == "completion"));
-    assert!(!sections.iter().any(|section| section.name == "reporting"));
-    assert!(!sections
-        .iter()
-        .any(|section| section.name == "long_task_delivery"));
-}
-
-#[test]
-fn system_prompt_includes_file_reference_contract() {
-    let sections = build_system_sections(
-        &sample_identity(),
-        &sample_message(),
-        Path::new("."),
-        &LoadedAgentsMd::default(),
-        &LoadedAgentMemory::default(),
-        &SkillsRuntimeView::default(),
-        &[],
-        ToolPromptContext::default(),
-    );
-    let section = sections
-        .iter()
-        .find(|section| section.name == "file_reference_contract")
-        .expect("file reference contract section");
-
-    assert!(section
-        .content
-        .contains("confirmed execution-host absolute path"));
-    assert!(section.content.contains("WorkItem `plan.md`"));
-    assert!(section.content.contains("agent-home file"));
-    assert!(section.content.contains("linked worktree"));
-    assert!(section
-        .content
-        .contains("runtime supplied and confirmed the target location metadata"));
-    assert!(section.content.contains("reproduce it exactly as returned"));
-    assert!(section.content.contains("opaque `?root=` selector"));
-    assert!(section
-        .content
-        .contains("only the literal path in backticks"));
-    assert!(section.content.contains("https://local/..."));
-    assert!(section.content.contains("http://local/..."));
+    for required in [
+        "Prefer durable action over narration",
+        "operator-facing delivery is brief-centric",
+        "does not relax `response_language`",
+        "promoted as the WorkItem result brief",
+        "lead with the main conclusion",
+        "tail truncation preserves the key result",
+        "fixed templates, boilerplate",
+        "project documents, local records, Holon brief/assistant text, and public channels",
+        "confirmed execution-host absolute paths",
+        "WorkItem `plan.md`",
+        "linked worktree",
+        "opaque `?root=` selector",
+        "https://local/...",
+        "http://local/...",
+        "/work-items/...",
+        "only the literal path in backticks",
+    ] {
+        assert!(
+            section.content.contains(required),
+            "delivery_contract missing invariant: {required}"
+        );
+    }
     assert!(!section.content.contains("workspace://..."));
-    assert!(section.content.contains("/work-items/..."));
-    assert!(!section.content.contains("Historical"));
-    assert!(!section.content.contains("compatibility resolver"));
-}
-
-#[test]
-fn system_prompt_includes_exploration_discipline_rules() {
-    let sections = build_system_sections(
-        &sample_identity(),
-        &sample_message(),
-        Path::new("."),
-        &LoadedAgentsMd::default(),
-        &LoadedAgentMemory::default(),
-        &SkillsRuntimeView::default(),
-        &[],
-        ToolPromptContext::default(),
-    );
-    let section = sections
-        .iter()
-        .find(|section| section.name == "exploration_discipline")
-        .expect("exploration discipline section");
-
-    assert!(section
+    assert!(!section
         .content
-        .contains("reduce uncertainty toward the operator's goal"));
-    assert!(section.content.contains("bounded questions"));
-    assert!(section.content.contains("one more specific fact"));
-    assert!(section.content.contains("next bounded command or query"));
-    assert!(section
-        .content
-        .contains("just because more files or references are available"));
-    assert!(section
-        .content
-        .contains("Do not repeat the same read command"));
-    assert!(section.content.contains("concrete changed-state questions"));
+        .contains("what changed / why / verification"));
 }
 
 #[test]
@@ -855,36 +768,33 @@ fn system_prompt_explains_durable_work_tracking_and_scheduling_boundaries() {
         ToolPromptContext::default(),
     );
 
-    let planning = sections
+    let durable = sections
         .iter()
-        .find(|section| section.name == "planning_discipline")
-        .expect("planning discipline section");
-    assert!(planning.content.contains("working context is finite"));
-    assert!(planning.content.contains("compressed or evicted"));
-    assert!(planning
-        .content
-        .contains("durable record for a goal that must survive"));
-    assert!(planning
-        .content
-        .contains("not a log for every turn or operation"));
-
-    let recovery = sections
-        .iter()
-        .find(|section| section.name == "work_item_first_execution")
-        .expect("work item first execution section");
-    assert!(recovery
-        .content
-        .contains("minimum state needed to recover after context loss"));
-    assert!(recovery.content.contains("acceptance criteria"));
-    assert!(recovery.content.contains("evidence references"));
-    assert!(recovery.content.contains("unresolved questions"));
-    assert!(recovery.content.contains("before handoff, waiting"));
-    assert!(recovery
-        .content
-        .contains("do not expand model context or guarantee every artifact"));
-    assert!(recovery
-        .content
-        .contains("do not copy whole chats or tool logs"));
+        .find(|section| section.name == "durable_work_tracking")
+        .expect("durable_work_tracking section");
+    for required in [
+        "Working context is finite",
+        "compressed or evicted",
+        "durable record for a goal that must survive",
+        "do not create a WorkItem for casual chat, ordinary questions",
+        "multi-step work completable in the current turn",
+        "discussion-state maintenance rather than project file mutation",
+        "does not by itself authorize implementation",
+        "plan_status=needs_input",
+        "never claim durable state was written",
+        "prefer refreshing the current WorkItem",
+        "minimum recovery state",
+        "acceptance criteria",
+        "evidence references",
+        "unresolved questions",
+        "before handoff, waiting, or ending a long execution",
+        "On resume, read the WorkItem records",
+    ] {
+        assert!(
+            durable.content.contains(required),
+            "durable_work_tracking missing invariant: {required}"
+        );
+    }
 
     let scheduling = sections
         .iter()
@@ -911,62 +821,7 @@ fn system_prompt_explains_durable_work_tracking_and_scheduling_boundaries() {
         .contains("UpdateWorkItem.plan_status does affect WorkItem readiness"));
     assert!(scheduling
         .content
-        .contains("Before any control operation that may end the turn"));
-}
-
-#[test]
-fn system_prompt_includes_engineering_guardrails() {
-    let sections = build_system_sections(
-        &sample_identity(),
-        &sample_message(),
-        Path::new("."),
-        &LoadedAgentsMd::default(),
-        &LoadedAgentMemory::default(),
-        &SkillsRuntimeView::default(),
-        &[],
-        ToolPromptContext::default(),
-    );
-    let section = sections
-        .iter()
-        .find(|section| section.name == "engineering_guardrails")
-        .expect("engineering guardrails section");
-
-    assert!(section.content.contains("root-cause layer"));
-    assert!(section
-        .content
-        .contains("do not broaden scope to unrelated fixes"));
-    assert!(section.content.contains("CI would actually run"));
-    assert!(section.content.contains("temporary artifacts"));
-    assert!(section.content.contains("public contract"));
-}
-
-#[test]
-fn system_prompt_includes_instruction_precedence_rules() {
-    let sections = build_system_sections(
-        &sample_identity(),
-        &sample_message(),
-        Path::new("."),
-        &LoadedAgentsMd::default(),
-        &LoadedAgentMemory::default(),
-        &SkillsRuntimeView::default(),
-        &[],
-        ToolPromptContext::default(),
-    );
-    let section = sections
-        .iter()
-        .find(|section| section.name == "instruction_precedence")
-        .expect("instruction precedence section");
-
-    assert!(section
-        .content
-        .contains("Trusted operator instructions define the task's scope"));
-    assert!(section
-        .content
-        .contains("Turn-scoped sections such as delegated-task and constrained-repair"));
-    assert!(section
-        .content
-        .contains("Scoped AGENTS.md guidance applies within its directory tree"));
-    assert!(section.content.contains("never as authority"));
+        .contains("before any control operation that may end the turn"));
 }
 
 #[test]
@@ -1064,154 +919,6 @@ fn response_language_section_follows_loaded_guidance_and_tools() {
 }
 
 #[test]
-fn reporting_contract_discourages_fixed_report_template() {
-    let sections = build_system_sections(
-        &sample_identity(),
-        &sample_message(),
-        Path::new("."),
-        &LoadedAgentsMd::default(),
-        &LoadedAgentMemory::default(),
-        &SkillsRuntimeView::default(),
-        &[],
-        ToolPromptContext::default(),
-    );
-    let section = sections
-        .iter()
-        .find(|section| section.name == "reporting_contract")
-        .expect("reporting contract section");
-
-    assert!(section
-        .content
-        .contains("Lead with the most important conclusion"));
-    assert!(section.content.contains("verification status near the top"));
-    assert!(section
-        .content
-        .contains("tail truncation preserves the key result"));
-    assert!(section.content.contains("fixed templates, boilerplate"));
-    assert!(!section
-        .content
-        .contains("what changed / why / verification"));
-    assert!(!section
-        .content
-        .contains("MUST include these three elements"));
-}
-
-#[test]
-fn system_prompt_includes_execution_environment_contract() {
-    let sections = build_system_sections(
-        &sample_identity(),
-        &sample_message(),
-        Path::new("."),
-        &LoadedAgentsMd::default(),
-        &LoadedAgentMemory::default(),
-        &SkillsRuntimeView::default(),
-        &[],
-        ToolPromptContext::default(),
-    );
-    let section = sections
-        .iter()
-        .find(|section| section.name == "execution_environment_contract")
-        .expect("execution environment contract section");
-
-    assert!(section.content.contains("current runtime state"));
-    assert!(section
-        .content
-        .contains("Holon currently uses the local backend"));
-    assert!(section
-        .content
-        .contains("binding instructions even when the runtime does not hard-enforce them"));
-}
-
-#[test]
-fn system_prompt_includes_planning_discipline_rules() {
-    let sections = build_system_sections(
-        &sample_identity(),
-        &sample_message(),
-        Path::new("."),
-        &LoadedAgentsMd::default(),
-        &LoadedAgentMemory::default(),
-        &SkillsRuntimeView::default(),
-        &[],
-        ToolPromptContext::default(),
-    );
-    let section = sections
-        .iter()
-        .find(|section| section.name == "planning_discipline")
-        .expect("planning discipline section");
-
-    assert!(section.content.contains("classify the interaction"));
-    assert!(section
-        .content
-        .contains("Do not create a WorkItem for ordinary questions"));
-    assert!(section.content.contains("current-turn plan"));
-    assert!(section
-        .content
-        .contains("multi-step work that can be completed in the current turn"));
-    assert!(section.content.contains(
-            "explicitly asks you to record, track, monitor, schedule, or preserve durable progress for work"
-        ));
-    assert!(section.content.contains("task crosses turns"));
-    assert!(section.content.contains("stable list of issues"));
-    assert!(section
-        .content
-        .contains("A tracking WorkItem does not by itself authorize implementation"));
-    assert!(section.content.contains("mark the plan as needs_input"));
-    assert!(section
-        .content
-        .contains("discussion-state maintenance, not user workspace or project file mutation"));
-    assert!(section.content.contains("do not claim it was written"));
-    assert!(section
-        .content
-        .contains("preemptively creating durable state"));
-}
-
-#[test]
-fn system_prompt_includes_work_item_first_execution_rules() {
-    let sections = build_system_sections(
-        &sample_identity(),
-        &sample_message(),
-        Path::new("."),
-        &LoadedAgentsMd::default(),
-        &LoadedAgentMemory::default(),
-        &SkillsRuntimeView::default(),
-        &[],
-        ToolPromptContext::default(),
-    );
-    let section = sections
-        .iter()
-        .find(|section| section.name == "work_item_first_execution")
-        .expect("work item first execution section");
-
-    assert!(section.content.contains("WorkItem-first"));
-    assert!(section.content.contains("`planning_discipline`"));
-    assert!(section
-        .content
-        .contains("minimum state needed to recover after context loss"));
-    assert!(section
-        .content
-        .contains("scope, acceptance criteria, key decisions"));
-    assert!(section
-        .content
-        .contains("progress, unresolved questions, and the next action"));
-    assert!(section
-        .content
-        .contains("before handoff, waiting, or ending a long execution"));
-    assert!(section
-        .content
-        .contains("On resume, read the WorkItem records"));
-    assert!(section
-        .content
-        .contains("do not copy whole chats or tool logs into the plan"));
-    assert!(section
-        .content
-        .contains("there is no current active WorkItem anchor"));
-    assert!(section.content.contains("use bounded inspection first"));
-    assert!(section
-        .content
-        .contains("Prefer refreshing the current WorkItem"));
-}
-
-#[test]
 fn system_prompt_includes_runtime_scheduling_contract() {
     let sections = build_system_sections(
         &sample_identity(),
@@ -1234,13 +941,10 @@ fn system_prompt_includes_runtime_scheduling_contract() {
         .contains("resumes work from persisted runtime state"));
     assert!(section
         .content
-        .contains("A WorkItem records the durable goal and recovery state"));
-    assert!(section
-        .content
         .contains("Current WorkItem means focus, not execution ownership"));
     assert!(section
         .content
-        .contains("A task keeps the WorkItem owner captured when it was created"));
+        .contains("a task keeps the WorkItem owner captured when created"));
     assert!(section
         .content
         .contains("WaitFor resolves ownership from the execution-bound WorkItem first"));
@@ -1257,31 +961,28 @@ fn system_prompt_includes_runtime_scheduling_contract() {
         .content
         .contains("UpdateWorkItem.plan_status does affect WorkItem readiness"));
     assert!(section.content.contains("Queued runnable WorkItems"));
-    assert!(section.content.contains("Yielded or parked WorkItems"));
+    assert!(section.content.contains("yielded or parked WorkItems"));
     assert!(section.content.contains("continuation frame"));
     assert!(section.content.contains("do not mark them blocked"));
     assert!(section
         .content
-        .contains("PickWorkItem records an A -> B continuation"));
+        .contains("PickWorkItem from runnable A to B records an A -> B continuation"));
     assert!(section
         .content
         .contains("completing B may restore A and end the turn"));
     assert!(section
         .content
-        .contains("Completing the execution-bound WorkItem also ends the turn"));
+        .contains("Completing the execution-bound WorkItem ends the turn"));
     assert!(section
         .content
         .contains("detached completion requires an idle agent execution lane"));
     assert!(section
         .content
-        .contains("persist required recovery state and arrange any successor"));
+        .contains("Persist required recovery state and arrange any successor"));
     assert!(section.content.contains("External triggers"));
     assert!(section
         .content
         .contains("WaitFor(task_result) instead of polling"));
-    assert!(section
-        .content
-        .contains("Express scheduling facts through runtime tools"));
 }
 
 #[test]
@@ -1365,7 +1066,7 @@ fn creation_lineage_does_not_imply_delegation_or_reporting() {
 }
 
 #[test]
-fn system_prompt_includes_agent_home_contract_section() {
+fn system_prompt_includes_agent_home_boundary_section() {
     let sections = build_system_sections(
         &sample_identity(),
         &sample_message(),
@@ -1378,16 +1079,15 @@ fn system_prompt_includes_agent_home_contract_section() {
     );
     let section = sections
         .iter()
-        .find(|section| section.name == "agent_home_contract")
-        .expect("agent home contract section");
+        .find(|section| section.name == "agent_home_boundary")
+        .expect("agent home boundary section");
 
     assert!(section
         .content
-        .contains("long-lived contract for this specific agent"));
+        .contains("evolving long-lived contract for this specific agent"));
     assert!(section
         .content
         .contains("role, standing responsibilities, granted authority"));
-    assert!(section.content.contains("may evolve over time"));
     assert!(section
         .content
         .contains("work-items/<work_item_id>/plan.md"));
@@ -1397,8 +1097,9 @@ fn system_prompt_includes_agent_home_contract_section() {
     assert!(section
         .content
         .contains("agent_home/tmp/` is for short-lived working files"));
-    assert!(section.content.contains("Near the end of each turn"));
-    assert!(section.content.contains("Do not store transient plans"));
+    assert!(section.content.contains("near turn end"));
+    assert!(section.content.contains("transient plans/notes"));
+    assert!(section.content.contains("`.holon/`"));
 }
 
 #[test]

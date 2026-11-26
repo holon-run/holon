@@ -150,7 +150,7 @@ pub(crate) enum HistoryReprojectionOutcome {
 impl EffectivePrompt {
     pub(crate) fn with_media_tool_defaults(
         mut self,
-        defaults: &crate::provider::media::MediaToolDefaults,
+        _defaults: &crate::provider::media::MediaToolDefaults,
         available_tools: &[ToolSpec],
     ) -> Self {
         let view = available_tools
@@ -165,27 +165,12 @@ impl EffectivePrompt {
         let mut lines = vec![
             "Media model overrides are optional and single-call only; omission preserves configured/default routing. Exact overrides do not silently fall back. Discover operation-specific candidates with ListModelProviders/ListProviderModels.".to_string(),
         ];
-        // Route identifiers may come from remote catalogs, not trusted instructions.
-        // Keep concrete candidates in discovery/tool results, out of system text.
-        if view {
-            lines.push(format!(
-                "ViewImage default candidate: {} (automatic health/availability checks still apply).",
-                if defaults.view_image.is_some() {
-                    "available"
-                } else {
-                    "unavailable; configure or discover a vision route"
-                },
-            ));
-        }
+        // Route identifiers and live availability stay in tool results/error hints so
+        // transient route-health shifts never churn the system prompt or cache key.
         if generate {
-            lines.push(format!(
-                "GenerateImage default candidate: {}. Final output_format defaults to PNG; runtime converts locally when needed. Omit size/background/aspect_ratio/resolution to use route-specific defaults; consult the selected model's generation contract before explicitly setting them.",
-                if defaults.generate_image.is_some() {
-                    "available"
-                } else {
-                    "unavailable; configure or select an image generation route"
-                },
-            ));
+            lines.push(
+                "GenerateImage final output_format defaults to PNG; omit size/background/aspect_ratio/resolution to use route-specific defaults unless the selected model's generation contract is known.".to_string(),
+            );
         }
         self.system_sections
             .retain(|section| section.name != "media_tool_defaults");
@@ -1288,21 +1273,16 @@ mod tests {
             assert!(first
                 .rendered_system_prompt
                 .contains("ListModelProviders/ListProviderModels"));
-            for (name, label) in [
-                (crate::tool::names::VIEW_IMAGE, "ViewImage"),
-                (crate::tool::names::GENERATE_IMAGE, "GenerateImage"),
-            ] {
-                assert_eq!(
-                    first
-                        .rendered_system_prompt
-                        .contains(&format!("{label} default candidate: available")),
-                    visible_tools.contains(&name),
-                );
-            }
+            assert!(!first
+                .rendered_system_prompt
+                .contains("default candidate: available"));
+            assert!(!first
+                .rendered_system_prompt
+                .contains("default candidate: unavailable"));
             if visible_tools.contains(&crate::tool::names::GENERATE_IMAGE) {
                 assert!(first
                     .rendered_system_prompt
-                    .contains("Final output_format defaults to PNG"));
+                    .contains("final output_format defaults to PNG"));
             }
             let renamed = crate::provider::media::MediaToolDefaults {
                 view_image: Some("test@plan/vision-b".into()),
@@ -1325,14 +1305,12 @@ mod tests {
                 .clone()
                 .with_media_tool_defaults(&unavailable, &tools);
             assert_eq!(third.system_sections.len(), 1);
-            assert!(third
-                .rendered_system_prompt
-                .contains("default candidate: unavailable; configure or"));
-            assert_ne!(
+            assert_eq!(second.rendered_system_prompt, third.rendered_system_prompt);
+            assert_eq!(
                 second.cache_identity.prompt_cache_key,
                 third.cache_identity.prompt_cache_key
             );
-            assert_ne!(
+            assert_eq!(
                 second.cache_identity.context_fingerprint,
                 third.cache_identity.context_fingerprint
             );

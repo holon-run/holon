@@ -317,7 +317,7 @@ fn fixtures(nonce: &str, tools: &[ToolSpec]) -> Vec<Sample> {
     }
     let canonical = &samples[3..];
     let shared = shared_text(&canonical[0]);
-    assert!(shared.contains("## core_contract\n"));
+    assert!(shared.contains("## work_and_verification\n"));
     assert!(shared.contains("## tool_exec_command\n"));
     for sample in canonical {
         assert_eq!(shared, shared_text(sample));
