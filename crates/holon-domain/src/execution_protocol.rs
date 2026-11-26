@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExecutionSettlementConflict {
@@ -1399,6 +1400,95 @@ pub enum ExecutionProtocolCommand {
     FinalizeInterrupted(FinalizeInterruptedExecution),
     RecoverInterruptedTaskResultClaim(Box<RecoverInterruptedTaskResultClaim>),
     RecoverUnadvancedTaskResultClaim(Box<RecoverUnadvancedTaskResultClaim>),
+}
+
+impl ExecutionProtocolCommand {
+    pub fn identity(&self) -> (&'static str, &str) {
+        match self {
+            Self::RegisterWorkItem(command) => {
+                ("register_work_item_execution", &command.work_item_id)
+            }
+            Self::AdvanceWorkItemSourceRevision(command) => {
+                ("advance_work_item_source_revision", &command.command_id)
+            }
+            Self::ReconcileWorkItemSourceRevision(command) => {
+                ("reconcile_work_item_source_revision", &command.command_id)
+            }
+            Self::SetWorkItemReadiness(command) => ("set_work_item_readiness", &command.command_id),
+            Self::RecheckContextBudgetStop(command) => {
+                ("recheck_context_budget_stop", &command.command_id)
+            }
+            Self::SuspendWorkItemContinuation(command) => {
+                ("suspend_work_item_continuation", &command.command_id)
+            }
+            Self::ResumeWorkItemContinuation(command) => {
+                ("resume_work_item_continuation", &command.command_id)
+            }
+            Self::ReconcileWorkItemContinuationYield(command) => (
+                "reconcile_work_item_continuation_yield",
+                &command.command_id,
+            ),
+            Self::SetWorkItemWaiting(command) => ("set_work_item_waiting", &command.command_id),
+            Self::CompleteWorkItem(command) => {
+                ("complete_work_item_execution", &command.command_id)
+            }
+            Self::Admit(command) => ("admit_execution", &command.attempt.attempt_id),
+            Self::Settle(command) => ("settle_execution", &command.outcome.outcome_id),
+            Self::Interrupt(command) => ("interrupt_execution", &command.outcome_id),
+            Self::FinalizeInterrupted(command) => {
+                ("finalize_interrupted_execution", &command.command_id)
+            }
+            Self::RecoverInterruptedTaskResultClaim(command) => {
+                ("recover_interrupted_task_result_claim", &command.command_id)
+            }
+            Self::RecoverUnadvancedTaskResultClaim(command) => {
+                ("recover_unadvanced_task_result_claim", &command.command_id)
+            }
+        }
+    }
+
+    pub fn reduce(&self, state: &ExecutionProtocolState) -> Result<ExecutionTransition, String> {
+        match self {
+            Self::RegisterWorkItem(command) => register_work_item_execution(state, command),
+            Self::AdvanceWorkItemSourceRevision(command) => {
+                advance_work_item_source_revision(state, command)
+            }
+            Self::ReconcileWorkItemSourceRevision(command) => {
+                reconcile_work_item_source_revision(state, command)
+            }
+            Self::SetWorkItemReadiness(command) => set_work_item_readiness(state, command),
+            Self::RecheckContextBudgetStop(command) => recheck_context_budget_stop(state, command),
+            Self::SuspendWorkItemContinuation(command) => {
+                suspend_work_item_continuation(state, command)
+            }
+            Self::ResumeWorkItemContinuation(command) => {
+                resume_work_item_continuation(state, command)
+            }
+            Self::ReconcileWorkItemContinuationYield(command) => {
+                reconcile_work_item_continuation_yield(state, command)
+            }
+            Self::SetWorkItemWaiting(command) => set_work_item_waiting(state, command),
+            Self::CompleteWorkItem(command) => complete_work_item_execution(state, command),
+            Self::Admit(command) => admit_execution(state, command),
+            Self::Settle(command) => settle_execution(state, command),
+            Self::Interrupt(command) => interrupt_execution(state, command),
+            Self::FinalizeInterrupted(command) => finalize_interrupted_execution(state, command),
+            Self::RecoverInterruptedTaskResultClaim(command) => {
+                recover_interrupted_task_result_claim(state, command)
+            }
+            Self::RecoverUnadvancedTaskResultClaim(command) => {
+                recover_unadvanced_task_result_claim(state, command)
+            }
+        }
+    }
+}
+
+/// Hash the exact serialized payload recorded in the command receipt.
+pub fn command_payload_hash(payload: &impl Serialize) -> Result<String, serde_json::Error> {
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(payload)?)
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

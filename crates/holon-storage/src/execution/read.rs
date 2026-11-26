@@ -6,7 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use holon_domain::execution_protocol::{
     self, ExecutionOutcomeRecord, ExecutionProtocolState, WorkItemExecutionRecord,
 };
-use rusqlite::{Connection, Transaction};
+use rusqlite::{params, Connection, Transaction};
 use serde::de::DeserializeOwned;
 
 use super::{decode_outcome_record_with_migration, project_legacy_in_flight_work_item};
@@ -29,6 +29,23 @@ pub fn partition_exists_on(connection: &Connection, agent_id: &str) -> Result<bo
             |row| row.get(0),
         )
         .map_err(Into::into)
+}
+
+/// Read a freshly persisted WorkItem on the caller's transaction for an ACK.
+pub fn load_committed_work_item_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    work_item_id: &str,
+) -> Result<WorkItemExecutionRecord> {
+    let payload: String = tx
+        .query_row(
+            "SELECT payload_json FROM execution_protocol_work_items
+             WHERE agent_id=?1 AND work_item_id=?2",
+            params![agent_id, work_item_id],
+            |row| row.get(0),
+        )
+        .context("committed touched work execution disappeared")?;
+    Ok(serde_json::from_str(&payload)?)
 }
 
 /// The pre-v47 offline fallback can open a database before schema migrations.

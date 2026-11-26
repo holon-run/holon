@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::Utc;
+use holon_storage::execution::{insert_repair_command_receipt_tx, ExecutionCommandReceipt};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -446,19 +446,16 @@ fn apply_entry_tx(
             )
         })?;
     persist_state_tx(tx, &transition.state)?;
-    tx.execute(
-        "INSERT OR IGNORE INTO execution_protocol_command_results (
-           agent_id, command_kind, command_identity,
-           payload_hash, references_json, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![
-            entry.agent_id,
-            "reconcile_work_item_source_revision",
-            command.command_id,
-            format!("{:x}", Sha256::digest(serde_json::to_vec(&command)?)),
-            serde_json::to_string(&transition.references)?,
-            Utc::now().to_rfc3339(),
-        ],
+    // Offline repair receipts hash the bare reconciliation payload.
+    insert_repair_command_receipt_tx(
+        tx,
+        &entry.agent_id,
+        &ExecutionCommandReceipt {
+            command_kind: "reconcile_work_item_source_revision",
+            payload_hash: execution_protocol::command_payload_hash(&command)?,
+            command_identity: command.command_id,
+            references: transition.references,
+        },
     )?;
     append_audit_event_tx(
         tx,
@@ -552,6 +549,7 @@ mod tests {
         ExecutionProtocolState, WorkItemExecutionRecord, WorkItemExecutionState,
     };
     use crate::runtime_db::transitions::execution_protocol_repository::persist_state_tx;
+    use chrono::Utc;
 
     fn runtime_db() -> Result<(tempfile::TempDir, RuntimeDb)> {
         let dir = tempfile::tempdir()?;
