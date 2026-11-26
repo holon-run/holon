@@ -298,6 +298,14 @@ fn ollama_provider(base_url: String) -> ProviderRuntimeConfig {
     provider
 }
 
+fn magpie_provider(base_url: String) -> ProviderRuntimeConfig {
+    let mut provider = custom_openai_provider(base_url);
+    provider.id = ProviderId::parse("magpie").unwrap();
+    provider.route_provider = provider.id.clone();
+    provider.transport = ProviderTransportKind::AnthropicMessages;
+    provider
+}
+
 #[test]
 fn maps_arcee_models_without_inventing_capabilities_or_output_limits() {
     let payload: ArceeModelsResponse = serde_json::from_str(
@@ -2804,4 +2812,28 @@ fn configured_decoder_drives_magpie_payload_via_effective_discovery() {
     assert_eq!(models[0].model_ref.model, "magpie-chat");
     assert_eq!(models[0].display_name, "Magpie Chat");
     assert_eq!(models[0].context_window_tokens, Some(131072));
+}
+
+#[test]
+fn built_in_magpie_discovers_models_through_openai_v1_and_magpie_decoder() {
+    let provider = magpie_provider("http://127.0.0.1:3425".into());
+    let discovery = effective_discovery(&provider, None).expect("built-in discovery");
+    assert_eq!(discovery.auth, ModelDiscoveryAuth::Optional);
+    assert_eq!(
+        discovery.route,
+        EffectiveDiscoveryRoute::BuiltIn(ModelDiscoveryRoute::OpenAiV1)
+    );
+    assert_eq!(discovery.decoder, ModelDiscoveryDecoder::Magpie);
+    assert_eq!(
+        provider_models_url(&provider, None).unwrap(),
+        "http://127.0.0.1:3425/v1/models"
+    );
+
+    // A root base_url and an explicit `/v1` base both resolve to the same
+    // discovery GET, so users only need to change the port at most.
+    let with_v1 = magpie_provider("http://127.0.0.1:3425/v1".into());
+    assert_eq!(
+        provider_models_url(&with_v1, None).unwrap(),
+        "http://127.0.0.1:3425/v1/models"
+    );
 }

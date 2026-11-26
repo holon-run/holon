@@ -8,8 +8,8 @@ use std::sync::{
 use super::support::*;
 use super::*;
 use crate::config::{
-    AnthropicCacheStrategy, ProviderEndpointId, ProviderId, ProviderRuntimeConfig,
-    ProviderTransportKind,
+    AnthropicCacheStrategy, CredentialKind, CredentialSource, ProviderAuthConfig,
+    ProviderEndpointId, ProviderId, ProviderRuntimeConfig, ProviderTransportKind,
 };
 use crate::provider::{
     http_trace::ProviderHttpTrace, provider_error_code, provider_transport_diagnostics,
@@ -72,6 +72,128 @@ async fn anthropic_compatible_endpoint_can_send_without_authentication() {
     let headers = headers.as_ref().expect("server should capture headers");
     assert!(headers.get("authorization").is_none());
     assert_eq!(headers["anthropic-version"], "2023-06-01");
+}
+
+#[tokio::test]
+async fn built_in_magpie_default_endpoint_sends_anthropic_messages_without_authorization() {
+    let captured_headers = Arc::new(Mutex::new(None::<HeaderMap>));
+    let captured_headers_for_server = captured_headers.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |headers: HeaderMap| {
+            let captured_headers = captured_headers_for_server.clone();
+            async move {
+                *captured_headers.lock().unwrap() = Some(headers);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    // The built-in `magpie` provider is zero-config: root base URL and no
+    // credential, matching the registry default before any user override.
+    let provider_config = ProviderRuntimeConfig {
+        headers: Default::default(),
+        id: ProviderId::parse("magpie").unwrap(),
+        route_provider: ProviderId::parse("magpie").unwrap(),
+        route_endpoint: ProviderEndpointId::default_endpoint(),
+        transport: ProviderTransportKind::AnthropicMessages,
+        base_url,
+        auth: Default::default(),
+        credential: None,
+        credential_store_path: None,
+        codex_home: None,
+        originator: None,
+        reasoning_effort: None,
+        context_management: Default::default(),
+        builtin_web_search: None,
+    };
+    let provider = AnthropicProvider::from_runtime_config(
+        &provider_config,
+        "magpie-default",
+        1024,
+        Path::new("."),
+        true,
+        TEST_CLIENT_VERSION,
+    )
+    .unwrap();
+
+    provider
+        .complete_turn(ProviderTurnRequest::plain("hello", Vec::new(), Vec::new()))
+        .await
+        .unwrap();
+
+    // Reaching the `/v1/messages` route proves the root base URL resolves to
+    // the Anthropic Messages path rather than `/v1/chat/completions`.
+    let headers = captured_headers.lock().unwrap();
+    let headers = headers.as_ref().expect("server should capture headers");
+    assert!(headers.get("authorization").is_none());
+    assert_eq!(headers["anthropic-version"], "2023-06-01");
+}
+
+#[tokio::test]
+async fn magpie_explicit_env_credential_adds_authorization_header() {
+    let captured_headers = Arc::new(Mutex::new(None::<HeaderMap>));
+    let captured_headers_for_server = captured_headers.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |headers: HeaderMap| {
+            let captured_headers = captured_headers_for_server.clone();
+            async move {
+                *captured_headers.lock().unwrap() = Some(headers);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let provider_config = ProviderRuntimeConfig {
+        headers: Default::default(),
+        id: ProviderId::parse("magpie").unwrap(),
+        route_provider: ProviderId::parse("magpie").unwrap(),
+        route_endpoint: ProviderEndpointId::default_endpoint(),
+        transport: ProviderTransportKind::AnthropicMessages,
+        base_url,
+        auth: ProviderAuthConfig {
+            source: CredentialSource::Env,
+            kind: CredentialKind::ApiKey,
+            env: Some("MAGPIE_API_KEY".into()),
+            profile: None,
+            external: None,
+            client_id: None,
+        },
+        credential: Some("magpie-app-key".into()),
+        credential_store_path: None,
+        codex_home: None,
+        originator: None,
+        reasoning_effort: None,
+        context_management: Default::default(),
+        builtin_web_search: None,
+    };
+    let provider = AnthropicProvider::from_runtime_config(
+        &provider_config,
+        "magpie-default",
+        1024,
+        Path::new("."),
+        true,
+        TEST_CLIENT_VERSION,
+    )
+    .unwrap();
+
+    provider
+        .complete_turn(ProviderTurnRequest::plain("hello", Vec::new(), Vec::new()))
+        .await
+        .unwrap();
+
+    let headers = captured_headers.lock().unwrap();
+    let headers = headers.as_ref().expect("server should capture headers");
+    assert_eq!(headers["authorization"], "Bearer magpie-app-key");
 }
 
 #[tokio::test]

@@ -1788,6 +1788,88 @@ fn built_in_provider_default_config_resolves_known_and_unknown_provider() {
 }
 
 #[test]
+fn built_in_magpie_provider_is_zero_config_and_usable_without_api_key() {
+    let settings_env = HashMap::new();
+    let providers = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
+    let magpie = providers
+        .get(&ProviderId::parse("magpie").unwrap())
+        .expect("built-in magpie provider");
+
+    assert_eq!(magpie.transport, ProviderTransportKind::AnthropicMessages);
+    assert_eq!(magpie.base_url, "http://127.0.0.1:3425");
+    assert_eq!(magpie.auth.source, CredentialSource::None);
+    assert_eq!(magpie.auth.kind, CredentialKind::None);
+    assert!(magpie.auth.env.is_none());
+    assert!(magpie.credential.is_none());
+    // D3: an empty `credential_envs` list keeps the zero-config provider usable
+    // even when `MAGPIE_API_KEY` is not set.
+    assert!(provider_has_usable_auth(magpie));
+
+    let default_config = super::built_in_provider_default_config_with_settings(
+        &ProviderId::parse("magpie").unwrap(),
+        &settings_env,
+    )
+    .unwrap()
+    .expect("expected built-in magpie default");
+    assert_eq!(
+        default_config.transport,
+        ProviderTransportKind::AnthropicMessages
+    );
+    assert_eq!(default_config.base_url, "http://127.0.0.1:3425");
+    assert_eq!(default_config.auth.source, CredentialSource::None);
+
+    let doc_entries = super::built_in_provider_doc_entries().unwrap();
+    let entry = doc_entries
+        .iter()
+        .find(|entry| entry.legacy_provider.as_str() == "magpie")
+        .expect("magpie should be projected into the provider catalog");
+    assert_eq!(entry.provider.as_str(), "magpie");
+    assert_eq!(entry.endpoint.as_str(), "default");
+    assert_eq!(entry.transport, ProviderTransportKind::AnthropicMessages);
+    assert_eq!(entry.base_url, "http://127.0.0.1:3425");
+    assert!(entry.auth_env.is_none());
+}
+
+#[test]
+fn magpie_explicit_config_overrides_built_in_defaults() {
+    let mut config = HolonConfigFile::default();
+    set_config_key(
+        &mut config,
+        "providers.magpie.base_url",
+        "http://127.0.0.1:4325",
+    )
+    .unwrap();
+
+    let registry =
+        resolve_provider_registry(&config, &HashMap::new(), &CredentialStoreFile::default())
+            .unwrap();
+    let magpie = registry
+        .get(&ProviderId::parse("magpie").unwrap())
+        .expect("magpie provider");
+    assert_eq!(magpie.base_url, "http://127.0.0.1:4325");
+    assert_eq!(magpie.transport, ProviderTransportKind::AnthropicMessages);
+    assert_eq!(magpie.auth.source, CredentialSource::None);
+    assert!(provider_has_usable_auth(magpie));
+
+    // Explicit env auth is opt-in; it resolves a credential only when the
+    // named variable is set.
+    set_config_key(&mut config, "providers.magpie.auth.source", "env").unwrap();
+    set_config_key(&mut config, "providers.magpie.auth.kind", "api_key").unwrap();
+    set_config_key(&mut config, "providers.magpie.auth.env", "MAGPIE_API_KEY").unwrap();
+    let settings_env =
+        HashMap::from([("MAGPIE_API_KEY".to_string(), "magpie-app-key".to_string())]);
+    let registry =
+        resolve_provider_registry(&config, &settings_env, &CredentialStoreFile::default()).unwrap();
+    let magpie = registry
+        .get(&ProviderId::parse("magpie").unwrap())
+        .expect("magpie provider");
+    assert_eq!(magpie.auth.source, CredentialSource::Env);
+    assert_eq!(magpie.auth.env.as_deref(), Some("MAGPIE_API_KEY"));
+    assert_eq!(magpie.credential.as_deref(), Some("magpie-app-key"));
+    assert!(provider_has_usable_auth(magpie));
+}
+
+#[test]
 fn materialize_provider_config_preserves_builtin_runtime_fields() {
     let settings_env = HashMap::new();
     let mut built_ins = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
