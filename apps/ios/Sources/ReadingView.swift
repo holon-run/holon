@@ -22,11 +22,12 @@ struct ReadingView: View {
     private var connectionStatusKey: String {
         ReadingPresentation.connectionStatusKey(
             status: reader.status, hasContent: true, isCached: reader.isShowingCachedContent,
-            isRefreshing: reader.isRefreshing, connecting: isConnecting
+            isRefreshing: reader.isInitialRosterRefreshing, connecting: isConnecting
         ) ?? "reading.status.live"
     }
     private var canRetryConnection: Bool {
-        ReadingPresentation.showsConnectionRetry(status: reader.status, isRefreshing: reader.isRefreshing,
+        ReadingPresentation.showsConnectionRetry(status: reader.status,
+                                                 isRefreshing: reader.isInitialRosterRefreshing,
                                                  connecting: isConnecting)
     }
     private var rosterBottomMargin: CGFloat? {
@@ -38,49 +39,110 @@ struct ReadingView: View {
         if dynamicTypeSize.isAccessibilitySize { return 3 }
         return dynamicTypeSize >= .xLarge ? 2 : 1
     }
+    private var usesStackedConnectionHeader: Bool {
+        dynamicTypeSize >= .xLarge
+    }
+    private var connectionStatusDotColor: Color {
+        switch reader.status {
+        case .permissionDenied, .sessionExpired, .incompatible: .red
+        case .offline: isConnecting ? .accentColor : .orange
+        case .syncing: .accentColor
+        case .live: (reader.isShowingCachedContent || reader.isInitialRosterRefreshing) ? .accentColor : .green
+        case .disconnected: .secondary
+        }
+    }
 
     var body: some View {
             List {
                 Section {
                     // Keep one list row while connection state changes offscreen.
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 4) {
-                            NavigationLink(value: AppRoute.connections) {
-                                let host = connection.selectedProfile?.name ?? ""
-                                Label {
-                                    Text(verbatim: host).lineLimit(1).truncationMode(.middle)
-                                } icon: {
-                                    Image(systemName: "network").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if usesStackedConnectionHeader {
+                            HStack(spacing: 4) {
+                                NavigationLink(value: AppRoute.connections) {
+                                    let host = connection.selectedProfile?.name ?? ""
+                                    Label {
+                                        Text(verbatim: host)
+                                            .font(.subheadline.weight(.medium))
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    } icon: {
+                                        Image(systemName: "network").foregroundStyle(Color.accentColor)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .accessibilityLabel(Text(verbatim: host))
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .accessibilityLabel(Text(verbatim: host))
+                                .accessibilityIdentifier("connection.manage")
+                                Group {
+                                    if canRetryConnection {
+                                        Button {
+                                            Task { await reader.refresh() }
+                                        } label: {
+                                            Image(systemName: "arrow.clockwise")
+                                                .frame(width: 44, height: 44)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .accessibilityLabel(Text("reading.retry"))
+                                        .accessibilityIdentifier("agents.retry")
+                                    } else {
+                                        Color.clear.frame(width: 44, height: 44)
+                                            .allowsHitTesting(false)
+                                            .accessibilityHidden(true)
+                                    }
+                                }
                             }
-                            .accessibilityIdentifier("connection.manage")
-                            Group {
+                            Text(LocalizedStringKey(connectionStatusKey))
+                                .font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(connectionStatusLines, reservesSpace: true)
+                                .accessibilityIdentifier("agents.connectionStatus")
+                        } else {
+                            HStack(spacing: 8) {
+                                NavigationLink(value: AppRoute.connections) {
+                                    let host = connection.selectedProfile?.name ?? ""
+                                    Label {
+                                        Text(verbatim: host)
+                                            .font(.subheadline.weight(.medium))
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    } icon: {
+                                        Image(systemName: "network").foregroundStyle(Color.accentColor)
+                                    }
+                                    .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                                    .accessibilityLabel(Text(verbatim: host))
+                                }
+                                .accessibilityIdentifier("connection.manage")
+                                HStack(spacing: 5) {
+                                    Circle()
+                                        .fill(connectionStatusDotColor)
+                                        .frame(width: 6, height: 6)
+                                        .accessibilityHidden(true)
+                                    Text(LocalizedStringKey(connectionStatusKey))
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(canRetryConnection ? Color.orange : Color.secondary)
+                                        .lineLimit(1)
+                                        .fixedSize(horizontal: true, vertical: false)
+                                        .accessibilityIdentifier("agents.connectionStatus")
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color(uiColor: .secondarySystemFill), in: Capsule())
                                 if canRetryConnection {
                                     Button {
                                         Task { await reader.refresh() }
                                     } label: {
                                         Image(systemName: "arrow.clockwise")
-                                            .frame(width: 44, height: 44)
+                                            .font(.subheadline.weight(.medium))
+                                            .frame(width: 36, height: 36)
                                             .contentShape(Rectangle())
                                     }
                                     .buttonStyle(.borderless)
                                     .accessibilityLabel(Text("reading.retry"))
                                     .accessibilityIdentifier("agents.retry")
-                                } else {
-                                    // Keep the slot without leaving an invisible action in the list.
-                                    Color.clear.frame(width: 44, height: 44)
-                                        .allowsHitTesting(false)
-                                        .accessibilityHidden(true)
                                 }
                             }
+                            .frame(minHeight: 36)
                         }
-                        // Reserve lines for the current text size, not the current connection state.
-                        Text(LocalizedStringKey(connectionStatusKey))
-                            .font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(connectionStatusLines, reservesSpace: true)
-                            .accessibilityIdentifier("agents.connectionStatus")
                         if rosterLoading && reader.agents.isEmpty { ProgressView() }
                         if reader.agents.isEmpty {
                             if reader.status == .live {
@@ -94,16 +156,19 @@ struct ReadingView: View {
                             }
                         }
                     }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                 }
-                Section("reading.recent") {
+                Section {
                     ForEach(Array(matching.prefix(window))) { agent in
+                        let presentation = AgentIdentityPresentation.derive(
+                            agent, status: reader.status, isRosterCurrent: reader.hasDisplayableLiveRoster,
+                            isCached: reader.rosterIsCached,
+                            isRefreshing: reader.isInitialRosterRefreshing, connecting: isConnecting
+                        )
                         NavigationLink(value: AppRoute.conversation(agent.id)) {
-                            AgentSummaryRow(agent: agent, store: reader.avatars, presentation: .derive(
-                                agent, status: reader.status, isRosterCurrent: reader.isRosterCurrent,
-                                isCached: reader.rosterIsCached,
-                                isRefreshing: reader.isRefreshing, connecting: isConnecting
-                            ))
+                            AgentSummaryRow(agent: agent, store: reader.avatars, presentation: presentation)
                         }
+                        .listRowBackground(presentation.kind == .needsInput ? Color.orange.opacity(0.08) : nil)
                         .accessibilityIdentifier("agent." + agent.id)
                         .onAppear { visibleAgents.insert(agent.id) }
                         .onDisappear { visibleAgents.remove(agent.id) }
@@ -122,12 +187,7 @@ struct ReadingView: View {
             .navigationBarTitleDisplayMode(.inline)
             .refreshable { await reader.refresh() }
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    NavigationLink(value: AppRoute.settings) {
-                        Label("settings.title", systemImage: "gearshape")
-                    }.accessibilityIdentifier("settings.open")
-                }
-                ToolbarItem(placement: .secondaryAction) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Menu {
                         Picker("agents.filter", selection: $filter) {
                             ForEach(AgentListFilter.allCases, id: \.self) { option in
@@ -136,7 +196,12 @@ struct ReadingView: View {
                         }
                     } label: {
                         Label("agents.filter", systemImage: filter == .all ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill")
-                    }.accessibilityIdentifier("agents.filter")
+                    }
+                    .accessibilityIdentifier("agents.filter")
+                    NavigationLink(value: AppRoute.settings) {
+                        Label("settings.title", systemImage: "gearshape")
+                    }
+                    .accessibilityIdentifier("settings.open")
                 }
             }
             .onChange(of: query) { _, _ in window = 80 }
@@ -153,33 +218,41 @@ private struct AgentSummaryRow: View {
     let store: AgentAvatarStore
     let presentation: AgentIdentityPresentation
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @ScaledMetric(relativeTo: .caption) private var statusHeight: CGFloat = 16
+    @ScaledMetric(relativeTo: .headline) private var titleRowHeight: CGFloat = 22
+    @ScaledMetric(relativeTo: .subheadline) private var previewRowHeight: CGFloat = 22
+
+    private var hasUnread: Bool { (agent.unreadCount ?? 0) > 0 }
+    private var showsInlineStatusBadge: Bool {
+        switch presentation.kind {
+        case .ready, .unknown: false
+        default: true
+        }
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            AgentAvatarView(store: store, agentID: agent.id, presentation: presentation)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(verbatim: agent.name).font(.headline).foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    if let date = AgentSummaryPresentation.activityDate(agent) {
-                        Text(date, style: .relative).font(.caption2).foregroundStyle(.secondary)
-                            .lineLimit(1).fixedSize(horizontal: true, vertical: false)
-                    }
-                }
-                let preview = AgentSummaryPresentation.preview(agent)
-                HStack(spacing: 4) {
-                    if AgentSummaryPresentation.showsOperatorPreview(agent) {
-                        Text("reading.inputPreview")
-                    }
-                    // Keep the same row height when an asynchronously loaded preview arrives.
-                    Text(verbatim: preview.isEmpty ? " " : preview)
-                }
-                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                .accessibilityHidden(preview.isEmpty)
-                Group {
-                    if dynamicTypeSize.isAccessibilitySize {
+        let preview = AgentSummaryPresentation.preview(agent)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                HStack(alignment: .top, spacing: 12) {
+                    AgentAvatarView(store: store, agentID: agent.id, presentation: presentation)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(verbatim: agent.name).font(.headline).foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                            if let date = AgentSummaryPresentation.activityDate(agent) {
+                                Text(date, style: .relative).font(.caption2).foregroundStyle(.secondary)
+                                    .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                            }
+                        }
+                        HStack(spacing: 4) {
+                            if AgentSummaryPresentation.showsOperatorPreview(agent) {
+                                Text("reading.inputPreview")
+                            }
+                            Text(verbatim: preview.isEmpty ? " " : preview)
+                        }
+                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        .accessibilityHidden(preview.isEmpty)
                         VStack(alignment: .leading, spacing: 4) {
                             AgentStatusLabel(presentation: presentation, reservedLines: 2)
                             if let unread = agent.unreadCount, unread > 0 {
@@ -188,22 +261,73 @@ private struct AgentSummaryRow: View {
                                 Text(verbatim: " ").lineLimit(1).accessibilityHidden(true)
                             }
                         }
-                    } else {
-                        HStack(spacing: 8) {
-                            AgentStatusLabel(presentation: presentation)
-                            Spacer(minLength: 0)
-                            if let unread = agent.unreadCount, unread > 0 {
-                                Text("reading.unread \(unread)").fontWeight(.semibold)
-                            }
-                        }
-                        .lineLimit(1)
-                        .frame(minHeight: statusHeight)
+                        .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                .font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack(alignment: .center, spacing: 12) {
+                    AgentAvatarView(store: store, agentID: agent.id, presentation: presentation)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .center, spacing: 6) {
+                            AgentStatusLabel(presentation: presentation, showsTitle: false)
+                                .font(.subheadline.weight(.semibold))
+                            Text(verbatim: agent.name)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            if showsInlineStatusBadge {
+                                let statusTint = AgentStatusLabel.tint(for: presentation)
+                                Text(LocalizedStringKey(presentation.statusKey))
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(statusTint)
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1.5)
+                                    .background(statusTint.opacity(0.14), in: Capsule())
+                                    .accessibilityHidden(true)
+                            }
+                            Spacer(minLength: 4)
+                            if let date = AgentSummaryPresentation.activityDate(agent) {
+                                Text(date, style: .relative)
+                                    .font(.caption)
+                                    .foregroundStyle(hasUnread ? Color.accentColor : .secondary)
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                        }
+                        .frame(minHeight: titleRowHeight)
+                        HStack(alignment: .center, spacing: 8) {
+                            HStack(spacing: 4) {
+                                if AgentSummaryPresentation.showsOperatorPreview(agent) {
+                                    Text("reading.inputPreview").fontWeight(.medium)
+                                }
+                                // Keep the same row height when an asynchronously loaded preview arrives.
+                                Text(verbatim: preview.isEmpty ? " " : preview)
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(hasUnread ? Color.primary.opacity(0.85) : Color.secondary)
+                            .lineLimit(1)
+                            .accessibilityHidden(preview.isEmpty)
+                            Spacer(minLength: 0)
+                            if let unread = agent.unreadCount, unread > 0 {
+                                Text(verbatim: unread > 99 ? "99+" : "\(unread)")
+                                    .font(.caption2.weight(.bold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6.5)
+                                    .padding(.vertical, 2)
+                                    .frame(minWidth: 20, minHeight: 20)
+                                    .background(Color.accentColor, in: Capsule())
+                                    .accessibilityLabel(Text("reading.unread \(unread)"))
+                            }
+                        }
+                        .frame(minHeight: previewRowHeight)
+                    }
+                }
             }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .accessibilityElement(children: .combine)
     }
 }
@@ -214,7 +338,7 @@ private struct AgentConversationTitle: View {
     let presentation: AgentIdentityPresentation
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 8) {
             AgentAvatarView(store: store, agentID: agent.id, presentation: presentation, size: 28)
             VStack(alignment: .leading, spacing: 1) {
                 Text(verbatim: agent.name).font(.subheadline.weight(.semibold)).lineLimit(1)
@@ -247,7 +371,7 @@ struct ConversationReadingView: View {
 
     private var connectionPresentation: ConversationConnectionPresentation {
         .init(status: reader.status, hasSnapshot: reader.snapshot != nil,
-              isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing,
+              isCached: reader.isShowingCachedContent, isRefreshing: reader.isConversationRefreshing,
               canPersistDraft: sender?.canPersistDraft == true)
     }
     @State private var scrollRequest: ScrollRequest?
@@ -281,37 +405,47 @@ struct ConversationReadingView: View {
             // lazy offscreen estimates can loop while scrolling rich results.
             VStack(alignment: .leading, spacing: 16) {
                 if turnRange.lowerBound > 0 || reader.canLoadHistory {
-                    Button("reading.history") {
-                        follow.reviewHistory()
-                        if turnRange.lowerBound > 0 {
-                            showHistoryWindow(endingAt: ConversationTurnWindow.olderEnd(ids: turnIDs, current: turnRange))
-                        } else {
-                            Task {
-                                let agent = reader.selectedAgentID
-                                let epoch = reader.snapshot?.eventLogEpoch
-                                let previousFirst = turnIDs.first
-                                await reader.loadHistory()
-                                guard reader.selectedAgentID == agent, reader.snapshot?.eventLogEpoch == epoch else { return }
-                                if let previousFirst, let index = turnIDs.firstIndex(of: previousFirst), index > 0 {
-                                    showHistoryWindow(endingAt: turnIDs[min(turnIDs.count - 1, index + 4)])
-                                } else {
-                                    showHistoryWindow(endingAt: historyEndTurnID)
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button {
+                            follow.reviewHistory()
+                            if turnRange.lowerBound > 0 {
+                                showHistoryWindow(endingAt: ConversationTurnWindow.olderEnd(ids: turnIDs, current: turnRange))
+                            } else {
+                                Task {
+                                    let agent = reader.selectedAgentID
+                                    let epoch = reader.snapshot?.eventLogEpoch
+                                    let previousFirst = turnIDs.first
+                                    await reader.loadHistory()
+                                    guard reader.selectedAgentID == agent, reader.snapshot?.eventLogEpoch == epoch else { return }
+                                    if let previousFirst, let index = turnIDs.firstIndex(of: previousFirst), index > 0 {
+                                        showHistoryWindow(endingAt: turnIDs[min(turnIDs.count - 1, index + 4)])
+                                    } else {
+                                        showHistoryWindow(endingAt: historyEndTurnID)
+                                    }
                                 }
                             }
+                        } label: {
+                            Label("reading.history", systemImage: "arrow.up.circle")
+                                .font(.caption.weight(.medium))
                         }
-                    }
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
+                        .controlSize(.small)
                         .disabled(reader.isLoadingHistory || (turnRange.lowerBound == 0 && reader.status != .live))
                         .accessibilityIdentifier("conversation.older")
                         .overlay(alignment: .trailing) {
-                            if reader.isLoadingHistory { ProgressView().controlSize(.mini) }
+                            if reader.isLoadingHistory { ProgressView().controlSize(.mini).offset(x: 22) }
                         }
+                        Spacer(minLength: 0)
+                    }
                 }
                 if reader.status == .offline && reader.snapshot == nil {
                     Text("reading.cache.noConversation").foregroundStyle(.secondary)
                         .accessibilityIdentifier("conversation.notCached")
                 }
                 if reader.snapshot != nil && turns.isEmpty && reader.snapshot?.raw["pending_inputs"].viewArray.isEmpty == true {
-                    Text("reading.emptyConversation")
+                    Text("reading.emptyConversation").foregroundStyle(.secondary)
                 }
                 ForEach(visibleTurns) { turn in
                     ReadingTurnView(turn: turn, reader: reader)
@@ -325,11 +459,22 @@ struct ConversationReadingView: View {
                     // dropped even after the target materializes).
                 }
                 if turnRange.upperBound < turns.count {
-                    Button("reading.newerTurns") {
-                        let ids = turnIDs
-                        let nextEnd = ConversationTurnWindow.newerEnd(ids: ids, current: turnRange)
-                        showHistoryWindow(endingAt: nextEnd)
-                    }.accessibilityIdentifier("conversation.newer")
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button {
+                            let ids = turnIDs
+                            let nextEnd = ConversationTurnWindow.newerEnd(ids: ids, current: turnRange)
+                            showHistoryWindow(endingAt: nextEnd)
+                        } label: {
+                            Label("reading.newerTurns", systemImage: "arrow.down.circle")
+                                .font(.caption.weight(.medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("conversation.newer")
+                        Spacer(minLength: 0)
+                    }
                 }
                 ForEach((reader.snapshot?.raw["pending_inputs"].viewArray ?? []).filter { $0["presentation_class"] == .string("operator") && TaskResultInput($0) == nil }, id: \.viewMessageID) { input in
                     ReadingInputView(input: input, reader: reader)
@@ -417,7 +562,7 @@ struct ConversationReadingView: View {
         .onChange(of: reader.snapshot?.eventLogEpoch) { old, new in
             if let old, let new, old != new { follow.showLatest(); historyEndTurnID = nil; scrollRequest = .latest }
         }
-        .overlay(alignment: .bottomTrailing) {
+        .overlay(alignment: .bottom) {
             if !nearBottom || historyEndTurnID != nil || !follow.followsLatest {
                 Button {
                     follow.showLatest()
@@ -425,9 +570,17 @@ struct ConversationReadingView: View {
                     if let latest = turnIDs.last { reader.rememberPosition(turnID: latest) }
                 } label: {
                     Label(newContent ? "reading.newContent" : "reading.latest", systemImage: "arrow.down")
-                        .font(.caption).padding(10).background(.regularMaterial, in: Capsule())
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(newContent ? Color.accentColor : .primary)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(.regularMaterial, in: Capsule())
+                        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
                 }
-                .accessibilityIdentifier("conversation.latest").padding(12)
+                .buttonStyle(.plain)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("conversation.latest")
+                .padding(.bottom, 8)
             }
         }
         }
@@ -473,9 +626,9 @@ struct ConversationReadingView: View {
                 HStack(spacing: 0) {
                     if let agent = reader.agents.first(where: { $0.id == reader.selectedAgentID }) {
                         AgentConversationTitle(agent: agent, store: reader.avatars, presentation: .derive(
-                            agent, status: reader.status, isRosterCurrent: reader.isRosterCurrent,
+                            agent, status: reader.status, isRosterCurrent: reader.hasDisplayableLiveRoster,
                             isCached: reader.rosterIsCached,
-                            isRefreshing: reader.isRefreshing
+                            isRefreshing: reader.isInitialRosterRefreshing
                         ))
                     } else {
                         VStack(alignment: .leading, spacing: 1) {
@@ -491,19 +644,27 @@ struct ConversationReadingView: View {
                     .layoutPriority(1)
                 }
             }
-            ToolbarItemGroup(placement: .primaryAction) {
-                    if reader.status == .live, let agent = reader.selectedAgentID {
-                        NavigationLink(value: AppRoute.work(agent)) { Label("work.title", systemImage: "checklist") }
-                            .labelStyle(.iconOnly)
-                            .accessibilityIdentifier("conversation.work")
-                        NavigationLink(value: AppRoute.files(agent)) { Label("files.title", systemImage: "folder") }
-                            .labelStyle(.iconOnly)
-                            .accessibilityIdentifier("conversation.files")
-                    }
+            ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Button("reading.refresh") { Task { await reader.refresh() } }
-                    Button("reading.markRead") { readThroughToConfirm = reader.readConfirmationForVisibleBriefs }
-                        .disabled(reader.readThroughForVisibleBriefs == nil)
+                    if reader.status == .live, let agent = reader.selectedAgentID {
+                        NavigationLink(value: AppRoute.work(agent)) {
+                            Label("work.title", systemImage: "checklist")
+                        }
+                        .accessibilityIdentifier("conversation.work")
+                        NavigationLink(value: AppRoute.files(agent)) {
+                            Label("files.title", systemImage: "folder")
+                        }
+                        .accessibilityIdentifier("conversation.files")
+                        Divider()
+                    }
+                    Button { Task { await reader.refresh() } } label: {
+                        Label("reading.refresh", systemImage: "arrow.clockwise")
+                    }
+                    Button { readThroughToConfirm = reader.readConfirmationForVisibleBriefs } label: {
+                        Label("reading.markRead", systemImage: "checkmark.circle")
+                    }
+                    .disabled(reader.readThroughForVisibleBriefs == nil)
+                    Divider()
                     NavigationLink(value: AppRoute.tools) { Label("settings.sharing", systemImage: "square.and.arrow.up") }
                     NavigationLink(value: AppRoute.diagnostics) { Label("diagnostics.title", systemImage: "stethoscope") }
                         .accessibilityIdentifier("diagnostics.open")
@@ -551,7 +712,6 @@ struct ConversationReadingView: View {
 
     private func showHistoryWindow(endingAt end: String?) {
         let ids = turnIDs
-        let previousRange = turnRange
         let range = ConversationTurnWindow.range(ids: ids, endingAt: end)
         guard !range.isEmpty else { return }
         let first = ids[range.lowerBound]
@@ -582,21 +742,56 @@ private struct ReadingTurnView: View {
     @Environment(\.holonOpenTask) private var openTask
     @State private var reportScope: ContentReportScope?
 
+    private var operatorInputs: [JSONValue] {
+        turn.raw["inputs"].viewArray.filter {
+            ($0["presentation_class"].viewString ?? turn.raw["presentation_class"].viewString) == "operator"
+        }
+    }
+
+    private var visibleBriefIDs: [String] {
+        turn.raw["brief_ids"].viewArray.compactMap(\.viewString)
+    }
+
+    private var isCompactBackgroundTurn: Bool {
+        !showActivities
+            && ReadingPresentation.turnStatus(turn.raw) == nil
+            && operatorInputs.isEmpty
+            && visibleBriefIDs.isEmpty
+            && TaskResultInput.header(turn.raw["inputs"].viewArray)?.isFailure != true
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
+        let source = ReadingPresentation.turnSource(turn.raw)
+        VStack(alignment: .leading, spacing: isCompactBackgroundTurn ? 6 : 12) {
+            HStack(spacing: 6) {
+                Image(systemName: source.symbol)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Text(LocalizedStringKey(source.key)))
+                Text(verbatim: "#\(turn.index)")
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
                 if let date = turn.raw["started_at"].viewString.flatMap(ReadingPresentation.date) {
                     Text(date, format: .dateTime.month(.abbreviated).day().hour().minute())
                         .accessibilityIdentifier("conversation.time." + turn.id)
                 }
-                Spacer()
-                if let status = ReadingPresentation.turnStatus(turn.raw) { Text(LocalizedStringKey(status)) }
+                Spacer(minLength: 4)
+                if let status = ReadingPresentation.turnStatus(turn.raw) {
+                    Text(LocalizedStringKey(status))
+                        .fontWeight(.medium)
+                        .foregroundStyle(ReadingPresentation.turnStatusColor(status))
+                }
+                if let duration = ReadingPresentation.turnDuration(turn.raw) {
+                    Text(verbatim: duration)
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                }
             }
             .font(.caption2).foregroundStyle(.secondary)
             ForEach(turn.raw["inputs"].viewArray, id: \.viewMessageID) { input in
                 ReadingInputView(input: input, reader: reader, fallbackClass: turn.raw["presentation_class"].viewString)
             }
-            ForEach(turn.raw["brief_ids"].viewArray.compactMap(\.viewString), id: \.self) { briefID in
+            ForEach(visibleBriefIDs, id: \.self) { briefID in
                 ReadingBriefView(briefID: briefID, reader: reader, inputs: turn.raw["inputs"].viewArray,
                                  onReport: { reportScope = reader.contentReportScope })
             }
@@ -610,7 +805,7 @@ private struct ReadingTurnView: View {
                     if let result = TaskResultInput.header(turn.raw["inputs"].viewArray) { TaskResultLabel(result: result, showReason: true) }
                     else { Text("reading.activities").font(.caption).foregroundStyle(.secondary) }
                 }
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: isCompactBackgroundTurn ? 36 : 44, alignment: .leading)
                 .accessibilityIdentifier("activities." + turn.id)
             }
             .task(id: "\(showActivities)|\(reader.activityReadKey)") {
@@ -864,8 +1059,8 @@ struct ConversationConnectionButton: View {
                     ProgressView().controlSize(.mini)
                 } else {
                     Image(systemName: presentation.symbol)
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(presentation.isError || presentation.showsRetry ? Color.orange : Color.secondary)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(presentation.isError || presentation.showsRetry ? Color.orange : Color.secondary.opacity(0.65))
                 }
             }
             .frame(width: 44, height: 44)
@@ -892,6 +1087,7 @@ struct ConversationConnectionDetails: View {
             }
             if presentation.showsRetry {
                 Button("reading.retry", action: retry)
+                    .buttonStyle(.borderedProminent)
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("conversation.retry")
             }
@@ -905,11 +1101,20 @@ struct OperatorMessageBubble<Content: View>: View {
     @ViewBuilder var content: () -> Content
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            Spacer(minLength: 24)
-            content().padding(.horizontal, 13).padding(.vertical, 10)
-                .background(Color(uiColor: .secondarySystemBackground),
-                            in: UnevenRoundedRectangle(topLeadingRadius: 16, bottomLeadingRadius: 16,
-                                                       bottomTrailingRadius: 4, topTrailingRadius: 16))
+            Spacer(minLength: 28)
+            content()
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    Color.accentColor.opacity(0.11),
+                    in: UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18,
+                                               bottomTrailingRadius: 4, topTrailingRadius: 18)
+                )
+                .overlay(
+                    UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18,
+                                           bottomTrailingRadius: 4, topTrailingRadius: 18)
+                        .strokeBorder(Color.accentColor.opacity(0.2), lineWidth: 0.5)
+                )
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .accessibilityElement(children: .contain)
@@ -943,7 +1148,12 @@ private struct ReadingBriefView: View {
                         }
                     }
                     if let workID = brief["work_item_id"].viewString {
-                        Button("work.details", systemImage: "checklist") { openWork?(workID) }.font(.caption)
+                        Button("work.details", systemImage: "checklist") { openWork?(workID) }
+                            .font(.caption.weight(.medium))
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.capsule)
+                            .controlSize(.small)
+                            .frame(minHeight: 44, alignment: .leading)
                             .disabled(openWork == nil)
                     }
                 }
@@ -1033,6 +1243,45 @@ enum ReadingPresentation {
         case "provider_failed_needs_recovery", "baseline_over_budget": return "reading.failedTurn"
         default: return nil
         }
+    }
+
+    static func turnStatusColor(_ statusKey: String) -> Color {
+        switch statusKey {
+        case "reading.activeTurn": .accentColor
+        case "reading.wait": .orange
+        case "reading.failedTurn", "reading.interruptedTurn": .red
+        default: .secondary
+        }
+    }
+
+    static func turnSource(_ turn: JSONValue) -> (symbol: String, key: String) {
+        switch turn["presentation_class"]?.readingString {
+        case "operator": ("person", "reading.source.operator")
+        case "task": ("wrench.and.screwdriver", "reading.source.task")
+        case "external": ("bubble.left", "reading.source.external")
+        case "timer": ("clock", "reading.source.timer")
+        case "internal": ("arrow.triangle.branch", "reading.source.internal")
+        case "system": ("cpu", "reading.source.system")
+        case "operational": ("wrench.and.screwdriver", "reading.source.operational")
+        default: ("circle.dotted", "reading.turn")
+        }
+    }
+
+    @MainActor static func turnDuration(_ turn: JSONValue) -> String? {
+        guard turn["execution"]?["kind"] != .string("active"),
+              let startText = turn["started_at"]?.readingString,
+              let endText = turn["completed_at"]?.readingString
+                ?? turn["ended_at"]?.readingString
+                ?? turn["execution"]?["completed_at"]?.readingString
+                ?? turn["execution"]?["ended_at"]?.readingString,
+              let start = date(startText), let end = date(endText) else { return nil }
+        let seconds = Int(end.timeIntervalSince(start).rounded())
+        guard seconds >= 1 else { return nil }
+        if seconds < 60 { return "\(seconds)s" }
+        let minutes = seconds / 60, rem = seconds % 60
+        if minutes < 60 { return rem == 0 ? "\(minutes)m" : "\(minutes)m\(rem)s" }
+        let hours = minutes / 60, remMin = minutes % 60
+        return remMin == 0 ? "\(hours)h" : "\(hours)h\(remMin)m"
     }
 
     static func attachmentReference(_ attachment: JSONValue) -> String? {

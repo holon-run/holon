@@ -255,23 +255,50 @@ struct SendingView: View {
     @State private var pendingQueueDeleteID: UUID?
     @Environment(\.scenePhase) private var scenePhase
 
+    private var hasAttentionEntries: Bool {
+        sender.entries.contains { $0.state == .failed || $0.state == .unknown }
+            || sender.draft.modelID != nil
+            || sender.hasLegacyModelInQueue
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if !sender.draft.attachments.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack {
+            if !sender.draft.attachments.isEmpty || (sender.draft.modelID?.isEmpty == false) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        if let modelID = sender.draft.modelID, !modelID.isEmpty {
+                            let token = sender.draftScopeRevision
+                            HStack(spacing: 5) {
+                                Image(systemName: "exclamationmark.circle")
+                                    .foregroundStyle(Color.orange)
+                                Text(verbatim: modelID)
+                                    .lineLimit(1)
+                                Button {
+                                    sender.removeLegacyDraftModel(revision: token)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(minWidth: 44, minHeight: 44)
+                                .accessibilityLabel(Text("sending.model.reset"))
+                            }
+                            .font(.caption.weight(.medium))
+                            .padding(.leading, 10).padding(.trailing, 4).padding(.vertical, 3)
+                            .background(Color.orange.opacity(0.14), in: Capsule())
+                        }
                         ForEach(sender.draft.attachments) { attachment in
                             HStack(spacing: 6) {
                                 Image(systemName: attachment.contentType.hasPrefix("image/") ? "photo" : "doc")
+                                    .foregroundStyle(Color.accentColor)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(verbatim: attachment.name).lineLimit(1)
                                     Text(verbatim: attachment.contentType + " · " + ByteCountFormatter.string(fromByteCount: attachment.byteCount, countStyle: .file))
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }
-                                Button { sender.removeDraftAttachment(attachment.id) } label: { Image(systemName: "xmark.circle") }
+                                Button { sender.removeDraftAttachment(attachment.id) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                                     .frame(minWidth: 44, minHeight: 44)
                                     .accessibilityLabel(Text("sending.remove"))
-                            }.font(.caption).padding(8).background(.quaternary, in: Capsule())
+                            }.font(.caption).padding(.leading, 10).padding(.trailing, 4).padding(.vertical, 4).background(.quaternary, in: Capsule())
                         }
                     }
                 }
@@ -281,21 +308,54 @@ struct SendingView: View {
             } else if let error = importError ?? sender.error {
                 Text(verbatim: error).font(.caption).foregroundStyle(.secondary).lineLimit(3)
             }
-            HStack(alignment: .bottom, spacing: 10) {
+            HStack(alignment: .bottom, spacing: 8) {
                 Menu {
                     Button { selectPhoto() } label: { Label("sending.photo", systemImage: "photo") }
                     Button { selectCamera() } label: { Label("sending.camera", systemImage: "camera") }
                     Button { selectFile() } label: { Label("sending.file", systemImage: "doc") }
-                    Button("sending.draft") { focused = false; showDraft = true }
-                    Button("sending.queue") { focused = false; showQueue = true }
-                        .accessibilityIdentifier("sending.queue")
+                    Divider()
+                    Button {
+                        focused = false; showModels = true
+                    } label: {
+                        Label("sending.model", systemImage: sender.draft.modelID == nil && !sender.hasLegacyModelInQueue ? "cpu" : "exclamationmark.circle")
+                    }
+                    .accessibilityIdentifier("sending.model")
+                    Button {
+                        focused = false; showDraft = true
+                    } label: {
+                        Label("sending.expandEditor", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    Button {
+                        focused = false; showQueue = true
+                    } label: {
+                        Label("sending.queue", systemImage: "tray.full")
+                    }
+                    .accessibilityIdentifier("sending.queue")
                     if currentRunID != nil {
-                        Button("sending.stop", role: .destructive) {
+                        Divider()
+                        Button(role: .destructive) {
                             stopRunID = currentRunID
                             showStop = stopRunID != nil
-                        }.disabled(sender.status != .ready).accessibilityIdentifier("sending.stop")
+                        } label: {
+                            Label("sending.stop", systemImage: "stop.circle")
+                        }
+                        .disabled(sender.status != .ready)
+                        .accessibilityIdentifier("sending.stop")
                     }
-                } label: { Image(systemName: "plus").font(.title3).frame(width: 44, height: 44) }
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "plus.circle.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .font(.title2)
+                            .frame(width: 44, height: 44)
+                        if hasAttentionEntries {
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 8, height: 8)
+                                .offset(x: -7, y: 8)
+                        }
+                    }
+                }
                 .accessibilityLabel(Text("sending.options"))
                 .accessibilityIdentifier("sending.options")
                 TextField("sending.placeholder", text: Binding(
@@ -316,20 +376,12 @@ struct SendingView: View {
                     Image(systemName: "arrow.up.circle.fill").font(.title).frame(width: 44, height: 44)
                 }
                 .disabled(!sender.canEnqueueDraft || !SendingPresentation.hasContent(sender.draft))
-                .tint(Color(uiColor: .systemBlue))
                 .accessibilityLabel(Text("sending.send"))
                 .accessibilityIdentifier("sending.enqueue")
-                Button { focused = false; showModels = true } label: {
-                    Image(systemName: sender.draft.modelID == nil && !sender.hasLegacyModelInQueue
-                          ? "cpu" : "exclamationmark.circle")
-                        .font(.title3).frame(width: 44, height: 44).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Text("sending.model"))
-                .accessibilityIdentifier("sending.model")
             }
             .padding(.horizontal, 4)
-            .background(Color(uiColor: .tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+            .background(Color(uiColor: .tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(.bar)
@@ -508,37 +560,50 @@ struct SendingView: View {
 
     private var queue: some View {
         NavigationStack {
-            List {
-                Text("sending.receipt.explanation").font(.caption)
-                ForEach(sender.entries) { entry in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(entry.draft.text).lineLimit(3)
-                        Text(LocalizedStringKey(SendingPresentation.stateKey(entry.state)))
-                            .accessibilityIdentifier("sending.state.\(entry.state.rawValue)")
-                        Text(entry.requestID.uuidString).font(.caption2).textSelection(.enabled)
-                            .accessibilityIdentifier("sending.requestID." + entry.requestID.uuidString)
-                        ForEach(entry.draft.attachments) { attachment in Text(attachment.name).font(.caption) }
-                        if let model = entry.legacyModelID, entry.state != .received {
-                            Text("sending.model.legacyQueue.item").font(.caption)
-                            Text(verbatim: model).font(.caption)
-                        }
-                        if let error = entry.error { Text(error).font(.caption) }
-                        if entry.state == .unknown { Text("sending.unknown.explanation").font(.caption) }
-                        HStack {
-                            if SendingPresentation.canRetry(entry.state) {
-                                SendingEntryRetryButton(sender: sender, entry: entry)
-                                .accessibilityIdentifier("sending.retry." + entry.requestID.uuidString)
+            Group {
+                if sender.entries.isEmpty {
+                    ContentUnavailableView {
+                        Label("sending.queue.empty", systemImage: "tray")
+                    } description: {
+                        Text("sending.receipt.explanation")
+                    }
+                } else {
+                    List {
+                        Text("sending.receipt.explanation").font(.caption).foregroundStyle(.secondary)
+                        ForEach(sender.entries) { entry in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(entry.draft.text).lineLimit(3)
+                                Text(LocalizedStringKey(SendingPresentation.stateKey(entry.state)))
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(entry.state == .failed ? .red : entry.state == .unknown ? .orange : .secondary)
+                                    .accessibilityIdentifier("sending.state.\(entry.state.rawValue)")
+                                Text(entry.requestID.uuidString).font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
+                                    .accessibilityIdentifier("sending.requestID." + entry.requestID.uuidString)
+                                ForEach(entry.draft.attachments) { attachment in Text(attachment.name).font(.caption) }
+                                if let model = entry.legacyModelID, entry.state != .received {
+                                    Text("sending.model.legacyQueue.item").font(.caption)
+                                    Text(verbatim: model).font(.caption)
+                                }
+                                if let error = entry.error { Text(error).font(.caption).foregroundStyle(.red) }
+                                if entry.state == .unknown { Text("sending.unknown.explanation").font(.caption).foregroundStyle(.secondary) }
+                                HStack(spacing: 16) {
+                                    if SendingPresentation.canRetry(entry.state) {
+                                        SendingEntryRetryButton(sender: sender, entry: entry)
+                                            .accessibilityIdentifier("sending.retry." + entry.requestID.uuidString)
+                                    }
+                                    Button("sending.delete", role: .destructive) {
+                                        // Match LocalMessageView: an unknown receipt may
+                                        // have been accepted server-side; dropping its
+                                        // retry handle deserves an explicit confirm.
+                                        if entry.state == .unknown { pendingQueueDeleteID = entry.requestID }
+                                        else { sender.delete(requestID: entry.requestID) }
+                                    }
+                                    .disabled(entry.state == .sending)
+                                }
+                                .buttonStyle(.borderless)
                             }
-                            Button("sending.delete", role: .destructive) {
-                                // Match LocalMessageView: an unknown receipt may
-                                // have been accepted server-side; dropping its
-                                // retry handle deserves an explicit confirm.
-                                if entry.state == .unknown { pendingQueueDeleteID = entry.requestID }
-                                else { sender.delete(requestID: entry.requestID) }
-                            }
-                            .disabled(entry.state == .sending)
+                            .padding(.vertical, 4)
                         }
-                        .buttonStyle(.borderless)
                     }
                 }
             }

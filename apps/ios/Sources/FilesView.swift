@@ -14,8 +14,18 @@ struct FilesView: View {
                     breadcrumbs(directory)
                     ForEach(coordinator.entries) { entry in
                         if entry.isDirectory {
-                            Button { coordinator.browse(directory.workspace, path: entry.path) } label: { row(entry) }
-                                .id(entry.id).accessibilityIdentifier("files.entry." + entry.path)
+                            Button { coordinator.browse(directory.workspace, path: entry.path) } label: {
+                                HStack(spacing: 8) {
+                                    row(entry)
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .id(entry.id).accessibilityIdentifier("files.entry." + entry.path)
                         } else {
                             NavigationLink(value: AppRoute.file(coordinator.selectedAgentID ?? "",
                                 .source(.workspace(directory.workspace, path: entry.path)))) { row(entry) }
@@ -23,13 +33,22 @@ struct FilesView: View {
                         }
                     }
                     if coordinator.entries.isEmpty { Text("files.empty").foregroundStyle(.secondary) }
-                } header: { Text(directory.workspace.name) }
+                }
             } else {
                 Section("files.workspaces") {
                     ForEach(coordinator.workspaces) { workspace in
                         Button { coordinator.browse(workspace) } label: {
-                            Label(workspace.name, systemImage: "externaldrive")
+                            HStack(spacing: 10) {
+                                Label(workspace.name, systemImage: "externaldrive")
+                                    .foregroundStyle(.primary)
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                         .accessibilityIdentifier("files.workspace." + workspace.workspaceID)
                     }
                 }
@@ -72,9 +91,11 @@ struct FilesView: View {
     }
 
     private func row(_ entry: FilesEntry) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: entry.isDirectory ? "folder" : "doc").foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: entry.isDirectory ? "folder.fill" : "doc.text")
+                .foregroundStyle(entry.isDirectory ? Color.accentColor : .secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(verbatim: entry.name).foregroundStyle(.primary).lineLimit(2)
                 HStack {
                     if !entry.isDirectory, let size = entry.size {
@@ -88,14 +109,30 @@ struct FilesView: View {
 
     private func breadcrumbs(_ directory: FilesDirectory) -> some View {
         ScrollView(.horizontal) {
-            HStack {
-                Button(directory.workspace.name) { coordinator.browse(directory.workspace) }
-                let parts = directory.path.split(separator: "/").map(String.init)
-                ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
-                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
-                    Button(part) { coordinator.browse(directory.workspace, path: parts.prefix(index + 1).joined(separator: "/")) }
+            HStack(spacing: 6) {
+                Button {
+                    coordinator.selectAgent(coordinator.selectedAgentID)
+                } label: {
+                    Label("files.workspaces", systemImage: "externaldrive")
                 }
-            }.font(.caption)
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                let parts = directory.path.split(separator: "/").map(String.init)
+                if parts.isEmpty {
+                    Text(verbatim: directory.workspace.name).fontWeight(.medium).foregroundStyle(.primary)
+                } else {
+                    Button(directory.workspace.name) { coordinator.browse(directory.workspace) }
+                    ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                        if index == parts.count - 1 {
+                            Text(verbatim: part).fontWeight(.medium).foregroundStyle(.primary)
+                        } else {
+                            Button(part) { coordinator.browse(directory.workspace, path: parts.prefix(index + 1).joined(separator: "/")) }
+                        }
+                    }
+                }
+            }
+            .font(.caption)
+            .padding(.vertical, 2)
         }.scrollIndicators(.hidden)
     }
 }

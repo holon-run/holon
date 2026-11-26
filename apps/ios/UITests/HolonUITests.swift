@@ -244,26 +244,66 @@ final class HolonUITests: XCTestCase {
             object: identity)
         XCTAssertEqual(XCTWaiter.wait(for: [statusVisible], timeout: UIWaitScale.scaled(15)), .completed,
                        "Identity exposes an authoritative text status, not only an avatar expression")
-        let work = app.buttons["conversation.work"], files = app.buttons["conversation.files"]
-        XCTAssertTrue(work.isHittable); XCTAssertTrue(files.isHittable)
-        XCTAssertFalse(work.label.isEmpty); XCTAssertFalse(files.label.isEmpty)
-        XCTAssertEqual(work.frame.midY, files.frame.midY, accuracy: 2,
-                       "Work and Files remain on the same navigation row")
+        let more = app.buttons["conversation.more"]
+        XCTAssertTrue(more.isHittable)
+        XCTAssertFalse(more.label.isEmpty)
         XCTAssertGreaterThan(identity.frame.width, 0)
-        XCTAssertLessThanOrEqual(identity.frame.maxX, work.frame.minX + 2,
+        XCTAssertLessThanOrEqual(identity.frame.maxX, more.frame.minX + 2,
                                  "A long title must not overlap the toolbar actions")
+        more.tap()
+        let work = app.buttons["conversation.work"], files = app.buttons["conversation.files"]
+        XCTAssertTrue(work.waitForExistence(timeout: UIWaitScale.scaled(5)))
+        XCTAssertTrue(files.waitForExistence(timeout: UIWaitScale.scaled(5)))
+        XCTAssertFalse(work.label.isEmpty); XCTAssertFalse(files.label.isEmpty)
+        let privacyInfo = app.buttons["conversation.privacyInfo"]
+        XCTAssertTrue(privacyInfo.waitForExistence(timeout: UIWaitScale.scaled(5)))
+        privacyInfo.tap()
+        let closePrivacy = app.buttons["privacy.aiInfo.close"]
+        XCTAssertTrue(closePrivacy.waitForExistence(timeout: UIWaitScale.scaled(5)))
+        closePrivacy.tap()
+        let options = app.buttons["sending.options"]
+        XCTAssertTrue(options.isHittable)
+        XCTAssertGreaterThanOrEqual(options.frame.minY, app.navigationBars.firstMatch.frame.maxY,
+                                    "Composer options belong to the composer, not the title")
+        options.tap()
         let model = app.buttons["sending.model"]
-        XCTAssertTrue(model.isHittable)
-        XCTAssertGreaterThanOrEqual(model.frame.minY, app.navigationBars.firstMatch.frame.maxY,
-                                    "Model selection belongs to the composer, not the title")
+        XCTAssertTrue(model.waitForExistence(timeout: UIWaitScale.scaled(5)))
         model.tap()
         let closeModels = app.buttons["sending.model.close"]
         XCTAssertTrue(closeModels.waitForExistence(timeout: UIWaitScale.scaled(5)))
         closeModels.tap()
     }
 
-    private func assertAgentModelRoundTrip(_ app: XCUIApplication) throws {
+    private func openModelSettings(_ app: XCUIApplication) {
+        let options = app.buttons["sending.options"]
+        XCTAssertTrue(options.waitForExistence(timeout: UIWaitScale.scaled(10)))
+        options.tap()
         let model = app.buttons["sending.model"]
+        XCTAssertTrue(model.waitForExistence(timeout: UIWaitScale.scaled(5)))
+        model.tap()
+    }
+
+    private func openConversationWork(_ app: XCUIApplication) {
+        let more = app.buttons["conversation.more"]
+        XCTAssertTrue(more.waitForExistence(timeout: UIWaitScale.scaled(15)))
+        more.tap()
+        let work = app.buttons["conversation.work"]
+        XCTAssertTrue(work.waitForExistence(timeout: UIWaitScale.scaled(5)))
+        waitForEnabled(work)
+        work.tap()
+    }
+
+    private func openConversationFiles(_ app: XCUIApplication) {
+        let more = app.buttons["conversation.more"]
+        XCTAssertTrue(more.waitForExistence(timeout: UIWaitScale.scaled(30)))
+        more.tap()
+        let files = app.buttons["conversation.files"]
+        XCTAssertTrue(files.waitForExistence(timeout: UIWaitScale.scaled(5)))
+        waitForEnabled(files)
+        files.tap()
+    }
+
+    private func assertAgentModelRoundTrip(_ app: XCUIApplication) throws {
         let close = app.buttons["sending.model.close"]
         let effective = app.staticTexts["sending.model.effective"]
         let apply = app.buttons["sending.model.apply"]
@@ -281,18 +321,18 @@ final class HolonUITests: XCTestCase {
             XCTAssertTrue(choice.waitForExistence(timeout: UIWaitScale.scaled(5)))
             choice.tap()
         }
-        model.tap()
+        openModelSettings(app)
         waitForModel("/fixture-model")
         choose("Fixture alternate model")
         waitForModel("/fixture-model")
         reveal(apply, in: app); apply.tap()
         waitForModel("/fixture-alternate")
-        close.tap(); model.tap()
+        close.tap(); openModelSettings(app)
         waitForModel("/fixture-alternate")
         choose("Auto (runtime default)")
         reveal(apply, in: app); apply.tap()
         waitForModel("/fixture-model")
-        close.tap(); model.tap()
+        close.tap(); openModelSettings(app)
         waitForModel("/fixture-model")
         close.tap()
     }
@@ -1013,7 +1053,7 @@ final class HolonUITests: XCTestCase {
             .waitForExistence(timeout: UIWaitScale.scaled(60)))
         capture(app, "authenticated-outbox")
         app.buttons["Close"].tap()
-        app.buttons["conversation.work"].tap()
+        openConversationWork(app)
         let item = app.buttons["work.item." + work]
         if ProcessInfo.processInfo.environment["HOLON_UI_RICH_TURN_ID"]?.isEmpty == false {
             let more = app.buttons["work.moreItems"]
@@ -1040,11 +1080,7 @@ final class HolonUITests: XCTestCase {
         capture(app, "task-output")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        let files = app.buttons["conversation.files"]
-        XCTAssertTrue(files.waitForExistence(timeout: UIWaitScale.scaled(10)))
-        waitForEnabled(files)
-        XCTAssertTrue(files.isHittable, "Files is directly reachable in the navigation bar")
-        files.tap()
+        openConversationFiles(app)
         app.buttons["files.options"].tap()
         app.buttons["Server reference"].tap()
         let reference = app.textFields["files.reference"]
@@ -1287,7 +1323,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(agentRow.waitForExistence(timeout: UIWaitScale.scaled(15))); agentRow.tap()
         app.buttons["sending.options"].tap(); app.buttons["Take photo"].tap()
         XCTAssertTrue(app.staticTexts["The camera is not available on this device. Choose a photo or file instead."].waitForExistence(timeout: UIWaitScale.scaled(10)))
-        app.buttons["conversation.work"].tap()
+        openConversationWork(app)
         let moreWork = app.buttons["work.moreItems"]
         reveal(moreWork, in: app); moreWork.tap()
         let additionalWork = app.buttons["work.item." + (try required("RICH_ADDITIONAL_WORK_ID"))]
@@ -1440,19 +1476,19 @@ final class HolonUITests: XCTestCase {
 
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        let files = app.buttons["conversation.files"]
-        if !files.waitForExistence(timeout: UIWaitScale.scaled(5)) {
+        let more = app.buttons["conversation.more"]
+        if !more.waitForExistence(timeout: UIWaitScale.scaled(5)) {
             let agentRow = app.buttons["agent." + agent]
             reveal(agentRow, in: app); agentRow.tap()
         }
-        XCTAssertTrue(files.waitForExistence(timeout: UIWaitScale.scaled(15)))
+        XCTAssertTrue(more.waitForExistence(timeout: UIWaitScale.scaled(15)))
         let image = app.images["conversation.image.loaded"].firstMatch
         reveal(image, in: app)
         XCTAssertTrue(image.waitForExistence(timeout: UIWaitScale.scaled(20)),
                       "Reopened chat must render the canonical system-share image")
         reveal(image, in: app, fullyVisible: true)
         capture(app, "system-share-conversation-image")
-        waitForEnabled(files); files.tap()
+        openConversationFiles(app)
         app.buttons["files.options"].tap()
         app.buttons["Server reference"].tap()
         let entry = app.textFields["files.reference"]
@@ -1476,7 +1512,7 @@ final class HolonUITests: XCTestCase {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
         let row = app.buttons["agent." + agent]
-        if !app.buttons["conversation.files"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
+        if !app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
             reveal(row, in: app); row.tap()
         }
         let detail = app.buttons["operator.fullMessage." + id]
@@ -1695,10 +1731,7 @@ final class HolonUITests: XCTestCase {
         let directory = try required("RICH_DIRECTORY")
         let workspace = try required("WORKSPACE_ID")
         let app = launch(language: "en", dark: false, large: false)
-        let files = app.buttons["conversation.files"]
-        XCTAssertTrue(files.waitForExistence(timeout: UIWaitScale.scaled(30)))
-        XCTAssertTrue(files.isHittable, "Files is directly reachable in the navigation bar")
-        files.tap()
+        openConversationFiles(app)
         let home = app.buttons["files.workspace." + workspace].firstMatch
         reveal(home, in: app); home.tap()
         let folder = app.buttons["files.entry." + directory]
@@ -2240,7 +2273,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation.retry"].isHittable)
         capture(app, "live-interruption-offline-details")
         app.buttons["conversation.connectionClose"].tap()
-        app.buttons["sending.model"].tap()
+        openModelSettings(app)
         let modelOffline = app.staticTexts["sending.model.offline"]
         let modelClose = app.buttons["sending.model.close"]
         XCTAssertTrue(modelOffline.waitForExistence(timeout: UIWaitScale.scaled(10)),
@@ -2262,7 +2295,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(10)), "The composer must return with the live session")
         assertStableChrome("recovered")
         capture(app, "live-interruption-recovered")
-        app.buttons["sending.model"].tap()
+        openModelSettings(app)
         XCTAssertTrue(app.staticTexts["sending.model.effective"].waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "The current model must be readable after the same conversation reconnects")
         XCTAssertFalse(modelOffline.exists)
@@ -2333,8 +2366,9 @@ final class HolonUITests: XCTestCase {
             // A hittable target can still precede the native ID scroll's
             // committed layout. Wait for the same geometry we assert below.
             let positioned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                guard timestamp.exists, timestamp.isHittable, status.exists else { return false }
-                let top = max(app.scrollViews["conversation.viewport"].frame.minY, status.frame.maxY)
+                guard timestamp.exists, timestamp.isHittable else { return false }
+                let chromeTop = status.exists ? status.frame.maxY : app.navigationBars.firstMatch.frame.maxY
+                let top = max(app.scrollViews["conversation.viewport"].frame.minY, chromeTop)
                 return timestamp.frame.minY >= top - 2 && timestamp.frame.minY <= top + 50
             }, object: nil)
             let result = XCTWaiter.wait(for: [positioned], timeout: UIWaitScale.scaled(20))
@@ -2345,6 +2379,7 @@ final class HolonUITests: XCTestCase {
                 add(hierarchy)
             }
             let viewport = app.scrollViews["conversation.viewport"].frame
+            let chromeTop = status.exists ? status.frame.maxY : app.navigationBars.firstMatch.frame.maxY
             XCTAssertEqual(result, .completed,
                 "Window navigation must finish positioning its first turn; "
                 + "turn=\(timestamp.frame), viewport=\(viewport), status=\(status.frame)")
@@ -2354,7 +2389,7 @@ final class HolonUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(timestamp.frame.minY, top - 2)
             XCTAssertLessThanOrEqual(timestamp.frame.minY, top + 50,
                 "Window navigation must position its first turn, not just change the underlying range; "
-                + "turn=\(timestamp.frame), viewport=\(viewport), status=\(status.frame)")
+                + "turn=\(timestamp.frame), viewport=\(viewport), chromeTop=\(chromeTop)")
         }
         capture(app, "native-older-turn-window-before-assertion")
         assertTop(try required("HISTORY_OLDER_TOP"))

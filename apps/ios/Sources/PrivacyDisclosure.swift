@@ -55,7 +55,10 @@ struct PrivacyInfoSheet: View {
             }
             .navigationTitle("privacy.aiInfo")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("common.cancel") { dismiss() } }
+            .toolbar {
+                Button("common.cancel") { dismiss() }
+                    .accessibilityIdentifier("privacy.aiInfo.close")
+            }
         }
     }
 }

@@ -78,12 +78,13 @@ public actor HolonClient {
         try await read(path: ["auth", "session", "me"], decode: HolonCurrentUser.init)
     }
 
-    public func conversation(agentID: String, before: String? = nil, limit: Int = 60)
+    public func conversation(agentID: String, before: String? = nil, limit: Int = 60,
+                             retry: HolonRetryPolicy = .none)
         async throws -> HolonResponse<HolonConversationSnapshot> {
         guard limit > 0 else { throw HolonClientError.invalidRequest }
         var query = ["limit": String(limit)]
         if let before { query["before"] = before }
-        return try await read(path: ["agents", agentID, "conversation"], query: query) {
+        return try await read(path: ["agents", agentID, "conversation"], query: query, retry: retry) {
             let raw = try JSONDecoder().decode(JSONValue.self, from: $0)
             guard case .object(var fields) = raw,
                   raw["agent_id"] == nil || raw["agent_id"] == .string(agentID) else {
@@ -387,7 +388,11 @@ public actor HolonClient {
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         if let lastEventID { request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID") }
         let streamID = UUID()
-        let transport = Self.makeSession(configuration)
+        let streamConfig = configuration.copy() as! URLSessionConfiguration
+        if streamConfig.timeoutIntervalForRequest == URLSessionConfiguration.ephemeral.timeoutIntervalForRequest {
+            streamConfig.timeoutIntervalForRequest = 300
+        }
+        let transport = Self.makeSession(streamConfig)
         streamSessions[streamID] = transport
         do {
             for attempt in 1...retry.maxAttempts {

@@ -8,7 +8,9 @@ final class ReleaseConfigurationTests: XCTestCase {
             let path = try XCTUnwrap(Bundle.main.path(forResource: language, ofType: "lproj"))
             let bundle = try XCTUnwrap(Bundle(path: path))
             for key in ["agents.filter.all", "agents.filter.reply", "agents.filter.newResults", "agents.filter.active",
-                        "sending.camera", "sending.camera.permission", "sending.camera.unavailable", "files.endOfFile"] {
+                        "sending.camera", "sending.camera.permission", "sending.camera.unavailable", "files.endOfFile",
+                        "sending.expandEditor", "sending.queue.empty", "sending.model.reset",
+                        "reading.source.operator", "reading.source.task", "reading.source.timer", "reading.source.internal"] {
                 let value = bundle.localizedString(forKey: key, value: nil, table: nil)
                 XCTAssertNotEqual(value, key, "\(language) must resolve \(key)")
                 XCTAssertFalse(value.isEmpty)

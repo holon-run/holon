@@ -281,12 +281,14 @@ struct ReadingConversationProjection {
 
 struct ReadingTurnPresentation: Identifiable {
     let id: String
+    let index: Int64
     let raw: JSONValue
 
     init?(raw: JSONValue) {
         guard let id = raw["turn_id"]?.readingString, !id.isEmpty,
-              raw["key"]?["turn_index"]?.readingInteger != nil else { return nil }
+              let index = raw["key"]?["turn_index"]?.readingInteger else { return nil }
         self.id = id
+        self.index = index
         self.raw = raw
     }
 }

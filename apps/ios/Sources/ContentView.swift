@@ -19,12 +19,17 @@ struct ContentView: View {
                     .disabled(coordinator.isBusy)
             }
             Section("connection.title") {
-                ConnectionStatusView(coordinator: coordinator)
-                Button("connection.refresh") { Task { await coordinator.refresh() } }
-                    .disabled(coordinator.isBusy || coordinator.selectedProfile == nil)
-                Button("login.logout", role: .destructive) {
+                ConnectionStatusView(coordinator: coordinator, showsProfileIdentity: false)
+                Button { Task { await coordinator.refresh() } } label: {
+                    Label("connection.refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(coordinator.isBusy || coordinator.selectedProfile == nil)
+                Button(role: .destructive) {
                     Task { await coordinator.logout() }
-                }.disabled(coordinator.isBusy || coordinator.selectedProfile == nil)
+                } label: {
+                    Label("login.logout", systemImage: "rectangle.portrait.and.arrow.right")
+                }
+                .disabled(coordinator.isBusy || coordinator.selectedProfile == nil)
             }
             if let identity = coordinator.identity {
                 Section {

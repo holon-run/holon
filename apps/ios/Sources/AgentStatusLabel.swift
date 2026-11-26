@@ -4,9 +4,10 @@ import SwiftUI
 struct AgentStatusLabel: View {
     let presentation: AgentIdentityPresentation
     var reservedLines: Int? = nil
+    var showsTitle: Bool = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var color: Color {
+    static func tint(for presentation: AgentIdentityPresentation) -> Color {
         switch presentation.tone {
         case .muted: .secondary
         case .attention: .orange
@@ -15,19 +16,32 @@ struct AgentStatusLabel: View {
         }
     }
 
+    private var color: Color { Self.tint(for: presentation) }
+
+    @ViewBuilder
+    private var iconView: some View {
+        if presentation.animates(reduceMotion: reduceMotion) {
+            ProgressView().controlSize(.mini)
+                .frame(width: 14, height: 14)
+        } else {
+            Image(systemName: presentation.icon.systemName)
+        }
+    }
+
     var body: some View {
-        Label {
-            if let reservedLines {
-                Text(LocalizedStringKey(presentation.statusKey)).lineLimit(reservedLines, reservesSpace: true)
+        Group {
+            if showsTitle {
+                HStack(spacing: 4) {
+                    iconView
+                    if let reservedLines {
+                        Text(LocalizedStringKey(presentation.statusKey)).lineLimit(reservedLines, reservesSpace: true)
+                    } else {
+                        Text(LocalizedStringKey(presentation.statusKey))
+                    }
+                }
             } else {
-                Text(LocalizedStringKey(presentation.statusKey))
-            }
-        } icon: {
-            if presentation.animates(reduceMotion: reduceMotion) {
-                ProgressView().controlSize(.mini)
-                    .frame(width: 14, height: 14)
-            } else {
-                Image(systemName: presentation.icon.systemName)
+                iconView
+                    .frame(width: 16, height: 16)
             }
         }
         .foregroundStyle(color)

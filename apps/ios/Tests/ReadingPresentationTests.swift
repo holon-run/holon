@@ -158,4 +158,30 @@ final class ReadingPresentationTests: XCTestCase {
                            "Readable …", "completable low surrogate prefix: \(low)")
         }
     }
+
+    func testTurnSourceAndCompactDurationFormatting() {
+        XCTAssertEqual(ReadingPresentation.turnSource(.object(["presentation_class": .string("operator")])).symbol, "person")
+        XCTAssertEqual(ReadingPresentation.turnSource(.object(["presentation_class": .string("timer")])).symbol, "clock")
+        XCTAssertEqual(ReadingPresentation.turnSource(.object(["presentation_class": .string("task")])).symbol, "wrench.and.screwdriver")
+        XCTAssertEqual(ReadingPresentation.turnSource(.object(["presentation_class": .string("internal")])).symbol, "arrow.triangle.branch")
+
+        let shortTurn: JSONValue = .object([
+            "started_at": .string("2026-11-26T02:00:00Z"),
+            "completed_at": .string("2026-11-26T02:00:14Z")
+        ])
+        XCTAssertEqual(ReadingPresentation.turnDuration(shortTurn), "14s")
+
+        let mediumTurn: JSONValue = .object([
+            "started_at": .string("2026-11-26T02:00:00Z"),
+            "execution": .object(["kind": .string("terminal"), "ended_at": .string("2026-11-26T02:04:39Z")])
+        ])
+        XCTAssertEqual(ReadingPresentation.turnDuration(mediumTurn), "4m39s")
+
+        let activeTurn: JSONValue = .object([
+            "started_at": .string("2026-11-26T02:00:00Z"),
+            "completed_at": .string("2026-11-26T02:04:39Z"),
+            "execution": .object(["kind": .string("active")])
+        ])
+        XCTAssertNil(ReadingPresentation.turnDuration(activeTurn))
+    }
 }

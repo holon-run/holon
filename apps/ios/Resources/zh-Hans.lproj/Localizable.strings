@@ -80,6 +80,13 @@
 "reading.history" = "加载更早的 turn";
 "reading.newerTurns" = "查看后续 turn";
 "reading.turn" = "Turn";
+"reading.source.operator" = "Operator 消息";
+"reading.source.task" = "任务结果";
+"reading.source.external" = "外部消息";
+"reading.source.timer" = "定时检查";
+"reading.source.internal" = "后台续接";
+"reading.source.system" = "系统唤醒";
+"reading.source.operational" = "运行时操作";
 "reading.operator" = "Operator";
 "reading.brief" = "Brief";
 "reading.brief.unloaded" = "Brief 未加载";
@@ -155,7 +162,10 @@
 
 /* Native sending editor */
 "sending.draft" = "草稿";
+"sending.expandEditor" = "展开编辑器";
 "sending.queue" = "发送队列";
+"sending.queue.empty" = "暂无待发消息";
+"sending.model.reset" = "恢复默认模型";
 "sending.stop" = "停止当前运行";
 "sending.stop.confirm" = "停止 Agent 当前运行？";
 "sending.stop.explanation" = "此操作停止服务端运行，不是取消本地 HTTP 请求。";
