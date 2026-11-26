@@ -857,11 +857,11 @@
     {
       "apply_patch_surface": "unified_diff_json",
       "profile": "full-surface",
-      "rendered_system_chars": 38838,
-      "rendered_system_estimated_tokens": 9710,
-      "shared_prefix_chars": 33860,
-      "shared_prefix_estimated_tokens": 8465,
-      "shared_prefix_fingerprint": "cfd995a2902f299ef3839035fe58a6e359eb2992185c28738684d83efc0c40cd",
+      "rendered_system_chars": 38832,
+      "rendered_system_estimated_tokens": 9708,
+      "shared_prefix_chars": 33854,
+      "shared_prefix_estimated_tokens": 8464,
+      "shared_prefix_fingerprint": "490207dafdcac570309761997ab4413cfc4950d7eac1f8852c939abe49708861",
       "shared_prefix_sections": 21,
       "system_sections": [
         {
@@ -945,8 +945,8 @@
           "stability": "stable"
         },
         {
-          "chars": 317,
-          "estimated_tokens": 80,
+          "chars": 311,
+          "estimated_tokens": 78,
           "id": "tool_get_agent",
           "layout": "shared_prefix",
           "name": "tool_get_agent",
