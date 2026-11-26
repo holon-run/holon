@@ -421,16 +421,16 @@ plan 把稳定的提供商别名（例如 `volcengine-image-openai`）映射到�
 模型发现与推理 `transport` 分开配置，因此支持多种协议的网关可以共用同一份模型列表：
 
 ```bash
-holon config set providers.magpie.discovery.kind openai_models
-holon config set providers.magpie.discovery.path /models
-holon config set providers.magpie.discovery.decoder magpie
-holon config set providers.magpie.endpoints.anthropic.discovery.path /v1/models
+holon config set providers.my-gateway.discovery.kind openai_models
+holon config set providers.my-gateway.discovery.path /models
+holon config set providers.my-gateway.discovery.decoder magpie
+holon config set providers.my-gateway.endpoints.anthropic.discovery.path /v1/models
 ```
 
 - `providers.<id>.discovery` 是提供商级默认配置；`providers.<id>.endpoints.<endpoint_id>.discovery` 可按端点覆盖。
 - `kind`：`openai_models` 或 `disabled`。`disabled` 会关闭包括 `openai_chat_completions` 默认 `/v1/models` 回退在内的自动发现。
 - `path`：相对于生效端点的 `base_url`。配置加载时会拒绝绝对 URL、`..` 路径段、查询串、片段和百分号转义，拼接后的 URL 不会离开端点所在源。
-- `decoder`：可选，指定如何解析模型列表响应。默认为 `openai_compatible`（保持原有行为）。若网关返回带 `display_name`/`owned_by`/`context_window`/`kind` 的 Magpie 形态列表，可设为 `magpie`。支持的解码器包括 `openai_compatible`、`magpie`、`hugging_face`、`kilo`、`near_ai`、`open_code_go`、`open_router`、`synthetic`、`tencent_token_hub`、`venice`、`vercel_ai_gateway`、`arcee`；`ollama` 由专用路径处理，不可配置。设置 `decoder` 时必须同时配置 `kind`，且 `disabled` 不能搭配 `decoder`；未知值或 `disabled` + `decoder` 属于配置错误。
+- `decoder`：可选，指定如何解析模型列表响应。默认为 `openai_compatible`。内置 `magpie` 提供商已默认启用 `magpie` 解码器；若自定义网关返回带 `display_name`/`owned_by`/`context_window`/`kind` 的 Magpie 形态列表，也可显式设为 `magpie`。支持的解码器包括 `openai_compatible`、`magpie`、`hugging_face`、`kilo`、`near_ai`、`open_code_go`、`open_router`、`synthetic`、`tencent_token_hub`、`venice`、`vercel_ai_gateway`、`arcee`；`ollama` 由专用路径处理，不可配置。设置 `decoder` 时必须同时配置 `kind`，且 `disabled` 不能搭配 `decoder`；未知值或 `disabled` + `decoder` 属于配置错误。
 - 未配置 `discovery` 时保持原有行为。未知 `kind` 值与未知字段会直接报配置错误，不会静默回退。
 - 发现缓存按 `provider@endpoint` 隔离；修改某端点的 `base_url` 或 `discovery.path` 只会让该端点的缓存失效。
 
@@ -705,6 +705,23 @@ Holon 对 HTTP 端点实施会话超时控制与可选的 CSRF 跨站请求防�
 ### Cookie Origin 守卫
 
 若你的部署涉及跨域 Cookie 认证访问，可在 `api.csrf.trusted_origins` 中配置受信任的完整 Origin（例如 `["https://app.example.com"]`）。带有会话 Cookie 的不安全变更请求（`POST`、`PUT`、`DELETE`、`PATCH`）必须附带匹配的 `Origin` 请求头；若缺少 Origin 或不在列表中，请求会被拒绝并返回 HTTP 403。
+
+## ACP 托管代理设置
+
+使用 `acp` 执行驱动的 Agent 会在外部托管进程（如 `agy acp`，内置 profile 为 `antigravity`）中运行模型轮次。可在 `acp` 下配置默认行为与按 profile 的覆盖项：
+
+| 配置键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `acp.default_harness_profile` | string | 未设置（`antigravity`） | 当 ACP 驱动的 Agent 未指定 profile 时使用的默认配置 |
+| `acp.interaction_timeout_ms` | positive_integer | `120000` | `interactive` 模式下等待操作者权限或表单回复的最长时间（毫秒），超时后自动拒绝；不允许设为 `0` |
+| `acp.profiles.<name>.program` | string | profile 默认值（`antigravity` 为 `agy`） | 托管进程的可执行文件名或绝对路径 |
+| `acp.profiles.<name>.args` | string_list | `[]` | 放在 profile 默认参数之前的额外命令行参数 |
+| `acp.profiles.<name>.sandbox` | string | profile 默认值 | 沙箱模式覆盖项：`read_only`、`workspace_write` 或 `full_access` |
+| `acp.profiles.<name>.env` | object | `{}` | 与宿主白名单环境变量一同注入托管进程的额外环境变量 |
+| `acp.profiles.<name>.role` | string | 未设置 | 通过托管进程 persona 通道下发的角色文本 |
+| `acp.profiles.<name>.permission_mode` | string | `"unattended"` | `unattended` 直接按静态工作区策略裁决；`interactive` 通过 [HTTP 控制平面](/zh-CN/reference/http-control-plane.md) 处理权限审批与表单输入 |
+
+在 `interactive` 模式下，所有权限请求（包括工作区根目录内的操作）都会通过 `GET/POST /api/control/agents/:id/acp-interactions` 等待人工答复，超时自动拒绝。只有 `allow_always` 会在当前 ACP 会话和工作区信任域内保留授权，并在会话轮换时清除；`reject_always` 仅拒绝当前请求。登录、错误码与观测事件详情见 [ACP 托管代理排障](/zh-CN/guides/troubleshooting.md#acp-托管代理agy-acp)。
 
 ## 另请参阅
 

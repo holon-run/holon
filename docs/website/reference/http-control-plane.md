@@ -772,6 +772,35 @@ rejected. Responses include `Cache-Control: no-store`. Returns `404` when the
 agent or trigger does not exist, `409 trigger_not_active` when revoked, and
 `409 token_unavailable` when no stored token verifies against its hash.
 
+**`GET /api/control/agents/:id/acp-interactions`** — List pending ACP interactions
+
+Lists pending permission and elicitation prompts waiting for operator input on a
+loaded `acp`-driver agent (`agent_id` and `interactions`). A loaded agent with no
+pending interactions returns an empty array; sleeping agents are not woken by
+this request.
+
+**`POST /api/control/agents/:id/acp-interactions/:interaction_id`** — Resolve pending ACP interaction
+
+Resolves one pending ACP permission or elicitation request.
+
+- Permission decisions use `decision` (`allow_once`, `allow_always`, `reject_once`, or `reject_always`):
+
+```json
+{ "decision": "allow_once" }
+```
+
+- Elicitation responses use `action` (`accept`, `decline`, or `cancel`), with optional form `content` when accepting:
+
+```json
+{ "action": "accept", "content": { "answer": "yes" } }
+```
+
+Returns `200` with `{"agent_id": "...", "interaction_id": "...", "resolved": true}`.
+Returns `400` for an invalid body, `404` when the agent or interaction ID is
+unknown, and `409` with `settled_reason` (`timed_out`, `cancelled`, or
+`resolved`) if the interaction already settled; late replies never grant authority
+after a timeout fallback.
+
 **`GET /api/control/network/tailscale/serve`** — Tailscale Serve status
 
 Returns current Tailscale Serve status, target loopback port, and the active tailnet domain when configured. `control_authentication_available` indicates effective TCP control authentication without exposing credentials; disabled authentication does not qualify.

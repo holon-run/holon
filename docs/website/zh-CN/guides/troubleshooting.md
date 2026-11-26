@@ -172,6 +172,21 @@ curl --fail --silent --show-error \
 
 可通过 `holon debug trace --search MESSAGE_OR_TURN_ID` 检索保留的 Trace，或参阅[配置可观测性](configure-observability.md)校验 OTLP 导出链路。采样未完成前，避免仅为清零计数而重启守护进程。
 
+### ACP 托管代理（`agy acp`）
+
+使用 `acp` 执行驱动的 Agent 会在外部 `agy acp` 进程中运行模型轮次，由 Holon 监管该进程并裁决其权限请求。
+
+1. 先用 `agy --version` 确认可执行文件，再运行 `agy acp --login` 完成登录。
+   若无终端登录会话，可配置 `GEMINI_API_KEY` / `GOOGLE_API_KEY`，或通过
+   `GOOGLE_APPLICATION_CREDENTIALS`、`GOOGLE_CLOUD_PROJECT`、
+   `GOOGLE_CLOUD_LOCATION` 与 `AGY_ADC_AUTH` 提供 Vertex ADC 凭据。
+2. `-32000` 表示缺少可用凭据。请先完成登录或配置上述环境变量；Holon 会把该轮次直接结算为结构化运行时错误，不会循环重试。
+3. `-32002` 表示持久化的 ACP 会话已失效。Holon 会重建会话并记录 `acp_session_rotated` 事件，原有的会话级 `allow_always` 授权也会随之失效。
+4. 默认的 `unattended` 权限模式不会等待人工响应。如需在控制台处理权限审批与表单输入，请将 `acp.profiles.<profile>.permission_mode` 设为 `interactive`，并按需调整 `acp.interaction_timeout_ms`，再携带控制面凭据调用 `GET/POST /api/control/agents/{agent_id}/acp-interactions`。超时未答复的请求会自动拒绝；对已结算的 ID 重复提交会返回 `409`（附带 `settled_reason`），未知 ID 返回 `404`。`interactive` 模式比 `unattended` 更严格：即使是工作区根目录内的操作也会等待审批，超时即拒绝。仅有 `allow_always` 会在当前会话内保留授权，`reject_always` 只作用于单次请求。
+5. 计划、外部托管工具内部子任务和上下文用量更新会记录为 `acp_plan_updated`、`acp_subagents_updated` 与 `acp_usage_updated` 事件。它们只是只读观测记录，托管进程内的 subagent 不会进入 Holon 自身的监管树；这些事件会在每轮结束结算时统一发出。
+
+完整操作清单可参阅仓库内的 `docs/local-operator-troubleshooting.md`。
+
 ## 何时停止重试并上报阻塞
 
 若完成上述分层检查仍无法定位或修复，请停止盲目重试并整理以下信息上报：

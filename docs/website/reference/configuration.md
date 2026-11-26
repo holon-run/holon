@@ -458,16 +458,16 @@ Model discovery is configured separately from the inference `transport`, so a
 gateway that speaks several protocols can expose one model list:
 
 ```bash
-holon config set providers.magpie.discovery.kind openai_models
-holon config set providers.magpie.discovery.path /models
-holon config set providers.magpie.discovery.decoder magpie
-holon config set providers.magpie.endpoints.anthropic.discovery.path /v1/models
+holon config set providers.my-gateway.discovery.kind openai_models
+holon config set providers.my-gateway.discovery.path /models
+holon config set providers.my-gateway.discovery.decoder magpie
+holon config set providers.my-gateway.endpoints.anthropic.discovery.path /v1/models
 ```
 
 - `providers.<id>.discovery` is the provider-level default; `providers.<id>.endpoints.<endpoint_id>.discovery` overrides it.
 - `kind`: `openai_models` or `disabled`. `disabled` opts out of the transport default, including the automatic `openai_chat_completions` `/v1/models` fallback.
 - `path`: relative to the effective endpoint `base_url`. Absolute URLs, `..` segments, query strings, fragments and percent-escapes are rejected when the config loads, and the joined URL never leaves the endpoint origin.
-- `decoder`: optional; selects how the model-list payload is parsed. Defaults to `openai_compatible` (unchanged historical behavior). Set `magpie` for Magpie-shaped lists that carry `display_name`/`owned_by`/`context_window`/`kind`. Allowed values are the configurable decoders (`openai_compatible`, `magpie`, `hugging_face`, `kilo`, `near_ai`, `open_code_go`, `open_router`, `synthetic`, `tencent_token_hub`, `venice`, `vercel_ai_gateway`, `arcee`); `ollama` is not configurable because its payload is handled by the dedicated Ollama path. Setting `decoder` requires `kind`, and `disabled` must not carry `decoder`; unknown values and `disabled`+`decoder` are configuration errors.
+- `decoder`: optional; selects how the model-list payload is parsed. Defaults to `openai_compatible`. The built-in `magpie` provider enables the `magpie` decoder automatically; custom gateways returning Magpie-shaped lists (`display_name`/`owned_by`/`context_window`/`kind`) can set `magpie` explicitly. Allowed values are the configurable decoders (`openai_compatible`, `magpie`, `hugging_face`, `kilo`, `near_ai`, `open_code_go`, `open_router`, `synthetic`, `tencent_token_hub`, `venice`, `vercel_ai_gateway`, `arcee`); `ollama` is not configurable because its payload is handled by the dedicated Ollama path. Setting `decoder` requires `kind`, and `disabled` must not carry `decoder`; unknown values and `disabled`+`decoder` are configuration errors.
 - A block without `discovery` keeps the previous behavior. Unknown `kind` values and unknown fields are configuration errors, not silent fallbacks.
 - Cached results are owned by `provider@endpoint`; changing an endpoint's base URL or discovery path invalidates only that endpoint's entry.
 
@@ -797,6 +797,23 @@ Authenticated Web GUI and native client sessions expire after 7 days of inactivi
 ### Cookie Origin Guard
 
 When your deployment serves cookie-authenticated sessions across origins, populate `api.csrf.trusted_origins` with exact trusted origins (e.g. `["https://app.example.com"]`). Unsafe mutating requests (`POST`, `PUT`, `DELETE`, `PATCH`) with session cookies must present an exact matching `Origin` header. Requests without an Origin or with an unlisted origin fail closed with HTTP 403.
+
+## ACP Harness Settings
+
+Agents using the `acp` execution driver run model turns inside an external harness process such as `agy acp` (built-in profile: `antigravity`). Configure harness defaults and per-profile overrides under `acp`:
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `acp.default_harness_profile` | string | unset (`antigravity`) | Default harness profile used when an ACP-driven agent does not specify one |
+| `acp.interaction_timeout_ms` | positive_integer | `120000` | Maximum wait for an operator permission or elicitation reply in `interactive` mode before rejecting; `0` is rejected |
+| `acp.profiles.<name>.program` | string | profile default (`agy` for `antigravity`) | Executable name or absolute path for the harness process |
+| `acp.profiles.<name>.args` | string_list | `[]` | Arguments prepended before the profile's default arguments |
+| `acp.profiles.<name>.sandbox` | string | profile default | Sandbox mode override: `read_only`, `workspace_write`, or `full_access` |
+| `acp.profiles.<name>.env` | object | `{}` | Extra environment variables injected alongside the allowlisted host environment |
+| `acp.profiles.<name>.role` | string | unset | Role text delivered through the harness persona channel |
+| `acp.profiles.<name>.permission_mode` | string | `"unattended"` | `unattended` applies static workspace rules immediately; `interactive` routes permissions and elicitation prompts through the [HTTP Control Plane](/reference/http-control-plane.md) |
+
+In `interactive` mode, every permission prompt (including in-root requests) waits for an operator response via `GET/POST /api/control/agents/:id/acp-interactions` and falls back to rejection on timeout. Only `allow_always` is saved for the current ACP session and workspace trust domain (and cleared when the session rotates); `reject_always` rejects only that request. See [Troubleshooting ACP harness agents](/guides/troubleshooting.md#acp-harness-agents-agy-acp) for login, error codes, and event details.
 
 ## See Also
 

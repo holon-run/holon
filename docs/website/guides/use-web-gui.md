@@ -100,15 +100,21 @@ Use these screens for the task you need:
 
 The Dashboard provides a runtime overview:
 
-- **Agent roster** — all agents with their status (Awake, Asleep, Booting),
-  pending message counts, and current model.
-  Status and unread counts update live as agent activity changes.
+- **Action inbox and notifications** — check items waiting for your input or
+  approval under **Needs your action** and **Needs your input**, alongside recent
+  notifications. Dismiss or ignore individual alerts, clear them in
+  bulk, or enable optional browser notifications.
+- **Agent roster** — view all agents with their status (Awake, Asleep, Booting),
+  pending input counts, active tasks, timers, mounted workspaces, and current
+  model. Filter by workspace (including standalone agents), group by workspace,
+  filter by attention or active work, search by name, work, or model, sort by
+  recent activity or name, and switch between card and compact views.
 - **Runtime health** — scheduler posture, wake hints, and recent activity.
 - **Task list** — click a task to open its detail panel showing status,
   command, workdir, and output. Task events (creation, status updates,
   completion) refresh the list in real time.
 - **Quick actions** — create a blank agent or instantiate one from a template,
-  attach workspaces, and view agent detail.
+  optionally set a display name, attach workspaces, and open agent detail.
 - **Agent lifecycle** — start, stop, and delete agents from the dashboard.
   Creation shows progress and any failure. Before deleting, preserve needed
   results and review the confirmation and any blockers. Include private
@@ -116,8 +122,6 @@ The Dashboard provides a runtime overview:
 - **Timer overview** — View active and paused relative and calendar timers (with
   cron rules and timezones), check upcoming fire times, and pause, resume, or
   edit titles/instructions, or cancel timers in the agent detail panel.
-- **Notifications** — receive in-app reminders and optional browser notifications
-  when an agent replies, finishes a WorkItem, or waits for operator input.
 
 ### Agent Conversation
 
