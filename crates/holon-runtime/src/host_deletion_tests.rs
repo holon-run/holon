@@ -1266,3 +1266,42 @@ async fn operator_delete_status_does_not_cover_unrelated_private_agent() {
         Err(PublicAgentError::Private { .. })
     ));
 }
+
+#[cfg(holon_lib_test_shard = "d")]
+#[tokio::test]
+async fn operator_delete_status_reads_private_agent_job_after_supervision_ends() {
+    let (_home, host) = test_host();
+    let identity = AgentIdentityRecord::new(
+        "private-stranded-job",
+        AgentKind::Named,
+        AgentVisibility::Private,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PrivateChild,
+        None,
+        None,
+    );
+    host.append_agent_identity(&identity).unwrap();
+    host.runtime_db()
+        .agent_identities()
+        .upsert(&identity)
+        .unwrap();
+    let (_, job, created) = host
+        .runtime_db()
+        .agent_deletions()
+        .begin(&identity.agent_id, identity.revision, "operator", false)
+        .unwrap();
+    assert!(created);
+
+    let (visible_identity, visible_job) = host
+        .operator_agent_deletion_status(&identity.agent_id)
+        .expect("operator read must stay reachable after the agent lost its delete surface");
+    assert_eq!(visible_identity.agent_id, identity.agent_id);
+    assert_eq!(
+        visible_job.expect("stranded job must be readable").deletion_id,
+        job.deletion_id
+    );
+    assert!(matches!(
+        host.public_agent_deletion_status(&identity.agent_id),
+        Err(PublicAgentError::Private { .. })
+    ));
+}

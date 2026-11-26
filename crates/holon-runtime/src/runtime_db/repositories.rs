@@ -1657,6 +1657,27 @@ pub(crate) fn validate_parent_cleanup_tx(
     Ok(())
 }
 
+/// Count lineage children still attached to a parent identity at abandonment
+/// time, covering both canonical lineage rows and legacy identity payloads.
+fn count_retained_lineage_children_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<u64> {
+    let canonical = tx.query_row(
+        "SELECT COUNT(*) FROM agent_lineages WHERE parent_agent_id = ?1",
+        [agent_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let legacy = tx.query_row(
+        "SELECT COUNT(*) FROM agent_identities
+         WHERE agent_id != ?1
+           AND (
+               json_extract(payload_json, '$.lineage_parent_agent_id') = ?1
+               OR json_extract(payload_json, '$.parent_agent_id') = ?1
+           )",
+        [agent_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(u64::try_from(canonical.saturating_add(legacy)).unwrap_or(u64::MAX))
+}
+
 pub(crate) fn ensure_agent_deletion_tx(
     tx: &Transaction<'_>,
     request: &AgentDeletionRequest,
@@ -1884,7 +1905,10 @@ fn ensure_agent_deletion_inner_tx(
     if let Some(job) = existing_job {
         anyhow::ensure!(
             identity.status == AgentRegistryStatus::Deleted
-                || job.status == AgentDeletionStatus::Completed,
+                || matches!(
+                    job.status,
+                    AgentDeletionStatus::Completed | AgentDeletionStatus::Abandoned
+                ),
             "agent {agent_id} has a non-completed deletion job while its identity is active"
         );
         tx.execute(
@@ -1923,6 +1947,8 @@ fn ensure_agent_deletion_inner_tx(
         attempts: 0,
         last_error: None,
         failure_kind: None,
+        required_input: None,
+        abandon_cleanup: None,
         next_attempt_at: None,
         created_at: now,
         updated_at: now,
@@ -2221,6 +2247,127 @@ impl AgentDeletionRepository<'_> {
                 ));
             }
             Ok(())
+        })
+    }
+
+    /// Operator-scoped explicit abandonment of a stopped deletion job.
+    ///
+    /// The identity returns to `Active` with a bumped revision and the job
+    /// moves to the `Abandoned` terminal state, recording the cleanup scope
+    /// that could not be completed. The terminal row is replaced by a fresh
+    /// job on the next delete, so the unique per-agent row never blocks
+    /// re-admission.
+    pub fn abandon(
+        &self,
+        agent_id: &str,
+        requested_by: &str,
+    ) -> Result<(
+        AgentIdentityRecord,
+        AgentDeletionJob,
+        AgentDeletionAbandonCleanup,
+    )> {
+        self.db.transaction(|tx| {
+            let identity_payload = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("agent {agent_id} not found"))?;
+            let mut identity = decode_agent_identity_payload(&identity_payload)?;
+            anyhow::ensure!(
+                identity.status == AgentRegistryStatus::Deleting,
+                "agent {agent_id} is not being deleted (status {:?})",
+                identity.status
+            );
+            let job_payload = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("agent {agent_id} has no deletion job to abandon"))?;
+            let mut job: AgentDeletionJob = serde_json::from_str(&job_payload)
+                .context("decoding deletion job for abandonment")?;
+            anyhow::ensure!(
+                job.status == AgentDeletionStatus::NeedsAttention,
+                "deletion job {} for {agent_id} cannot be abandoned from status {:?}; only needs_attention jobs are resolvable",
+                job.deletion_id,
+                job.status
+            );
+
+            let completed_phases = AgentDeletionPhase::ALL
+                .iter()
+                .copied()
+                .take_while(|phase| *phase < job.phase)
+                .collect::<Vec<_>>();
+            let private_history_cleared =
+                super::agent_deletion_cleanup::assert_private_history_cleared_tx(tx, agent_id)
+                    .is_ok();
+            let retained_lineage_children = count_retained_lineage_children_tx(tx, agent_id)?;
+            let home_cleanup_completed = completed_phases.contains(&AgentDeletionPhase::Home);
+            let cleanup = AgentDeletionAbandonCleanup {
+                completed_phases,
+                private_history_cleared,
+                retained_lineage_children,
+                residual_artifacts: !home_cleanup_completed
+                    || !private_history_cleared
+                    || retained_lineage_children > 0,
+            };
+
+            let now = std::cmp::max(
+                Utc::now(),
+                std::cmp::max(identity.updated_at, job.updated_at)
+                    + chrono::Duration::nanoseconds(1),
+            );
+            job.status = AgentDeletionStatus::Abandoned;
+            job.required_input = None;
+            job.next_attempt_at = None;
+            job.completed_at = Some(now);
+            job.updated_at = now;
+            job.abandon_cleanup = Some(cleanup.clone());
+            let payload_json = serde_json::to_string(&job)?;
+            let updated = tx.execute(
+                "UPDATE agent_deletion_jobs
+                 SET status = ?1, phase = ?2, updated_at = ?3,
+                     completed_at = ?4, next_attempt_at = NULL, payload_json = ?5
+                 WHERE deletion_id = ?6 AND agent_id = ?7",
+                params![
+                    enum_string(&job.status)?,
+                    enum_string(&job.phase)?,
+                    timestamp(job.updated_at),
+                    job.completed_at.map(timestamp),
+                    payload_json,
+                    job.deletion_id,
+                    job.agent_id,
+                ],
+            )?;
+            anyhow::ensure!(
+                updated == 1,
+                "deletion job {} not found for abandonment",
+                job.deletion_id
+            );
+
+            identity.status = AgentRegistryStatus::Active;
+            identity.revision = identity.revision.saturating_add(1);
+            identity.updated_at = now;
+            upsert_agent_identity_tx(tx, &identity)?;
+            transition_supervision_state_tx(
+                tx,
+                agent_id,
+                AgentSupervisionState::Active,
+                identity.revision,
+                identity.updated_at,
+            )?;
+            tracing::info!(
+                agent_id,
+                deletion_id = %job.deletion_id,
+                requested_by,
+                "agent deletion abandoned by explicit operator resolution"
+            );
+            Ok((identity, job, cleanup))
         })
     }
 

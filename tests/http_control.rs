@@ -47,6 +47,7 @@ http_async_tests!(
     control_agent_delete_rejects_default_and_reports_unknown,
     control_agent_recreate_after_completed_deletion_reincarnates,
     control_agent_create_admits_cleanup_repair_when_proof_is_missing,
+    control_agent_deletion_abandon_resolves_needs_attention,
     control_agent_reincarnation_clears_history_and_resets_turn_sequence,
     control_agent_name_validation_and_default_rename_are_applied,
     control_prompt_requires_bearer_token_when_required,

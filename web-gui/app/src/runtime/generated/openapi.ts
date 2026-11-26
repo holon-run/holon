@@ -1261,6 +1261,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/control/agents/{agent_id}/deletion/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve stopped agent deletion
+         * @description Explicit operator resolution for a stopped deletion job. Currently supports abandoning the deletion, which returns the identity to active and reports the cleanup scope that remains. Agents have no self-service path.
+         */
+        post: operations["resolveAgentDeletion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/control/agents/{agent_id}/detail": {
         parameters: {
             query?: never;
@@ -3068,6 +3088,100 @@ export interface components {
             hydration_tombstones: components["schemas"]["AgentHydrationKey"][];
             latest_brief: components["schemas"]["AgentLatestBrief"] | null;
         };
+        /** AgentDeletionResolveResponse */
+        AgentDeletionResolveResponse: {
+            /** @description Cleanup scope reported when an operator abandons a stopped deletion. */
+            cleanup: {
+                /** @description Phases that had already completed when the job stopped. */
+                completed_phases: ("fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize")[];
+                /**
+                 * @description True when the private-history purge proof is current and no residue
+                 *      was found at abandonment time.
+                 */
+                private_history_cleared: boolean;
+                /** @description True when deletion phases or private-history/lineage artifacts remain. */
+                residual_artifacts: boolean;
+                /**
+                 * Format: uint64
+                 * @description Number of canonical lineage child records still attached at
+                 *      abandonment time.
+                 */
+                retained_lineage_children: number;
+            };
+            identity: {
+                agent_id: string;
+                /**
+                 * @description True when this identity satisfies the backend rename guard (public
+                 *      and self-owned). UI surfaces use this to
+                 *      show the rename entry point; the rename endpoint stays authoritative.
+                 * @default false
+                 */
+                can_rename: boolean;
+                delegated_from_task_id?: string | null;
+                /**
+                 * Format: uint64
+                 * @description Monotonic incarnation counter; 1 for the original identity and +1
+                 *      for every explicit recreation of the same agent id after a fully
+                 *      completed deletion.
+                 * @default 1
+                 */
+                incarnation: number;
+                is_default_agent: boolean;
+                lineage_parent_agent_id?: string | null;
+                name?: string | null;
+                parent_agent_id?: string | null;
+                /** @enum {string} */
+                status: "active" | "deleting" | "deleted";
+            };
+            job: {
+                /** @description Cleanup scope recorded when an operator abandoned the job. */
+                abandon_cleanup?: {
+                    /** @description Phases that had already completed when the job stopped. */
+                    completed_phases: ("fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize")[];
+                    /**
+                     * @description True when the private-history purge proof is current and no residue
+                     *      was found at abandonment time.
+                     */
+                    private_history_cleared: boolean;
+                    /** @description True when deletion phases or private-history/lineage artifacts remain. */
+                    residual_artifacts: boolean;
+                    /**
+                     * Format: uint64
+                     * @description Number of canonical lineage child records still attached at
+                     *      abandonment time.
+                     */
+                    retained_lineage_children: number;
+                } | null;
+                agent_id: string;
+                /** @description Explicit user-retained export, outside the deleted AgentHome. */
+                archive_path?: string | null;
+                /** Format: uint32 */
+                attempts: number;
+                cascade_private_children: boolean;
+                /** Format: date-time */
+                completed_at?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                deletion_id: string;
+                /** Format: uint64 */
+                expected_identity_revision: number;
+                failure_kind?: ("terminal_invariant" | "retry_budget_exhausted") | null;
+                last_error?: string | null;
+                /** @default delete */
+                mode: ("delete" | "cleanup_repair") | "parent_cleanup";
+                /** Format: date-time */
+                next_attempt_at?: string | null;
+                /** @enum {string} */
+                phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize";
+                requested_by: string;
+                /** @description Explicit operator input required to continue a stopped job. */
+                required_input?: ("ownership_resolution" | "abandon_decision" | "unclassified") | null;
+                status: ("pending" | "running" | "retryable_failed" | "completed") | "needs_attention" | "abandoned";
+                /** Format: date-time */
+                updated_at: string;
+            };
+            ok: boolean;
+        };
         /** AgentDeletionResponse */
         AgentDeletionResponse: {
             created: boolean;
@@ -3097,6 +3211,24 @@ export interface components {
                 status: "active" | "deleting" | "deleted";
             };
             job: {
+                /** @description Cleanup scope recorded when an operator abandoned the job. */
+                abandon_cleanup?: {
+                    /** @description Phases that had already completed when the job stopped. */
+                    completed_phases: ("fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize")[];
+                    /**
+                     * @description True when the private-history purge proof is current and no residue
+                     *      was found at abandonment time.
+                     */
+                    private_history_cleared: boolean;
+                    /** @description True when deletion phases or private-history/lineage artifacts remain. */
+                    residual_artifacts: boolean;
+                    /**
+                     * Format: uint64
+                     * @description Number of canonical lineage child records still attached at
+                     *      abandonment time.
+                     */
+                    retained_lineage_children: number;
+                } | null;
                 agent_id: string;
                 /** @description Explicit user-retained export, outside the deleted AgentHome. */
                 archive_path?: string | null;
@@ -3119,7 +3251,9 @@ export interface components {
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize";
                 requested_by: string;
-                status: ("pending" | "running" | "retryable_failed" | "completed") | "needs_attention";
+                /** @description Explicit operator input required to continue a stopped job. */
+                required_input?: ("ownership_resolution" | "abandon_decision" | "unclassified") | null;
+                status: ("pending" | "running" | "retryable_failed" | "completed") | "needs_attention" | "abandoned";
                 /** Format: date-time */
                 updated_at: string;
             };
@@ -3153,6 +3287,24 @@ export interface components {
                 status: "active" | "deleting" | "deleted";
             };
             job?: {
+                /** @description Cleanup scope recorded when an operator abandoned the job. */
+                abandon_cleanup?: {
+                    /** @description Phases that had already completed when the job stopped. */
+                    completed_phases: ("fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize")[];
+                    /**
+                     * @description True when the private-history purge proof is current and no residue
+                     *      was found at abandonment time.
+                     */
+                    private_history_cleared: boolean;
+                    /** @description True when deletion phases or private-history/lineage artifacts remain. */
+                    residual_artifacts: boolean;
+                    /**
+                     * Format: uint64
+                     * @description Number of canonical lineage child records still attached at
+                     *      abandonment time.
+                     */
+                    retained_lineage_children: number;
+                } | null;
                 agent_id: string;
                 /** @description Explicit user-retained export, outside the deleted AgentHome. */
                 archive_path?: string | null;
@@ -3175,7 +3327,9 @@ export interface components {
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize";
                 requested_by: string;
-                status: ("pending" | "running" | "retryable_failed" | "completed") | "needs_attention";
+                /** @description Explicit operator input required to continue a stopped job. */
+                required_input?: ("ownership_resolution" | "abandon_decision" | "unclassified") | null;
+                status: ("pending" | "running" | "retryable_failed" | "completed") | "needs_attention" | "abandoned";
                 /** Format: date-time */
                 updated_at: string;
             } | null;
@@ -3352,6 +3506,24 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             deletion?: {
+                /** @description Cleanup scope recorded when an operator abandoned the job. */
+                abandon_cleanup?: {
+                    /** @description Phases that had already completed when the job stopped. */
+                    completed_phases: ("fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize")[];
+                    /**
+                     * @description True when the private-history purge proof is current and no residue
+                     *      was found at abandonment time.
+                     */
+                    private_history_cleared: boolean;
+                    /** @description True when deletion phases or private-history/lineage artifacts remain. */
+                    residual_artifacts: boolean;
+                    /**
+                     * Format: uint64
+                     * @description Number of canonical lineage child records still attached at
+                     *      abandonment time.
+                     */
+                    retained_lineage_children: number;
+                } | null;
                 agent_id: string;
                 /** @description Explicit user-retained export, outside the deleted AgentHome. */
                 archive_path?: string | null;
@@ -3374,7 +3546,9 @@ export interface components {
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize";
                 requested_by: string;
-                status: ("pending" | "running" | "retryable_failed" | "completed") | "needs_attention";
+                /** @description Explicit operator input required to continue a stopped job. */
+                required_input?: ("ownership_resolution" | "abandon_decision" | "unclassified") | null;
+                status: ("pending" | "running" | "retryable_failed" | "completed") | "needs_attention" | "abandoned";
                 /** Format: date-time */
                 updated_at: string;
             } | null;
@@ -7390,6 +7564,11 @@ export interface components {
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         RenameAgentRequest: {
             [key: string]: unknown;
+        };
+        /** ResolveAgentDeletionRequest */
+        ResolveAgentDeletionRequest: {
+            /** @description Operator-scoped resolution decision for a stopped deletion job. */
+            decision: "abandon";
         };
         /** ResolveFileReferencesRequest */
         ResolveFileReferencesRequest: {
@@ -11992,6 +12171,51 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentDeletionStatusResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    resolveAgentDeletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveAgentDeletionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDeletionResolveResponse"];
                 };
             };
             /** @description Client error JSON response. */

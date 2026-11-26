@@ -37,6 +37,20 @@ pub struct AgentDeletionStatusResponse {
     pub job: Option<holon_domain::AgentDeletionJob>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveAgentDeletionRequest {
+    pub decision: holon_domain::AgentDeletionResolution,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentDeletionResolveResponse {
+    pub ok: bool,
+    pub identity: holon_domain::AgentIdentityView,
+    pub job: holon_domain::AgentDeletionJob,
+    pub cleanup: holon_domain::AgentDeletionAbandonCleanup,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, PartialEq, Eq)]
 pub struct ControlPromptRequest {
     pub text: String,

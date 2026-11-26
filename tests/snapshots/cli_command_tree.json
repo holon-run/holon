@@ -81,6 +81,15 @@
         "required": false
       },
       {
+        "long": "resolve",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "abandon"
+        ],
+        "required": false
+      },
+      {
         "long": "timeout",
         "short": null,
         "default_value": null,

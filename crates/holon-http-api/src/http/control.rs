@@ -1372,7 +1372,7 @@ pub async fn agent_deletion_status(
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let (identity, job) = state
         .host
-        .public_agent_deletion_status(&agent_id)
+        .operator_agent_deletion_status(&agent_id)
         .map_err(agent_access_error)?;
     Ok(Json(AgentDeletionStatusResponse {
         identity: crate::types::AgentIdentityView::from_record(
@@ -1380,6 +1380,38 @@ pub async fn agent_deletion_status(
             &state.host.config().default_agent_id,
         ),
         job,
+    }))
+}
+
+/// Operator-scoped resolution for a stopped deletion job.
+///
+/// The only supported decision is an explicit abandonment, which returns the
+/// identity to `Active` and records the cleanup scope that remains. This is a
+/// control-plane entry point only; agents have no self-service path.
+pub async fn resolve_agent_deletion(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ResolveAgentDeletionRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let (identity, job, cleanup) = state
+        .host
+        .resolve_agent_deletion(
+            &agent_id,
+            request.decision,
+            "authenticated_operator_control",
+        )
+        .await
+        .map_err(agent_access_error)?;
+    Ok(Json(AgentDeletionResolveResponse {
+        ok: true,
+        identity: crate::types::AgentIdentityView::from_record(
+            &identity,
+            &state.host.config().default_agent_id,
+        ),
+        job,
+        cleanup,
     }))
 }
 

@@ -1,12 +1,13 @@
 pub use holon_client::wire::{
-    AbortCurrentRunRequest, AgentDeletionResponse, AgentDeletionStatusResponse,
-    AttachWorkspaceRequest, BatchGetBriefsRequest, BatchGetBriefsResponse, BatchGetMessagesRequest,
-    BatchGetMessagesResponse, BatchGetTranscriptEntriesRequest, BatchGetTranscriptEntriesResponse,
-    CancelTimerRequest, ClearAgentModelRequest, ClearAgentTimezoneRequest, ControlPromptAttachment,
+    AbortCurrentRunRequest, AgentDeletionResolveResponse, AgentDeletionResponse,
+    AgentDeletionStatusResponse, AttachWorkspaceRequest, BatchGetBriefsRequest,
+    BatchGetBriefsResponse, BatchGetMessagesRequest, BatchGetMessagesResponse,
+    BatchGetTranscriptEntriesRequest, BatchGetTranscriptEntriesResponse, CancelTimerRequest,
+    ClearAgentModelRequest, ClearAgentTimezoneRequest, ControlPromptAttachment,
     ControlPromptFileAttachment, ControlPromptImageAttachment, ControlPromptRequest,
     ControlRequest, CreateAgentRequest, CreateTimerRequest, DebugPromptRequest, DeleteAgentRequest,
-    DetachWorkspaceRequest, ExitWorkspaceRequest, RenameAgentRequest, SetAgentModelRequest,
-    SetAgentTimezoneRequest, TaskInputRequest, TaskStopRequest,
+    DetachWorkspaceRequest, ExitWorkspaceRequest, RenameAgentRequest, ResolveAgentDeletionRequest,
+    SetAgentModelRequest, SetAgentTimezoneRequest, TaskInputRequest, TaskStopRequest,
 };
 
 use super::*;

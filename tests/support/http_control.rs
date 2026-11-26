@@ -946,6 +946,93 @@ pub async fn control_agent_create_returns_deletion_incomplete_until_job_complete
     Ok(())
 }
 
+pub async fn control_agent_deletion_abandon_resolves_needs_attention() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    let agent_id = "abandon-http";
+    host.create_named_agent(agent_id, None).await?;
+    let (_, job, created) = host
+        .begin_public_agent_deletion(agent_id, false, "operator")
+        .await?;
+    assert!(created);
+
+    // Ambiguous shared-history ownership forces a deterministic stop.
+    host.runtime_db().transaction(|tx| {
+        tx.execute(
+            "INSERT INTO work_item_delegations
+             (delegation_id, parent_agent_id, parent_work_item_id,
+              child_agent_id, child_work_item_id, state,
+              created_at, updated_at, payload_json)
+             VALUES ('delegation-abandon-http', 'foreign-parent', 'work-1',
+                     ?1, 'work-2', 'open', ?2, ?2, '{}')",
+            rusqlite::params![job.agent_id, chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    })?;
+
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+    host.spawn_daemon_deletion_coordinator();
+
+    wait_until_async_for(Duration::from_secs(15), || {
+        let client = client.clone();
+        let url = format!("{base}/api/control/agents/{agent_id}/delete-status");
+        async move {
+            let status: serde_json::Value = client.get(url).send().await?.json().await?;
+            Ok(status["job"]["status"] == serde_json::json!("needs_attention"))
+        }
+    })
+    .await?;
+
+    let status: serde_json::Value = client
+        .get(format!(
+            "{base}/api/control/agents/{agent_id}/delete-status"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(status["job"]["failure_kind"], "terminal_invariant");
+    assert_eq!(status["job"]["required_input"], "ownership_resolution");
+    assert_eq!(status["job"]["attempts"], 1);
+
+    let resolved: serde_json::Value = client
+        .post(format!(
+            "{base}/api/control/agents/{agent_id}/deletion/resolve"
+        ))
+        .json(&serde_json::json!({ "decision": "abandon" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(resolved["identity"]["status"], "active");
+    assert_eq!(resolved["job"]["status"], "abandoned");
+    assert!(resolved["cleanup"]["completed_phases"].is_array());
+    assert_eq!(resolved["cleanup"]["residual_artifacts"], true);
+
+    // A terminal abandoned row must not block a fresh deletion admission.
+    let redeleted: serde_json::Value = client
+        .delete(format!("{base}/api/control/agents/{agent_id}"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(redeleted["created"], true);
+    assert_ne!(
+        redeleted["job"]["deletion_id"],
+        status["job"]["deletion_id"]
+    );
+    assert_eq!(redeleted["job"]["attempts"], 0);
+
+    host.shutdown_daemon_deletion_coordinator().await;
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_agent_create_admits_cleanup_repair_when_proof_is_missing() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     attach_default_workspace(&host).await?;

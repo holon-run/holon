@@ -5,7 +5,8 @@
 //! been completed is a safe no-op. On transient failure the job is marked
 //! `RetryableFailed` with an actionable `last_error` and persisted retry
 //! deadline; a subsequent retry resumes from the failed phase. Failures that a
-//! retry cannot resolve stop in the `NeedsAttention` terminal state instead.
+//! retry cannot resolve stop in the `NeedsAttention` state, which requires an
+//! operator decision instead.
 //!
 //! The coordinator is triggered:
 //! - by a coalesced wake after deletion admission;
@@ -468,6 +469,7 @@ impl RuntimeHost {
                         | AgentDeletionStatus::Running
                         | AgentDeletionStatus::RetryableFailed
                         | AgentDeletionStatus::NeedsAttention
+                        | AgentDeletionStatus::Abandoned
                 )
             }) {
                 continue;
@@ -981,6 +983,7 @@ impl RuntimeHost {
         job.attempts = job.attempts.saturating_add(1);
         job.last_error = None;
         job.failure_kind = None;
+        job.required_input = None;
         job.next_attempt_at = None;
         let claim_at = Utc::now();
         job.updated_at = claim_at;
@@ -1813,15 +1816,22 @@ fn settle_deletion_failure(
         DeletionFailureClass::NeedsOwnershipResolution => {
             job.status = AgentDeletionStatus::NeedsAttention;
             job.failure_kind = Some(AgentDeletionFailureKind::TerminalInvariant);
+            job.required_input = Some(AgentDeletionRequiredInput::for_failure_kind(
+                AgentDeletionFailureKind::TerminalInvariant,
+            ));
             job.next_attempt_at = None;
         }
         DeletionFailureClass::Retryable if job.attempts >= DELETION_MAX_ATTEMPTS => {
             job.status = AgentDeletionStatus::NeedsAttention;
             job.failure_kind = Some(AgentDeletionFailureKind::RetryBudgetExhausted);
+            job.required_input = Some(AgentDeletionRequiredInput::for_failure_kind(
+                AgentDeletionFailureKind::RetryBudgetExhausted,
+            ));
             job.next_attempt_at = None;
         }
         DeletionFailureClass::Retryable => {
             job.status = AgentDeletionStatus::RetryableFailed;
+            job.required_input = None;
             let retry_delay = deletion_retry_delay(job);
             job.next_attempt_at = Some(now + chrono::Duration::from_std(retry_delay)?);
         }
@@ -2824,6 +2834,8 @@ mod tests {
             attempts,
             last_error: Some("database is locked".into()),
             failure_kind: None,
+            required_input: None,
+            abandon_cleanup: None,
             next_attempt_at: None,
             created_at: now,
             updated_at: now,

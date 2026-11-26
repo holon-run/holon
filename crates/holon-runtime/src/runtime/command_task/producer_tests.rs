@@ -402,6 +402,8 @@ fn set_original_command_deleting(
                 attempts: 0,
                 last_error: None,
                 failure_kind: None,
+                required_input: None,
+                abandon_cleanup: None,
                 next_attempt_at: None,
                 created_at: identity.updated_at,
                 updated_at: identity.updated_at,

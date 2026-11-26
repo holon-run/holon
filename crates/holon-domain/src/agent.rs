@@ -702,13 +702,24 @@ pub enum AgentDeletionStatus {
     Pending,
     Running,
     RetryableFailed,
-    /// Terminal failure that retrying cannot resolve: the persisted state needs
-    /// an explicit ownership or cleanup decision from the operator.
+    /// Failure that retrying cannot resolve: the persisted state needs an
+    /// explicit ownership or cleanup decision from the operator.
     NeedsAttention,
     Completed,
+    /// Terminal state reached when an operator explicitly gives up on a
+    /// stopped deletion. Distinct from `NeedsAttention` (still blocked) and
+    /// from `Completed` (cleanup finished).
+    Abandoned,
 }
 
-/// Why a deletion job stopped in the `NeedsAttention` terminal state.
+impl AgentDeletionStatus {
+    /// Final states that are never picked up by the deletion scheduler again.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Abandoned)
+    }
+}
+
+/// Why a deletion job stopped in the `NeedsAttention` state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentDeletionFailureKind {
@@ -716,6 +727,55 @@ pub enum AgentDeletionFailureKind {
     TerminalInvariant,
     /// The retry budget was exhausted while the failure stayed retryable.
     RetryBudgetExhausted,
+}
+
+/// Closed set of explicit operator inputs a stopped deletion can require.
+///
+/// This is a decision vocabulary, not free text: an unknown reason must fall
+/// back to `Unclassified` so the control plane never parses prose.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDeletionRequiredInput {
+    /// Persisted state needs an explicit ownership/orphan resolution before
+    /// cleanup can continue.
+    OwnershipResolution,
+    /// Cleanup cannot continue; the operator must explicitly abandon the
+    /// deletion instead of retrying it.
+    AbandonDecision,
+    /// The job stopped without a classifiable required input.
+    Unclassified,
+}
+
+impl AgentDeletionRequiredInput {
+    pub fn for_failure_kind(kind: AgentDeletionFailureKind) -> Self {
+        match kind {
+            AgentDeletionFailureKind::TerminalInvariant => Self::OwnershipResolution,
+            AgentDeletionFailureKind::RetryBudgetExhausted => Self::AbandonDecision,
+        }
+    }
+}
+
+/// Operator-scoped resolution decision for a stopped deletion job.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDeletionResolution {
+    /// Explicitly give up on the deletion and return the identity to `Active`.
+    Abandon,
+}
+
+/// Cleanup scope reported when an operator abandons a stopped deletion.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentDeletionAbandonCleanup {
+    /// Phases that had already completed when the job stopped.
+    pub completed_phases: Vec<AgentDeletionPhase>,
+    /// True when the private-history purge proof is current and no residue
+    /// was found at abandonment time.
+    pub private_history_cleared: bool,
+    /// Number of canonical lineage child records still attached at
+    /// abandonment time.
+    pub retained_lineage_children: u64,
+    /// True when deletion phases or private-history/lineage artifacts remain.
+    pub residual_artifacts: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -784,6 +844,12 @@ pub struct AgentDeletionJob {
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_kind: Option<AgentDeletionFailureKind>,
+    /// Explicit operator input required to continue a stopped job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_input: Option<AgentDeletionRequiredInput>,
+    /// Cleanup scope recorded when an operator abandoned the job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abandon_cleanup: Option<AgentDeletionAbandonCleanup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,

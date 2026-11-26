@@ -14,16 +14,16 @@ use serde_json::Value;
 use crate::{
     http_dto::{AgentStateSnapshotDto, SlimAgentDto},
     wire::{
-        AgentDeletionResponse, AgentDeletionStatusResponse, AttachWorkspaceRequest,
-        BatchGetBriefsRequest, BatchGetBriefsResponse, BatchGetMessagesRequest,
-        BatchGetMessagesResponse, BatchGetTranscriptEntriesRequest,
+        AgentDeletionResolveResponse, AgentDeletionResponse, AgentDeletionStatusResponse,
+        AttachWorkspaceRequest, BatchGetBriefsRequest, BatchGetBriefsResponse,
+        BatchGetMessagesRequest, BatchGetMessagesResponse, BatchGetTranscriptEntriesRequest,
         BatchGetTranscriptEntriesResponse, CancelTimerRequest, ClearAgentModelRequest,
         ControlPromptRequest, CreateAgentRequest, CreateTimerRequest, DebugPromptRequest,
         DeleteAgentRequest, DetachWorkspaceRequest, ExitWorkspaceRequest,
         ModelConfigMigrationRequest, PerformanceDiagnosticsSnapshot, RenameAgentRequest,
-        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
-        RuntimeShutdownResponse, RuntimeStatusResponse, SetAgentModelRequest, TaskInputRequest,
-        TaskStopRequest,
+        ResolveAgentDeletionRequest, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
+        RuntimeConfigUpdateResponse, RuntimeShutdownResponse, RuntimeStatusResponse,
+        SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
     },
 };
 use holon_domain::{
@@ -911,6 +911,19 @@ impl LocalClient {
     ) -> Result<AgentDeletionStatusResponse> {
         self.get_control_json(&format!("/control/agents/{agent_id}/delete-status"))
             .await
+    }
+
+    /// Operator-scoped resolution for a stopped deletion job.
+    pub async fn resolve_agent_deletion(
+        &self,
+        agent_id: &str,
+        decision: holon_domain::AgentDeletionResolution,
+    ) -> Result<AgentDeletionResolveResponse> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/deletion/resolve"),
+            &ResolveAgentDeletionRequest { decision },
+        )
+        .await
     }
 
     pub async fn create_agent(&self, agent_id: &str) -> Result<Value> {

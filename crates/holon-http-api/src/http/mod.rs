@@ -566,6 +566,10 @@ pub fn router(state: AppState) -> Router {
             get(control::agent_deletion_status),
         )
         .route(
+            "/control/agents/{agent_id}/deletion/resolve",
+            post(control::resolve_agent_deletion),
+        )
+        .route(
             "/control/agents/{agent_id}/reset-callback",
             post(control::reset_callback),
         )
