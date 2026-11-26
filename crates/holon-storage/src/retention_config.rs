@@ -9,6 +9,10 @@ pub const DEFAULT_TOOL_EXECUTIONS_DAYS: u64 = 90;
 pub const DEFAULT_AUDIT_EVENTS_MIN_ROWS_PER_SCOPE: usize = 4096;
 pub const DEFAULT_TRANSCRIPT_ENTRIES_MIN_ROWS: usize = 20_000;
 pub const DEFAULT_TOOL_EXECUTIONS_MIN_ROWS: usize = 15_000;
+// Usage is a billing-baseline ledger, so its default window covers
+// year-over-year comparison instead of the trace debugging window.
+pub const DEFAULT_USAGE_ATTEMPTS_DAYS: u64 = 400;
+pub const DEFAULT_USAGE_ATTEMPTS_MIN_ROWS: usize = 20_000;
 pub const DEFAULT_RETENTION_INTERVAL_HOURS: u64 = 6;
 pub const DEFAULT_INCREMENTAL_VACUUM_PAGES: u32 = 256;
 
@@ -28,6 +32,8 @@ pub struct RuntimeDbRetentionPolicy {
     pub audit_events_min_rows_per_scope: usize,
     pub transcript_entries_min_rows: usize,
     pub tool_executions_min_rows: usize,
+    pub usage_attempts_days: u64,
+    pub usage_attempts_min_rows: usize,
     pub interval_hours: u64,
     pub incremental_vacuum_pages: u32,
 }
@@ -42,6 +48,8 @@ impl Default for RuntimeDbRetentionPolicy {
             audit_events_min_rows_per_scope: DEFAULT_AUDIT_EVENTS_MIN_ROWS_PER_SCOPE,
             transcript_entries_min_rows: DEFAULT_TRANSCRIPT_ENTRIES_MIN_ROWS,
             tool_executions_min_rows: DEFAULT_TOOL_EXECUTIONS_MIN_ROWS,
+            usage_attempts_days: DEFAULT_USAGE_ATTEMPTS_DAYS,
+            usage_attempts_min_rows: DEFAULT_USAGE_ATTEMPTS_MIN_ROWS,
             interval_hours: DEFAULT_RETENTION_INTERVAL_HOURS,
             incremental_vacuum_pages: DEFAULT_INCREMENTAL_VACUUM_PAGES,
         }
@@ -84,6 +92,16 @@ impl RuntimeDbRetentionPolicy {
         validate_positive_bounded(
             "runtime.retention.tool_executions_min_rows",
             self.tool_executions_min_rows,
+            MAX_RETENTION_ROWS,
+        )?;
+        validate_positive_bounded(
+            "runtime.retention.usage_attempts_days",
+            self.usage_attempts_days,
+            MAX_RETENTION_DAYS,
+        )?;
+        validate_positive_bounded(
+            "runtime.retention.usage_attempts_min_rows",
+            self.usage_attempts_min_rows,
             MAX_RETENTION_ROWS,
         )?;
         validate_positive_bounded(

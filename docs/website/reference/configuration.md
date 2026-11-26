@@ -679,6 +679,8 @@ Configure automatic retention cleanup for SQLite runtime events, transcripts, an
 | `runtime.retention.transcript_entries_min_rows` | positive integer | `20000` | Minimum transcript rows retained globally. |
 | `runtime.retention.tool_executions_days` | positive integer | `90` | Age window in days for tool execution retention. |
 | `runtime.retention.tool_executions_min_rows` | positive integer | `15000` | Minimum tool execution rows retained globally. |
+| `runtime.retention.usage_attempts_days` | positive integer | `400` | Age window in days for the attempt-level usage ledger. Independent of the trace retention window. |
+| `runtime.retention.usage_attempts_min_rows` | positive integer | `20000` | Minimum usage attempt rows retained globally. |
 | `runtime.retention.incremental_vacuum_pages` | positive integer | `256` | Maximum pages requested from SQLite incremental vacuum after a retention pass. |
 
 ## Command Task Output Safety

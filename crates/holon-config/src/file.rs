@@ -765,6 +765,10 @@ pub struct RuntimeRetentionConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_executions_min_rows: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_attempts_days: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_attempts_min_rows: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval_hours: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub incremental_vacuum_pages: Option<u32>,
@@ -1095,6 +1099,8 @@ impl RuntimeRetentionConfigFile {
             && self.audit_events_min_rows_per_scope.is_none()
             && self.transcript_entries_min_rows.is_none()
             && self.tool_executions_min_rows.is_none()
+            && self.usage_attempts_days.is_none()
+            && self.usage_attempts_min_rows.is_none()
             && self.interval_hours.is_none()
             && self.incremental_vacuum_pages.is_none()
     }

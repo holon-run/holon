@@ -4645,6 +4645,44 @@ FROM normalized;
         // The hook handles data cleanup on compacted baselines with optional tables.
         sql: "DROP TABLE IF EXISTS destructive_operations;",
     },
+    Migration {
+        version: 122,
+        name: "usage_attempts",
+        // Attempt-level usage ledger. One row per provider attempt that reached
+        // a transport; rounds and turns never add a second row. Missing wire
+        // usage is recorded as NULL tokens plus `token_usage_source='missing'`
+        // so underestimated cost stays observable instead of reading as zero.
+        sql: "CREATE TABLE IF NOT EXISTS usage_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  work_item_id TEXT,
+  task_id TEXT,
+  round_index INTEGER,
+  attempt_index INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  day TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  model_ref TEXT NOT NULL,
+  transport TEXT,
+  service_tier TEXT,
+  outcome TEXT NOT NULL,
+  failure_category TEXT,
+  uncached_input_tokens INTEGER,
+  cache_read_tokens INTEGER,
+  cache_write_tokens INTEGER,
+  output_tokens INTEGER,
+  reasoning_tokens INTEGER,
+  token_usage_source TEXT NOT NULL,
+  trace_id TEXT,
+  span_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_usage_attempts_day ON usage_attempts(day);
+CREATE INDEX IF NOT EXISTS idx_usage_attempts_agent_day ON usage_attempts(agent_id, day);
+CREATE INDEX IF NOT EXISTS idx_usage_attempts_model_day ON usage_attempts(model_ref, day);",
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {

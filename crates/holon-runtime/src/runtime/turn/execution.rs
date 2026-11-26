@@ -1086,6 +1086,39 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    /// Write the attempt-level usage ledger rows for one provider round.
+    ///
+    /// The ledger is runtime state (`state/runtime.sqlite`), not trace data: it
+    /// must survive diagnostics sampling and the much shorter trace retention
+    /// window, so it is written here instead of through the trace pipeline.
+    pub(super) async fn record_provider_attempt_usage(
+        &self,
+        agent_id: &str,
+        round: usize,
+        timeline: Option<&ProviderAttemptTimeline>,
+        trace: Option<&crate::observability::TraceContext>,
+    ) -> Result<()> {
+        let Some(timeline) = timeline.filter(|timeline| !timeline.attempts.is_empty()) else {
+            return Ok(());
+        };
+        let (turn_id, work_item_id) = {
+            let guard = self.inner.agent.lock().await;
+            (
+                guard.state.current_turn_id.clone(),
+                guard.state.current_turn_work_item_id.clone(),
+            )
+        };
+        let records = usage_attempt_records(
+            agent_id,
+            turn_id.as_deref(),
+            work_item_id.as_deref(),
+            round,
+            trace.map(|trace| trace.trace_id.as_str()),
+            timeline,
+        );
+        self.runtime_db().append_usage_attempts(&records)
+    }
+
     /// Publishes the whitelisted `provider_switch` fact: the runtime moved the
     /// turn to a different model route. It reports the switch only; it makes
     /// no claim about success, degradation confirmation, or cross-turn state.
@@ -2103,6 +2136,84 @@ fn provider_endpoint_of(model_ref: &str) -> Option<String> {
         .map(|route| route.endpoint.as_str().to_string())
 }
 
+fn usage_attempt_outcome(
+    outcome: ProviderAttemptOutcome,
+) -> crate::runtime_db::usage::UsageAttemptOutcome {
+    use crate::runtime_db::usage::UsageAttemptOutcome as LedgerOutcome;
+    match outcome {
+        ProviderAttemptOutcome::Succeeded => LedgerOutcome::Success,
+        ProviderAttemptOutcome::Retrying => LedgerOutcome::FailedRetryable,
+        // Retries are exhausted for this route; a later model fallback is a
+        // new attempt with its own row.
+        ProviderAttemptOutcome::RetriesExhausted => LedgerOutcome::FailedTerminal,
+        ProviderAttemptOutcome::FailFastAborted => LedgerOutcome::Cancelled,
+    }
+}
+
+/// One ledger row per attempt that actually reached a transport.
+///
+/// Rounds and turns never add a second row: the winning response is the last
+/// attempt of the same timeline, so summing the ledger cannot double count a
+/// fallback round the way summing round and attempt token totals would.
+fn usage_attempt_records(
+    agent_id: &str,
+    turn_id: Option<&str>,
+    work_item_id: Option<&str>,
+    round: usize,
+    trace_id: Option<&str>,
+    timeline: &ProviderAttemptTimeline,
+) -> Vec<crate::runtime_db::usage::UsageAttemptRecord> {
+    timeline
+        .attempts
+        .iter()
+        .map(|attempt| {
+            let (provider, endpoint, model_id) = match ModelRouteRef::parse(&attempt.model_ref) {
+                Ok(route) => (
+                    route.provider.as_str().to_string(),
+                    route.endpoint.as_str().to_string(),
+                    route.model.clone(),
+                ),
+                // Route refs are runtime-produced; keep the row instead of
+                // dropping an attempt when one cannot be re-parsed.
+                Err(_) => (
+                    attempt.provider.clone(),
+                    "default".to_string(),
+                    attempt.model_ref.clone(),
+                ),
+            };
+            crate::runtime_db::usage::UsageAttemptRecord {
+                attempt_id: uuid::Uuid::new_v4().to_string(),
+                agent_id: agent_id.to_string(),
+                turn_id: turn_id.map(str::to_string),
+                work_item_id: work_item_id.map(str::to_string),
+                task_id: None,
+                round_index: Some(round as u64),
+                attempt_index: attempt.attempt as u64,
+                started_at: attempt.started_at.unwrap_or_else(chrono::Utc::now),
+                provider,
+                endpoint,
+                model_id,
+                model_ref: attempt.model_ref.clone(),
+                transport: attempt.transport.clone(),
+                service_tier: attempt.served_service_tier.clone(),
+                outcome: usage_attempt_outcome(attempt.outcome),
+                failure_category: attempt.failure_kind.clone(),
+                token_usage: attempt.normalized_token_usage.map(|usage| {
+                    crate::runtime_db::usage::UsageTokenCounts {
+                        uncached_input_tokens: usage.uncached_input_tokens,
+                        cache_read_tokens: usage.cache_read_tokens,
+                        cache_write_tokens: usage.cache_write_tokens,
+                        output_tokens: usage.output_tokens,
+                        reasoning_tokens: usage.reasoning_tokens,
+                    }
+                }),
+                trace_id: trace_id.map(str::to_string),
+                span_id: None,
+            }
+        })
+        .collect()
+}
+
 fn record_provider_round_span(
     parent: Option<&crate::observability::TraceContext>,
     agent_id: &str,
@@ -2537,6 +2648,107 @@ mod provider_span_tests {
             backoff.attributes.backoff_source.as_deref(),
             Some("server_retry_after")
         );
+    }
+
+    #[test]
+    fn usage_attempt_records_keep_endpoints_and_missing_usage() {
+        let started_at = Utc::now() - Duration::seconds(1);
+        let timeline = ProviderAttemptTimeline {
+            attempts: vec![
+                ProviderAttemptRecord {
+                    provider: "opencode-go".into(),
+                    model_ref: "opencode-go@default/kimi-k2".into(),
+                    transport: Some("openai_chat".into()),
+                    served_service_tier: None,
+                    attempt: 1,
+                    max_attempts: 2,
+                    started_at: Some(started_at),
+                    completed_at: Some(started_at),
+                    duration_ms: Some(40),
+                    failure_kind: Some("server_error".into()),
+                    disposition: Some("retryable".into()),
+                    outcome: ProviderAttemptOutcome::Retrying,
+                    advanced_to_fallback: false,
+                    backoff_ms: None,
+                    backoff_source: None,
+                    token_usage: None,
+                    cache_usage: None,
+                    normalized_token_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: Some("request-1".into()),
+                    provider_http_trace_id: None,
+                    transport_diagnostics: None,
+                    transport_timeline: None,
+                },
+                ProviderAttemptRecord {
+                    provider: "opencode-go".into(),
+                    model_ref: "opencode-go@messages/kimi-k2".into(),
+                    transport: Some("openai_chat".into()),
+                    served_service_tier: Some("priority".into()),
+                    attempt: 2,
+                    max_attempts: 2,
+                    started_at: Some(started_at),
+                    completed_at: Some(started_at),
+                    duration_ms: Some(50),
+                    failure_kind: None,
+                    disposition: None,
+                    outcome: ProviderAttemptOutcome::Succeeded,
+                    advanced_to_fallback: true,
+                    backoff_ms: None,
+                    backoff_source: None,
+                    token_usage: Some(TokenUsage::new(150, 5)),
+                    cache_usage: None,
+                    normalized_token_usage: Some(
+                        crate::provider::AttemptTokenUsage::from_inclusive_input(
+                            100, 10, 0, 5, None,
+                        ),
+                    ),
+                    provider_message_id: Some("message-2".into()),
+                    provider_request_id: Some("request-2".into()),
+                    provider_http_trace_id: None,
+                    transport_diagnostics: None,
+                    transport_timeline: None,
+                },
+            ],
+            requested_model_ref: "opencode-go@default/kimi-k2".into(),
+            active_model_ref: None,
+            winning_model_ref: None,
+            pending_fallback_model_ref: None,
+            pending_fallback_disposition: None,
+            aggregated_token_usage: None,
+        };
+
+        let records = super::usage_attempt_records(
+            "agent-1",
+            Some("turn-1"),
+            Some("work-1"),
+            0,
+            None,
+            &timeline,
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].endpoint, "default");
+        assert_eq!(records[1].endpoint, "messages");
+        assert_eq!(
+            records[0].outcome,
+            crate::runtime_db::usage::UsageAttemptOutcome::FailedRetryable
+        );
+        assert_eq!(
+            records[1].outcome,
+            crate::runtime_db::usage::UsageAttemptOutcome::Success
+        );
+        assert_eq!(records[0].failure_category.as_deref(), Some("server_error"));
+        assert!(records[0].token_usage.is_none());
+        assert_eq!(records[0].transport.as_deref(), Some("openai_chat"));
+        assert_eq!(records[1].service_tier.as_deref(), Some("priority"));
+        let usage = records[1].token_usage.expect("normalized attempt usage");
+        assert_eq!(usage.uncached_input_tokens, 90);
+        assert_eq!(usage.cache_read_tokens, 10);
+        assert_eq!(usage.output_tokens, 5);
+        // An unsampled trace never suppresses a ledger row.
+        assert!(records[1].trace_id.is_none());
+        assert_eq!(records[1].round_index, Some(0));
+        assert_eq!(records[1].attempt_index, 2);
     }
 
     #[test]
@@ -5540,6 +5752,14 @@ impl<'a> TurnExecution<'a> {
                     let result = match result {
                         ProviderRoundDispatch::Completed(result) => result,
                         ProviderRoundDispatch::Interjected(timeline) => {
+                            runtime
+                                .record_provider_attempt_usage(
+                                    agent_id,
+                                    round,
+                                    timeline.as_ref(),
+                                    trace_context.as_ref(),
+                                )
+                                .await?;
                             reselected_attempts = timeline;
                             next_dispatch_reason = ProviderDispatchReason::AfterInterjection;
                             continue 'provider_round;
@@ -5589,6 +5809,19 @@ impl<'a> TurnExecution<'a> {
                         provider_started_at,
                         &result,
                     );
+                    runtime
+                        .record_provider_attempt_usage(
+                            agent_id,
+                            round,
+                            match &result {
+                                Ok((_, timeline)) => timeline.as_ref(),
+                                Err(error) => {
+                                    crate::provider::provider_attempt_timeline(error)
+                                }
+                            },
+                            trace_context.as_ref(),
+                        )
+                        .await?;
                     if result.as_ref().err().is_some_and(|error| error.downcast_ref::<CurrentRunAborted>().is_some()) {
                         if let Some(timeline) = reselected_attempts.as_ref() {
                             runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
@@ -6134,6 +6367,14 @@ impl<'a> TurnExecution<'a> {
                     let result = match result {
                         ProviderRoundDispatch::Completed(result) => result,
                         ProviderRoundDispatch::Interjected(timeline) => {
+                            runtime
+                                .record_provider_attempt_usage(
+                                    agent_id,
+                                    round,
+                                    timeline.as_ref(),
+                                    trace_context.as_ref(),
+                                )
+                                .await?;
                             reselected_attempts = timeline;
                             next_dispatch_reason = ProviderDispatchReason::AfterInterjection;
                             continue 'provider_round;
@@ -6183,6 +6424,19 @@ impl<'a> TurnExecution<'a> {
                         provider_started_at,
                         &result,
                     );
+                    runtime
+                        .record_provider_attempt_usage(
+                            agent_id,
+                            round,
+                            match &result {
+                                Ok((_, timeline)) => timeline.as_ref(),
+                                Err(error) => {
+                                    crate::provider::provider_attempt_timeline(error)
+                                }
+                            },
+                            trace_context.as_ref(),
+                        )
+                        .await?;
                     if result.as_ref().err().is_some_and(|error| error.downcast_ref::<CurrentRunAborted>().is_some()) {
                         if let Some(timeline) = reselected_attempts.as_ref() {
                             runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;

@@ -735,6 +735,20 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "runtime.retention.usage_attempts_days",
+            kind: "positive_integer",
+            description: "Age window in days for the attempt-level usage ledger. Independent of the trace retention window.",
+            default: json!(DEFAULT_USAGE_ATTEMPTS_DAYS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.retention.usage_attempts_min_rows",
+            kind: "positive_integer",
+            description: "Minimum usage attempt rows retained globally.",
+            default: json!(DEFAULT_USAGE_ATTEMPTS_MIN_ROWS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "runtime.retention.interval_hours",
             kind: "positive_integer",
             description: "Hours between daemon retention passes while retention is enabled.",
@@ -1421,6 +1435,18 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .tool_executions_min_rows
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "runtime.retention.usage_attempts_days" => Ok(config
+            .runtime
+            .retention
+            .usage_attempts_days
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.retention.usage_attempts_min_rows" => Ok(config
+            .runtime
+            .retention
+            .usage_attempts_min_rows
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "runtime.retention.interval_hours" => Ok(config
             .runtime
             .retention
@@ -2017,6 +2043,14 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             config.runtime.retention.tool_executions_min_rows =
                 Some(parse_positive_usize_key(key, raw_value)?);
         }
+        "runtime.retention.usage_attempts_days" => {
+            config.runtime.retention.usage_attempts_days =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.retention.usage_attempts_min_rows" => {
+            config.runtime.retention.usage_attempts_min_rows =
+                Some(parse_positive_usize_key(key, raw_value)?);
+        }
         "runtime.retention.interval_hours" => {
             config.runtime.retention.interval_hours = Some(parse_positive_u64_key(key, raw_value)?);
         }
@@ -2502,6 +2536,12 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         }
         "runtime.retention.tool_executions_min_rows" => {
             config.runtime.retention.tool_executions_min_rows = None;
+        }
+        "runtime.retention.usage_attempts_days" => {
+            config.runtime.retention.usage_attempts_days = None;
+        }
+        "runtime.retention.usage_attempts_min_rows" => {
+            config.runtime.retention.usage_attempts_min_rows = None;
         }
         "runtime.retention.interval_hours" => {
             config.runtime.retention.interval_hours = None;

@@ -85,6 +85,7 @@ pub(crate) mod task_status_metadata;
 pub(crate) mod task_stop;
 pub mod types;
 pub mod unread;
+pub mod usage;
 pub mod work_item_source_revision_repair;
 pub(crate) mod work_snapshot;
 pub(crate) mod workspace_context;

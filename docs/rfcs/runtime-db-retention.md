@@ -16,6 +16,11 @@ append-oriented tables in `runtime.sqlite`:
 - `transcript_entries`;
 - `tool_executions`.
 
+The attempt-level usage ledger (`usage_attempts`, see
+[`runtime-usage-ledger`](runtime-usage-ledger.md)) also runs through this pass.
+It is append-only usage state rather than evidence, so it is bounded only by its
+own age window and row floor and has no strong-root protection.
+
 Retention is disabled unless the operator explicitly sets
 `runtime.retention.enabled = true`. When enabled, a row is eligible only when
 it is older than the table's age window and is outside the configured minimum
@@ -70,6 +75,8 @@ tool_executions_days = 90
 audit_events_min_rows_per_scope = 4096
 transcript_entries_min_rows = 20000
 tool_executions_min_rows = 15000
+usage_attempts_days = 400
+usage_attempts_min_rows = 20000
 interval_hours = 6
 incremental_vacuum_pages = 256
 ```
@@ -78,6 +85,10 @@ incremental_vacuum_pages = 256
 operator may enable the policy with only the boolean setting. Age and count
 values are positive. The audit floor cannot be lower than the HTTP event
 replay window.
+
+`usage_attempts_days` defaults to 400 so the usage ledger can cover
+year-over-year comparison; it is independent of the trace retention window and
+of trace sampling.
 
 The age and count conditions are conjunctive. A table or audit scope at or
 below its floor is skipped even when old rows exist. A maintenance pass must
