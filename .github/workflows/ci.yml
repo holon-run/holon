@@ -55,7 +55,7 @@ on:
       - "scripts/ci_test_shards.py"
       - "scripts/validate-agent-templates*.py"
       - "scripts/beta-real-lib-*.sh"
-      - "scripts/test-beta-real-lib-smoke-snapshot.sh"
+      - "scripts/test-beta-real-lib-smoke-*.sh"
   pull_request:
     branches: [main]
     paths:
@@ -110,7 +110,7 @@ on:
       - "scripts/ci_test_shards.py"
       - "scripts/validate-agent-templates*.py"
       - "scripts/beta-real-lib-*.sh"
-      - "scripts/test-beta-real-lib-smoke-snapshot.sh"
+      - "scripts/test-beta-real-lib-smoke-*.sh"
   workflow_dispatch:
   schedule:
     # Nightly full-sweep safety net: PRs and main pushes skip Apple jobs,
@@ -207,7 +207,7 @@ jobs:
             beta_smoke_scripts:
               - '.github/workflows/ci.yml'
               - 'scripts/beta-real-lib-*.sh'
-              - 'scripts/test-beta-real-lib-smoke-snapshot.sh'
+              - 'scripts/test-beta-real-lib-smoke-*.sh'
             conversation_sdk:
               - 'packages/conversation-sdk/**'
               - '.github/workflows/ci.yml'
@@ -853,6 +853,9 @@ jobs:
 
       - name: Test concurrent-safe database snapshot
         run: bash scripts/test-beta-real-lib-smoke-snapshot.sh
+
+      - name: Test startup port wait
+        run: bash scripts/test-beta-real-lib-smoke-startup-wait.sh
 
   rust-lint:
 

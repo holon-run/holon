@@ -37,6 +37,13 @@ E2E.
 | next day 02:40 Beijing | `holon-release` timer | Promotion gate: attestation green, the demo ran the beta for ≥20h without a failed deployment or restart loop, the agent round-trip is healthy at the end of the window, no release-blocking issue, stable slot free. Pass → stable promotion. Fail → the beta dies; the next train restarts from the new `main`. |
 | after stable verification | owner machine(s) | `channel-upgrade.sh` installs the new stable and restarts. |
 
+The real-library smoke's port wait is migration-aware: `SMOKE_STARTUP_WAIT_SECS`
+(default 600) is an inactivity window that ongoing work refreshes (new
+migration log lines, log growth, or advancing CPU time), so a multi-minute
+migration of a large live database is a pass, not a "did not open port"
+timeout. Timeout messages distinguish a dead or aborting daemon from one that
+is still migrating.
+
 ## Operator release principles
 
 Two operator-set gates (2026-11-24) apply to every daily beta:
