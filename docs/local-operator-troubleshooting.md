@@ -355,6 +355,20 @@ when the session is rebuilt, rotated, or the agent is deleted. It is never a
 global or cross-agent approval. A timeout, cancelled interaction, or closed
 channel falls back to rejection instead of hanging the turn.
 
+`reject_always` is not remembered session-wide: it rejects only the current
+request, so the same tool call asks again next time. Only `allow_always`
+carries a session grant.
+
+Interactive mode is deliberately stricter than unattended: even a request that
+stays inside the bound execution root waits for an operator and is rejected if
+the interaction times out. In unattended mode the same in-root request is
+allowed once immediately.
+
+A pending interaction leaves the list as soon as it settles. Answering an id
+that already timed out, was cancelled, or was answered returns `409` with a
+`settled_reason` (`timed_out`, `cancelled`, or `resolved`); an id that never
+existed returns `404`. A late answer never grants authority after the fallback.
+
 ### Observability
 
 The event stream carries one audit event per observable ACP family:
@@ -367,6 +381,10 @@ The event stream carries one audit event per observable ACP family:
   optional cumulative cost. It is not a per-turn token delta.
 - `acp_interaction_requested` / `acp_interaction_resolved`: the operator
   approval lifecycle.
+
+Plan, subagent, and usage events are emitted once per turn when the turn
+settles. Within a long turn they are buffered, so treat them as turn-level
+snapshots rather than a live stream.
 
 ## Recommended Quick Paths
 

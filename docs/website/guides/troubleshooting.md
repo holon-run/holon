@@ -193,11 +193,15 @@ process. Holon supervises the process and decides its permission requests.
    approvals and form questions, set `acp.profiles.<profile>.permission_mode`
    to `interactive` and tune `acp.interaction_timeout_ms`; then use
    `GET/POST /api/control/agents/{agent_id}/acp-interactions` with control
-   credentials. Unanswered requests fall back to rejection.
+   credentials. Unanswered requests fall back to rejection, and a settled id
+   answers `409` (`settled_reason`) while an unknown id answers `404`.
+   Interactive mode is stricter than unattended: even in-root requests wait and
+   are rejected on timeout. Only `allow_always` is remembered for the session;
+   `reject_always` applies to one request.
 5. Plan, harness-internal subagent, and usage updates appear as
    `acp_plan_updated`, `acp_subagents_updated`, and `acp_usage_updated` events.
    They are read-only evidence: harness subagents never enter Holon's own
-   supervision tree.
+   supervision tree. These events are emitted once per turn when it settles.
 
 See the full operator checklist in the repository's
 `docs/local-operator-troubleshooting.md`.

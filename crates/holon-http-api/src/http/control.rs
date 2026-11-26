@@ -8,6 +8,7 @@ use super::*;
 use crate::{
     config::{ApiPromptConfigFile, AppConfig},
     daemon::RuntimeStatusResponse,
+    runtime::AcpInteractionOutcome,
     runtime_db::RuntimeDbProtectionStatus,
 };
 use anyhow::Context as _;
@@ -1432,12 +1433,22 @@ pub async fn resolve_acp_interaction(
         .resolve_acp_interaction_decision(&interaction_id, &body)
         .await
     {
-        Ok(true) => Ok(Json(json!({
+        Ok(AcpInteractionOutcome::Resolved) => Ok(Json(json!({
             "agent_id": agent_id,
             "interaction_id": interaction_id,
             "resolved": true,
         }))),
-        Ok(false) => Err(not_found(format!(
+        Ok(AcpInteractionOutcome::AlreadySettled(reason)) => Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!(
+                    "ACP interaction `{interaction_id}` is already settled ({reason})"
+                ),
+                "interaction_id": interaction_id,
+                "settled_reason": reason,
+            })),
+        )),
+        Ok(AcpInteractionOutcome::Unknown) => Err(not_found(format!(
             "no pending ACP interaction `{interaction_id}`"
         ))),
         Err(error) => Err(bad_request(error.to_string())),

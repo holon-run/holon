@@ -948,6 +948,7 @@ impl RuntimeHandle {
                 }),
                 acp_session: Mutex::new(None),
                 acp_interactions: Mutex::new(std::collections::BTreeMap::new()),
+                acp_settled_interactions: Mutex::new(std::collections::BTreeMap::new()),
                 #[cfg(test)]
                 acp_test_harness: Mutex::new(None),
                 #[cfg(test)]

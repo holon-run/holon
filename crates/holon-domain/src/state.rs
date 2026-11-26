@@ -222,8 +222,9 @@ pub struct AcpSessionGrant {
     /// request can match it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_kind: Option<String>,
-    /// Absolute path scope the grant covers. `None` means the grant has no
-    /// path claim and only matches kind-less requests.
+    /// Absolute path scope the grant covers. `None` records that the granted
+    /// request claimed no paths, so only a later request that also claims no
+    /// paths matches; the tool kind is still compared separately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_scope: Option<String>,
     /// Workspace trust domain the grant was issued in (bound execution root

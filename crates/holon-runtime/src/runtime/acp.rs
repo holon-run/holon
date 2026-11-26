@@ -233,6 +233,83 @@ impl PendingAcpInteraction {
     }
 }
 
+/// Why a pending interaction left the registry without operator input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AcpSettledReason {
+    /// An operator answered it.
+    Resolved,
+    /// The bounded wait elapsed before an answer arrived.
+    TimedOut,
+    /// The asking turn was cancelled or its future was dropped.
+    Cancelled,
+}
+
+impl AcpSettledReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Resolved => "resolved",
+            Self::TimedOut => "timed_out",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// A recently settled interaction, retained briefly so a late operator answer
+/// can be explained instead of reported as nonexistent.
+#[derive(Clone, Debug)]
+pub(crate) struct AcpSettledInteraction {
+    pub(crate) reason: AcpSettledReason,
+    pub(crate) settled_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// How a resolution attempt ended, so the control plane can distinguish a
+/// settled interaction from one that never existed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcpInteractionOutcome {
+    /// The pending interaction existed and was answered.
+    Resolved,
+    /// The interaction already settled (resolved, timed out, or cancelled).
+    AlreadySettled(&'static str),
+    /// No such interaction was ever registered, or it aged out of the registry.
+    Unknown,
+}
+
+/// How long a settled interaction stays available to explain a late answer.
+const ACP_SETTLED_TTL: Duration = Duration::from_secs(600);
+/// Upper bound on retained settled interactions per runtime.
+const ACP_SETTLED_CAP: usize = 128;
+
+fn insert_settled_interaction(
+    settled: &mut BTreeMap<String, AcpSettledInteraction>,
+    id: String,
+    reason: AcpSettledReason,
+) {
+    let now = chrono::Utc::now();
+    let cutoff = now
+        - chrono::Duration::from_std(ACP_SETTLED_TTL)
+            .unwrap_or_else(|_| chrono::Duration::seconds(600));
+    settled.retain(|_, entry| entry.settled_at >= cutoff);
+    settled.insert(
+        id,
+        AcpSettledInteraction {
+            reason,
+            settled_at: now,
+        },
+    );
+    while settled.len() > ACP_SETTLED_CAP {
+        let oldest = settled
+            .iter()
+            .min_by_key(|(_, entry)| entry.settled_at)
+            .map(|(key, _)| key.clone());
+        match oldest {
+            Some(key) => {
+                settled.remove(&key);
+            }
+            None => break,
+        }
+    }
+}
+
 /// Scope key for one `allow_always` grant.
 ///
 /// The key is deliberately conservative: the same normalized tool kind and the
@@ -835,8 +912,9 @@ impl AcpInteractionBroker {
     ) -> Option<AcpInteractionResolution> {
         let runtime = self.runtime()?;
         let (responder, receiver) = tokio::sync::oneshot::channel();
+        let id = crate::ids::runtime_id("acpint");
         let pending = PendingAcpInteraction {
-            id: crate::ids::runtime_id("acpint"),
+            id: id.clone(),
             agent_id: self.agent_id.clone(),
             session_id: session_id.to_string(),
             created_at: chrono::Utc::now(),
@@ -847,11 +925,86 @@ impl AcpInteractionBroker {
             tracing::warn!(%error, "failed to register ACP interaction");
             return None;
         }
+        // Keep the registry entry and the waiting future paired: if this turn
+        // is cancelled and the future is dropped, the guard removes the entry.
+        let guard = PendingInteractionGuard::new(Arc::clone(&runtime.inner), id.clone());
         match tokio::time::timeout(self.timeout, receiver).await {
-            Ok(Ok(resolution)) => Some(resolution),
-            // Operator channel closed or the bound elapsed: apply the
-            // unattended fallback instead of hanging the turn.
-            Ok(Err(_)) | Err(_) => None,
+            Ok(Ok(resolution)) => {
+                guard.disarm();
+                Some(resolution)
+            }
+            // Operator channel closed (runtime teardown): fall back and leave
+            // the registry clean.
+            Ok(Err(_)) => {
+                runtime
+                    .settle_acp_interaction(&id, AcpSettledReason::Cancelled)
+                    .await;
+                guard.disarm();
+                None
+            }
+            // Bound elapsed: fall back deterministically and drop the entry so
+            // the pending list only ever reports interactions still awaiting an
+            // operator answer.
+            Err(_) => {
+                runtime
+                    .settle_acp_interaction(&id, AcpSettledReason::TimedOut)
+                    .await;
+                guard.disarm();
+                None
+            }
+        }
+    }
+}
+
+/// Removes a pending interaction when the asking future is dropped.
+///
+/// `ask` disarms the guard after every normal settlement (answer, timeout, or
+/// channel close). It fires only when the turn future itself is cancelled, so
+/// a dropped future cannot leak a stale pending interaction.
+struct PendingInteractionGuard {
+    runtime: Arc<super::RuntimeInner>,
+    id: String,
+    armed: bool,
+}
+
+impl PendingInteractionGuard {
+    fn new(runtime: Arc<super::RuntimeInner>, id: String) -> Self {
+        Self {
+            runtime,
+            id,
+            armed: true,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingInteractionGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let runtime = Arc::clone(&self.runtime);
+        let id = std::mem::take(&mut self.id);
+        // Fast path: the registry lock is usually uncontended on cancellation.
+        if let Ok(mut pending) = runtime.acp_interactions.try_lock() {
+            if pending.remove(&id).is_some() {
+                if let Ok(mut settled) = runtime.acp_settled_interactions.try_lock() {
+                    insert_settled_interaction(&mut settled, id, AcpSettledReason::Cancelled);
+                }
+            }
+            return;
+        }
+        // Slow path: hand the removal to a task that can await the lock.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if runtime.acp_interactions.lock().await.remove(&id).is_some() {
+                    let mut settled = runtime.acp_settled_interactions.lock().await;
+                    insert_settled_interaction(&mut settled, id, AcpSettledReason::Cancelled);
+                }
+            });
         }
     }
 }
@@ -915,26 +1068,58 @@ impl super::RuntimeHandle {
         &self,
         interaction_id: &str,
         body: &Value,
-    ) -> Result<bool> {
+    ) -> Result<AcpInteractionOutcome> {
         let resolution = parse_interaction_resolution(body)?;
         self.resolve_acp_interaction(interaction_id, resolution)
             .await
     }
 
+    /// Remove a still-pending interaction and record why it settled.
+    ///
+    /// Used by the timeout, channel-close, and cancellation paths so the
+    /// pending list never reports an interaction that is no longer waiting.
+    async fn settle_acp_interaction(&self, interaction_id: &str, reason: AcpSettledReason) {
+        let removed = self
+            .inner
+            .acp_interactions
+            .lock()
+            .await
+            .remove(interaction_id)
+            .is_some();
+        if removed {
+            self.record_acp_interaction_settled(interaction_id, reason)
+                .await;
+        }
+    }
+
+    async fn record_acp_interaction_settled(&self, interaction_id: &str, reason: AcpSettledReason) {
+        let mut settled = self.inner.acp_settled_interactions.lock().await;
+        insert_settled_interaction(&mut settled, interaction_id.to_string(), reason);
+    }
+
+    async fn acp_interaction_settled_outcome(&self, interaction_id: &str) -> AcpInteractionOutcome {
+        let settled = self.inner.acp_settled_interactions.lock().await;
+        match settled.get(interaction_id) {
+            Some(entry) => AcpInteractionOutcome::AlreadySettled(entry.reason.as_str()),
+            None => AcpInteractionOutcome::Unknown,
+        }
+    }
+
     /// Resolve one pending ACP interaction.
     ///
-    /// Returns `false` when the id is unknown or already settled. A late
-    /// resolution never creates authority; the gate has already applied its
-    /// timeout fallback.
+    /// A late resolution never creates authority; the gate has already applied
+    /// its timeout fallback. The returned outcome lets the control plane explain
+    /// an already-settled interaction instead of pretending it never existed.
     pub(crate) async fn resolve_acp_interaction(
         &self,
         interaction_id: &str,
         resolution: AcpInteractionResolution,
-    ) -> Result<bool> {
+    ) -> Result<AcpInteractionOutcome> {
         {
             let interactions = self.inner.acp_interactions.lock().await;
             let Some(existing) = interactions.get(interaction_id) else {
-                return Ok(false);
+                drop(interactions);
+                return Ok(self.acp_interaction_settled_outcome(interaction_id).await);
             };
             let expected_kind = existing.request.kind();
             let actual_kind = match &resolution {
@@ -954,9 +1139,18 @@ impl super::RuntimeHandle {
             .await
             .remove(interaction_id);
         let Some(pending) = pending else {
-            return Ok(false);
+            return Ok(self.acp_interaction_settled_outcome(interaction_id).await);
         };
         let accepted = pending.responder.send(resolution.clone()).is_ok();
+        if accepted {
+            self.record_acp_interaction_settled(interaction_id, AcpSettledReason::Resolved)
+                .await;
+        } else {
+            // The waiter is gone; treat it like a timeout so a follow-up answer
+            // is not mistaken for authority.
+            self.record_acp_interaction_settled(interaction_id, AcpSettledReason::TimedOut)
+                .await;
+        }
         self.append_audit_event(
             "acp_interaction_resolved",
             json!({
@@ -981,7 +1175,11 @@ impl super::RuntimeHandle {
             }),
         )
         .await?;
-        Ok(accepted)
+        Ok(if accepted {
+            AcpInteractionOutcome::Resolved
+        } else {
+            AcpInteractionOutcome::AlreadySettled("timed_out")
+        })
     }
 }
 
@@ -3416,5 +3614,253 @@ mod acp_driver_tests {
         );
         assert!(parse_interaction_resolution(&json!({"decision": "maybe"})).is_err());
         assert!(parse_interaction_resolution(&json!({})).is_err());
+    }
+
+    #[tokio::test]
+    async fn timed_out_interaction_is_removed_from_the_pending_list() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        let broker = AcpInteractionBroker::new(
+            Arc::downgrade(&runtime.inner),
+            "default",
+            std::time::Duration::from_millis(20),
+        );
+        let request = ElicitationRequest {
+            session_id: "s1".into(),
+            mode: "form".into(),
+            message: "need input".into(),
+            requested_schema: Some(json!({"type": "object"})),
+            tool_call_id: None,
+        };
+        assert_eq!(broker.ask_elicitation("s1", &request).await, None);
+        assert!(
+            runtime.pending_acp_interactions().await.is_empty(),
+            "a timed-out interaction must not linger in the pending list"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolution_distinguishes_settled_from_unknown() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        let (responder, _receiver) = tokio::sync::oneshot::channel();
+        let id = "acpint-settled";
+        runtime
+            .register_acp_interaction(PendingAcpInteraction {
+                id: id.to_string(),
+                agent_id: "default".into(),
+                session_id: "s1".into(),
+                created_at: chrono::Utc::now(),
+                request: AcpInteractionRequest::Elicitation {
+                    message: "q".into(),
+                    requested_schema: None,
+                    tool_call_id: None,
+                },
+                responder,
+            })
+            .await
+            .expect("register interaction");
+        runtime
+            .settle_acp_interaction(id, AcpSettledReason::TimedOut)
+            .await;
+        assert!(runtime.pending_acp_interactions().await.is_empty());
+        assert_eq!(
+            runtime
+                .resolve_acp_interaction_decision(id, &json!({"action": "decline"}))
+                .await
+                .expect("resolve settled"),
+            AcpInteractionOutcome::AlreadySettled("timed_out")
+        );
+        assert_eq!(
+            runtime
+                .resolve_acp_interaction_decision("acpint-missing", &json!({"action": "decline"}))
+                .await
+                .expect("resolve unknown"),
+            AcpInteractionOutcome::Unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn elicitation_request_round_trips_through_the_control_plane() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        let broker = AcpInteractionBroker::new(
+            Arc::downgrade(&runtime.inner),
+            "default",
+            std::time::Duration::from_secs(5),
+        );
+        let request = ElicitationRequest {
+            session_id: "s1".into(),
+            mode: "form".into(),
+            message: "choose".into(),
+            requested_schema: Some(json!({"type": "object"})),
+            tool_call_id: Some("call-1".into()),
+        };
+        let ask = broker.ask_elicitation("s1", &request);
+        let answer = async {
+            loop {
+                let pending = runtime.pending_acp_interactions().await;
+                if let Some(view) = pending.first() {
+                    let id = view["interaction_id"]
+                        .as_str()
+                        .expect("interaction id")
+                        .to_string();
+                    return runtime
+                        .resolve_acp_interaction_decision(
+                            &id,
+                            &json!({"action": "accept", "content": {"choice": "a"}}),
+                        )
+                        .await
+                        .expect("resolve elicitation");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        };
+        let (asked, outcome) = tokio::join!(ask, answer);
+        assert_eq!(outcome, AcpInteractionOutcome::Resolved);
+        assert_eq!(
+            asked,
+            Some(AcpInteractionResolution::Elicitation(
+                ElicitationResponse::Accept {
+                    content: Some(json!({"choice": "a"})),
+                }
+            ))
+        );
+        assert!(
+            runtime.pending_acp_interactions().await.is_empty(),
+            "a resolved interaction leaves the pending list"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_grants_survive_resume_and_drop_on_rotation() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        let grant = crate::types::AcpSessionGrant {
+            tool_kind: Some("read".into()),
+            path_scope: Some("/root/src/lib.rs".into()),
+            trust_domain: "/root".into(),
+        };
+        runtime
+            .persist_acp_session_state("antigravity", "sess-1", "/root", &[])
+            .await
+            .expect("seed session state");
+        runtime
+            .persist_acp_session_grants("sess-1", vec![grant.clone()])
+            .await
+            .expect("persist grant");
+        let stored = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .acp_session_state
+            .expect("session state")
+            .session_grants;
+        assert_eq!(stored, vec![grant.clone()]);
+
+        // Resuming the same logical session keeps its grants.
+        runtime
+            .persist_acp_session_state("antigravity", "sess-1", "/root", &[])
+            .await
+            .unwrap();
+        let resumed = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .acp_session_state
+            .expect("session state")
+            .session_grants;
+        assert_eq!(resumed, vec![grant.clone()], "resume keeps grants");
+
+        // A different session id starts empty and rejects stale writes.
+        runtime
+            .persist_acp_session_state("antigravity", "sess-2", "/root", &[])
+            .await
+            .unwrap();
+        runtime
+            .persist_acp_session_grants("sess-1", vec![grant])
+            .await
+            .unwrap();
+        let rotated = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .acp_session_state
+            .expect("session state")
+            .session_grants;
+        assert!(
+            rotated.is_empty(),
+            "a rotated session must not inherit grants"
+        );
+    }
+
+    #[tokio::test]
+    async fn loaded_session_grants_answer_without_the_channel() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let execution = execution(dir.path(), true);
+        let interaction = Arc::new(FakeInteraction {
+            permission: Some(AcpPermissionDecisionKind::AllowOnce),
+            elicitation: None,
+            permission_calls: AtomicUsize::new(0),
+        });
+        let gate = interactive_gate(&execution, Arc::clone(&interaction));
+        let request = read_request("call-1", &dir.path().join("src/lib.rs"));
+        let grant = gate.request_scope(&request).to_grant(&gate.trust_domain);
+        gate.load_grants(&[grant]);
+        assert!(matches!(
+            gate.decide(&request).await,
+            PermissionOutcome::Selected { .. }
+        ));
+        assert_eq!(gate.drain()[0]["reason"], "session_grant_matches");
+        assert_eq!(interaction.permission_calls.load(Ordering::SeqCst), 0);
+
+        // A fresh session loads an empty set, so the grant no longer applies.
+        gate.load_grants(&[]);
+        assert!(matches!(
+            gate.decide(&request).await,
+            PermissionOutcome::Selected { option_id } if option_id == "allow_once"
+        ));
+        assert_eq!(interaction.permission_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn plan_subagent_and_usage_updates_project_as_read_only_evidence() {
+        let updates = vec![
+            SessionUpdate::Plan {
+                entries: vec![PlanEntry {
+                    content: "step one".into(),
+                    priority: None,
+                    status: Some("pending".into()),
+                }],
+            },
+            SessionUpdate::SubagentUpdate {
+                session_id: "sub-1".into(),
+                title: Some("child".into()),
+                description: None,
+                state: Some(json!("running")),
+            },
+            SessionUpdate::UsageUpdate {
+                used: 10,
+                size: 100,
+                cost: None,
+            },
+        ];
+        let projection = project_updates(&updates);
+        assert!(
+            projection.blocks.is_empty(),
+            "plan/subagent/usage updates never create model blocks"
+        );
+        let plan = projection
+            .evidence
+            .iter()
+            .find(|entry| entry["kind"] == "plan")
+            .expect("plan evidence");
+        assert_eq!(plan["entries"][0]["content"], "step one");
+        let subagent = projection
+            .evidence
+            .iter()
+            .find(|entry| entry["kind"] == "subagents")
+            .expect("subagent evidence");
+        assert_eq!(subagent["session_update"], "subagent_update");
+        assert_eq!(subagent["update"]["sessionId"], "sub-1");
+        let usage = projection.usage.as_ref().expect("usage projection");
+        assert_eq!(usage["used"], 10);
+        assert_eq!(usage["size"], 100);
     }
 }
