@@ -42,61 +42,63 @@ order: 1
 </div>
 </div>
 <div class="home-stage__panel" data-stage-panel="web">
-<a class="home-stage__shot" href="/assets/lite-paper/web-gui-review-en.webp" aria-label="View the Holon web workbench screenshot at full size">
-<img src="/assets/lite-paper/web-gui-review-en.webp" width="1600" height="1003" alt="Holon web workbench: role-scoped agents on the left, PR review progress and next steps in the center, and the saved WorkItem plan, waiting condition, and checklist on the right." fetchpriority="high" decoding="async">
+<a class="home-stage__shot" href="/assets/home-workbench-en.webp" aria-label="View the Holon web workbench screenshot at full size">
+<img src="/assets/home-workbench-en.webp" width="1600" height="1003" alt="Holon web workbench: Holon Bot coordinates Leo (Code Review), Maya (Docs), and Nora (Growth) on the left, summarizes completed docs and launch drafts in the center, and tracks the v0.62 release WorkItem checklist and CI wait state on the right." fetchpriority="high" decoding="async">
 </a>
 </div>
 <div class="home-stage__panel" data-stage-panel="tui" hidden>
-<div class="home-terminal" role="region" aria-label="Terminal CLI and TUI session inspecting the same PR review WorkItem">
+<div class="home-terminal" role="region" aria-label="Terminal CLI and TUI session inspecting Holon Bot coordinating the v0.62 launch WorkItem">
 <div class="home-terminal__chrome" aria-hidden="true"><span class="home-terminal__dots"><i></i><i></i><i></i></span><span class="home-terminal__title">holon — local daemon · 127.0.0.1:7878</span></div>
 <div class="home-terminal__body">
 <div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon work-item list</span></div>
 <div class="home-terminal__line home-terminal__line--head">WORK ITEM              AGENT          STATUS    TITLE</div>
-<div class="home-terminal__line">demo-reviewer-work     code-reviewer  <span class="home-terminal__badge home-terminal__badge--wait">blocked</span>   Follow PR #42: fix skipped pages</div>
+<div class="home-terminal__line">launch-v062            holonbot       <span class="home-terminal__badge home-terminal__badge--wait">blocked</span>   Coordinate v0.62 launch: code, docs &amp; content</div>
+<div class="home-terminal__line">demo-leo-work          leo-reviewer   <span class="home-terminal__badge home-terminal__badge--wait">blocked</span>   Follow PR #128: waiting on release CI checks</div>
 <div class="home-terminal__spacer"></div>
-<div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon tail --agent code-reviewer --include-progress</span></div>
-<div class="home-terminal__line"><span class="home-terminal__time">10:12</span> <span class="home-terminal__tag">webhook</span>  GitHub push on PR #42 · commit 8f3c1a2</div>
-<div class="home-terminal__line"><span class="home-terminal__time">10:14</span> <span class="home-terminal__tag home-terminal__tag--ok">done</span>     Checked pagination fix and empty-list regression tests</div>
-<div class="home-terminal__line"><span class="home-terminal__time">10:15</span> <span class="home-terminal__tag home-terminal__tag--wait">parked</span>   Waiting for CI on current commit (0 tokens while idle)</div>
+<div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon tail --agent holonbot --include-progress</span></div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:11</span> <span class="home-terminal__tag home-terminal__tag--ok">maya-docs</span>    Updated quickstart &amp; mobile QR pairing guides</div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:13</span> <span class="home-terminal__tag home-terminal__tag--ok">nora-growth</span>  Drafted v0.62 launch post &amp; release highlights</div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:15</span> <span class="home-terminal__tag home-terminal__tag--wait">parked</span>       Waiting on Leo (PR #128 CI) &amp; your approval to publish</div>
 <div class="home-terminal__spacer"></div>
 <div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon tui</span></div>
-<div class="home-terminal__line home-terminal__line--muted">▸ Attached to local runtime · 3 agents active · 2 todos done, 2 pending CI</div>
+<div class="home-terminal__line home-terminal__line--muted">▸ Attached to local runtime · 4 agents online · 2 todos done, waiting on CI &amp; sign-off</div>
 </div>
 </div>
 </div>
 <div class="home-stage__panel" data-stage-panel="mobile" hidden>
-<div class="home-mobile-stage" role="region" aria-label="Holon mobile client connected to the same running daemon">
+<div class="home-mobile-stage" role="region" aria-label="Holon mobile client connected to Holon Bot and specialist agents">
 <div class="home-phones" aria-hidden="true">
 <div class="home-phone">
 <div class="home-phone__notch"><span>9:41</span><i></i><span>5G</span></div>
 <div class="home-phone__top"><strong>Holon</strong><span class="home-phone__live">dev-server</span></div>
 <div class="home-phone__search">Filter agents...</div>
 <div class="home-phone__list">
-<div class="home-phone__row"><span class="home-phone__dot"></span><div><strong>Investigation</strong><small>Idle · Last brief 09:48</small></div></div>
-<div class="home-phone__row home-phone__row--active"><span class="home-phone__dot home-phone__dot--wait"></span><div><strong>Code review</strong><small>Follow PR #42: fix skipped...</small></div><em>CI</em></div>
-<div class="home-phone__row"><span class="home-phone__dot home-phone__dot--ok"></span><div><strong>Verification</strong><small>Ready · 1 workspace</small></div></div>
+<div class="home-phone__row home-phone__row--active"><span class="home-phone__dot home-phone__dot--wait"></span><div><strong>Holon Bot</strong><small>Coordinate v0.62 launch: code...</small></div><em>Wait</em></div>
+<div class="home-phone__row"><span class="home-phone__dot home-phone__dot--wait"></span><div><strong>Leo · Code Review</strong><small>Follow PR #128: waiting on CI</small></div><em>CI</em></div>
+<div class="home-phone__row"><span class="home-phone__dot home-phone__dot--ok"></span><div><strong>Maya · Docs</strong><small>Pairing &amp; CLI guides updated</small></div></div>
+<div class="home-phone__row"><span class="home-phone__dot home-phone__dot--ok"></span><div><strong>Nora · Growth</strong><small>Launch post &amp; social draft ready</small></div></div>
 </div>
 </div>
 <div class="home-phone">
 <div class="home-phone__notch"><span>9:42</span><i></i><span>5G</span></div>
-<div class="home-phone__top"><span>‹ Code review</span><span class="home-phone__chip">Files</span></div>
+<div class="home-phone__top"><span>‹ Holon Bot</span><span class="home-phone__chip">Files</span></div>
 <div class="home-phone__card">
-<span class="home-phone__kicker">PR #42 · COMPLETION BRIEF</span>
-<strong>Changes reviewed; waiting for CI</strong>
-<p>Verified pagination fix and empty-list regression tests on commit 8f3c1a2.</p>
-<div class="home-phone__trace">▸ 4 tool checks &amp; diff output collapsed</div>
+<span class="home-phone__kicker">V0.62 LAUNCH · BRIEF</span>
+<strong>Docs &amp; launch draft ready; waiting on CI</strong>
+<p>Maya updated the guides and Nora drafted the launch post. Only PR #128 with Leo is waiting on CI.</p>
+<div class="home-phone__trace">▸ 3 role updates &amp; checks collapsed</div>
 </div>
-<div class="home-phone__wait">Waiting on GitHub CI · Reply to steer</div>
-<div class="home-phone__composer"><span>Merge once CI turns green</span><b>↑</b></div>
+<div class="home-phone__wait">Waiting on PR #128 CI &amp; publish sign-off</div>
+<div class="home-phone__composer"><span>Publish once Leo confirms CI passes</span><b>↑</b></div>
 </div>
 </div>
 <div class="home-mobile-stage__info">
 <span class="home-mobile-stage__kicker">HOLON AGENT REMOTE · IOS &amp; ANDROID</span>
-<h3>Step away from your desk without pausing the work.</h3>
+<h3>Step away from your desk without pausing the team.</h3>
 <ul class="home-mobile-stage__list">
 <li><strong>QR code pairing</strong> — Scan once from Web UI or macOS menu bar; revocable credentials stay in system Keychain.</li>
-<li><strong>Result-first timeline</strong> — Read Markdown briefs and workspace files while noisy tool traces stay collapsed.</li>
-<li><strong>Unblock in one reply</strong> — Answer approval questions or send links via Share Sheet to resume a parked WorkItem.</li>
+<li><strong>Result-first timeline</strong> — Read clean briefs and draft files from Holon Bot, Maya, or Nora while raw logs stay collapsed.</li>
+<li><strong>Approve on the go</strong> — Sign off on a launch post or steer an ongoing WorkItem in one reply from anywhere.</li>
 </ul>
 <div class="home-mobile-stage__links">
 <a href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS App Store ↗</a>
@@ -107,9 +109,9 @@ order: 1
 </div>
 </div>
 <div class="home-stage__callouts">
-<div class="home-stage__callout"><span>01 · ROLES</span><strong>Dedicated, lasting agents</strong><p>Give investigation, code review, and verification their own skills, instructions, and memory.</p></div>
-<div class="home-stage__callout"><span>02 · WORKITEM</span><strong>Saved plan &amp; checklist</strong><p>Goals, completed checks, and next steps stay attached to the task across multiple turns and days.</p></div>
-<div class="home-stage__callout"><span>03 · WAIT / WAKE</span><strong>Park on CI or human input</strong><p>Agents sleep cleanly while waiting for webhooks, schedules, or approvals, then resume in place.</p></div>
+<div class="home-stage__callout"><span>01 · COORDINATED ROLES</span><strong>Holon Bot + named specialists</strong><p>Start with Holon Bot, then delegate recurring code review, docs, and growth work to dedicated agents.</p></div>
+<div class="home-stage__callout"><span>02 · WORKITEM</span><strong>Saved plan &amp; checklist</strong><p>Goals, completed deliverables, and pending handoffs stay attached to one task across turns and days.</p></div>
+<div class="home-stage__callout"><span>03 · WAIT / WAKE</span><strong>Park on CI or human sign-off</strong><p>Agents sleep cleanly while waiting on webhooks, teammates, or your approval, then resume in place.</p></div>
 </div>
 </div>
 </section>

@@ -42,61 +42,63 @@ order: 1
 </div>
 </div>
 <div class="home-stage__panel" data-stage-panel="web">
-<a class="home-stage__shot" href="/assets/lite-paper/web-gui-review-zh-CN.webp" aria-label="查看 Holon Web 工作台截图大图">
-<img src="/assets/lite-paper/web-gui-review-zh-CN.webp" width="1600" height="1003" alt="Holon Web 工作台：左侧按职责列出常驻 Agent，中间展示 PR 审阅进展与下一步，右侧显示已保存的 WorkItem 计划、等待原因与待办清单。" fetchpriority="high" decoding="async">
+<a class="home-stage__shot" href="/assets/home-workbench-zh-CN.webp" aria-label="查看 Holon Web 工作台截图大图">
+<img src="/assets/home-workbench-zh-CN.webp" width="1600" height="1003" alt="Holon Web 工作台：左侧展示主助手 Holon Bot 与 Leo（代码审阅）、Maya（技术文档）、Nora（内容与增长）四个常驻角色，中间汇总文档与宣发草稿进展，右侧显示 v0.62 发布工作项的计划、阻塞原因与待办清单。" fetchpriority="high" decoding="async">
 </a>
 </div>
 <div class="home-stage__panel" data-stage-panel="tui" hidden>
-<div class="home-terminal" role="region" aria-label="在终端通过 CLI 与 TUI 查看同一个 PR 审阅工作项">
+<div class="home-terminal" role="region" aria-label="在终端通过 CLI 与 TUI 查看 Holon Bot 统筹多角色推进 v0.62 发布">
 <div class="home-terminal__chrome" aria-hidden="true"><span class="home-terminal__dots"><i></i><i></i><i></i></span><span class="home-terminal__title">holon — 本地后台服务 · 127.0.0.1:7878</span></div>
 <div class="home-terminal__body">
 <div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon work-item list</span></div>
 <div class="home-terminal__line home-terminal__line--head">WORK ITEM              AGENT          STATUS    TITLE</div>
-<div class="home-terminal__line">demo-reviewer-work     code-reviewer  <span class="home-terminal__badge home-terminal__badge--wait">blocked</span>   跟进 PR #42：修复分页遗漏问题</div>
+<div class="home-terminal__line">launch-v062            holonbot       <span class="home-terminal__badge home-terminal__badge--wait">blocked</span>   统筹 v0.62 发布：代码、文档与宣发</div>
+<div class="home-terminal__line">demo-leo-work          leo-reviewer   <span class="home-terminal__badge home-terminal__badge--wait">blocked</span>   跟进 PR #128：等待构建与回归测试 CI</div>
 <div class="home-terminal__spacer"></div>
-<div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon tail --agent code-reviewer --include-progress</span></div>
-<div class="home-terminal__line"><span class="home-terminal__time">10:12</span> <span class="home-terminal__tag">webhook</span>  收到 PR #42 新提交 · commit 8f3c1a2</div>
-<div class="home-terminal__line"><span class="home-terminal__time">10:14</span> <span class="home-terminal__tag home-terminal__tag--ok">done</span>     已核对分页修复代码与空列表回归测试</div>
-<div class="home-terminal__line"><span class="home-terminal__time">10:15</span> <span class="home-terminal__tag home-terminal__tag--wait">parked</span>   等待当前提交的 CI 结果（挂起期间 0 Token 消耗）</div>
+<div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon tail --agent holonbot --include-progress</span></div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:11</span> <span class="home-terminal__tag home-terminal__tag--ok">maya-docs</span>    已同步快速安装指南与移动端扫码配对文档</div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:13</span> <span class="home-terminal__tag home-terminal__tag--ok">nora-growth</span>  已起草 v0.62 发布博客与社媒版本亮点</div>
+<div class="home-terminal__line"><span class="home-terminal__time">10:15</span> <span class="home-terminal__tag home-terminal__tag--wait">parked</span>       等待 Leo 回传 PR #128 CI 结果，发布前请你确认</div>
 <div class="home-terminal__spacer"></div>
 <div class="home-terminal__line"><span class="home-terminal__prompt">$</span> <span class="home-terminal__cmd">holon tui</span></div>
-<div class="home-terminal__line home-terminal__line--muted">▸ 已连接本地运行时 · 3 个常驻 Agent 在线 · 2 项已完成，2 项等待 CI</div>
+<div class="home-terminal__line home-terminal__line--muted">▸ 已连接本地运行时 · 4 个常驻 Agent 在线 · 2 项已完成，等待 CI 与拍板确认</div>
 </div>
 </div>
 </div>
 <div class="home-stage__panel" data-stage-panel="mobile" hidden>
-<div class="home-mobile-stage" role="region" aria-label="连接到同一常驻服务的 Holon 手机客户端界面示意">
+<div class="home-mobile-stage" role="region" aria-label="连接到同一常驻服务的 Holon 手机客户端查看多角色协调进展">
 <div class="home-phones" aria-hidden="true">
 <div class="home-phone">
 <div class="home-phone__notch"><span>9:41</span><i></i><span>5G</span></div>
 <div class="home-phone__top"><strong>Holon</strong><span class="home-phone__live">dev-server</span></div>
 <div class="home-phone__search">搜索常驻 Agent…</div>
 <div class="home-phone__list">
-<div class="home-phone__row"><span class="home-phone__dot"></span><div><strong>问题调查</strong><small>空闲 · 上次简报 09:48</small></div></div>
-<div class="home-phone__row home-phone__row--active"><span class="home-phone__dot home-phone__dot--wait"></span><div><strong>代码审阅</strong><small>跟进 PR #42：修复分页遗漏…</small></div><em>等 CI</em></div>
-<div class="home-phone__row"><span class="home-phone__dot home-phone__dot--ok"></span><div><strong>验证测试</strong><small>就绪 · 1 个工作区</small></div></div>
+<div class="home-phone__row home-phone__row--active"><span class="home-phone__dot home-phone__dot--wait"></span><div><strong>Holon Bot</strong><small>统筹 v0.62 发布：代码、文档…</small></div><em>等确认</em></div>
+<div class="home-phone__row"><span class="home-phone__dot home-phone__dot--wait"></span><div><strong>Leo · 代码审阅</strong><small>跟进 PR #128：等待回归 CI</small></div><em>等 CI</em></div>
+<div class="home-phone__row"><span class="home-phone__dot home-phone__dot--ok"></span><div><strong>Maya · 技术文档</strong><small>安装与配对指南已更新</small></div></div>
+<div class="home-phone__row"><span class="home-phone__dot home-phone__dot--ok"></span><div><strong>Nora · 内容与增长</strong><small>发布博客与社媒草稿就绪</small></div></div>
 </div>
 </div>
 <div class="home-phone">
 <div class="home-phone__notch"><span>9:42</span><i></i><span>5G</span></div>
-<div class="home-phone__top"><span>‹ 代码审阅</span><span class="home-phone__chip">文件</span></div>
+<div class="home-phone__top"><span>‹ Holon Bot</span><span class="home-phone__chip">文件</span></div>
 <div class="home-phone__card">
-<span class="home-phone__kicker">PR #42 · 阶段简报</span>
-<strong>新提交已复核，正在等待 CI</strong>
-<p>已核对 commit 8f3c1a2 的分页修复与空列表回归测试。</p>
-<div class="home-phone__trace">▸ 已折叠 4 次工具调用与 Diff 记录</div>
+<span class="home-phone__kicker">V0.62 发布 · 协调简报</span>
+<strong>文档与宣发草稿就绪，等待 CI</strong>
+<p>Maya 已更新配对文档，Nora 已备好发布文章初稿；仅剩 Leo 跟进的 PR #128 等待 CI。</p>
+<div class="home-phone__trace">▸ 已折叠 3 条角色回传与核对记录</div>
 </div>
-<div class="home-phone__wait">等待 GitHub CI · 可随时回复调整要求</div>
-<div class="home-phone__composer"><span>保留旧接口，CI 通过后合并</span><b>↑</b></div>
+<div class="home-phone__wait">等待 PR #128 CI 与对外发布确认</div>
+<div class="home-phone__composer"><span>Leo 确认 CI 通过后即可发布</span><b>↑</b></div>
 </div>
 </div>
 <div class="home-mobile-stage__info">
 <span class="home-mobile-stage__kicker">HOLON AGENT REMOTE · IOS &amp; ANDROID</span>
-<h3>离开工位，也能随时查看简报、拍板放行。</h3>
+<h3>离开工位，也能随时查看汇总、拍板放行。</h3>
 <ul class="home-mobile-stage__list">
 <li><strong>扫码一键配对</strong> — 扫描 Web 工作台或 macOS 菜单栏二维码即可连接，可吊销凭据安全存入系统钥匙串。</li>
-<li><strong>结果优先时间线</strong> — 直接阅读清晰的交付简报与工作区文件，底层冗长的工具日志默认折叠不刷屏。</li>
-<li><strong>一句话恢复推进</strong> — 在路上回复关键取舍，或通过系统分享菜单把链接直接派发给指定 Agent。</li>
+<li><strong>结果优先时间线</strong> — 直接阅读 Holon Bot 的协调简报或打开 Nora 的草稿文件，底层日志默认折叠不刷屏。</li>
+<li><strong>一句话恢复推进</strong> — 在路上确认对外宣发或补充取舍要求，挂起中的工作项收到回复即刻继续。</li>
 </ul>
 <div class="home-mobile-stage__links">
 <a href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS App Store ↗</a>
@@ -107,9 +109,9 @@ order: 1
 </div>
 </div>
 <div class="home-stage__callouts">
-<div class="home-stage__callout"><span>01 · 长期职责</span><strong>按角色常驻的 Agent</strong><p>问题调查、代码审阅、测试验证各自拥有独立的技能、指令与记忆。</p></div>
-<div class="home-stage__callout"><span>02 · WORKITEM</span><strong>保存计划与核对清单</strong><p>目标、已完成检查和下一步进展绑定在同一工作项上，跨多轮对话与多天不丢失。</p></div>
-<div class="home-stage__callout"><span>03 · 等待与唤醒</span><strong>等 CI、等事件、按需人工拍板</strong><p>等待外部结果或人工确认时安静挂起，事件到达后沿着已有进度原地恢复。</p></div>
+<div class="home-stage__callout"><span>01 · 多角色协同</span><strong>Holon Bot 统筹专业队友</strong><p>从默认主助手起步，将代码审阅、技术文档、内容与增长交给有名有姓的常驻角色。</p></div>
+<div class="home-stage__callout"><span>02 · WORKITEM</span><strong>保存计划与分工清单</strong><p>目标、各角色已完成产出与待交接事项绑定在同一工作项上，跨会话与多天不丢失。</p></div>
+<div class="home-stage__callout"><span>03 · 等待与唤醒</span><strong>等 CI、等回传、按需拍板</strong><p>等待外部检查、角色回传或人工确认时安静挂起，条件满足后沿着已有进度原地恢复。</p></div>
 </div>
 </div>
 </section>

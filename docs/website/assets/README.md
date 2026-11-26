@@ -76,12 +76,14 @@ saved state and event wakeups. Technical terminology in article prose is unchang
 
 ## Web workbench screenshots
 
-The homepages and `what-is-holon` articles use the matching-language
-`lite-paper/web-gui-review-{zh-CN,en}.webp` (1600×1003, lossless WebP). Captions
-describe the reviewer waiting for CI and identify the content as demo data. Each
-image links to the same file, so the link opens the largest published size.
+- `home-workbench-{zh-CN,en}.webp` (1600×1003, lossless WebP): used on the
+  bilingual homepages to show `Holon Bot` coordinating named specialist agents
+  (`Leo · Code Review`, `Maya · Docs`, `Nora · Growth`). Re-export with
+  `node docs/website/.tools/gui-capture/capture-home-workbench.mjs`.
+- `lite-paper/web-gui-review-{zh-CN,en}.webp` (1600×1003, lossless WebP): used
+  in the `what-is-holon` articles to illustrate ongoing PR review waiting on CI.
 
-The source screenshots and capture metadata are in `docs/lite-paper/assets/`;
+The single-reviewer source screenshots and capture metadata are in `docs/lite-paper/assets/`;
 the reproducible capture scripts and fixtures are in
 `docs/lite-paper/tools/gui-tour/`. Website copies should match those sources.
 
