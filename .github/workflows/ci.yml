@@ -54,6 +54,8 @@ on:
       - "scripts/ci_rust_selection.py"
       - "scripts/ci_test_shards.py"
       - "scripts/validate-agent-templates*.py"
+      - "scripts/beta-real-lib-*.sh"
+      - "scripts/test-beta-real-lib-smoke-snapshot.sh"
   pull_request:
     branches: [main]
     paths:
@@ -107,6 +109,8 @@ on:
       - "scripts/ci_rust_selection.py"
       - "scripts/ci_test_shards.py"
       - "scripts/validate-agent-templates*.py"
+      - "scripts/beta-real-lib-*.sh"
+      - "scripts/test-beta-real-lib-smoke-snapshot.sh"
   workflow_dispatch:
   schedule:
     # Nightly full-sweep safety net: PRs and main pushes skip Apple jobs,
@@ -145,6 +149,7 @@ jobs:
       runtime_test_groups: ${{ steps.rust-selection.outputs.runtime_test_groups }}
       rust_test_shards: ${{ steps.rust-selection.outputs.rust_test_shards }}
       template_validation: ${{ steps.filter.outputs.template_validation }}
+      beta_smoke_scripts: ${{ steps.filter.outputs.beta_smoke_scripts }}
       conversation_sdk: ${{ steps.filter.outputs.conversation_sdk }}
       web: ${{ steps.filter.outputs.web }}
       android: ${{ steps.filter.outputs.android }}
@@ -199,6 +204,10 @@ jobs:
               - 'builtin_templates/**'
               - 'scripts/validate-agent-templates*.py'
               - 'Makefile'
+            beta_smoke_scripts:
+              - '.github/workflows/ci.yml'
+              - 'scripts/beta-real-lib-*.sh'
+              - 'scripts/test-beta-real-lib-smoke-snapshot.sh'
             conversation_sdk:
               - 'packages/conversation-sdk/**'
               - '.github/workflows/ci.yml'
@@ -829,6 +838,21 @@ jobs:
 
       - name: Validate checked-in agent templates
         run: make validate-agent-templates
+
+  beta-smoke-scripts:
+    name: Beta smoke scripts
+    needs: changes
+    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.beta_smoke_scripts == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure sqlite3
+        run: command -v sqlite3 >/dev/null || (sudo apt-get update && sudo apt-get install -y sqlite3)
+
+      - name: Test concurrent-safe database snapshot
+        run: bash scripts/test-beta-real-lib-smoke-snapshot.sh
 
   rust-lint:
 

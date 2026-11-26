@@ -2,9 +2,11 @@
 # Real-library startup smoke for a daily beta build.
 #
 # Snapshots the live daemon home's runtime database into a sandbox
-# (WAL-consistent `sqlite3 .backup` of `state/runtime.sqlite`), boots the
-# published beta binary against the snapshot on a spare port, and verifies
-# the daemon starts, passes schema migrations, and accepts connections. This
+# (consistent `sqlite3 VACUUM INTO` of `state/runtime.sqlite`; unlike
+# `.backup`, concurrent daemon writes do not restart the copy, so a large
+# live home still finishes), boots the published beta binary against the
+# snapshot on a spare port, and verifies the daemon starts, passes schema
+# migrations, and accepts connections. This
 # is the gate that catches #4429-class upgrade aborts before any real machine
 # auto-upgrades.
 #
@@ -27,20 +29,29 @@
 #   database shape, so schema migration behavior is verified exactly as
 #   before.
 #
-# Usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--keep] [--no-marker]
+# Usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--db <path>]
+#                                  [--keep] [--no-marker]
 # Env:
 #   SMOKE_HOME_SRC      default ~/.holon (live daemon home to snapshot)
+#   SMOKE_DB_PATH       pre-made offline database copy; skips the snapshot
 #   SMOKE_SANDBOX       default /var/tmp/holon-beta-smoke (reused, replaced)
 #   SMOKE_PORT          default 18099
 #   SMOKE_SETTLE_SECS   seconds the beta must stay healthy (default 45)
 #   SMOKE_WEB_DIST      optional --web-dist path if the build needs one
+# --db/SMOKE_DB_PATH must point at a frozen copy with no live writer (for
+# example a database produced by `sqlite3 ... "VACUUM INTO ..."` on a
+# stopped daemon). It is still copied into the sandbox as an independent,
+# writable file; the caller's database is never opened in place.
 # On success the `[smoke: pending]` marker in the beta release body is
 # replaced with `[smoke: passed] ...` (requires `gh`; skip with --no-marker).
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+SNAPSHOT="$SCRIPT_DIR/beta-real-lib-snapshot.sh"
 REPO="holon-run/holon"
 TAG=""
 BINARY=""
+DB_SRC="${SMOKE_DB_PATH:-}"
 KEEP=0
 MARKER=1
 HOME_SRC="${SMOKE_HOME_SRC:-$HOME/.holon}"
@@ -60,14 +71,15 @@ trap cleanup EXIT
 while [ $# -gt 0 ]; do
   case "$1" in
     --binary) BINARY="$2"; shift ;;
+    --db) DB_SRC="$2"; shift ;;
     --keep) KEEP=1 ;;
     --no-marker) MARKER=0 ;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) TAG="$1" ;;
   esac
   shift
 done
-[ -n "$TAG" ] || die "usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--keep] [--no-marker]"
+[ -n "$TAG" ] || die "usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--db <path>] [--keep] [--no-marker]"
 case "$TAG" in *-beta.*) ;; *) die "$TAG does not look like a beta tag" ;; esac
 
 OS="$(uname -s)"
@@ -94,16 +106,33 @@ if [ -z "$BINARY" ]; then
 fi
 log "smoking beta binary: $("$BINARY" --version)"
 
-log "snapshotting live daemon home ${HOME_SRC} into sandbox ${SANDBOX}"
-if [ -e "$HOME_SRC/credentials.json" ]; then
-  log "live credentials.json detected; NOT copying it (sandbox must stay credential-free)"
+if [ -n "$DB_SRC" ]; then
+  # A pre-made copy skips the live snapshot, but it must never alias the
+  # sandbox: the sandbox is deleted and rebuilt below.
+  [ -f "$DB_SRC" ] || die "--db/SMOKE_DB_PATH does not exist: $DB_SRC"
+  DB_SRC="$(realpath -e -- "$DB_SRC")" || die "--db/SMOKE_DB_PATH is not a readable path: $DB_SRC"
+  SANDBOX_ABS="$(realpath -m -- "$SANDBOX")"
+  case "$DB_SRC" in
+    "$SANDBOX_ABS"|"$SANDBOX_ABS"/*)
+      die "refusing --db inside the sandbox ($SANDBOX): the sandbox is deleted and rebuilt"
+      ;;
+  esac
+  log "using pre-snapshot database ${DB_SRC}; skipping the live snapshot"
+else
+  log "snapshotting live daemon home ${HOME_SRC} into sandbox ${SANDBOX}"
+  if [ -e "$HOME_SRC/credentials.json" ]; then
+    log "live credentials.json detected; NOT copying it (sandbox must stay credential-free)"
+  fi
 fi
 rm -rf "$SANDBOX"
 mkdir -p "$SANDBOX/.holon/state"
 chmod 700 "$SANDBOX"
 : > "$SANDBOX/.holon/holon.db"
-log "sqlite .backup of state/runtime.sqlite (WAL-consistent; can take minutes on large homes)"
-sqlite3 "$HOME_SRC/state/runtime.sqlite" ".backup '$SANDBOX/.holon/state/runtime.sqlite'"
+if [ -n "$DB_SRC" ]; then
+  "$SNAPSHOT" --src "$DB_SRC" --dst "$SANDBOX/.holon/state/runtime.sqlite" --frozen
+else
+  "$SNAPSHOT" --src "$HOME_SRC/state/runtime.sqlite" --dst "$SANDBOX/.holon/state/runtime.sqlite"
+fi
 log "snapshot size: $(du -sh "$SANDBOX/.holon/state/runtime.sqlite" | awk '{print $1}')"
 
 # Fail closed: the sandbox must be credential-free and config-free before
