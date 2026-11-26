@@ -195,6 +195,19 @@ pub struct WorkItemExecutionBinding {
     pub claimed_work_revision: Option<u64>,
 }
 
+/// Durable ACP session binding for one agent incarnation.
+///
+/// The upstream session id is a rotatable continuation credential only; it is
+/// never an agent, task, or work-item identity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcpSessionState {
+    pub acp_profile: String,
+    pub resume_session_id: String,
+    pub bound_execution_root: String,
+    #[serde(default)]
+    pub bound_additional_dirs: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentState {
     #[serde(
@@ -228,6 +241,8 @@ pub struct AgentState {
     pub execution_profile: ExecutionProfile,
     #[serde(default)]
     pub execution_driver: AgentExecutionDriver,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_session_state: Option<AcpSessionState>,
     #[serde(default)]
     pub pending_wake_hint: Option<PendingWakeHint>,
     #[serde(default)]
@@ -502,6 +517,7 @@ impl AgentState {
             tool_latency: Vec::new(),
             execution_profile: ExecutionProfile::default(),
             execution_driver: AgentExecutionDriver::default(),
+            acp_session_state: None,
             pending_wake_hint: None,
             attached_workspaces: Vec::new(),
             active_workspace_entry: None,

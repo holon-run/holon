@@ -856,6 +856,9 @@ struct RuntimeInner {
     input_evidence_budget: input_evidence_budget::InputEvidenceBudgetLedger,
     standalone_related_mutation_owners: mutation_owner::MutationOwnerRegistry,
     agent: Mutex<RuntimeAgent>,
+    acp_session: Mutex<Option<acp::AcpResidentSession>>,
+    #[cfg(test)]
+    acp_test_harness: Mutex<Option<acp::AcpTestHarnessFactory>>,
     // Fault/cancellation fixtures block the original post-SQL install seam.
     #[cfg(test)]
     installation_barrier: Mutex<()>,
