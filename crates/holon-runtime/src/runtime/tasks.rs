@@ -1542,7 +1542,7 @@ impl RuntimeHandle {
             let _ = self.enqueue(running_message).await;
         }
 
-        let mut retry = MessageWaitMonitorRetry::new(tokio::time::Instant::now());
+        let mut retry = MessageWaitMonitorRetry::new();
         let result = loop {
             match bridge
                 .await_agent_message(
@@ -1564,7 +1564,7 @@ impl RuntimeHandle {
                         return Ok(());
                     }
                     match MessageWaitMonitorFailure::classify(&error) {
-                        // Neither failure can be read or finished here. The
+                        // Neither failure can be read here. The
                         // durable task stays with the successor owner.
                         MessageWaitMonitorFailure::OwnerReplaced
                         | MessageWaitMonitorFailure::TaskWithdrawn => {
@@ -1572,8 +1572,16 @@ impl RuntimeHandle {
                                 "message wait reply read stopped; durable task retained for owner recovery");
                             return Ok(());
                         }
-                        MessageWaitMonitorFailure::CanonicalChanged
-                        | MessageWaitMonitorFailure::Retryable => {}
+                        // The persisted task no longer describes this wait, so
+                        // reading can never resolve it. Mirror the commit side:
+                        // leave the record untouched instead of retrying for
+                        // the whole budget and then failing the wait.
+                        MessageWaitMonitorFailure::CanonicalChanged => {
+                            tracing::warn!(task_id = %task_record.id, error = %error,
+                                "message wait reply read stopped; persisted task no longer describes this wait");
+                            return Ok(());
+                        }
+                        MessageWaitMonitorFailure::Retryable => {}
                     }
                     let Some(delay) = retry.next_delay(tokio::time::Instant::now()) else {
                         // A reply that can never be read converges the wait as
@@ -1639,7 +1647,7 @@ impl RuntimeHandle {
         terminal_detail: serde_json::Value,
         text: String,
     ) -> Result<()> {
-        let mut retry = MessageWaitMonitorRetry::new(tokio::time::Instant::now());
+        let mut retry = MessageWaitMonitorRetry::new();
         loop {
             // A withdrawn Task record has no target this monitor may commit.
             // The resident Task domain can report a missing key as merely

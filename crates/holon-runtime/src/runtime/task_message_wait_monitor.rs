@@ -19,6 +19,9 @@ use super::mutation_owner::MutationOwnerError;
 /// attempt is immediate, then the delay doubles up to the cap until the budget
 /// is spent. Both loops retain one recovery responsibility for a durable task,
 /// so pacing only changes latency and journal volume, not durability.
+///
+/// The budget measures retry time, not monitor lifetime: it starts on the first
+/// failure, so a wait that stayed healthy for hours still gets the full window.
 const RETRY_MIN_DELAY: Duration = Duration::from_millis(500);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 const RETRY_BUDGET: Duration = Duration::from_secs(15 * 60);
@@ -79,23 +82,26 @@ impl MessageWaitMonitorFailure {
 #[derive(Debug)]
 pub(super) struct MessageWaitMonitorRetry {
     next_delay: Duration,
-    deadline: Instant,
+    deadline: Option<Instant>,
 }
 
 impl MessageWaitMonitorRetry {
-    pub(super) fn new(now: Instant) -> Self {
+    /// The deadline stays open until the first failure, because the budget
+    /// bounds retry time and a monitor can wait for a reply for hours.
+    pub(super) fn new() -> Self {
         Self {
             next_delay: RETRY_MIN_DELAY,
-            deadline: now + RETRY_BUDGET,
+            deadline: None,
         }
     }
 
     /// Delay before the next attempt, or `None` once the budget is spent.
     pub(super) fn next_delay(&mut self, now: Instant) -> Option<Duration> {
-        if now >= self.deadline {
+        let deadline = *self.deadline.get_or_insert(now + RETRY_BUDGET);
+        if now >= deadline {
             return None;
         }
-        let delay = self.next_delay.min(self.deadline - now);
+        let delay = self.next_delay.min(deadline - now);
         self.next_delay = (self.next_delay * 2).min(RETRY_MAX_DELAY);
         Some(delay)
     }
@@ -158,9 +164,9 @@ mod tests {
     }
 
     #[test]
-    fn retry_backoff_grows_caps_and_then_expires() {
+    fn retry_backoff_starts_on_first_failure() {
         let start = Instant::now();
-        let mut retry = MessageWaitMonitorRetry::new(start);
+        let mut retry = MessageWaitMonitorRetry::new();
         let mut delays = Vec::new();
         let mut now = start;
         while let Some(delay) = retry.next_delay(now) {
@@ -171,8 +177,24 @@ mod tests {
         assert_eq!(delays[0], RETRY_MIN_DELAY);
         assert_eq!(delays[1], RETRY_MIN_DELAY * 2);
         assert!(delays.iter().all(|delay| *delay <= RETRY_MAX_DELAY));
-        assert!(delays.iter().any(|delay| *delay == RETRY_MAX_DELAY));
+        assert!(delays.contains(&RETRY_MAX_DELAY));
         assert!(now >= start + RETRY_BUDGET);
         assert_eq!(retry.next_delay(now), None);
+    }
+
+    #[test]
+    fn retry_budget_ignores_time_spent_waiting_healthy() {
+        // A monitor can wait for a reply for longer than the whole budget. Its
+        // first failure must still get a full retry window instead of failing
+        // the durable wait immediately.
+        let mut retry = MessageWaitMonitorRetry::new();
+        let late = Instant::now() + RETRY_BUDGET * 4;
+        assert_eq!(retry.next_delay(late), Some(RETRY_MIN_DELAY));
+        assert_eq!(
+            retry.next_delay(late + RETRY_MIN_DELAY),
+            Some(RETRY_MIN_DELAY * 2)
+        );
+        let deadline = late + RETRY_BUDGET;
+        assert_eq!(retry.next_delay(deadline), None);
     }
 }
