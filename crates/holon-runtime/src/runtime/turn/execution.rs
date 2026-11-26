@@ -2181,15 +2181,34 @@ fn usage_attempt_records(
                     attempt.model_ref.clone(),
                 ),
             };
+            let started_at = attempt.started_at.unwrap_or_else(chrono::Utc::now);
+            // A row is written once per attempt, but the id is still derived
+            // from the attempt's own dispatch facts, never from a random UUID:
+            // a repeated write of the same attempt must stay a no-op under
+            // `INSERT OR IGNORE` instead of silently adding a second row. The
+            // round is deliberately excluded because a carried attempt is
+            // observed by more than one round of the same turn.
+            let attempt_id = match attempt.started_at {
+                Some(started_at) => format!(
+                    "{}:{}:{}:{}",
+                    turn_id.unwrap_or("no-turn"),
+                    attempt.attempt,
+                    attempt.model_ref,
+                    started_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                ),
+                // A transport that never reported a start has no stable
+                // identity to derive from.
+                None => uuid::Uuid::new_v4().to_string(),
+            };
             crate::runtime_db::usage::UsageAttemptRecord {
-                attempt_id: uuid::Uuid::new_v4().to_string(),
                 agent_id: agent_id.to_string(),
                 turn_id: turn_id.map(str::to_string),
                 work_item_id: work_item_id.map(str::to_string),
                 task_id: None,
                 round_index: Some(round as u64),
                 attempt_index: attempt.attempt as u64,
-                started_at: attempt.started_at.unwrap_or_else(chrono::Utc::now),
+                attempt_id,
+                started_at,
                 provider,
                 endpoint,
                 model_id,
@@ -2212,6 +2231,33 @@ fn usage_attempt_records(
             }
         })
         .collect()
+}
+
+/// The attempt timeline a terminal provider round records.
+///
+/// A dispatch merges the attempts carried from an earlier dispatch of the same
+/// round into its own result, so the merged terminal timeline already holds
+/// every attempt of the round.
+fn usage_ledger_terminal_timeline(
+    result: &Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)>,
+) -> Option<&ProviderAttemptTimeline> {
+    match result {
+        Ok((_, timeline)) => timeline.as_ref(),
+        Err(error) => crate::provider::provider_attempt_timeline(error),
+    }
+}
+
+/// Whether the terminal timeline left the carried attempts out.
+///
+/// An abort propagates the runtime's control-flow error without merging the
+/// probes carried by the round, so those attempts still need their own rows.
+fn usage_ledger_carried_rows_are_unmerged(
+    result: &Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)>,
+) -> bool {
+    result
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.downcast_ref::<CurrentRunAborted>().is_some())
 }
 
 fn record_provider_round_span(
@@ -2749,6 +2795,126 @@ mod provider_span_tests {
         assert!(records[1].trace_id.is_none());
         assert_eq!(records[1].round_index, Some(0));
         assert_eq!(records[1].attempt_index, 2);
+        // Attempt ids come from the attempt itself, so re-reporting the same
+        // attempts from another round of the turn is an ignored duplicate.
+        let repeated = super::usage_attempt_records(
+            "agent-1",
+            Some("turn-1"),
+            Some("work-1"),
+            3,
+            None,
+            &timeline,
+        );
+        let ids = |records: &[crate::runtime_db::usage::UsageAttemptRecord]| {
+            records
+                .iter()
+                .map(|record| record.attempt_id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&records), ids(&repeated));
+        assert_ne!(records[0].attempt_id, records[1].attempt_id);
+    }
+
+    #[test]
+    fn usage_attempt_ids_survive_reselection_merge() {
+        let started_at = Utc::now() - Duration::seconds(1);
+        let attempt = |index: usize, model_ref: &str, offset_ms: i64| ProviderAttemptRecord {
+            provider: "opencode-go".into(),
+            model_ref: model_ref.into(),
+            transport: Some("openai_chat".into()),
+            served_service_tier: None,
+            attempt: index,
+            max_attempts: 3,
+            started_at: Some(started_at + Duration::milliseconds(offset_ms)),
+            completed_at: Some(started_at + Duration::milliseconds(offset_ms + 5)),
+            duration_ms: Some(5),
+            failure_kind: Some("server_error".into()),
+            disposition: Some("retryable".into()),
+            outcome: ProviderAttemptOutcome::Retrying,
+            advanced_to_fallback: false,
+            backoff_ms: None,
+            backoff_source: None,
+            token_usage: None,
+            cache_usage: None,
+            normalized_token_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            provider_http_trace_id: None,
+            transport_diagnostics: None,
+            transport_timeline: None,
+        };
+        let carried = ProviderAttemptTimeline {
+            attempts: vec![attempt(1, "opencode-go@default/kimi-k2", 0)],
+            requested_model_ref: "opencode-go@default/kimi-k2".into(),
+            active_model_ref: None,
+            winning_model_ref: None,
+            pending_fallback_model_ref: None,
+            pending_fallback_disposition: None,
+            aggregated_token_usage: None,
+        };
+        // The terminal timeline of a reselection round merges the carried
+        // attempts in front of its own, which is the shape that used to be
+        // recorded twice (once before the reselection, once at the end).
+        let merged = ProviderAttemptTimeline {
+            attempts: vec![
+                carried.attempts[0].clone(),
+                attempt(1, "opencode-go@messages/kimi-k2", 100),
+            ],
+            ..carried.clone()
+        };
+
+        let first =
+            super::usage_attempt_records("agent-1", Some("turn-1"), None, 0, None, &carried);
+        let second =
+            super::usage_attempt_records("agent-1", Some("turn-1"), None, 1, None, &merged);
+        let mut ids: Vec<&str> = second
+            .iter()
+            .map(|record| record.attempt_id.as_str())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        for record in &first {
+            assert!(
+                ids.contains(&record.attempt_id.as_str()),
+                "carried attempt keeps its identity so the second write is ignored"
+            );
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 2, "distinct attempts keep distinct ids");
+    }
+
+    #[test]
+    fn terminal_usage_ledger_targets_record_each_attempt_once() {
+        let timeline = ProviderAttemptTimeline {
+            attempts: Vec::new(),
+            requested_model_ref: "opencode-go@default/kimi-k2".into(),
+            active_model_ref: None,
+            winning_model_ref: None,
+            pending_fallback_model_ref: None,
+            pending_fallback_disposition: None,
+            aggregated_token_usage: None,
+        };
+
+        // A provider failure already carries the merged round timeline, so the
+        // carried attempts must not be recorded a second time.
+        let failed: Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)> =
+            Err(crate::provider::provider_turn_error(
+                "provider failed",
+                timeline.clone(),
+                anyhow::anyhow!("provider failed"),
+            ));
+        assert!(super::usage_ledger_terminal_timeline(&failed).is_some());
+        assert!(!super::usage_ledger_carried_rows_are_unmerged(&failed));
+
+        // An abort keeps the runtime's control-flow error and drops the merge,
+        // so the carried attempts still need their rows.
+        let aborted: Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)> =
+            Err(anyhow::Error::new(crate::runtime::CurrentRunAborted {
+                run_id: "run-1".into(),
+                reason: "operator stop".into(),
+            }));
+        assert!(super::usage_ledger_terminal_timeline(&aborted).is_none());
+        assert!(super::usage_ledger_carried_rows_are_unmerged(&aborted));
     }
 
     #[test]
@@ -5752,14 +5918,9 @@ impl<'a> TurnExecution<'a> {
                     let result = match result {
                         ProviderRoundDispatch::Completed(result) => result,
                         ProviderRoundDispatch::Interjected(timeline) => {
-                            runtime
-                                .record_provider_attempt_usage(
-                                    agent_id,
-                                    round,
-                                    timeline.as_ref(),
-                                    trace_context.as_ref(),
-                                )
-                                .await?;
+                            // Carried into the next dispatch and recorded once
+                            // with the terminal timeline. Recording here as well
+                            // writes a second row for the same attempts.
                             reselected_attempts = timeline;
                             next_dispatch_reason = ProviderDispatchReason::AfterInterjection;
                             continue 'provider_round;
@@ -5813,15 +5974,26 @@ impl<'a> TurnExecution<'a> {
                         .record_provider_attempt_usage(
                             agent_id,
                             round,
-                            match &result {
-                                Ok((_, timeline)) => timeline.as_ref(),
-                                Err(error) => {
-                                    crate::provider::provider_attempt_timeline(error)
-                                }
-                            },
+                            usage_ledger_terminal_timeline(&result),
                             trace_context.as_ref(),
                         )
                         .await?;
+                    // An aborted dispatch keeps the runtime's control-flow
+                    // error, so the attempts carried from an earlier dispatch of
+                    // the same round never merge into it. Record them here
+                    // instead of losing their rows; every other terminal result
+                    // already carries them merged, and recording there too would
+                    // double count.
+                    if usage_ledger_carried_rows_are_unmerged(&result) {
+                        runtime
+                            .record_provider_attempt_usage(
+                                agent_id,
+                                round,
+                                reselected_attempts.as_ref(),
+                                trace_context.as_ref(),
+                            )
+                            .await?;
+                    }
                     if result.as_ref().err().is_some_and(|error| error.downcast_ref::<CurrentRunAborted>().is_some()) {
                         if let Some(timeline) = reselected_attempts.as_ref() {
                             runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
@@ -6367,14 +6539,9 @@ impl<'a> TurnExecution<'a> {
                     let result = match result {
                         ProviderRoundDispatch::Completed(result) => result,
                         ProviderRoundDispatch::Interjected(timeline) => {
-                            runtime
-                                .record_provider_attempt_usage(
-                                    agent_id,
-                                    round,
-                                    timeline.as_ref(),
-                                    trace_context.as_ref(),
-                                )
-                                .await?;
+                            // Carried into the next dispatch and recorded once
+                            // with the terminal timeline. Recording here as well
+                            // writes a second row for the same attempts.
                             reselected_attempts = timeline;
                             next_dispatch_reason = ProviderDispatchReason::AfterInterjection;
                             continue 'provider_round;
@@ -6428,15 +6595,26 @@ impl<'a> TurnExecution<'a> {
                         .record_provider_attempt_usage(
                             agent_id,
                             round,
-                            match &result {
-                                Ok((_, timeline)) => timeline.as_ref(),
-                                Err(error) => {
-                                    crate::provider::provider_attempt_timeline(error)
-                                }
-                            },
+                            usage_ledger_terminal_timeline(&result),
                             trace_context.as_ref(),
                         )
                         .await?;
+                    // An aborted dispatch keeps the runtime's control-flow
+                    // error, so the attempts carried from an earlier dispatch of
+                    // the same round never merge into it. Record them here
+                    // instead of losing their rows; every other terminal result
+                    // already carries them merged, and recording there too would
+                    // double count.
+                    if usage_ledger_carried_rows_are_unmerged(&result) {
+                        runtime
+                            .record_provider_attempt_usage(
+                                agent_id,
+                                round,
+                                reselected_attempts.as_ref(),
+                                trace_context.as_ref(),
+                            )
+                            .await?;
+                    }
                     if result.as_ref().err().is_some_and(|error| error.downcast_ref::<CurrentRunAborted>().is_some()) {
                         if let Some(timeline) = reselected_attempts.as_ref() {
                             runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;

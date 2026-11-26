@@ -108,7 +108,9 @@ impl UsageAttemptRecord {
 }
 
 /// Append attempt rows. `attempt_id` is the primary key, so a repeated write of
-/// the same attempt is ignored instead of duplicating the ledger entry.
+/// the same attempt is ignored instead of duplicating the ledger entry; the
+/// writer derives that id from the attempt's own dispatch facts, so re-reporting
+/// one attempt through two paths cannot add a second row.
 pub fn append_usage_attempts(
     connection: &Connection,
     records: &[UsageAttemptRecord],

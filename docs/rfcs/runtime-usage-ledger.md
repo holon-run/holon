@@ -61,6 +61,14 @@ outcome (`success`, `failed_retryable`, `failed_terminal`, `cancelled`), and an
 optional `failure_category`. `trace_id` / `span_id` are soft, optional links:
 a missing or pruned trace never invalidates a usage row.
 
+`attempt_id` is derived from the attempt's own dispatch facts (turn, the
+attempt's ordinal within its dispatch, route, and start time) instead of a
+random value, so the primary key keeps its promise: re-reporting one attempt
+through two paths stays an ignored duplicate. A round records its attempts once,
+after its terminal result; when an abort keeps the carried attempts out of the
+merged terminal timeline, they are recorded on their own so no dispatched
+attempt loses its row.
+
 ## Retention
 
 Usage rows follow `runtime.retention.enabled` like the rest of the runtime
