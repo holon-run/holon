@@ -106,33 +106,23 @@ fn explicit_reply_tx(tx: &Transaction<'_>, task: &TaskRecord) -> Result<Option<M
     let Some((target, _, boundary, deadline)) = wait_contract(task) else {
         return Ok(None);
     };
-    let mut statement = tx.prepare(
-        "SELECT payload_json FROM agent_message_deliveries
-         WHERE rowid > ?1 AND target_agent_id = ?2 AND outcome = 'accepted'
-         ORDER BY rowid ASC",
-    )?;
-    let rows = statement.query_map(params![boundary, task.agent_id], |row| {
-        row.get::<_, String>(0)
-    })?;
-    for payload in rows {
-        let delivery = decode_delivery(&payload?)?;
-        if delivery.caller.caller_agent_id.as_deref() != Some(target)
-            || deadline.is_some_and(|deadline| {
+    first_accepted_delivery_after_on(tx, &task.agent_id, boundary, |delivery| {
+        delivery.caller.caller_agent_id.as_deref() == Some(target)
+            && deadline.is_none_or(|deadline| {
                 delivery
                     .accepted_at
-                    .is_none_or(|accepted| accepted > deadline)
+                    .is_some_and(|accepted| accepted <= deadline)
             })
-        {
-            continue;
-        }
-        return Ok(Some(MessageWaitReply::Explicit {
+    })?
+    .map(|delivery| {
+        Ok(MessageWaitReply::Explicit {
             delivery_id: delivery.delivery_id,
             message_id: delivery
                 .message_id
                 .context("accepted reply is missing its message")?,
-        }));
-    }
-    Ok(None)
+        })
+    })
+    .transpose()
 }
 
 fn insert_outcome_tx(
@@ -465,11 +455,7 @@ pub(crate) fn prepare_final_brief_reply_tx(
     {
         return Ok(None);
     }
-    let rowid: i64 = tx.query_row(
-        "SELECT rowid FROM agent_message_deliveries WHERE delivery_id = ?1",
-        [&request.delivery_id],
-        |row| row.get(0),
-    )?;
+    let rowid = delivery_rowid_on(tx, &request.delivery_id)?;
     if rowid != boundary {
         return Ok(None);
     }

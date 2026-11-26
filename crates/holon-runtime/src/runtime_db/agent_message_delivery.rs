@@ -33,7 +33,15 @@ use crate::{
     },
 };
 
-const DELIVERY_DIAGNOSTIC_LIMIT: usize = 512;
+use holon_storage::agent_message_delivery::{
+    active_deliveries_for_target_tx, delivery_by_message_id_on, delivery_rowid_on,
+    first_accepted_delivery_after_on, replace_delivery_tx,
+};
+pub(crate) use holon_storage::agent_message_delivery::{
+    advance_delivery_state_for_message_tx, charge_chain_budget_tx, delivery_by_id,
+    delivery_by_idempotency_scope_tx, delivery_by_message_id_on as delivery_by_message_id_tx,
+    exhausted_chain_limit_tx, insert_delivery_tx,
+};
 
 mod replies;
 pub(crate) use replies::{
@@ -42,9 +50,7 @@ pub(crate) use replies::{
 };
 
 mod chains;
-pub(crate) use chains::{
-    charge_chain_budget_tx, exhausted_chain_limit_tx, resolve_delivery_chain_tx,
-};
+pub(crate) use chains::resolve_delivery_chain_tx;
 
 pub(crate) struct ResolvedAgentMessageReplyContext {
     pub activation_id: String,
@@ -107,15 +113,7 @@ fn batch_admits_reply_source(
     }
     // Enqueue assigns an ingress turn ID before execution. A live follower
     // still needs its real accepted delivery, not just a copied input ID.
-    let delivery = tx
-        .query_row(
-            "SELECT payload_json FROM agent_message_deliveries WHERE message_id = ?1",
-            [&message.id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .map(|payload| decode_delivery(&payload))
-        .transpose()?;
+    let delivery = delivery_by_message_id_tx(tx, &message.id)?;
     if delivery.is_none_or(|delivery| {
         delivery.target_agent_id != message.agent_id
             || delivery.message_id.as_deref() != Some(message.id.as_str())
@@ -576,14 +574,7 @@ impl AgentMessageDeliveryRepository<'_> {
 
     pub(crate) fn rowid(&self, delivery_id: &str) -> Result<Option<i64>> {
         self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT rowid
-                     FROM agent_message_deliveries
-                     WHERE delivery_id = ?1",
-                    [delivery_id],
-                    |row| row.get(0),
-                )
+            delivery_rowid_on(connection, delivery_id)
                 .optional()
                 .context("reading agent message delivery rowid")
         })
@@ -596,24 +587,9 @@ impl AgentMessageDeliveryRepository<'_> {
         after_rowid: i64,
     ) -> Result<Option<AgentMessageDeliveryRecord>> {
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-                 FROM agent_message_deliveries
-                 WHERE rowid > ?1
-                   AND target_agent_id = ?2
-                   AND outcome = 'accepted'
-                 ORDER BY rowid ASC",
-            )?;
-            let rows = statement.query_map(params![after_rowid, target_agent_id], |row| {
-                row.get::<_, String>(0)
-            })?;
-            for payload in rows {
-                let record = decode_delivery(&payload?)?;
-                if record.caller.caller_agent_id.as_deref() == Some(sender_agent_id) {
-                    return Ok(Some(record));
-                }
-            }
-            Ok(None)
+            first_accepted_delivery_after_on(connection, target_agent_id, after_rowid, |record| {
+                record.caller.caller_agent_id.as_deref() == Some(sender_agent_id)
+            })
         })
     }
 
@@ -627,7 +603,7 @@ impl AgentMessageDeliveryRepository<'_> {
         message_id: &str,
     ) -> Result<Option<AgentMessageDeliveryRecord>> {
         self.db
-            .with_read(|connection| Self::latest_for_message_on(connection, message_id))
+            .with_read(|connection| delivery_by_message_id_on(connection, message_id))
     }
 
     pub(crate) async fn latest_for_message_async(
@@ -636,7 +612,7 @@ impl AgentMessageDeliveryRepository<'_> {
     ) -> Result<Option<AgentMessageDeliveryRecord>> {
         let message_id = message_id.to_owned();
         self.db
-            .with_read_async(move |connection| Self::latest_for_message_on(connection, &message_id))
+            .with_read_async(move |connection| delivery_by_message_id_on(connection, &message_id))
             .await
     }
 
@@ -645,24 +621,7 @@ impl AgentMessageDeliveryRepository<'_> {
         message_id: &str,
     ) -> Result<Option<AgentMessageDeliveryRecord>> {
         self.db
-            .read_for_preparation(|tx| Self::latest_for_message_on(tx, message_id))
-    }
-
-    fn latest_for_message_on(
-        connection: &rusqlite::Connection,
-        message_id: &str,
-    ) -> Result<Option<AgentMessageDeliveryRecord>> {
-        connection
-            .query_row(
-                "SELECT payload_json
-                 FROM agent_message_deliveries
-                 WHERE message_id = ?1",
-                [message_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_delivery(&payload))
-            .transpose()
+            .read_for_preparation(|tx| delivery_by_message_id_on(tx, message_id))
     }
 
     pub fn receipt(&self, delivery_id: &str) -> Result<Option<AgentMessageDeliveryReceipt>> {
@@ -688,56 +647,6 @@ impl AgentMessageDeliveryRepository<'_> {
             }
         })
     }
-}
-
-pub(crate) fn delivery_by_id(
-    connection: &rusqlite::Connection,
-    delivery_id: &str,
-) -> Result<Option<AgentMessageDeliveryRecord>> {
-    connection
-        .query_row(
-            "SELECT payload_json
-             FROM agent_message_deliveries
-             WHERE delivery_id = ?1",
-            [delivery_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .map(|payload| decode_delivery(&payload))
-        .transpose()
-}
-
-pub(crate) fn delivery_by_idempotency_scope_tx(
-    tx: &Transaction<'_>,
-    idempotency_scope: &str,
-    idempotency_key_digest: &str,
-) -> Result<Option<AgentMessageDeliveryRecord>> {
-    tx.query_row(
-        "SELECT payload_json
-         FROM agent_message_deliveries
-         WHERE idempotency_scope = ?1 AND idempotency_key_digest = ?2",
-        params![idempotency_scope, idempotency_key_digest],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|payload| decode_delivery(&payload))
-    .transpose()
-}
-
-pub(crate) fn delivery_by_message_id_tx(
-    tx: &Transaction<'_>,
-    message_id: &str,
-) -> Result<Option<AgentMessageDeliveryRecord>> {
-    tx.query_row(
-        "SELECT payload_json
-         FROM agent_message_deliveries
-         WHERE message_id = ?1",
-        [message_id],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|payload| decode_delivery(&payload))
-    .transpose()
 }
 
 pub(crate) fn prepare_delivery_admission_tx(
@@ -905,7 +814,7 @@ pub(crate) fn prepare_delivery_admission_tx(
         }),
         runtime_status: state
             .as_ref()
-            .map(|state| enum_string(&state.status))
+            .map(|state| holon_storage::codec::enum_string(&state.status))
             .transpose()?,
         message_policy_revision: policy.map(|policy| policy.revision),
         principal_kind: candidate.caller.principal_kind,
@@ -957,7 +866,7 @@ pub(crate) fn prepare_delivery_admission_tx(
         record.state = AgentMessageDeliveryState::Rejected;
         record.rejection_code = Some(code);
         record.retryable = code.retryable();
-        record.diagnostic = Some(bounded_diagnostic(diagnostic));
+        record.diagnostic = Some(AgentMessageDeliveryRecord::bounded_diagnostic(diagnostic));
         record.accepted_at = None;
         record.terminal_at = Some(now);
         return Ok(AgentMessageDeliveryAdmissionDecision::Complete {
@@ -982,46 +891,6 @@ pub(crate) fn prepare_delivery_admission_tx(
         record,
         replace_existing,
     })
-}
-
-pub(crate) fn insert_delivery_tx(
-    tx: &Transaction<'_>,
-    record: &AgentMessageDeliveryRecord,
-) -> Result<()> {
-    let payload_json = serde_json::to_string(record)?;
-    tx.execute(
-        "INSERT INTO agent_message_deliveries (
-           delivery_id, target_agent_id, message_id, idempotency_scope,
-           idempotency_key_digest, request_digest, outcome, state, state_version,
-           rejection_code, retryable, accepted_at, terminal_at, created_at,
-           updated_at, payload_json
-         ) VALUES (
-           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
-         )",
-        params![
-            record.delivery_id,
-            record.target_agent_id,
-            record.message_id,
-            record.idempotency_scope,
-            record.idempotency_key_digest,
-            record.request_digest,
-            enum_string(&record.outcome)?,
-            enum_string(&record.state)?,
-            i64::try_from(record.state_version).context("delivery state version exceeds SQLite")?,
-            record
-                .rejection_code
-                .as_ref()
-                .map(enum_string)
-                .transpose()?,
-            i64::from(record.retryable),
-            record.accepted_at.map(timestamp),
-            record.terminal_at.map(timestamp),
-            timestamp(record.created_at),
-            timestamp(record.updated_at),
-            payload_json,
-        ],
-    )?;
-    Ok(())
 }
 
 pub(crate) fn persist_completed_admission_tx(
@@ -1077,7 +946,7 @@ pub(in crate::runtime_db) fn record_chain_budget_rejection_tx(
     record.rejection_code = Some(AgentMessageDeliveryRejectionCode::MessageChainBudgetExhausted);
     record.retryable = false;
     record.message_chain_id = Some(chain_id.to_owned());
-    record.diagnostic = Some(bounded_diagnostic(&format!(
+    record.diagnostic = Some(AgentMessageDeliveryRecord::bounded_diagnostic(&format!(
         "message chain {chain_id} exhausted at {max_deliveries} accepted deliveries"
     )));
     record.accepted_at = None;
@@ -1321,11 +1190,7 @@ fn bind_message_wait_tx(
         |row| row.get(0),
     )?;
     let identity: AgentIdentityRecord = serde_json::from_str(&identity)?;
-    let cursor: i64 = tx.query_row(
-        "SELECT rowid FROM agent_message_deliveries WHERE delivery_id = ?1",
-        [&delivery.delivery_id],
-        |row| row.get(0),
-    )?;
+    let cursor = delivery_rowid_on(tx, &delivery.delivery_id)?;
     let detail = task.detail.get_or_insert_with(|| serde_json::json!({}));
     let detail = detail
         .as_object_mut()
@@ -1362,103 +1227,6 @@ fn bind_message_wait_tx(
     task.updated_at = std::cmp::max(task.updated_at, delivery.updated_at);
     super::repositories::upsert_task_tx(tx, &task)?;
     Ok(())
-}
-
-fn replace_delivery_tx(tx: &Transaction<'_>, record: &AgentMessageDeliveryRecord) -> Result<()> {
-    let payload_json = serde_json::to_string(record)?;
-    let changed = tx.execute(
-        "UPDATE agent_message_deliveries
-         SET message_id = ?1, outcome = ?2, state = ?3, state_version = ?4,
-             rejection_code = ?5, retryable = ?6, accepted_at = ?7,
-             terminal_at = ?8, updated_at = ?9, payload_json = ?10
-         WHERE delivery_id = ?11",
-        params![
-            record.message_id,
-            enum_string(&record.outcome)?,
-            enum_string(&record.state)?,
-            i64::try_from(record.state_version).context("delivery state version exceeds SQLite")?,
-            record
-                .rejection_code
-                .as_ref()
-                .map(enum_string)
-                .transpose()?,
-            i64::from(record.retryable),
-            record.accepted_at.map(timestamp),
-            record.terminal_at.map(timestamp),
-            timestamp(record.updated_at),
-            payload_json,
-            record.delivery_id,
-        ],
-    )?;
-    anyhow::ensure!(changed == 1, "delivery {} not found", record.delivery_id);
-    Ok(())
-}
-
-pub(crate) fn compare_and_set_delivery_state_tx(
-    tx: &Transaction<'_>,
-    delivery_id: &str,
-    expected_state: AgentMessageDeliveryState,
-    next: &AgentMessageDeliveryRecord,
-) -> Result<bool> {
-    let payload_json = serde_json::to_string(next)?;
-    let changed = tx.execute(
-        "UPDATE agent_message_deliveries
-         SET state = ?1, state_version = ?2, terminal_at = ?3,
-             updated_at = ?4, payload_json = ?5
-         WHERE delivery_id = ?6 AND state = ?7 AND state_version = ?8",
-        params![
-            enum_string(&next.state)?,
-            i64::try_from(next.state_version).context("delivery state version exceeds SQLite")?,
-            next.terminal_at.map(timestamp),
-            timestamp(next.updated_at),
-            payload_json,
-            delivery_id,
-            enum_string(&expected_state)?,
-            i64::try_from(next.state_version.saturating_sub(1))
-                .context("delivery state version exceeds SQLite")?,
-        ],
-    )?;
-    Ok(changed == 1)
-}
-
-pub(crate) fn advance_delivery_state_for_message_tx(
-    tx: &Transaction<'_>,
-    message_id: &str,
-    next_state: AgentMessageDeliveryState,
-    diagnostic: Option<&str>,
-) -> Result<bool> {
-    let Some(mut record) = delivery_by_message_id_tx(tx, message_id)? else {
-        return Ok(false);
-    };
-    let valid = matches!(
-        (record.state, next_state),
-        (
-            AgentMessageDeliveryState::Queued,
-            AgentMessageDeliveryState::Dispatched
-                | AgentMessageDeliveryState::Consumed
-                | AgentMessageDeliveryState::Failed
-                | AgentMessageDeliveryState::CancelledByDeletion
-        ) | (
-            AgentMessageDeliveryState::Dispatched,
-            AgentMessageDeliveryState::Consumed
-                | AgentMessageDeliveryState::Failed
-                | AgentMessageDeliveryState::CancelledByDeletion
-        )
-    );
-    if !valid {
-        return Ok(false);
-    }
-
-    let expected_state = record.state;
-    let now = Utc::now();
-    record.state = next_state;
-    record.state_version = record.state_version.saturating_add(1);
-    record.updated_at = now;
-    record.terminal_at = next_state.is_terminal().then_some(now);
-    if let Some(diagnostic) = diagnostic {
-        record.diagnostic = Some(bounded_diagnostic(diagnostic));
-    }
-    compare_and_set_delivery_state_tx(tx, &record.delivery_id, expected_state, &record)
 }
 
 pub(crate) fn bind_delivery_execution_for_message_tx(
@@ -1510,23 +1278,7 @@ pub(crate) fn cancel_active_deliveries_for_target_tx(
     tx: &Transaction<'_>,
     target_agent_id: &str,
 ) -> Result<usize> {
-    let queued = enum_string(&AgentMessageDeliveryState::Queued)?;
-    let dispatched = enum_string(&AgentMessageDeliveryState::Dispatched)?;
-    let records = {
-        let mut statement = tx.prepare(
-            "SELECT payload_json
-             FROM agent_message_deliveries
-             WHERE target_agent_id = ?1 AND state IN (?2, ?3)
-             ORDER BY created_at ASC, delivery_id ASC",
-        )?;
-        let rows = statement.query_map(params![target_agent_id, queued, dispatched], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .map(|payload| decode_delivery(&payload))
-            .collect::<Result<Vec<_>>>()?
-    };
+    let records = active_deliveries_for_target_tx(tx, target_agent_id)?;
 
     let mut cancelled = 0;
     for record in records {
@@ -1541,25 +1293,6 @@ pub(crate) fn cancel_active_deliveries_for_target_tx(
         )?);
     }
     Ok(cancelled)
-}
-
-fn decode_delivery(payload: &str) -> Result<AgentMessageDeliveryRecord> {
-    serde_json::from_str(payload).context("decoding agent message delivery payload")
-}
-
-fn enum_string<T: serde::Serialize>(value: &T) -> Result<String> {
-    Ok(serde_json::to_value(value)?
-        .as_str()
-        .context("delivery enum serialized to a non-string value")?
-        .to_string())
-}
-
-fn timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
-    value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
-
-fn bounded_diagnostic(value: &str) -> String {
-    value.chars().take(DELIVERY_DIAGNOSTIC_LIMIT).collect()
 }
 
 #[cfg(holon_lib_test_shard = "b")]
@@ -1585,6 +1318,7 @@ mod tests {
             QueueEntryStatus, TurnOwner,
         },
     };
+    use holon_storage::codec::timestamp;
     use tempfile::TempDir;
 
     fn runtime_db() -> Result<(TempDir, RuntimeDb)> {
@@ -4185,45 +3919,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn failed_delivery_diagnostic_is_bounded() -> Result<()> {
-        let (_dir, db) = runtime_db()?;
-        seed_target(&db, AgentStatus::AwakeIdle)?;
-        let prepared = prepare("diagnostic-key", "fail")?;
-        let accepted = db
-            .transitions()
-            .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
-        let delivery_id = accepted
-            .delivery_receipt
-            .context("missing delivery receipt")?
-            .delivery_id;
-        let diagnostic = "x".repeat(DELIVERY_DIAGNOSTIC_LIMIT + 100);
-        db.transaction(|tx| {
-            anyhow::ensure!(advance_delivery_state_for_message_tx(
-                tx,
-                &prepared.message.id,
-                AgentMessageDeliveryState::Failed,
-                Some(&diagnostic),
-            )?);
-            Ok(())
-        })?;
-        let failed = db
-            .agent_message_deliveries()
-            .latest(&delivery_id)?
-            .context("missing failed delivery")?;
-        assert_eq!(failed.state, AgentMessageDeliveryState::Failed);
-        assert_eq!(
-            failed
-                .diagnostic
-                .as_deref()
-                .context("missing failure diagnostic")?
-                .chars()
-                .count(),
-            DELIVERY_DIAGNOSTIC_LIMIT
-        );
-        Ok(())
-    }
-
     // ---------------------------------------------------------------------
     // Shared message-chain delivery budgets
     // ---------------------------------------------------------------------
@@ -4273,7 +3968,7 @@ mod tests {
                  VALUES (?1, ?2, 1, ?3)",
                 params![
                     chain_id,
-                    super::chains::MESSAGE_CHAIN_MAX_DELIVERIES,
+                    holon_storage::agent_message_delivery::MESSAGE_CHAIN_MAX_DELIVERIES,
                     timestamp(Utc::now())
                 ],
             )?;

@@ -5866,7 +5866,7 @@ async fn lifecycle_delivery_reentry_rejects_an_invalid_canonical_predecessor() {
         .inner
         .runtime_db
         .transaction(|tx| {
-            crate::runtime_db::agent_message_delivery::compare_and_set_delivery_state_tx(
+            holon_storage::agent_message_delivery::compare_and_set_delivery_state_tx(
                 tx,
                 &delivery.delivery_id,
                 expected_state,

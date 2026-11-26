@@ -413,6 +413,35 @@ pub struct AgentMessageDeliveryReceipt {
 }
 
 impl AgentMessageDeliveryRecord {
+    pub fn bounded_diagnostic(value: &str) -> String {
+        value.chars().take(512).collect()
+    }
+
+    pub fn advance_state(
+        &mut self,
+        next_state: AgentMessageDeliveryState,
+        now: DateTime<Utc>,
+        diagnostic: Option<&str>,
+    ) -> bool {
+        use AgentMessageDeliveryState::*;
+        if !matches!(
+            (self.state, next_state),
+            (Queued, Dispatched | Consumed | Failed | CancelledByDeletion)
+                | (Dispatched, Consumed | Failed | CancelledByDeletion)
+        ) {
+            return false;
+        }
+
+        self.state = next_state;
+        self.state_version = self.state_version.saturating_add(1);
+        self.updated_at = now;
+        self.terminal_at = next_state.is_terminal().then_some(now);
+        if let Some(diagnostic) = diagnostic {
+            self.diagnostic = Some(Self::bounded_diagnostic(diagnostic));
+        }
+        true
+    }
+
     /// Legacy records bind the original label without granting it operator authority.
     pub fn matches_message_authority(&self, actual: AuthorityClass) -> bool {
         match self.message_authority_version {
