@@ -8,6 +8,17 @@ use holon_domain::execution_protocol::{
 use holon_domain::{AgentIdentityRecord, AgentRegistryStatus, AgentStatus};
 use rusqlite::{params, OptionalExtension, Transaction};
 
+mod closure_read;
+mod read;
+
+pub use closure_read::{
+    closure_protocol_material_tx, read_closure_rows_tx, ValidatedClosureProtocol,
+};
+pub use read::{
+    load_live_work_items_on, load_retired_scheduler_state_tx, load_state_on,
+    load_state_unchecked_on, partition_exists_on, ExecutionReadMaterial,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionAuthorityFences {
     pub agent_control_revision: u64,
