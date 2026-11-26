@@ -52,6 +52,7 @@ holon (v0.61.0)
 │   ├── stop     停止 daemon
 │   ├── status   查看 daemon 状态
 │   ├── quarantine 离线读取最近记录的启动隔离报告
+│   ├── validate-startup 离线校验启动兼容性
 │   ├── restart  重启 daemon
 │   └── logs     查看 daemon 日志
 ├── config       运行时配置
@@ -97,9 +98,12 @@ holon (v0.61.0)
 │   ├── pick     把 WorkItem 选为当前焦点
 │   ├── update   更新 WorkItem
 │   └── complete 完成 WorkItem
-├── timer        创建、列出或取消定时器
+├── timer        创建、列出、暂停、恢复、编辑或取消定时器
 │   ├── create   创建延时或周期性定时器
 │   ├── list     列出活跃定时器
+│   ├── pause    暂停定时器
+│   ├── resume   恢复已暂停的定时器
+│   ├── edit     编辑定时器标题或触发指令
 │   └── cancel   取消活跃定时器
 ├── control      [已废弃] 请改用 `holon agent start|stop|abort`
 ├── agent        Agent 管理
@@ -214,8 +218,10 @@ holon agent delete reviewer --yes
 > [CLI 稳定性策略](/zh-CN/reference/cli-stability-policy.md#deprecated-holon-control)。
 
 `holon agent delete` 会永久删除一个 Agent 及其关联数据。传入
-`--cascade-private-children` 可一并删除它的私有子 Agent，传入 `--wait` 会阻塞
-直到删除任务完成。非交互模式下需要 `--yes`。
+`--cascade-private-children` 可一并删除它的私有子 Agent，传入 `--archive` 可在
+清理前导出私有历史与 AgentHome，传入 `--wait` 会阻塞直到删除任务完成。非交互
+模式下需要 `--yes`。如果删除任务停在 `needs_attention`，可执行
+`holon agent delete <AGENT_ID> --resolve abandon` 放弃本次删除并将身份恢复为 `Active`。
 
 `holon agent repair <AGENT_ID>` 会重试创建时未完成的模板、运行时、工作区、
 模型和初始消息步骤。它不会重建 Agent，也不会覆盖冲突的用户管理状态。
@@ -308,6 +314,22 @@ holon daemon restart
 holon daemon stop
 ```
 
+#### 机器可读输出
+
+每个 daemon 子命令都共用 daemon 级的 `--json` 参数，该参数可写在子命令之前或之后：
+
+```bash
+holon daemon --json status
+holon daemon logs --json --tail 40
+```
+
+JSON 模式会在 stdout 上只输出一个 `{ schema_version, command, status, data, error }`
+信封，其中 `status` 为 `ok`、`failed` 或 `blocked`。不加 `--json` 时，同一结果
+会渲染为有界且脱敏的人类可读文本。两种模式共用 daemon 退出码 `0`、`1`、`20`、
+`21` 以及保留的 `22`；详情请参阅[CLI 退出码](./cli-exit-codes.md)与
+[Agent 故障排查指南](../guides/troubleshooting.md)。此前未包裹的 daemon JSON
+输出已不再保留兼容模式：脚本须改用 `--json` 并读取 `data`。
+
 生命周期命令的 JSON 包含 `process_created`：仅当本次命令创建了返回的 daemon
 进程时为 true。幂等 Start 复用已有 daemon 时为 false；成功返回不代表取得进程管理权。
 在停止流程中，stop 路径会在短暂延迟后复核进程存活状态，并将僵尸进程（状态 Z 或 X）正确视作
@@ -318,6 +340,16 @@ daemon，即使 daemon 已离线也能查看被隔离的 Agent 启动故障。
 
 ```bash
 holon daemon quarantine
+```
+
+`holon daemon validate-startup` 在不启动 daemon 的前提下，检查当前二进制是否
+可以基于现有运行时目录启动。默认以只读方式运行（只读打开数据库，遇到需要迁移
+时以退出码 `22` 报告 `migration_required`）；当 daemon 已停止时，传入 `--migrate`
+可在执行同一套校验前先完成待处理的 schema 迁移与回填。
+
+```bash
+holon daemon validate-startup
+holon daemon validate-startup --migrate
 ```
 
 ### 初始化配置
@@ -444,12 +476,25 @@ holon work-item complete <WORK_ITEM_ID>
 ### 定时器
 
 ```bash
-holon timer create --after-ms 60000 --summary "心跳检查"
+holon timer create --after-ms 60000 --title "心跳" --instruction "执行心跳检查"
 holon timer list
+holon timer pause <TIMER_ID>
+holon timer resume <TIMER_ID>
+holon timer edit <TIMER_ID> --title "心跳（已更新）"
 holon timer cancel <TIMER_ID>
 ```
 
-`holon timer` 用于为 Agent 调度延时或周期性定时器（默认为默认 Agent，或通过 `--agent <AGENT>` 指定）。
+`holon timer` 用于管理 Agent 的延时或周期性定时器。未指定 `--agent <AGENT>` 时，
+默认作用于当前配置的默认 Agent。创建时，`--title` 设置可选展示标签，
+`--instruction` 设置后续触发时投递的提示词（`--summary` 保留为 `--instruction`
+的旧别名）。`edit` 支持通过 `--title` / `--clear-title` 与 `--instruction` /
+`--clear-instruction` 就地修改内容，不影响调度周期或已入队的唤醒。
+
+与 `cancel` 一样，`pause` 和 `resume` 会将更新后的 `TimerRecord` 打印为 JSON。
+`pause` 会将状态设为 `paused` 并清空 `next_fire_at`；`resume` 会将状态恢复为
+`active` 并重新设置 `next_fire_at`。对已暂停的定时器重复执行 `pause` 会保留
+冻结的剩余延迟；对活跃定时器重复执行 `resume` 会保留原有调度。对已取消或已完成
+的定时器执行这两个命令会返回冲突并以非零状态退出。
 
 ### 事件
 
@@ -568,6 +613,11 @@ holon daemon restart --reset-serve-options --access local
 | 参数 | 说明 |
 |--------|-------------|
 | `--template <TEMPLATE>` | 内置模板或路径模板 |
+
+当 `holon agent create` 未提供显式初始消息时，CLI 会根据调用方终端的 locale
+（依次检查 `LC_ALL`、`LC_MESSAGES`、`LANG`）推导一次性的回复语言提示，让新 Agent
+的首次默认引导回复匹配终端语言。该提示仅作用于首次回复，不会持久化为 Agent 偏好；
+缺失或无法映射的 locale 会直接忽略。
 
 ### `holon solve` 参数
 

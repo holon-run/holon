@@ -488,14 +488,27 @@ Schedules asynchronous deletion of an agent and its data. Pass `?cascade_private
 
 **`GET /api/control/agents/:id/delete-status`** — Query deletion job status
 
-Returns lifecycle progress of an agent deletion job.
+Returns the current `identity` and deletion `job` (`pending`, `running`,
+`retryable_failed`, `needs_attention`, `completed`, or `abandoned`). When a job
+stops in `needs_attention`, inspect `job.required_input` for the operator
+decision needed.
+
+**`POST /api/control/agents/:id/deletion/resolve`** — Resolve a stopped deletion
+
+Resolves an agent deletion job stopped in `needs_attention`. The only supported
+decision is `"abandon"`, which marks the deletion job `abandoned`, returns the
+agent identity to `Active`, and returns any remaining manual `cleanup` scope.
+
+```json
+{ "decision": "abandon" }
+```
 
 **`POST /api/control/agents/:id/timers`** — Create timer
 
 Creates a persistent delayed or recurring timer for the agent.
 
 ```json
-{ "after_ms": 60000, "every_ms": null, "summary": "Health check" }
+{ "duration_ms": 60000, "interval_ms": null, "title": "Heartbeat", "instruction": "Run health check" }
 ```
 
 **`POST /api/control/agents/:id/timers/:timer_id/pause`** — Pause timer
@@ -566,10 +579,11 @@ recorded focus transition.
 
 **`PATCH /api/control/agents/:id/work-items/:work_item_id`** — Update work item
 
-Mutates one or more WorkItem fields. Empty updates are rejected. `blocked_by`
-uses a nested optional shape: a string sets the blocker, `null` clears it, and
-omitting the field leaves it unchanged. `recheck_after` is milliseconds and
-requires a non-empty blocker.
+Mutates one or more WorkItem fields. Empty updates are rejected. `blocked_by` is
+descriptive only (a string sets the note, `null` clears it, and omitting leaves
+it unchanged) and does not pause or resume scheduling. Passing `recheck_after`
+(including `null`) is rejected with `400 Bad Request`; use `WaitFor` with
+`recheck_after_ms` instead.
 
 ```json
 {
@@ -577,7 +591,6 @@ requires a non-empty blocker.
   "plan_status": "ready",
   "todo_list": [{ "text": "Run cargo check", "state": "completed" }],
   "blocked_by": "waiting for CI",
-  "recheck_after": 600000,
   "authority_class": "operator_instruction"
 }
 ```
@@ -606,10 +619,18 @@ Creates a timer that will deliver a `TimerTick` to the agent.
 {
   "duration_ms": 60000,
   "interval_ms": null,
-  "summary": "reminder",
+  "title": "Heartbeat",
+  "instruction": "reminder",
   "authority_class": "operator_instruction"
 }
 ```
+
+`summary` remains accepted as a legacy alias for `instruction` (do not send both).
+
+**`PATCH /api/control/agents/:id/timers/:timer_id`** — Edit timer title or instruction
+
+Partially updates `title` and/or `instruction` (or legacy `summary`; `null` clears)
+on an active or paused timer without changing its schedule or wakes already queued.
 
 **`POST /api/control/agents/:id/timers/:timer_id/pause`** — Pause timer
 
@@ -646,6 +667,21 @@ Sends a debug-mode prompt (runtime-internal classification). Request body:
 ```json
 { "text": "debug instruction", "authority_class": "operator_instruction" }
 ```
+
+**`GET /api/agents/:id/turns/:turn_id/deletion-preview`** — Preview turn content deletion
+
+Returns the scope preview before deleting recorded conversation content for a turn.
+
+**`DELETE /api/agents/:id/turns/:turn_id/content`** — Delete turn content
+
+Deletes stored conversation content for a settled turn (optionally guarded by
+`?expected_revision=<N>`). Deleted turn content is withheld from transcript,
+event, and export reads.
+
+**`POST /api/agents/:id/messages/:message_id/withdraw`** — Withdraw unexecuted input
+
+Withdraws an operator-submitted queued message before it has been claimed for
+execution. Already-claimed or non-operator messages fail with `409 Conflict`.
 
 **`POST /api/control/agents/:id/operator-bindings`** — Create operator transport binding
 

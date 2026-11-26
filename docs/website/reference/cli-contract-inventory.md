@@ -65,6 +65,7 @@ support policy behind these labels.
 | `holon daemon status` | none | `--json` | daemon envelope (`--json`) or bounded human summary | `stable` candidate | Important local inspection surface. |
 | `holon daemon restart` | none | `--json`; same `ServeOptions` as `serve` | daemon envelope (`--json`) or bounded human summary | `stable` candidate | Same access/token validation as `serve`. |
 | `holon daemon logs` | none | `--json`; `--tail <TAIL>` default `80` | daemon envelope (`--json`) or bounded human summary | `stable` candidate | `daemon logs` is documented as a local troubleshooting surface. |
+| `holon daemon validate-startup` | none | `--json`; `--migrate` | daemon envelope (`--json`) or bounded human summary | `stable` candidate | Offline read-only startup compatibility check by default (exit `22` on `migration_required`); `--migrate` applies pending migrations when stopped. |
 
 All daemon subcommands share one `{ schema_version, command, status, data,
 error }` envelope and the `0/1/20/21/22` exit-code mapping; see
@@ -129,10 +130,11 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon work-item list` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | pretty JSON array of `WorkItemRecord` | `experimental` | The JSON schema owner is the HTTP/API `WorkItemRecord` read model returned by `/agents/:agent_id/work-items`. |
 | `holon work-item get` | `<WORK_ITEM_ID>` | `--agent <AGENT>` | pretty JSON `WorkItemRecord` | `experimental` | Reads a single work item through `/agents/:agent_id/work-items/:work_item_id`; `create`, `pick`, `update`, and `complete` subcommands exist, but their mutation API contracts are still being stabilized. |
 | `holon timer` | none | legacy create syntax: required `--after-ms <MS>`; `--every-ms <MS>`; `--summary <SUMMARY>`; `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Backward-compatible alias for `holon timer create`. |
-| `holon timer create` | none | required `--after-ms <MS>`; `--every-ms <MS>`; `--summary <SUMMARY>`; `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Creates a one-shot or repeating timer through the control plane. |
+| `holon timer create` | none | `--after-ms <MS>` or `--calendar-expression <CRON>` + `--timezone <TZ>`; `--every-ms <MS>`; `--title <TITLE>`; `--instruction <TEXT>` (or legacy `--summary`); `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Creates a one-shot, fixed-interval, or calendar timer through the control plane. |
 | `holon timer list` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | pretty JSON array of `TimerRecord` | `experimental` | Reads recent timers through the agent timer API. |
 | `holon timer pause` | `<TIMER_ID>` | `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Freezes the timer; repeating the command preserves the frozen delay. Conflicts for cancelled or completed timers. |
 | `holon timer resume` | `<TIMER_ID>` | `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Resumes the timer; repeating the command preserves the schedule. Conflicts for cancelled or completed timers. |
+| `holon timer edit` | `<TIMER_ID>` | `--title <TITLE>` \| `--clear-title`; `--instruction <TEXT>` \| `--clear-instruction` (legacy `--summary` / `--clear-summary`); `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Updates display title or future trigger instruction without changing the schedule. |
 | `holon timer cancel` | `<TIMER_ID>` | `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Cancels an active timer; already-cancelled timers are idempotent. |
 
 ### Agent lifecycle and model selection
@@ -147,6 +149,7 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon agent start` | optional `[AGENT_ID]` | none | JSON lifecycle control response | `stable` candidate | Replacement for deprecated `control start`. |
 | `holon agent stop` | optional `[AGENT_ID]` | none | JSON lifecycle control response | `stable` candidate | Replacement for deprecated `control stop`. |
 | `holon agent abort` | optional `[AGENT_ID]` | none | pretty JSON control-plane response | `stable` candidate | Replacement for deprecated `control abort`; shares the lifecycle JSON output path with start/stop. |
+| `holon agent delete` | `<AGENT_ID>` | `-y`/`--yes`; `--cascade-private-children`; `--archive`; `--wait`; `--timeout <SECS>`; `--resolve abandon`; `--json` | human summary or JSON deletion job status | `stable` candidate | Schedules durable deletion; `--resolve abandon` resolves a stopped deletion in `needs_attention` back to `Active`. |
 | `holon agent model get` | optional `[AGENT_ID]` | none | JSON model override/status fragment | `stable` candidate | Reads `summary.model` from agent status. |
 | `holon agent model set` | `<MODEL> [AGENT_ID]` | none | JSON model override response | `stable` candidate | Positional `AGENT_ID` is tested. |
 | `holon agent model clear` | optional `[AGENT_ID]` | none | JSON model override response | `stable` candidate | Should share contract with set/get. |

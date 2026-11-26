@@ -633,10 +633,10 @@ each call at one attempt, set `web.search.max_provider_attempts` to `1`. This
 is not a provider allowlist and does not limit separate calls.
 
 Native server-side search providers (native `web.providers` kinds such as
-`open_ai_native`, including routes bound through the Codex transport) are
+`open_ai_native` and `gemini_native`, including routes bound through the Codex transport) are
 explicit-only. A model provider with usable credentials and a
-standalone-dispatchable native search capability (today `openai` and
-`openai-codex`) also derives a native entry automatically with zero
+standalone-dispatchable native search capability (today `openai`,
+`openai-codex`, and `gemini`) also derives a native entry automatically with zero
 configuration, binding the model catalog preferred route; `web.search.native_default`
 pins one provider, disables derivation with `off`, or restores the default with
 `auto`, and an explicit `web.providers` entry with the same id wins over the
@@ -652,18 +652,19 @@ no mappable sources returns an empty result list, while a response without
 search evidence fails explicitly. Every failure is terminal for the call:
 native dispatch never falls back to another provider or route.
 
-The Z.AI and BigModel standalone search services are also discoverable. When
-global standalone search is enabled and an authenticated model provider is
-pinned to the official Z.AI host (`api.z.ai`) or BigModel host
-(`open.bigmodel.cn`), Holon derives one explicit-only `zai` or `bigmodel`
-search entry from that official key; binding both stations derives one entry
-each. Proxy or compatible-protocol endpoints never derive an entry, and a key
-is never borrowed across stations. Explicit `web.providers` entries win and are
-not duplicated. Derived entries stay out of the default, `auto`, and
-`aggregate` candidate chain and run only when their ID is passed as
-`WebSearch.provider`. Listing performs no request and probes no permission or
-quota; discovery does not mean the account has search access, and an actual
-search request may be billed.
+The DeepSeek, Z.AI, and BigModel standalone search services are also
+discoverable. When global standalone search is enabled and an authenticated
+model provider is pinned to the official DeepSeek (`api.deepseek.com`), Z.AI
+(`api.z.ai`), or BigModel (`open.bigmodel.cn`) host, Holon derives one
+explicit-only `deepseek`, `zai`, or `bigmodel` search entry from that official
+key; binding multiple stations derives one entry each. Proxy or
+compatible-protocol endpoints never derive an entry, and a key is never
+borrowed across stations. Explicit `web.providers` entries win and are not
+duplicated. Derived entries stay out of the default, `auto`, and `aggregate`
+candidate chain and run only when their ID is passed as `WebSearch.provider`.
+Listing performs no request and probes no permission or quota; discovery does
+not mean the account has search access, and an actual search request may be
+billed.
 
 ## Runtime Database Retention
 

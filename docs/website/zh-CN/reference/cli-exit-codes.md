@@ -71,6 +71,24 @@ echo $? # 1
 脚本必须检查已文档化的 JSON 字段来获取业务状态。只有当某命令的专属参考页记录
 了相应行为时，Holon 才会把业务状态提升为非零进程退出码。
 
+## Daemon `--json` 机器接口
+
+`holon daemon --json <command>`（等价于 `holon daemon <command> --json`）是上表的
+例外情况。它始终向 stdout 输出一个 `{ schema_version, command, status, data, error }`
+信封，并按 `status` 映射到专用退出码：
+
+| 退出码 | 含义 |
+|---:|---|
+| `0` | `status: ok` |
+| `1` | 用法/解析失败或未预期的内部错误 |
+| `20` | 预期内的领域失败（`status: failed`，`error.kind: domain`） |
+| `21` | 受阻状态：`daemon_unavailable`、`daemon_running`、`daemon_lease_held` 或陈旧/无响应的运行时 |
+| `22` | `daemon validate-startup` 只读模式报告 `migration_required` |
+
+人类可读（不带 `--json`）的 daemon 输出保持相同的退出码，但在输出文本中渲染
+有界摘要而非 JSON 信封。由于 daemon 失败也始终在 stdout 输出错误信封，脚本应
+读取 `error.code`，而不是解析 stderr。
+
 ## stdout 与 stderr
 
 - 只有当命令的参考页或清单条目说明它会输出 JSON 或文档化的原始响应体时，才把

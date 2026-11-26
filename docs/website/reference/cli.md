@@ -56,6 +56,7 @@ holon (v0.61.0)
 │   ├── stop     Stop the daemon
 │   ├── status   Check daemon status
 │   ├── quarantine Read the last recorded startup quarantine report without contacting the daemon
+│   ├── validate-startup Validate startup compatibility offline
 │   ├── restart  Restart the daemon
 │   └── logs     View daemon logs
 ├── config       Runtime configuration
@@ -106,6 +107,7 @@ holon (v0.61.0)
 │   ├── list     List active timers
 │   ├── pause    Pause a timer
 │   ├── resume   Resume a paused timer
+│   ├── edit     Edit a timer's title or trigger instruction
 │   └── cancel   Cancel an active timer
 ├── control      [deprecated] use `holon agent start|stop|abort`
 ├── agent        Agent management
@@ -224,9 +226,11 @@ holon agent delete reviewer --yes
 > for the compatibility and removal criteria.
 
 `holon agent delete` permanently removes an agent and its associated data.
-Pass `--cascade-private-children` to also remove its private child agents and
-`--wait` to block until the deletion job completes. It requires `--yes` in
-non-interactive mode.
+Pass `--cascade-private-children` to also remove its private child agents,
+`--archive` to export private history and AgentHome before cleanup, and `--wait`
+to block until the deletion job completes. It requires `--yes` in
+non-interactive mode. If a deletion job stops in `needs_attention`, run
+`holon agent delete <AGENT_ID> --resolve abandon` to abandon it and return the identity to `Active`.
 
 `holon agent repair <AGENT_ID>` retries incomplete post-create template,
 runtime, workspace, model, and initial-message steps. It does not recreate the
@@ -356,6 +360,17 @@ isolated agent startup faults even when the daemon is offline.
 
 ```bash
 holon daemon quarantine
+```
+
+`holon daemon validate-startup` checks whether the current binary can start
+against the existing runtime library without starting the daemon. It is
+read-only by default (opening the database read-only and exiting with `22` when
+`migration_required`); pass `--migrate` when the daemon is stopped to apply
+pending schema migrations and backfills before running the same checks.
+
+```bash
+holon daemon validate-startup
+holon daemon validate-startup --migrate
 ```
 
 #### Persistent serve options
@@ -533,15 +548,21 @@ control-plane response.
 ### Timers
 
 ```bash
-holon timer create --after-ms 60000 --summary "Heartbeat check"
+holon timer create --after-ms 60000 --title "Heartbeat" --instruction "Run heartbeat check"
 holon timer list
 holon timer pause <TIMER_ID>
 holon timer resume <TIMER_ID>
+holon timer edit <TIMER_ID> --title "Heartbeat (updated)"
 holon timer cancel <TIMER_ID>
 ```
 
 `holon timer` manages delayed or recurring timers for an agent. Commands use
 the configured default agent unless you pass `--agent <AGENT>`.
+On `create`, `--title` sets an optional display label and `--instruction` sets
+the prompt delivered on future fires (`--summary` remains a legacy alias for
+`--instruction`). `edit` updates `--title` / `--clear-title` and
+`--instruction` / `--clear-instruction` in place without changing the timer's
+schedule or wakes already queued.
 
 `pause` and `resume` print a `TimerRecord` as JSON, just like `cancel`. Pausing
 sets the status to `paused` and clears `next_fire_at`. Resuming sets the status

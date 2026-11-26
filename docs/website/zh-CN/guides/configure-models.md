@@ -191,15 +191,7 @@ holon config set image_generation.default "openai@default/dall-e-3"
    ```
    `--base-url` 可以是网关根地址（`http://gateway.internal:8080`），也可以是显式 `/v1` 地址（`http://gateway.internal:8080/v1`），两者都会解析为 `GET /v1/models`；带路径前缀的地址（如 `http://gateway.internal:8080/gw`）解析为 `GET /gw/v1/models`。对开放匿名发现的网关，可以不配置凭据。
 
-   > 自定义（非内置）`openai_chat_completions` provider 的发现地址由 `base_url` 推导：`{base_url}` 或 `{base_url}/v1` 解析为 `{base_url}/v1/models`，路径前缀 `{base_url}/<prefix>` 解析为 `{base_url}/<prefix>/v1/models`。只在根路径提供 `GET /models`（没有 `/v1`）的网关不会被自动发现，请改用 `models.catalog` 登记模型。内置 provider（Copilot、Kilo Code、LiteLLM、vLLM、Ollama 等）都有显式发现定义，不受影响。
-
-   网关返回 **Magpie 形态**列表（带 `display_name`/`owned_by`/`context_window`/`kind` 等扩展字段）时，用 `decoder="magpie"` 选择对应解码器，无需改 Rust 代码即可拿到上下文窗口、模态等能力元数据：
-   ```bash
-   holon config set my-gateway.discovery.kind openai_models
-   holon config set my-gateway.discovery.path /v1/models
-   holon config set my-gateway.discovery.decoder magpie
-   ```
-   `decoder` 缺省为 `openai_compatible`（保持原有行为）；`ollama` 不可配置，未知值或 `disabled` 搭配 `decoder` 会被配置校验拒绝。
+   > 自定义（非内置）`openai_chat_completions` provider 的发现地址由 `base_url` 推导：`{base_url}` 或 `{base_url}/v1` 解析为 `{base_url}/v1/models`，路径前缀 `{base_url}/<prefix>` 解析为 `{base_url}/<prefix>/v1/models`。如果网关在其他路径提供模型列表，可通过 `discovery` 显式声明（见[多协议网关](#multi-protocol-gateways)）。内置 provider（Copilot、Kilo Code、LiteLLM、vLLM、Ollama 等）都有显式发现定义，不受影响。
 2. **触发发现**（发现从不在启动或 Turn 期间探测，因此网关故障不会阻塞 Agent）：
    ```bash
    holon config models refresh --provider my-gateway
@@ -222,6 +214,72 @@ holon config set models.catalog '{"my-gateway@default/my-model":{"context_window
 ```
 
 > 自动发现目前只覆盖 OpenAI 兼容的 `GET /v1/models` 形态，响应中的厂商扩展字段尚未解析；需要显式预算或能力时请使用 `models.catalog` 覆盖。
+
+<a id="multi-protocol-gateways"></a>
+
+#### 多协议网关
+
+Magpie、LiteLLM 等网关通常用一个模型列表服务多个协议端点，而 OpenAI 兼容端点的
+`base_url` 往往与 Anthropic 或 Gemini 端点不同。因此 `discovery` 支持分别在
+provider 级和端点级配置：
+
+```bash
+# Provider 级默认值：作用于该 provider 下的所有端点。
+holon config set providers.magpie.discovery.kind openai_models
+holon config set providers.magpie.discovery.path /models
+
+# OpenAI 客户端 base_url（带 /v1）—— 解析为 GET /v1/models。
+holon config set providers.magpie.transport openai_chat_completions
+holon config set providers.magpie.base_url http://gateway.internal:3425/v1
+
+# Anthropic 客户端 base_url（不带 /v1）及其单独的发现路径。
+holon config set providers.magpie.endpoints.anthropic.transport anthropic_messages
+holon config set providers.magpie.endpoints.anthropic.base_url http://gateway.internal:3425
+holon config set providers.magpie.endpoints.anthropic.discovery.path /v1/models
+holon config set providers.magpie.plans.anthropic.endpoint anthropic
+```
+
+网关返回 **Magpie 形态**列表（包含 `display_name`/`owned_by`/`context_window`/`kind`
+等扩展字段）时，选择 Magpie 解码器即可直接读取上下文窗口、模态与最大输出 token，
+无需退回通用 OpenAI 兼容结果：
+
+```bash
+holon config set providers.magpie.discovery.decoder magpie
+```
+
+`decoder` 默认为 `openai_compatible`（保持原有行为）；`ollama` 不可配置，未知值或
+`disabled` 搭配 `decoder` 会被配置校验拒绝。
+
+对应的 `config.json` 声明如下：
+
+```json
+{
+  "providers": {
+    "magpie": {
+      "transport": "openai_chat_completions",
+      "base_url": "http://gateway.internal:3425/v1",
+      "discovery": { "kind": "openai_models", "path": "/models" },
+      "endpoints": {
+        "anthropic": {
+          "transport": "anthropic_messages",
+          "base_url": "http://gateway.internal:3425",
+          "discovery": { "kind": "openai_models", "path": "/v1/models" }
+        }
+      },
+      "plans": { "anthropic": { "endpoint": "anthropic" } }
+    }
+  }
+}
+```
+
+规则：
+
+- 优先级固定为：端点 `discovery` > provider `discovery` > 传输/内置默认值。
+- `kind` 支持 `openai_models`（OpenAI `{ "data": [ { "id": ... } ] }`）或 `disabled`（即使对 `openai_chat_completions` 也关闭自动发现）。
+- `path` 相对于**生效端点**的 `base_url`：`https://gw/v1` 拼接 `/models` 得到 `https://gw/v1/models`。配置加载时会拒绝绝对 URL、`..` 路径段、查询串与百分号转义。
+- 发现请求使用该端点自身的 `base_url`、凭据与请求头，不借用 provider 级默认值。
+- 缓存按 `provider@endpoint` 隔离，同一网关的兄弟端点各自保留独立的模型列表；修改端点的 `base_url` 或 `discovery.path` 只会让该端点的缓存失效。
+- 发现与推理传输协议解耦：`anthropic_messages` 端点也能读取 OpenAI 形态的模型列表。发现始终是可选且允许失败的，绝不会阻塞启动或对话轮次。
 
 ## 常见排障与诊断
 

@@ -411,6 +411,24 @@ plan 把稳定的提供商别名（例如 `volcengine-image-openai`）映射到�
 显式持久化该路由，例如 `volcengine@image-openai/model-id`。已有的内置别名和更旧的
 `provider/model` 引用继续作为兼容输入可用。
 
+### 提供商模型发现（Provider Discovery）
+
+模型发现与推理 `transport` 分开配置，因此支持多种协议的网关可以共用同一份模型列表：
+
+```bash
+holon config set providers.magpie.discovery.kind openai_models
+holon config set providers.magpie.discovery.path /models
+holon config set providers.magpie.discovery.decoder magpie
+holon config set providers.magpie.endpoints.anthropic.discovery.path /v1/models
+```
+
+- `providers.<id>.discovery` 是提供商级默认配置；`providers.<id>.endpoints.<endpoint_id>.discovery` 可按端点覆盖。
+- `kind`：`openai_models` 或 `disabled`。`disabled` 会关闭包括 `openai_chat_completions` 默认 `/v1/models` 回退在内的自动发现。
+- `path`：相对于生效端点的 `base_url`。配置加载时会拒绝绝对 URL、`..` 路径段、查询串、片段和百分号转义，拼接后的 URL 不会离开端点所在源。
+- `decoder`：可选，指定如何解析模型列表响应。默认为 `openai_compatible`（保持原有行为）。若网关返回带 `display_name`/`owned_by`/`context_window`/`kind` 的 Magpie 形态列表，可设为 `magpie`。支持的解码器包括 `openai_compatible`、`magpie`、`hugging_face`、`kilo`、`near_ai`、`open_code_go`、`open_router`、`synthetic`、`tencent_token_hub`、`venice`、`vercel_ai_gateway`、`arcee`；`ollama` 由专用路径处理，不可配置。设置 `decoder` 时必须同时配置 `kind`，且 `disabled` 不能搭配 `decoder`；未知值或 `disabled` + `decoder` 属于配置错误。
+- 未配置 `discovery` 时保持原有行为。未知 `kind` 值与未知字段会直接报配置错误，不会静默回退。
+- 发现缓存按 `provider@endpoint` 隔离；修改某端点的 `base_url` 或 `discovery.path` 只会让该端点的缓存失效。
+
 ### 删除提供商
 
 ```bash
@@ -565,9 +583,9 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 
 即使默认模式为 `single`，显式聚合也可能把同一查询发送给多家提供商，增加外发、费用或延迟。如需每次最多尝试一家，请将 `web.search.max_provider_attempts` 设为 `1`。这不是提供商白名单，也不限制多次独立调用。
 
-原生服务端搜索提供商（如 `open_ai_native` 这类 native `web.providers` 类型，含经 Codex 传输绑定的路由）仅在显式点名时运行。具备可用凭证且声明可独立派发原生搜索能力的模型提供商（目前为 `openai` 与 `openai-codex`）还会零配置自动派生一个原生条目，绑定模型目录 preferred route；`web.search.native_default` 可固定单个提供商、用 `off` 关闭派生或用 `auto` 恢复默认，同 id 的显式 `web.providers` 条目优先于派生条目。派生条目保持显式点名边界：省略 `WebSearch.provider`、传入 `auto`/`aggregate` 或配置 `web.search.providers` 都不会触发它们；只有以 `provider` 显式传入其 ID 才会执行，且绑定的 `model_route` 必须可解析并声明 builtin web search。独立请求只携带查询与必要的搜索参数——不含对话历史、工作区数据或其他工具。结果仅取厂商结构化引用来源，按 URL 去重后最多返回 `max_results` 条；已执行搜索但无可映射来源时返回空结果列表，未执行搜索的纯回答则显式失败。任何失败对本次调用都是终态：native 派发绝不回退到其他提供商或路由。
+原生服务端搜索提供商（如 `open_ai_native` 与 `gemini_native` 这类 native `web.providers` 类型，含经 Codex 传输绑定的路由）仅在显式点名时运行。具备可用凭证且声明可独立派发原生搜索能力的模型提供商（目前为 `openai`、`openai-codex` 与 `gemini`）还会零配置自动派生一个原生条目，绑定模型目录 preferred route；`web.search.native_default` 可固定单个提供商、用 `off` 关闭派生或用 `auto` 恢复默认，同 id 的显式 `web.providers` 条目优先于派生条目。派生条目保持显式点名边界：省略 `WebSearch.provider`、传入 `auto`/`aggregate` 或配置 `web.search.providers` 都不会触发它们；只有以 `provider` 显式传入其 ID 才会执行，且绑定的 `model_route` 必须可解析并声明 builtin web search。独立请求只携带查询与必要的搜索参数——不含对话历史、工作区数据或其他工具。结果仅取厂商结构化引用来源，按 URL 去重后最多返回 `max_results` 条；已执行搜索但无可映射来源时返回空结果列表，未执行搜索的纯回答则显式失败。任何失败对本次调用都是终态：native 派发绝不回退到其他提供商或路由。
 
-Z.AI 与 BigModel 的独立搜索服务同样支持零配置发现。全局独立搜索开启且存在绑定在官方 Z.AI 站点（`api.z.ai`）或 BigModel 站点（`open.bigmodel.cn`）的已认证模型提供商时，Holon 会用该官方 key 派生一个仅显式点名可用的 `zai` 或 `bigmodel` 条目；两站都绑定则各派生一次。第三方代理或仅兼容协议的端点不会派生，key 也不会跨站借用。显式 `web.providers` 条目优先且不会被重复列出。派生条目不会进入默认、`auto` 或 `aggregate` 候选链，只有把其 ID 作为 `WebSearch.provider` 传入才会运行。列举不发起请求，也不探测权限或额度；发现不代表账号已具备搜索权限，实际搜索请求可能计费。
+DeepSeek、Z.AI 与 BigModel 的独立搜索服务同样支持零配置发现。全局独立搜索开启且存在绑定在官方 DeepSeek（`api.deepseek.com`）、Z.AI（`api.z.ai`）或 BigModel（`open.bigmodel.cn`）站点的已认证模型提供商时，Holon 会用该官方 key 派生一个仅显式点名可用的 `deepseek`、`zai` 或 `bigmodel` 条目；绑定多个站点则各派生一次。第三方代理或仅兼容协议的端点不会派生，key 也不会跨站借用。显式 `web.providers` 条目优先且不会被重复列出。派生条目不会进入默认、`auto` 或 `aggregate` 候选链，只有把其 ID 作为 `WebSearch.provider` 传入才会运行。列举不发起请求，也不探测权限或额度；发现不代表账号已具备搜索权限，实际搜索请求可能计费。
 
 ## 运行时数据库保留策略（Retention）
 

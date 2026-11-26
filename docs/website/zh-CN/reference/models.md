@@ -11,7 +11,7 @@ summary: Holon 内置支持的所有模型和提供商的完整参考。
 # Supported Models
 
 Holon includes built-in configuration for **37 provider accounts**
-across **51 endpoints** and **429 models**.
+across **51 endpoints** and **425 models**.
 
 This page is auto-generated from the Holon source code
 ([`crates/holon-model-catalog/src/lib.rs`](https://github.com/holon-run/holon/blob/main/crates/holon-model-catalog/src/lib.rs) and
@@ -464,9 +464,6 @@ and capabilities.
 | `volcengine` | `deepseek-v4-pro-ga-260813` | `volcengine/deepseek-v4-pro-ga-260813` | 1000000 | 384000 | ✅ | — |
 | `volcengine` | `deepseek-v4.1-flash` | `volcengine/deepseek-v4.1-flash` | — | — | ✅ | ✅ |
 | `volcengine` | `deepseek-v4.1-flash-economy` | `volcengine/deepseek-v4.1-flash-economy` | — | — | ✅ | ✅ |
-| `volcengine` | `doubao-seed-2-0-code-preview-260215` | `volcengine/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | ✅ |
-| `volcengine` | `doubao-seed-2-0-lite-260215` | `volcengine/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
-| `volcengine` | `doubao-seed-2-0-mini-260215` | `volcengine/doubao-seed-2-0-mini-260215` | 256000 | 4096 | — | — |
 | `volcengine` | `doubao-seed-2-0-pro-260215` | `volcengine/doubao-seed-2-0-pro-260215` | 256000 | 4096 | ✅ | ✅ |
 | `volcengine` | `doubao-seed-2-1-lite-260915` | `volcengine/doubao-seed-2-1-lite-260915` | — | — | ✅ | ✅ |
 | `volcengine` | `doubao-seed-2-1-pro-260628` | `volcengine/doubao-seed-2-1-pro-260628` | — | 256000 | ✅ | ✅ |
@@ -486,7 +483,6 @@ and capabilities.
 | `volcengine` | `glm-5.4` | `volcengine/glm-5.4` | — | — | — | ✅ |
 | `volcengine` | `glm-latest` | `volcengine/glm-latest` | — | — | ✅ | — |
 | `volcengine` | `kimi-k2.8-preview` | `volcengine/kimi-k2.8-preview` | — | — | ✅ | ✅ |
-| `volcengine` | `kimi-k3` | `volcengine/kimi-k3` | — | — | ✅ | ✅ |
 | `volcengine` | `kimi-k3-1-pro` | `volcengine/kimi-k3-1-pro` | 1048576 | — | ✅ | ✅ |
 | `volcengine` | `kimi-k3.1-pro` | `volcengine/kimi-k3.1-pro` | — | — | ✅ | — |
 | `volcengine` | `kimi-latest` | `volcengine/kimi-latest` | — | — | — | — |

@@ -42,9 +42,12 @@ Agent 的运行时上下文会自动注入其默认接入凭据。对于常规�
 
 | 操作 | 操作者 CLI | Agent 工具 |
 |---|---|---|
-| 创建 | `holon timer create --after-ms N [--every-ms N] [--summary TEXT] [--agent ID]` 或 `holon timer create --calendar-expression "M H * * *" --timezone AREA/LOCATION` | `CreateTimer(duration_ms?, interval_ms?, calendar_expression?, timezone?, summary?)` |
+| 创建 | `holon timer create --after-ms N [--every-ms N] [--title TITLE] [--instruction TEXT] [--agent ID]` 或 `holon timer create --calendar-expression "M H * * *" --timezone AREA/LOCATION` | `CreateTimer(duration_ms?, interval_ms?, calendar_expression?, timezone?, summary?)` |
 | 列表 | `holon timer list [--limit N] [--agent ID]` | `ListTimers(limit?)` |
 | 详情 | 见下方 HTTP 路由 | `GetTimer(timer_id)` |
+| 暂停 | `holon timer pause TIMER_ID [--agent ID]` | 见下方 HTTP 控制路由 |
+| 恢复 | `holon timer resume TIMER_ID [--agent ID]` | 见下方 HTTP 控制路由 |
+| 编辑内容 | `holon timer edit TIMER_ID [--title TITLE \| --clear-title] [--instruction TEXT \| --clear-instruction] [--agent ID]` | `EditTimerContent(timer_id, title?, instruction?)` |
 | 取消 | `holon timer cancel TIMER_ID [--agent ID]` | `CancelTimer(timer_id)` |
 
 系统依然支持旧版的 `holon timer --after-ms N` 创建语法。Agent 工具仅对当前 Agent 生效，不接受指定目标 Agent ID。延迟与周期参数均为正毫秒数。创建定时器不会暂停当前轮次。取消已处于取消状态的定时器是幂等的；已触发完成的单次定时器无法再被取消。
@@ -53,9 +56,10 @@ Agent 的运行时上下文会自动注入其默认接入凭据。对于常规�
 
 | HTTP 路由 | 契约说明 |
 |---|---|
-| `POST /api/control/agents/:id/timers` | 创建定时器，接收 `duration_ms`/`interval_ms` 或 `calendar_expression`/`timezone`，以及可选 `summary` 与控制层 `authority_class` 元数据 |
+| `POST /api/control/agents/:id/timers` | 创建定时器，接收 `duration_ms`/`interval_ms` 或 `calendar_expression`/`timezone`，以及可选 `title`、`instruction`（或旧版 `summary`）与控制层 `authority_class` 元数据 |
 | `GET /api/agents/:id/timers` | 列出近期的定时器记录 |
 | `GET /api/agents/:id/timers/:timer_id` | 读取归属于该 Agent 的定时器详情，不存在时返回 404 |
+| `PATCH /api/control/agents/:id/timers/:timer_id` | 局部更新活跃或已暂停定时器的 `title` 或 `instruction`（兼容旧版 `summary` 别名），不改变调度计划与已入队唤醒 |
 | `POST /api/control/agents/:id/timers/:timer_id/pause` | 暂停活跃定时器，保留其 ID、调度配置、触发历史与显式等待；已暂停时调用幂等 |
 | `POST /api/control/agents/:id/timers/:timer_id/resume` | 恢复已暂停定时器；已处于活跃状态时调用幂等 |
 | `POST /api/control/agents/:id/timers/:timer_id/cancel` | 取消定时器；支持可选的控制层 `authority_class` 元数据 |
@@ -74,7 +78,8 @@ Agent 的运行时上下文会自动注入其默认接入凭据。对于常规�
 | `interval_ms` | 可选的重复周期（毫秒） |
 | `repeat` | 是否周期性重复触发 |
 | `status` | `active`、`paused`、`completed` 或 `cancelled`；旧版 `scheduled` 会被反序列化为 `active` |
-| `summary` | 可选的提醒说明文本 |
+| `title` | 可选的界面展示标题 |
+| `instruction`、`summary` | 定时器触发时投递的指令文本（`summary` 保留为 `instruction` 的旧别名） |
 | `next_fire_at`、`last_fired_at` | 下次预计触发时间戳与最近一次已触发时间戳 |
 | `paused_remaining_ms` | 相对或固定间隔定时器暂停期间冻结的剩余毫秒数 |
 | `calendar` | 日历定时器的归一化五段表达式与 IANA 时区配置 |

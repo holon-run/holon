@@ -116,8 +116,9 @@ source initialized the agent.
 
 ### Use a local directory or custom GitHub template URL
 
-Without `--template`, `holon agent create` uses the generic default role. To
-instantiate an inspected custom template directly:
+Without `--template`, `holon agent create` creates a blank agent with a minimal
+role-neutral `AGENTS.md` rather than assigning a role template. To instantiate
+an inspected custom template directly:
 
 ```bash
 holon agent create my-agent --template /path/to/my-template

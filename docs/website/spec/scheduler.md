@@ -122,7 +122,7 @@ WorkItems flow through scheduling states that the scheduler consumes:
 |-------|---------|-----------------|
 | `Runnable` | Ready for processing | May be auto-picked as current |
 | `WaitingOperator` | `plan_status=NeedsInput` or operator wait | Agent waits for operator |
-| `Blocked` | `blocked_by` set without a more specific wait | Not runnable; check legacy `recheck_at` when present |
+| `Blocked` | Non-runnable wait/blocker projection without a more specific state | Not runnable; requires explicit wait resolution or operator action |
 | `WaitingTask` | Wait condition on task result | Wake on task terminal |
 | `WaitingExternal` | Wait condition on external event | Wake on external trigger |
 | `WaitingTimer` | Runtime timer wait | Wake when timer fires |

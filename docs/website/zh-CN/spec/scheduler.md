@@ -118,7 +118,7 @@ WorkItem 会经过调度器消费的这些调度状态：
 |-------|---------|-----------------|
 | `Runnable` | 可以处理 | 可能被自动选为当前 WorkItem |
 | `WaitingOperator` | `plan_status=NeedsInput` 或操作者等待 | Agent 等待操作者 |
-| `Blocked` | 设置了 `blocked_by` 但没有更具体的等待 | 不可运行；存在遗留 `recheck_at` 时检查它 |
+| `Blocked` | 无更具体状态时的不可运行等待/阻塞投影 | 不可运行；需显式解除等待或由操作者处理 |
 | `WaitingTask` | 对任务结果的等待条件 | 任务进入终态时唤醒 |
 | `WaitingExternal` | 对外部事件的等待条件 | 外部触发时唤醒 |
 | `WaitingTimer` | 运行时定时器等待 | 定时器触发时唤醒 |

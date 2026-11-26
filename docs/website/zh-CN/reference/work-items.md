@@ -74,9 +74,9 @@ order: 38
 | `plan_artifact` | 可选的计划描述符，包含所属 Agent/工作区标识、相对与绝对路径、哈希值、字节数、时间戳、预览文本及预览完整性标记 |
 | `todo_list` | 包含 `text` 与 `state`（`pending`、`in_progress`、`completed`）的清单条目数组 |
 | `work_refs` | 证据引用数组，包含类型、引用标识、记录原因、状态、时间戳及可选的标题/来源/元数据 |
-| `blocked_by` | 当前阻塞说明（如有） |
-| `blocked_by_wait_id` | 建立该阻塞的等待标识；独立阻塞或旧版阻塞此项为空 |
-| `recheck_at`、`recheck_consumed_at` | 回退重新核验的截止时间戳及其被消费时间戳 |
+| `blocked_by` | 可选的阻塞说明备注；不会门控或暂停调度 |
+| `blocked_by_wait_id` | 历史等待派生的阻塞元数据；新等待不再写入 |
+| `recheck_at`、`recheck_consumed_at` | 历史回退重新核验字段；不再调度 |
 | `result_brief_id`、`result_summary` | 正式完成报告的关联标识与摘要文本 |
 | `completion_intent` | 完成意图来源与版本、必需的报告状态以及报告关联 |
 | `created_at`、`updated_at`、`turn_id` | 记录时间戳与可选的关联交互轮次 |
@@ -95,7 +95,7 @@ order: 38
 - `CompleteWorkItem` — 把目标标记为完成
 - `WaitFor` — 显式登记等待条件，且不改变任务的归属权
 
-修改计划正文请直接编辑计划文件。对于 Agent 的执行等待，应调用 `WaitFor`，不要通过 `UpdateWorkItem` 修改阻塞字段。操作者的 HTTP PATCH 接口具有独立的 `blocked_by`/`recheck_after` 控制字段，详见 [HTTP 控制平面参考](http-control-plane.md)；这些不是 Agent 工具的入参。
+修改计划正文请直接编辑计划文件。每当 Agent 需要暂停等待唤醒时，应调用 `WaitFor`（可按需传入 `recheck_after_ms`）；`blocked_by` 仅作说明备注。
 
 `PickWorkItem` 可以通过延续机制将当前执行让渡给另一个工作项。设置 `clear_blocker=true` 时必须提供阻塞已解决的事实依据和明确原因，不能用它来绕过让渡项的正常返回路径。
 

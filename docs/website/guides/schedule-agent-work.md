@@ -67,10 +67,14 @@ A timer firing only indicates that the trigger arrived on schedule; verify the a
 ### 4. Pause, resume, or cancel a recurring schedule
 
 To temporarily hold a timer without losing its schedule or history, click
-**Pause** on that timer in the Web GUI **Overview** panel (or call the HTTP
-pause endpoint). Paused timers stop counting down and never replay missed runs
+**Pause** on that timer in the Web GUI **Overview** panel (or run
+`holon timer pause`). Paused timers stop counting down and never replay missed runs
 when you click **Resume**: calendar timers wait for the next match after resume
 time, while interval timers finish their remaining delay.
+
+To rename a timer's display title or update the trigger instruction for future
+fires without resetting its schedule, edit the timer in the Web GUI **Overview**
+panel or run `holon timer edit` (agents can call `EditTimerContent`).
 
 When a project milestone is reached or monitoring is no longer required, tell the agent to cancel the schedule:
 
@@ -119,13 +123,19 @@ holon timer list --agent developer
 
 # Create a one-off timer from the CLI (fires after 60 seconds)
 holon timer create --agent developer --after-ms 60000 \
-  --summary "One-off CI check"
+  --title "CI check" --instruction "Check the current CI run and report status"
 
 # Create a recurring weekday morning schedule
 holon timer create --agent developer \
   --calendar-expression "0 8 * * 1-5" \
   --timezone "Asia/Shanghai" \
-  --summary "Weekday morning repo check"
+  --title "Morning repo check" \
+  --instruction "Audit open issues and write a summary report"
+
+# Pause, edit, or resume an existing timer
+holon timer pause TIMER_ID --agent developer
+holon timer edit TIMER_ID --agent developer --title "Weekday issue audit"
+holon timer resume TIMER_ID --agent developer
 
 # Cancel an active timer by ID
 holon timer cancel TIMER_ID --agent developer

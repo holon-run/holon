@@ -138,7 +138,7 @@ uses this precedence:
 | `WaitingForTask` | A WorkItem has an active task wait condition |
 | `WaitingForExternal` | A WorkItem has an active external waiting intent |
 | `WaitingForOperator` | WorkItem `plan_status=needs_input` or active operator wait |
-| `Blocked` | WorkItem has `blocked_by` set or an active timer/system/non-operator wait |
+| `Blocked` | WorkItem has an active timer, system, or non-operator wait |
 | `Idle` | No queued input, no runnable work, no blocking conditions |
 | `Unknown` | Default before first projection; not part of the stable contract |
 

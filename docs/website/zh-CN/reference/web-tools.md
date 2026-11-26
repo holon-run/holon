@@ -167,11 +167,13 @@ Holon 使用基于提供商的搜索模型，有多种提供商可选。未配�
 - **模型原生搜索**：部分模型提供商（OpenAI、Anthropic）通过自家 API 支持原生网络搜索。
   在 "Auto" 模式下，对话轮次会优先使用它们。独立的 `WebSearch` 原生提供商是另一回事：
   只有通过 `WebSearch.provider` 显式点名才会运行。具备可用凭证且声明可独立派发原生
-  搜索能力的模型提供商（目前为 `openai` 与 `openai-codex`）会自动派生原生条目并绑定
-  模型目录 preferred route；同 id 的显式 `web.providers.<id>.model_route` 条目优先于
-  派生路由。
+  搜索能力的模型提供商（目前为 `openai`、`openai-codex` 与 `gemini`）会自动派生原生条目
+  并绑定模型目录 preferred route；同 id 的显式 `web.providers.<id>.model_route` 条目
+  优先于派生路由。
 - **DeepSeek**：独立 Search / Fetch API，通过 `kind=deepseek` 引用 API key profile，
-  任意对话模型均可使用。
+  任意对话模型均可使用。绑定在官方站点 `https://api.deepseek.com` 的已认证 DeepSeek
+  模型提供商也会自动派生仅显式点名可用的 `deepseek` 搜索条目（不进入默认、`auto` 或
+  `aggregate` 候选链）。
 - **Z.AI / BigModel**：`api.z.ai`（`kind=zai`，引擎 `search-prime`）与
   `open.bigmodel.cn`（`kind=bigmodel`；引擎 `search_std`、`search_pro`、
   `search_pro_sogou`、`search_pro_quark`，默认 `search_pro`）上的独立

@@ -188,7 +188,10 @@ take precedence over this chain.
   `holon config set web.providers.firecrawl.kind firecrawl` and, for keyed
   access, `holon config set web.providers.firecrawl.credential_profile <profile>`.
 - **DeepSeek** — independent Search/Fetch APIs using a DeepSeek API key profile
-  (`kind=deepseek`), available to any conversation model.
+  (`kind=deepseek`), available to any conversation model. An authenticated
+  DeepSeek model provider pinned to the official `https://api.deepseek.com`
+  endpoint also derives an explicit-only `deepseek` search entry automatically
+  (excluded from default, `auto`, and `aggregate` chains).
 - **Z.AI / BigModel** — independent `POST /api/paas/v4/web_search` services at
   `api.z.ai` (`kind=zai`, engine `search-prime`) and `open.bigmodel.cn`
   (`kind=bigmodel`; engines `search_std`, `search_pro`, `search_pro_sogou`,
@@ -203,8 +206,8 @@ take precedence over this chain.
   these for conversation turns when available. Standalone `WebSearch` native
   providers are separate: they run only when explicitly named via
   `WebSearch.provider`. A model provider with usable credentials and a
-  standalone-dispatchable native search capability (today `openai` and
-  `openai-codex`) derives its native entry automatically with the model
+  standalone-dispatchable native search capability (today `openai`,
+  `openai-codex`, and `gemini`) derives its native entry automatically with the model
   catalog preferred route; an explicit `web.providers.<id>.model_route` entry
   with the same id overrides the derived route.
 - **SearXNG (self-hosted)** — an open-source meta-search engine backend requiring

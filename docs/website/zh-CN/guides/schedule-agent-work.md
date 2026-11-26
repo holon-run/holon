@@ -68,6 +68,8 @@ Holon 将基于时间的事件驱动能力作为一等运行时资源提供：�
 
 如果需要暂时挂起定时器而又保留调度规则与历史记录，可在 Web GUI 的**概览**面板点击**暂停**（或调用对应的 HTTP 暂停接口）。暂停后定时器不再倒计时，点击**恢复**也不会补跑暂停期间错过的次数：日历定时器会等待恢复之后的下一个匹配时刻，间隔定时器则继续跑完冻结的剩余时长。
 
+如果需要修改定时器的展示标题或后续触发时投递的指令，而又不重置调度计划，可在 Web GUI **概览**面板中编辑该定时器，或运行 `holon timer edit`（Agent 也可调用 `EditTimerContent`）。
+
 当项目阶段性收尾或不再需要定时监控时，在对话中直接要求 Agent 取消即可：
 
 > “当前版本已经发布，请取消工作日早间 8:00 的 Issue 巡检定时器，并确认已无活跃的定时调度。”
@@ -114,10 +116,20 @@ Holon 将基于时间的事件驱动能力作为一等运行时资源提供：�
 holon timer list --agent developer
 
 # 通过命令行直接创建单次定时器（60 秒后触发）
-holon timer create --agent developer --after-ms 60000   --summary "单次 CI 状态核验"
+holon timer create --agent developer --after-ms 60000 \
+  --title "CI 状态核验" --instruction "检查当前 CI 构建状态并汇报结果"
 
 # 创建工作日早间周期性日历定时器
-holon timer create --agent developer   --calendar-expression "0 8 * * 1-5"   --timezone "Asia/Shanghai"   --summary "工作日早间 Issue 巡检"
+holon timer create --agent developer \
+  --calendar-expression "0 8 * * 1-5" \
+  --timezone "Asia/Shanghai" \
+  --title "工作日早间巡检" \
+  --instruction "巡检未分诊的 Issue 并整理摘要报告"
+
+# 暂停、编辑或恢复已有定时器
+holon timer pause TIMER_ID --agent developer
+holon timer edit TIMER_ID --agent developer --title "工作日 Issue 巡检"
+holon timer resume TIMER_ID --agent developer
 
 # 根据 ID 取消指定定时器
 holon timer cancel TIMER_ID --agent developer

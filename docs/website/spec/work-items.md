@@ -34,8 +34,8 @@ A WorkItem is a durable objective record owned by an agent. It tracks:
 | `plan_status` | `draft`, `ready`, or `needs_input` |
 | `plan_artifact` | Path to the durable plan.md artifact in agent home |
 | `todo_list` | Progress checklist snapshot |
-| `blocked_by` | Human-readable wait/blocker description for display |
-| `recheck_at` | Legacy fallback deadline for blocked re-evaluation |
+| `blocked_by` | Descriptive blocker note for display; does not gate scheduling |
+| `recheck_at` | Historical fallback deadline; no longer scheduled |
 | `recheck_consumed_at` | Marker that the current recheck reminder was delivered |
 | `result_brief_id` | Canonical result `BriefRecord` id for a completed WorkItem report |
 | `result_summary` | Legacy completion summary fallback; new completion promotion should not write duplicate report text here |
@@ -80,12 +80,12 @@ The Rust enum `WorkItemPlanStatus` uses PascalCase variants (`Draft`, `Ready`,
   scheduler must wait for operator input.
 - `WaitFor` is the agent-facing way to mark a WorkItem waiting on operator
   input, a task result, an external resource, a timer, or a system tick. It
-  sets `blocked_by` for display and records the structured active wait.
+  records the structured active wait (and may record `blocked_by` for display).
 
 ## Readiness and scheduling
 
-WorkItem readiness is derived from `state`, `plan_status`, `blocked_by`, active
-wait state, and continuation-yield state:
+WorkItem readiness is derived from `state`, `plan_status`, active wait state,
+and continuation-yield state:
 
 | `WorkItemSchedulingState` | Condition |
 |---------------------------|-----------|
@@ -96,7 +96,7 @@ wait state, and continuation-yield state:
 | `WaitingExternal` | Active wait on an external event |
 | `WaitingTimer` | Active wait on a timer |
 | `WaitingSystem` | Active wait on a system tick |
-| `Blocked` | `blocked_by` is set with no active wait |
+| `Blocked` | Legacy/explicit non-runnable blocker state when present |
 | `Completing` | `state=Completing` |
 | `Completed` | `state=Completed` |
 
@@ -168,8 +168,7 @@ current WorkItem is the focus for the current turn:
   should wait.
 - Blocked WorkItems can be picked for inspection without becoming runnable. Use
   `PickWorkItem(clear_blocker=true, reason=...)` only after confirming the
-  blocker is resolved; this clears `blocked_by`, fallback recheck fields, and
-  active WorkItem-scoped waits.
+  blocker is resolved; this clears `blocked_by` and active WorkItem-scoped waits.
 - `CompleteWorkItem` promotion: the operator-facing completion report can be
   written immediately before the tool call in the same assistant round. A
   tool-only call instead returns an `awaiting_completion_report` receipt and
