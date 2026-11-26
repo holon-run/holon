@@ -141,18 +141,20 @@ transport-types-check: ## Check OpenAPI and generated TypeScript/Kotlin transpor
 transport-types-kotlin-check: ## Compile generated Kotlin transport types
 	$(GRADLE) --no-daemon -p $(KOTLIN_WIRE_CHECK_DIR) compileKotlin
 
-snapshots-check: ## Check CLI, OpenAPI, HTTP route, runtime status, and model tool schema snapshots
+snapshots-check: ## Check CLI, OpenAPI, HTTP route, runtime status, prompt topology, and model tool schema snapshots
 	cargo test --test cli_snapshot
 	cargo test --test openapi_snapshot
 	cargo test --test http_route_snapshot
 	cargo test --test runtime_status_inventory_snapshot
+	cargo test --test prompt_topology_snapshot
 	cargo test --test tool_schema_inventory_snapshot
 
-snapshots-refresh: ## Refresh CLI, OpenAPI, HTTP route, runtime status, and model tool schema snapshots
+snapshots-refresh: ## Refresh CLI, OpenAPI, HTTP route, runtime status, prompt topology, and model tool schema snapshots
 	cargo test --test cli_snapshot refresh_cli_snapshot -- --ignored
 	cargo test --test openapi_snapshot refresh_openapi_snapshot -- --ignored
 	cargo test --test http_route_snapshot refresh_http_route_inventory_snapshot -- --ignored
 	cargo test --test runtime_status_inventory_snapshot refresh_runtime_status_enum_inventory_snapshot -- --ignored
+	cargo test --test prompt_topology_snapshot refresh_prompt_topology_snapshot -- --ignored
 	cargo test --test tool_schema_inventory_snapshot refresh_tool_schema_inventory_snapshot -- --ignored
 
 build: ## Build all Rust targets (cargo build --all-targets)

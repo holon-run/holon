@@ -293,7 +293,7 @@ external harness's prompt.
    checkpoint prompts ([Turn-Local Context Compaction](./turn-local-context-compaction.md))
    move into dedicated `holon-context` prompt assets covered by snapshot tests.
 4. **Canonical prompt-topology snapshots:** add a checked-in prompt topology
-   snapshot (`docs/website/reference/prompt-topology-snapshots.json`) verified by
+   snapshot (`tests/snapshots/prompt_topology_inventory.json`) verified by
    `make snapshots-check` across representative profiles (`zero-tools`,
    `no-shell-steward`, `coding-shell-patch-dsl`, `coding-shell-patch-json`,
    `delegated-child`, and `full-surface`), recording section order,
