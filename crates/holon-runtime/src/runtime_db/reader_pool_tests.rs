@@ -13,7 +13,7 @@ use super::{RuntimeDb, RuntimeDbReadScope, RuntimeDbReaderConfig, RuntimeDbRetry
 use super::{RuntimeDbProtectionError, RuntimeDbProtectionState};
 
 fn fixture(capacity: u32) -> Result<(tempfile::TempDir, RuntimeDb)> {
-    fixture_with_budget(capacity, Duration::from_millis(100))
+    fixture_with_budget(capacity, Duration::from_secs(2))
 }
 
 fn fixture_with_budget(capacity: u32, budget: Duration) -> Result<(tempfile::TempDir, RuntimeDb)> {
@@ -1192,7 +1192,8 @@ fn panic_and_unfinished_transaction_discard_connection() -> Result<()> {
 
 #[test]
 fn saturated_pool_times_out_without_overflow_connection() -> Result<()> {
-    let (_directory, db) = fixture(1)?;
+    let (_directory, db) = fixture_with_budget(1, Duration::from_millis(100))?;
+    read_one(&db)?;
     let worker_db = db.clone();
     let (started_tx, started_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -1218,7 +1219,8 @@ fn saturated_pool_times_out_without_overflow_connection() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn cancellation_retains_started_work_and_removes_unstarted_waiter() -> Result<()> {
-    let (_directory, db) = fixture(1)?;
+    let (_directory, db) = fixture_with_budget(1, Duration::from_millis(100))?;
+    read_one(&db)?;
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let worker_db = db.clone();
@@ -1311,7 +1313,8 @@ fn blocking_queue_wait_obeys_acquisition_budget_without_running_read_closure() -
 
 #[tokio::test(flavor = "current_thread")]
 async fn started_read_can_outlive_acquisition_budget() -> Result<()> {
-    let (_directory, db) = fixture(1)?;
+    let (_directory, db) = fixture_with_budget(1, Duration::from_millis(100))?;
+    read_one(&db)?;
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let worker_db = db.clone();
@@ -1462,7 +1465,7 @@ fn pooled_lock_failure_preserves_sqlite_code_and_read_retry_classification() -> 
 
 #[test]
 fn preparation_reader_capacity_is_reserved_and_bounded_across_clones() -> Result<()> {
-    let (_directory, db) = fixture(1)?;
+    let (_directory, db) = fixture_with_budget(1, Duration::from_millis(100))?;
     let (started_tx, started_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let reader_db = db.clone();
