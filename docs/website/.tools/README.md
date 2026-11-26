@@ -66,20 +66,22 @@ directory must also stay in `../wrangler.jsonc`.
 
 ## Asset host
 
-Pages are served by the `holon.run` Worker; the same binaries are also served by
-a second Worker on `https://assets.holon.run` (`../wrangler.assets.jsonc`,
-`../asset-worker.mjs`). A separate origin gives binaries their own TCP/TLS
+Pages are served by the `holon.run` Worker; media is also served by a second
+Worker on `https://assets.holon.run` (`../wrangler.assets.jsonc`,
+`../asset-worker.mjs`). A separate origin gives media its own TCP/TLS
 connection, so a slow or lossy image download cannot stall the page connection,
 and HTTP/1.1 clients get a second connection pool instead of the six-per-host
 limit.
 
-`rewrite-asset-host.mjs` runs inside `build:cloudflare` and rewrites bare
-`/assets/...` references in `dist/content` to the asset host before mdorigin
-builds the bundle; its `--check` form then fails the build if the emitted
-bundle still has same-origin asset references. Only repository paths in prose
-(`docs/website/assets/...`) and already-absolute URLs are left alone. Set
-`ASSET_HOST=none` to skip the rewrite: that is the rollback switch, and pages
-return to same-origin assets after the page Worker is rebuilt and redeployed.
+`rewrite-asset-host.mjs` runs inside `build:cloudflare` and rewrites media
+references (images, PDFs, video, fonts) in `dist/content` to the asset host
+before mdorigin builds the bundle; its `--check` form then fails the build if
+the emitted bundle still has same-origin media references. Scripts,
+stylesheets and JSON fetched by page code stay on the page origin: they are on
+the critical path, CSP expects them same-origin, and they reuse the page
+connection anyway. Set `ASSET_HOST=none` to skip the rewrite: that is the
+rollback switch, and pages return to same-origin media after the page Worker is
+rebuilt and redeployed.
 
 The zone needs one proxied placeholder record, `assets.holon.run AAAA 100::`:
 a Worker route only matches a hostname that already resolves through
