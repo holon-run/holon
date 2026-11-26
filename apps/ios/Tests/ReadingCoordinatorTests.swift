@@ -2283,6 +2283,7 @@ final class ReadingCoordinatorTests: XCTestCase {
         await fake.releaseRoster()
         try await wait { !coordinator.isRefreshing }
         XCTAssertTrue(coordinator.isRosterCurrent)
+        XCTAssertTrue(coordinator.hasDisplayableLiveRoster)
         coordinator.disconnect()
     }
 
@@ -2413,6 +2414,38 @@ final class ReadingCoordinatorTests: XCTestCase {
         await fake.releaseRoster()
         try await wait { !coordinator.isRefreshing }
         XCTAssertTrue(coordinator.isRosterCurrent)
+        XCTAssertTrue(coordinator.hasDisplayableLiveRoster)
+        coordinator.disconnect()
+    }
+
+    func testLiveRosterHintKeepsDisplayableRosterCalmAndDecouplesConversationRefresh() async throws {
+        let (coordinator, fake, _) = try await start()
+        await fake.setRosterAgents([ReadingAgent(id: "A", name: "A", preview: "brief", posture: "idle")])
+        await coordinator.refresh()
+        try await wait { await fake.counts().0 == 1 && coordinator.isRosterCurrent && !coordinator.isRefreshing }
+        XCTAssertTrue(coordinator.hasDisplayableLiveRoster)
+        XCTAssertFalse(coordinator.isInitialRosterRefreshing)
+        XCTAssertFalse(coordinator.isConversationRefreshing)
+
+        let calls = await fake.rosterCalls
+        await fake.holdRoster()
+        await fake.send(try readingEvent("agent_roster_hint", raw: .object([:])), to: "roster")
+        try await wait { await fake.rosterCalls > calls }
+        // Route-withdrawal authority waits for the new roster, while UI display stays calm.
+        XCTAssertFalse(coordinator.isRosterCurrent)
+        XCTAssertTrue(coordinator.hasDisplayableLiveRoster)
+        XCTAssertFalse(coordinator.isInitialRosterRefreshing)
+        XCTAssertFalse(coordinator.isConversationRefreshing)
+        let agent = try XCTUnwrap(coordinator.agents.first)
+        XCTAssertEqual(AgentIdentityPresentation.derive(
+            agent, status: coordinator.status, isRosterCurrent: coordinator.hasDisplayableLiveRoster,
+            isCached: coordinator.rosterIsCached, isRefreshing: coordinator.isInitialRosterRefreshing
+        ).kind, .ready)
+
+        await fake.releaseRoster()
+        try await wait { !coordinator.isRefreshing }
+        XCTAssertTrue(coordinator.isRosterCurrent)
+        XCTAssertTrue(coordinator.hasDisplayableLiveRoster)
         coordinator.disconnect()
     }
 

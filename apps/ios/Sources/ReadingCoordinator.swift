@@ -27,6 +27,8 @@ final class ReadingCoordinator {
     @ObservationIgnored private var rosterEpoch: String?
     // Only a successful roster response in the current context authorizes missing-agent decisions.
     private(set) var isRosterCurrent = false
+    // Remains true across background SSE roster hints within the same live session so UI rows stay calm.
+    private(set) var hasLiveRoster = false
     private(set) var selectedAgentID: String?
     private(set) var conversationProjection: ReadingConversationProjection?
     private(set) var snapshot: HolonConversationSnapshot? {
@@ -60,6 +62,9 @@ final class ReadingCoordinator {
     private(set) var readStatus: ReadingReadStatus = .idle
     private(set) var readingPosition: String?
     var isRefreshing: Bool { rosterRefreshing || conversationRefreshing }
+    var isInitialRosterRefreshing: Bool { rosterRefreshing && !hasLiveRoster }
+    var isConversationRefreshing: Bool { conversationRefreshing }
+    var hasDisplayableLiveRoster: Bool { isRosterCurrent || hasLiveRoster }
     var isShowingCachedContent: Bool {
         selectedAgentID == nil ? rosterIsCached : conversationIsCached
     }
@@ -361,6 +366,7 @@ final class ReadingCoordinator {
         revision += 1
         conversationImageDetails.cancelAll()
         isRosterCurrent = false
+        hasLiveRoster = false
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
         for stream in streams.values { stream.close() }
@@ -415,6 +421,7 @@ final class ReadingCoordinator {
     private func clearDisplay() {
         agents = []
         rosterEpoch = nil
+        hasLiveRoster = false
         rosterSavedAt = nil
         rosterIsCached = false
         selectedAgentID = nil
@@ -483,6 +490,10 @@ final class ReadingCoordinator {
     }
 
     private func observeResourceEpoch(_ epoch: String) {
+        if let rosterEpoch, rosterEpoch != epoch {
+            isRosterCurrent = false
+            hasLiveRoster = false
+        }
         avatars.observeResourceEpoch(epoch)
     }
 
@@ -506,6 +517,7 @@ final class ReadingCoordinator {
         previewTask?.cancel()
         rosterRevision &+= 1
         isRosterCurrent = true
+        hasLiveRoster = true
         previewedAgentIDs = []
         rosterSavedAt = Date()
         rosterIsCached = false
@@ -1254,6 +1266,7 @@ final class ReadingCoordinator {
 
     private func markCached() {
         isRosterCurrent = false
+        hasLiveRoster = false
         rosterIsCached = rosterSavedAt != nil
         conversationIsCached = snapshot != nil
         canLoadHistory = false

@@ -41,6 +41,8 @@ extension ReadingTransport {
 
 /// SDK identity is independently bound; original connection identity remains the UI authority.
 actor ReadingClientTransport: ReadingTransport {
+    private static let transientReadRetry: HolonRetryPolicy =
+        (try? HolonRetryPolicy(maxAttempts: 2, baseDelay: 0.15, maximumDelay: 0.3)) ?? .none
     private let client: HolonClient
     private let authority: HolonConnectionIdentity
     private var bound: HolonConnectionIdentity?
@@ -93,7 +95,9 @@ actor ReadingClientTransport: ReadingTransport {
         defer { rosterLoading = false }
         rosterGeneration &+= 1
         let generation = rosterGeneration
-        let raw = try await request { try await $0.getJSON(path: ["agents", "snapshot"]) }
+        let raw = try await request {
+            try await $0.getJSON(path: ["agents", "snapshot"], retry: Self.transientReadRetry)
+        }
         guard generation == rosterGeneration else { throw CancellationError() }
         guard raw["runtime_id"]?.readingString == authority.runtimeID,
               raw["visibility_scope_id"]?.readingString == authority.visibilityScopeID,
@@ -122,7 +126,9 @@ actor ReadingClientTransport: ReadingTransport {
         var counts: [String: Int] = [:]
         var readStates: [String: ReadingReadState] = [:]
         do {
-            let states = try await request { try await $0.getJSON(path: ["agents", "brief-read-states"]) }
+            let states = try await request {
+                try await $0.getJSON(path: ["agents", "brief-read-states"], retry: Self.transientReadRetry)
+            }
             counts = try Self.unreadCounts(states, agentIDs: Set(agents.map(\.id)),
                                            epoch: epoch, visibility: authority.visibilityScopeID!)
             if case .array(let entries) = states {
@@ -178,7 +184,9 @@ actor ReadingClientTransport: ReadingTransport {
     func operatorPreview(agentID: String) async throws -> ReadingOperatorPreview? {
         guard let epoch = rosterEpoch else { throw HolonConversationError.bootstrapRequired }
         do {
-            let snapshot = try await request { try await $0.conversation(agentID: agentID, limit: 1) }
+            let snapshot = try await request {
+                try await $0.conversation(agentID: agentID, limit: 1, retry: Self.transientReadRetry)
+            }
             guard snapshot.eventLogEpoch == epoch, snapshot.agentID == agentID,
                   snapshot.runtimeID == authority.runtimeID,
                   snapshot.visibilityScopeID == authority.visibilityScopeID else {
@@ -252,12 +260,14 @@ actor ReadingClientTransport: ReadingTransport {
             // baseline before the snapshot, not at a later visible-body POST.
             do {
                 readState = try await request {
-                    try await $0.getJSON(path: ["agents", agentID, "brief-read-state"])
+                    try await $0.getJSON(path: ["agents", agentID, "brief-read-state"],
+                                         retry: Self.transientReadRetry)
                 }
             } catch { try Self.requireMetadataRecovery(error) }
         }
         let snapshot = try await request {
-            try await $0.conversation(agentID: agentID, before: before, limit: 60)
+            try await $0.conversation(agentID: agentID, before: before, limit: 60,
+                                      retry: Self.transientReadRetry)
         }
         guard conversationGeneration == generation else { throw CancellationError() }
         if before == nil, let readState,
