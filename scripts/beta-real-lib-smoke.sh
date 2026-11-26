@@ -30,7 +30,7 @@
 #   before.
 #
 # Usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--db <path>]
-#                                  [--keep] [--no-marker]
+#                                  [--keep] [--no-marker] [--self-check]
 # Env:
 #   SMOKE_HOME_SRC      default ~/.holon (live daemon home to snapshot)
 #   SMOKE_DB_PATH       pre-made offline database copy; skips the snapshot
@@ -48,6 +48,9 @@
 # example a database produced by `sqlite3 ... "VACUUM INTO ..."` on a
 # stopped daemon). It is still copied into the sandbox as an independent,
 # writable file; the caller's database is never opened in place.
+# --self-check runs offline assertions on the release-body marker flip and
+# exits; it needs no tag, network, `gh`, or daemon.
+#
 # On success the `[smoke: pending]` marker in the beta release body is
 # replaced with `[smoke: passed] ...` (requires `gh`; skip with --no-marker).
 set -euo pipefail
@@ -69,6 +72,47 @@ WORK=""
 
 log() { printf '[beta-smoke] %s\n' "$*"; }
 die() { printf '[beta-smoke] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Flip only the release-body smoke marker line. The body's explanatory
+# sentence also contains the literal `[smoke: pending]`, so an unanchored
+# substitution rewrites the explanation too; anchor the address to the
+# marker line, which starts at column 0.
+flip_smoke_marker_body() {
+  local body="$1" stamp="$2"
+  printf '%s\n' "$body" | sed "/^\[smoke: pending\]/s#\[smoke: pending\]#[smoke: passed] ${stamp} real-library snapshot smoke (linux-amd64)#"
+}
+
+# Marker state is derived from the marker line, never from any occurrence of
+# the literal: the explanatory sentence mentions `[smoke: pending]` even
+# after the marker has already passed.
+has_pending_marker() { printf '%s\n' "$1" | grep -q '^\[smoke: pending\]'; }
+has_passed_marker() { printf '%s\n' "$1" | grep -q '^\[smoke: passed\]'; }
+
+# Offline regression check for the marker flip: the marker line must change
+# while the explanatory sentence stays intact, and an already-passed body must
+# be recognized as such.
+self_check() {
+  local stamp="2026-11-26T21:22:08Z" fixture flipped marker
+  fixture="Daily beta train build \`v0.62.0-beta.20261127\` (candidate \`abc1234\`).
+
+Channel contract: beta-channel machines install this prerelease only after the Release E2E attestation and the real-library smoke check both pass. The \`[smoke: ...]\` line below is that smoke marker; \`[smoke: pending]\` means do not upgrade yet.
+
+## Commits since v0.62.0
+
+[smoke: pending]"
+  flipped="$(flip_smoke_marker_body "$fixture" "$stamp")"
+  case "$flipped" in
+    *"\`[smoke: pending]\` means do not upgrade yet."*) ;;
+    *) die "self-check failed: explanatory sentence was modified" ;;
+  esac
+  marker="$(printf '%s\n' "$flipped" | sed -n '/^\[smoke: passed\]/p')"
+  [ "$marker" = "[smoke: passed] ${stamp} real-library snapshot smoke (linux-amd64)" ] ||
+    die "self-check failed: marker line is '${marker}'"
+  has_pending_marker "$flipped" && die "self-check failed: pending marker line still present"
+  has_passed_marker "$flipped" || die "self-check failed: passed marker not detected"
+  log "self-check passed: marker flipped, explanatory sentence preserved"
+}
+
 cleanup() {
   if [ -n "${SERVER_PID:-}" ]; then kill -TERM -- "-${SERVER_PID}" 2>/dev/null || true; fi
   if [ "$KEEP" -ne 1 ] && [ -n "$WORK" ]; then rm -rf "$WORK"; fi
@@ -81,6 +125,7 @@ while [ $# -gt 0 ]; do
     --db) DB_SRC="$2"; shift ;;
     --keep) KEEP=1 ;;
     --no-marker) MARKER=0 ;;
+    --self-check) self_check; exit 0 ;;
     -h|--help) sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) TAG="$1" ;;
   esac
@@ -88,6 +133,12 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$TAG" ] || die "usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--db <path>] [--keep] [--no-marker]"
 case "$TAG" in *-beta.*) ;; *) die "$TAG does not look like a beta tag" ;; esac
+
+# Fail fast before any live work (download, snapshot, daemon boot) if the
+# release-body marker flip logic regressed.
+if [ "$MARKER" -eq 1 ]; then
+  self_check
+fi
 case "$STARTUP_WAIT" in
   ''|*[!0-9]*) die "SMOKE_STARTUP_WAIT_SECS must be a positive integer (got '${STARTUP_WAIT}')" ;;
 esac
@@ -293,13 +344,14 @@ log "PASS: beta ${TAG} started against the real-library snapshot and stayed heal
 if [ "$MARKER" -eq 1 ]; then
   command -v gh >/dev/null 2>&1 || { log "gh not available; skipping release-body marker"; exit 0; }
   body="$(gh release view "$TAG" --repo "$REPO" --json body --jq .body)"
-  case "$body" in
-    *"[smoke: pending]"*)
-      newbody="$(printf '%s' "$body" | sed "s#\[smoke: pending\]#[smoke: passed] $(date -u +%FT%TZ) real-library snapshot smoke (linux-amd64)#")"
-      gh release edit "$TAG" --repo "$REPO" --notes "$newbody" >/dev/null
-      log "release-body marker flipped to [smoke: passed]"
-      ;;
-    *"[smoke: passed]"*) log "marker already set; nothing to do" ;;
-    *) log "release body has no smoke marker; not modifying" ;;
-  esac
+  if has_pending_marker "$body"; then
+    stamp="$(date -u +%FT%TZ)"
+    newbody="$(flip_smoke_marker_body "$body" "$stamp")"
+    gh release edit "$TAG" --repo "$REPO" --notes "$newbody" >/dev/null
+    log "release-body marker flipped to [smoke: passed]"
+  elif has_passed_marker "$body"; then
+    log "marker already set; nothing to do"
+  else
+    log "release body has no smoke marker; not modifying"
+  fi
 fi
