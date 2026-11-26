@@ -226,6 +226,19 @@ impl AcpClient {
         parse_session_info(result)
     }
 
+    /// Drain replayed `session/update` notifications produced by
+    /// `session/load` before the next live prompt begins.
+    pub async fn drain_session_updates(&self, session_id: &str) -> usize {
+        let mut updates = self.updates.lock().await;
+        let mut drained = 0;
+        while let Ok(notification) = updates.try_recv() {
+            if notification.session_id == session_id {
+                drained += 1;
+            }
+        }
+        drained
+    }
+
     /// Send one prompt and stream `session/update` notifications until the peer
     /// answers with a `stopReason`.
     ///

@@ -946,6 +946,9 @@ impl RuntimeHandle {
                     current_run_abort: None,
                     _queue_budget_view: Some(queue_budget_view),
                 }),
+                acp_session: Mutex::new(None),
+                #[cfg(test)]
+                acp_test_harness: Mutex::new(None),
                 #[cfg(test)]
                 installation_barrier: Mutex::new(()),
                 #[cfg(any(test, feature = "http-test-support"))]

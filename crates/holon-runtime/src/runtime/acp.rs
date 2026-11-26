@@ -13,16 +13,17 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, ensure, Context, Result};
 use holon_acp::harness::{AcpHarnessSpec, LaunchRequest, SandboxMode};
 use holon_acp::protocol::{
-    ClientCapabilities, ContentBlock, InitializeParams, PromptParams, SessionNewParams,
-    SessionUpdate, StopReason, ToolCall, ToolCallStatus, ToolCallUpdate,
+    ClientCapabilities, ContentBlock, InitializeParams, PromptParams, SessionLoadParams,
+    SessionNewParams, SessionResumeParams, SessionUpdate, StopReason, ToolCall, ToolCallStatus,
+    ToolCallUpdate,
 };
 use holon_acp::{
-    AcpClient, AcpClientHandler, CancelHandle, ElicitationRequest, PermissionOutcome,
+    AcpClient, AcpClientHandler, AcpError, CancelHandle, ElicitationRequest, PermissionOutcome,
     PermissionRequest,
 };
 use serde_json::{json, Map, Value};
@@ -48,6 +49,8 @@ const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long to wait for the process group to report itself empty.
 const PROCESS_GROUP_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Resident ACP sessions are retired after a bounded idle period.
+const ACP_IDLE_RETIREMENT: Duration = Duration::from_secs(60);
 
 /// Harness binding resolved for one ACP-driven agent.
 #[derive(Debug, Clone)]
@@ -711,6 +714,10 @@ async fn spawn_harness(
     execution: &EffectiveExecution,
     gate: Arc<AcpPermissionGate>,
 ) -> Result<SpawnedHarness> {
+    #[cfg(test)]
+    if let Some(harness) = runtime.test_acp_harness(gate.clone()).await {
+        return Ok(harness);
+    }
     let (request, env) = launch_request(profile, execution)?;
     let launch = profile.spec.build_launch(&request);
     ensure!(
@@ -778,7 +785,11 @@ async fn spawn_harness(
         });
     }
     let process = Arc::new(tokio::sync::Mutex::new(process));
-    let client = AcpClient::from_split(stdout, stdin, gate as Arc<dyn AcpClientHandler>);
+    let client = Arc::new(AcpClient::from_split(
+        stdout,
+        stdin,
+        gate as Arc<dyn AcpClientHandler>,
+    ));
     Ok(SpawnedHarness {
         client,
         process,
@@ -786,14 +797,502 @@ async fn spawn_harness(
     })
 }
 
+/// A harness substituted by a test, standing in for a spawned process.
+///
+/// The seam keeps the continuation protocol under test without needing a real
+/// `agy acp` peer; production builds never compile it.
+#[cfg(test)]
+pub(crate) struct AcpTestHarness {
+    pub(crate) client: Arc<AcpClient>,
+    pub(crate) process: Arc<tokio::sync::Mutex<Box<dyn RunningProcess>>>,
+    pub(crate) group: Option<Arc<dyn RegisteredProcessGroupProbe>>,
+}
+
+#[cfg(test)]
+impl From<AcpTestHarness> for SpawnedHarness {
+    fn from(harness: AcpTestHarness) -> Self {
+        Self {
+            client: harness.client,
+            process: harness.process,
+            group: harness.group,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) type AcpTestHarnessFactory =
+    Arc<dyn Fn(Arc<dyn AcpClientHandler>) -> AcpTestHarness + Send + Sync>;
+
+/// A resident harness process and its bridged ACP client.
+pub(crate) struct AcpResidentSession {
+    pub(crate) client: Arc<AcpClient>,
+    gate: Arc<AcpPermissionGate>,
+    pub(crate) process: Arc<tokio::sync::Mutex<Box<dyn RunningProcess>>>,
+    pub(crate) group: Option<Arc<dyn RegisteredProcessGroupProbe>>,
+    pub(crate) session_id: String,
+    pub(crate) profile: String,
+    pub(crate) bound_execution_root: String,
+    pub(crate) bound_additional_dirs: Vec<String>,
+    pub(crate) last_used: Instant,
+}
+
 /// A spawned harness process and its bridged ACP client.
 struct SpawnedHarness {
-    client: AcpClient,
+    client: Arc<AcpClient>,
     process: Arc<tokio::sync::Mutex<Box<dyn RunningProcess>>>,
     group: Option<Arc<dyn RegisteredProcessGroupProbe>>,
 }
 
+struct AcpSessionAcquire {
+    session: AcpResidentSession,
+    new_session: bool,
+    rebuilt_session: bool,
+    prompt_role: Option<String>,
+}
+
+fn execution_binding(execution: &EffectiveExecution) -> (String, Vec<String>) {
+    let root = execution
+        .workspace
+        .execution_root_id()
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            execution
+                .workspace
+                .execution_root()
+                .to_string_lossy()
+                .into_owned()
+        });
+    let additional_dirs = execution
+        .attached_workspaces
+        .iter()
+        .map(|(_, path)| path.to_string_lossy().into_owned())
+        .collect();
+    (root, additional_dirs)
+}
+
+fn binding_matches(
+    profile: &str,
+    bound_execution_root: &str,
+    bound_additional_dirs: &[String],
+    expected_profile: &str,
+    expected_execution_root: &str,
+    expected_additional_dirs: &[String],
+) -> bool {
+    profile == expected_profile
+        && bound_execution_root == expected_execution_root
+        && bound_additional_dirs == expected_additional_dirs
+}
+
+fn session_resume_params(
+    session_id: &str,
+    execution: &EffectiveExecution,
+    profile: &ResolvedProfile,
+) -> SessionResumeParams {
+    let mut params = SessionResumeParams::new(session_id);
+    params.cwd = Some(
+        execution
+            .workspace
+            .execution_root()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    params.additional_directories = execution_binding(execution).1;
+    params.meta = Some(session_meta(profile));
+    params
+}
+
+fn session_load_params(
+    session_id: &str,
+    execution: &EffectiveExecution,
+    profile: &ResolvedProfile,
+) -> SessionLoadParams {
+    let mut params = SessionLoadParams::new(session_id);
+    params.cwd = Some(
+        execution
+            .workspace
+            .execution_root()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    params.additional_directories = execution_binding(execution).1;
+    params.meta = Some(session_meta(profile));
+    params
+}
+
+fn session_new_params(
+    execution: &EffectiveExecution,
+    profile: &ResolvedProfile,
+    handshake: &holon_acp::Handshake,
+) -> SessionNewParams {
+    let mut params = SessionNewParams::new(
+        execution
+            .workspace
+            .execution_root()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    params.additional_directories = execution_binding(execution).1;
+    params.meta = Some(session_meta(profile));
+    params.system_prompt = negotiated_role(profile, handshake);
+    params
+}
+
+fn bounded_recovery_summary(state: &crate::types::AgentState) -> Option<String> {
+    state
+        .last_turn_terminal
+        .as_ref()
+        .and_then(|terminal| terminal.last_assistant_message.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.chars().take(2048).collect())
+}
+
+fn recovery_handoff_prompt(prompt: &str, role: Option<&str>, summary: Option<&str>) -> String {
+    let mut handoff = String::new();
+    if let Some(summary) = summary.filter(|summary| !summary.is_empty()) {
+        handoff.push_str("Bounded handoff from the previous ACP session:\n");
+        handoff.push_str(summary);
+        handoff.push_str("\n\n");
+    }
+    handoff.push_str(&handoff_prompt(prompt, role));
+    handoff
+}
+
+#[cfg(test)]
 impl super::RuntimeHandle {
+    /// Install the harness a test drives instead of spawning a real peer.
+    pub(crate) async fn install_acp_test_harness(&self, factory: AcpTestHarnessFactory) {
+        *self.inner.acp_test_harness.lock().await = Some(factory);
+    }
+
+    async fn test_acp_harness(&self, gate: Arc<AcpPermissionGate>) -> Option<SpawnedHarness> {
+        let factory = self.inner.acp_test_harness.lock().await.clone()?;
+        Some(factory(gate as Arc<dyn AcpClientHandler>).into())
+    }
+}
+
+impl super::RuntimeHandle {
+    /// Retire a persisted upstream session that can no longer be continued.
+    ///
+    /// The rotation is recorded before the credential is dropped so the
+    /// degraded `session/new` path stays auditable.
+    async fn rotate_acp_session_state(
+        &self,
+        binding: &AcpDriverBinding,
+        previous_session_id: &str,
+        reason: &str,
+    ) -> Result<()> {
+        self.append_audit_event(
+            "acp_session_rotated",
+            json!({
+                "driver": "acp",
+                "acp_profile": binding.profile,
+                "previous_session_id": previous_session_id,
+                "reason": reason,
+            }),
+        )
+        .await
+        .context("record ACP session rotation")?;
+        self.clear_acp_session_state().await
+    }
+
+    async fn persist_acp_session_state(
+        &self,
+        profile: &str,
+        session_id: &str,
+        bound_execution_root: &str,
+        bound_additional_dirs: &[String],
+    ) -> Result<()> {
+        let profile = profile.to_string();
+        let session_id = session_id.to_string();
+        let bound_execution_root = bound_execution_root.to_string();
+        let bound_additional_dirs = bound_additional_dirs.to_vec();
+        self.update_agent_state(|state| {
+            state.acp_session_state = Some(crate::types::AcpSessionState {
+                acp_profile: profile,
+                resume_session_id: session_id,
+                bound_execution_root,
+                bound_additional_dirs,
+            });
+            Ok(())
+        })
+        .await?;
+        Ok(())
+    }
+
+    async fn clear_acp_session_state(&self) -> Result<()> {
+        self.update_agent_state(|state| {
+            state.acp_session_state = None;
+            Ok(())
+        })
+        .await?;
+        Ok(())
+    }
+
+    async fn acquire_acp_session(
+        &self,
+        profile: &ResolvedProfile,
+        binding: &AcpDriverBinding,
+        execution: &EffectiveExecution,
+        gate: Arc<AcpPermissionGate>,
+    ) -> Result<AcpSessionAcquire> {
+        let (bound_execution_root, bound_additional_dirs) = execution_binding(execution);
+        if let Some(resident) = self.inner.acp_session.lock().await.take() {
+            if binding_matches(
+                &resident.profile,
+                &resident.bound_execution_root,
+                &resident.bound_additional_dirs,
+                &binding.profile,
+                &bound_execution_root,
+                &bound_additional_dirs,
+            ) {
+                return Ok(AcpSessionAcquire {
+                    session: resident,
+                    new_session: false,
+                    rebuilt_session: false,
+                    prompt_role: None,
+                });
+            }
+            reap_process(&resident.process, resident.group.as_ref()).await;
+        }
+
+        let state = self.agent_state().await?;
+        let persisted = state.acp_session_state.clone();
+        let persisted_matches = persisted.as_ref().is_some_and(|session| {
+            binding_matches(
+                &session.acp_profile,
+                &session.bound_execution_root,
+                &session.bound_additional_dirs,
+                &binding.profile,
+                &bound_execution_root,
+                &bound_additional_dirs,
+            )
+        });
+        let had_persisted_session = persisted.is_some();
+        if had_persisted_session && !persisted_matches {
+            self.clear_acp_session_state().await?;
+        }
+
+        let spawned = spawn_harness(self, profile, execution, gate.clone()).await?;
+        let SpawnedHarness {
+            client,
+            process,
+            group,
+        } = spawned;
+        let handshake = match client
+            .initialize(InitializeParams::new(ClientCapabilities::trimmed()))
+            .await
+        {
+            Ok(handshake) => handshake,
+            Err(error) => {
+                reap_process(&process, group.as_ref()).await;
+                return Err(anyhow!(error).context("ACP initialize failed"));
+            }
+        };
+
+        let mut new_session = !persisted_matches;
+        let mut rebuilt_session = had_persisted_session && !persisted_matches;
+        let session = if let Some(persisted) = persisted.filter(|_| persisted_matches) {
+            if handshake.supports_resume() {
+                match client
+                    .resume_session(session_resume_params(
+                        &persisted.resume_session_id,
+                        execution,
+                        profile,
+                    ))
+                    .await
+                {
+                    Ok(session) => session,
+                    Err(AcpError::SessionNotFound { .. }) => {
+                        rebuilt_session = true;
+                        self.rotate_acp_session_state(
+                            binding,
+                            &persisted.resume_session_id,
+                            "resume_session_not_found",
+                        )
+                        .await?;
+                        client
+                            .new_session(session_new_params(execution, profile, &handshake))
+                            .await
+                            .map_err(|error| anyhow!(error).context("ACP session/new failed"))?
+                    }
+                    Err(AcpError::UnsupportedByPeer { .. }) if handshake.supports_load() => {
+                        new_session = false;
+                        match client
+                            .load_session(session_load_params(
+                                &persisted.resume_session_id,
+                                execution,
+                                profile,
+                            ))
+                            .await
+                        {
+                            Ok(session) => {
+                                client
+                                    .drain_session_updates(&persisted.resume_session_id)
+                                    .await;
+                                session
+                            }
+                            Err(AcpError::SessionNotFound { .. }) => {
+                                rebuilt_session = true;
+                                new_session = true;
+                                self.rotate_acp_session_state(
+                                    binding,
+                                    &persisted.resume_session_id,
+                                    "load_session_not_found",
+                                )
+                                .await?;
+                                client
+                                    .new_session(session_new_params(execution, profile, &handshake))
+                                    .await
+                                    .map_err(|error| {
+                                        anyhow!(error).context("ACP session/new failed")
+                                    })?
+                            }
+                            Err(error) => {
+                                reap_process(&process, group.as_ref()).await;
+                                return Err(anyhow!(error).context("ACP session/load failed"));
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        reap_process(&process, group.as_ref()).await;
+                        return Err(anyhow!(error).context("ACP session/resume failed"));
+                    }
+                }
+            } else if handshake.supports_load() {
+                new_session = false;
+                match client
+                    .load_session(session_load_params(
+                        &persisted.resume_session_id,
+                        execution,
+                        profile,
+                    ))
+                    .await
+                {
+                    Ok(session) => {
+                        client
+                            .drain_session_updates(&persisted.resume_session_id)
+                            .await;
+                        session
+                    }
+                    Err(AcpError::SessionNotFound { .. }) => {
+                        rebuilt_session = true;
+                        new_session = true;
+                        self.rotate_acp_session_state(
+                            binding,
+                            &persisted.resume_session_id,
+                            "load_session_not_found",
+                        )
+                        .await?;
+                        client
+                            .new_session(session_new_params(execution, profile, &handshake))
+                            .await
+                            .map_err(|error| anyhow!(error).context("ACP session/new failed"))?
+                    }
+                    Err(error) => {
+                        reap_process(&process, group.as_ref()).await;
+                        return Err(anyhow!(error).context("ACP session/load failed"));
+                    }
+                }
+            } else {
+                rebuilt_session = true;
+                self.rotate_acp_session_state(
+                    binding,
+                    &persisted.resume_session_id,
+                    "peer_session_unsupported",
+                )
+                .await?;
+                client
+                    .new_session(session_new_params(execution, profile, &handshake))
+                    .await
+                    .map_err(|error| anyhow!(error).context("ACP session/new failed"))?
+            }
+        } else {
+            client
+                .new_session(session_new_params(execution, profile, &handshake))
+                .await
+                .map_err(|error| anyhow!(error).context("ACP session/new failed"))?
+        };
+
+        if let Err(error) = self
+            .persist_acp_session_state(
+                &binding.profile,
+                &session.session_id,
+                &bound_execution_root,
+                &bound_additional_dirs,
+            )
+            .await
+        {
+            reap_process(&process, group.as_ref()).await;
+            return Err(error.context("persist ACP session state"));
+        }
+
+        Ok(AcpSessionAcquire {
+            session: AcpResidentSession {
+                client,
+                gate,
+                process,
+                group,
+                session_id: session.session_id,
+                profile: binding.profile.clone(),
+                bound_execution_root,
+                bound_additional_dirs,
+                last_used: Instant::now(),
+            },
+            new_session,
+            rebuilt_session,
+            prompt_role: if new_session && !supports_system_prompt(&handshake) {
+                profile.role.clone()
+            } else {
+                None
+            },
+        })
+    }
+
+    async fn store_acp_session(&self, mut session: AcpResidentSession) {
+        let session_id = session.session_id.clone();
+        session.last_used = Instant::now();
+        *self.inner.acp_session.lock().await = Some(session);
+        self.schedule_acp_idle_retirement(session_id);
+    }
+
+    fn schedule_acp_idle_retirement(&self, session_id: String) {
+        let runtime = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            tokio::time::sleep(ACP_IDLE_RETIREMENT).await;
+            let Some(inner) = runtime.upgrade() else {
+                return;
+            };
+            let runtime = super::RuntimeHandle { inner };
+            runtime.retire_acp_session_if_idle(&session_id).await;
+        });
+    }
+
+    async fn retire_acp_session_if_idle(&self, expected_session_id: &str) {
+        let resident = {
+            let mut slot = self.inner.acp_session.lock().await;
+            let retire = slot.as_ref().is_some_and(|session| {
+                session.session_id == expected_session_id
+                    && session.last_used.elapsed() >= ACP_IDLE_RETIREMENT
+            });
+            if retire {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some(resident) = resident {
+            reap_process(&resident.process, resident.group.as_ref()).await;
+        }
+    }
+
+    pub(crate) async fn retire_acp_session(&self, _reason: &str) {
+        let resident = self.inner.acp_session.lock().await.take();
+        if let Some(resident) = resident {
+            reap_process(&resident.process, resident.group.as_ref()).await;
+        }
+    }
+
     /// Run one delegated turn inside an external ACP harness.
     ///
     /// The turn is bounded: the harness answers with a single terminal message
@@ -810,57 +1309,38 @@ impl super::RuntimeHandle {
         let acp_config = &config;
         let profile = resolve_profile(acp_config, binding, execution)?;
         let gate = Arc::new(AcpPermissionGate::new(execution));
-        let spawned = spawn_harness(self, &profile, execution, Arc::clone(&gate)).await?;
-        let SpawnedHarness {
-            client,
-            process,
-            group,
-        } = spawned;
-
-        let handshake = match client
-            .initialize(InitializeParams::new(ClientCapabilities::trimmed()))
-            .await
-        {
-            Ok(handshake) => handshake,
-            Err(error) => {
-                reap_process(&process, group.as_ref()).await;
-                return Err(anyhow!(error).context("ACP initialize failed"));
-            }
-        };
-        let root = execution.workspace.execution_root();
-        let additional_directories = execution
-            .attached_workspaces
-            .iter()
-            .map(|(_, path)| path.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        let mut session_params = SessionNewParams::new(root.to_string_lossy().into_owned())
-            .with_additional_directories(additional_directories)
-            .with_meta(session_meta(&profile));
-        // The negotiated persona channel is preferred. When the peer does not
-        // declare it, the role travels as ordinary handoff prose instead.
-        session_params.system_prompt = negotiated_role(&profile, &handshake);
-        let negotiated = session_params.system_prompt.clone();
-
-        let session = match client.new_session(session_params).await {
-            Ok(session) => session,
-            Err(error) => {
-                reap_process(&process, group.as_ref()).await;
-                return Err(anyhow!(error).context("ACP session/new failed"));
-            }
-        };
+        let previous_state = self.agent_state().await?;
+        let acquired = self
+            .acquire_acp_session(&profile, binding, execution, gate)
+            .await?;
+        let AcpSessionAcquire {
+            mut session,
+            rebuilt_session,
+            prompt_role,
+            ..
+        } = acquired;
+        let session_id = session.session_id.clone();
         let control = AcpSessionControl {
-            cancel: client.cancel_handle(session.session_id.clone()),
-            process,
-            group,
+            cancel: session.client.cancel_handle(session_id.clone()),
+            process: Arc::clone(&session.process),
+            group: session.group.clone(),
         };
 
-        let handoff = handoff_prompt(prompt, negotiated.as_deref());
+        let handoff = recovery_handoff_prompt(
+            prompt,
+            prompt_role.as_deref(),
+            rebuilt_session
+                .then(|| bounded_recovery_summary(&previous_state))
+                .flatten()
+                .as_deref(),
+        );
         let mut updates: Vec<SessionUpdate> = Vec::new();
         let outcome = {
-            let prompt_future = client.prompt(
-                PromptParams::text(session.session_id.clone(), handoff),
-                |update| updates.push(update.clone()),
-            );
+            let prompt_future = session
+                .client
+                .prompt(PromptParams::text(session_id.clone(), handoff), |update| {
+                    updates.push(update.clone())
+                });
             tokio::pin!(prompt_future);
             tokio::select! {
                 result = &mut prompt_future => Outcome::Settled(result),
@@ -874,19 +1354,33 @@ impl super::RuntimeHandle {
             Outcome::Settled(Err(_)) => "acp_error".to_string(),
             Outcome::Cancelled => "cancelled".to_string(),
         };
-        control.cancel_and_reap().await;
-        let transcript_entry_id = self
+        if !matches!(&outcome, Outcome::Settled(Ok(_))) {
+            control.cancel_and_reap().await;
+        }
+        let transcript_entry_id = match self
             .persist_acp_evidence(
                 agent_id,
                 &projection,
                 &stop_reason,
-                gate.recorded(),
-                session.session_id.as_str(),
+                session.gate.recorded(),
+                session_id.as_str(),
             )
-            .await?;
+            .await
+        {
+            Ok(entry_id) => entry_id,
+            Err(error) => {
+                if matches!(&outcome, Outcome::Settled(Ok(_))) {
+                    control.cancel_and_reap().await;
+                }
+                return Err(error);
+            }
+        };
 
         match outcome {
-            Outcome::Settled(Ok(_)) => {}
+            Outcome::Settled(Ok(_)) => {
+                session.last_used = Instant::now();
+                self.store_acp_session(session).await;
+            }
             Outcome::Settled(Err(error)) => {
                 return Err(anyhow!(error).context("ACP session/prompt failed"));
             }
@@ -1178,5 +1672,634 @@ mod acp_driver_tests {
             ],
         };
         assert_eq!(allow_once_option(&request), None);
+    }
+
+    #[test]
+    fn execution_binding_is_what_a_resumed_session_must_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exec = execution(dir.path(), true);
+        let (root, dirs) = execution_binding(&exec);
+        assert_eq!(root, dir.path().to_string_lossy());
+        assert!(binding_matches(
+            "antigravity",
+            &root,
+            &dirs,
+            "antigravity",
+            &root,
+            &dirs
+        ));
+    }
+
+    #[test]
+    fn resume_binding_rejects_a_different_profile_root_or_directory_set() {
+        let dirs = vec!["/srv/shared".to_string()];
+        assert!(binding_matches(
+            "agy", "/root", &dirs, "agy", "/root", &dirs
+        ));
+        assert!(!binding_matches(
+            "agy", "/root", &dirs, "other", "/root", &dirs
+        ));
+        assert!(!binding_matches(
+            "agy", "/root", &dirs, "agy", "/root2", &dirs
+        ));
+        assert!(!binding_matches("agy", "/root", &dirs, "agy", "/root", &[]));
+    }
+
+    #[test]
+    fn recovery_handoff_only_injects_a_summary_when_one_is_available() {
+        assert_eq!(
+            recovery_handoff_prompt("next step", Some("planner"), None),
+            handoff_prompt("next step", Some("planner"))
+        );
+        assert_eq!(
+            recovery_handoff_prompt("next step", None, Some("")),
+            handoff_prompt("next step", None)
+        );
+        let with_summary = recovery_handoff_prompt("next step", None, Some("last words"));
+        assert!(with_summary
+            .starts_with("Bounded handoff from the previous ACP session:\nlast words\n\n"));
+        assert!(with_summary.ends_with(&handoff_prompt("next step", None)));
+    }
+
+    #[test]
+    fn acp_session_state_round_trips_without_binding_agent_identity() {
+        let state = crate::types::AcpSessionState {
+            acp_profile: "antigravity".into(),
+            resume_session_id: "sess-1".into(),
+            bound_execution_root: "/root".into(),
+            bound_additional_dirs: vec!["/srv/shared".into()],
+        };
+        let encoded = serde_json::to_value(&state).expect("encode");
+        let decoded: crate::types::AcpSessionState =
+            serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, state);
+
+        // Older state payloads predate the additional-directory binding.
+        let legacy = serde_json::json!({
+            "acp_profile": "antigravity",
+            "resume_session_id": "sess-1",
+            "bound_execution_root": "/root",
+        });
+        let decoded_legacy: crate::types::AcpSessionState =
+            serde_json::from_value(legacy).expect("decode legacy");
+        assert!(decoded_legacy.bound_additional_dirs.is_empty());
+    }
+
+    // --- Continuity: hot reuse, idle retirement, and degraded rotation. ---
+
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use holon_acp::jsonrpc::{Frame, RpcId};
+    use tempfile::tempdir;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    use crate::context::ContextConfig;
+    use crate::provider::StubProvider;
+    use crate::runtime::RuntimeHandle;
+    use crate::system::process::ProcessOutput;
+    use crate::system::RunningProcessExitStatus;
+
+    /// How the mock peer answers session continuation calls.
+    #[derive(Clone, Copy)]
+    struct TestPeerConfig {
+        supports_resume: bool,
+        supports_load: bool,
+        resume_missing: bool,
+    }
+
+    /// Session ids are unique per mock connection so a rotated session is
+    /// distinguishable from the retired one, matching real peers.
+    static TEST_PEER_SESSION_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Default)]
+    struct TestPeerLogState {
+        handshakes: usize,
+        methods: Vec<String>,
+        prompts: Vec<(String, String)>,
+        new_sessions: Vec<String>,
+        resumed_sessions: Vec<String>,
+    }
+
+    /// What the mock peer observed across every connection it served.
+    #[derive(Default)]
+    struct TestPeerLog {
+        state: std::sync::Mutex<TestPeerLogState>,
+    }
+
+    impl TestPeerLog {
+        fn handshakes(&self) -> usize {
+            self.state.lock().unwrap().handshakes
+        }
+
+        fn method_count(&self, method: &str) -> usize {
+            self.state
+                .lock()
+                .unwrap()
+                .methods
+                .iter()
+                .filter(|seen| *seen == method)
+                .count()
+        }
+
+        fn prompts(&self) -> Vec<(String, String)> {
+            self.state.lock().unwrap().prompts.clone()
+        }
+
+        fn new_sessions(&self) -> Vec<String> {
+            self.state.lock().unwrap().new_sessions.clone()
+        }
+
+        fn resumed_sessions(&self) -> Vec<String> {
+            self.state.lock().unwrap().resumed_sessions.clone()
+        }
+    }
+
+    /// The process-group proof a test harness hands to the reaper.
+    #[derive(Default)]
+    struct TestProcessGroup {
+        empty: AtomicBool,
+        graceful_stops: AtomicUsize,
+    }
+
+    impl RegisteredProcessGroupProbe for TestProcessGroup {
+        fn observe(&self) -> RegisteredProcessGroupQuiescence {
+            if self.empty.load(Ordering::SeqCst) {
+                RegisteredProcessGroupQuiescence::Empty
+            } else {
+                RegisteredProcessGroupQuiescence::NonEmpty
+            }
+        }
+    }
+
+    /// Stand-in for the spawned `agy acp` process.
+    struct TestHarnessProcess {
+        group: Arc<TestProcessGroup>,
+    }
+
+    #[async_trait::async_trait]
+    impl RunningProcess for TestHarnessProcess {
+        fn id(&self) -> String {
+            "test-acp-harness".into()
+        }
+
+        fn take_stdout(&mut self) -> Option<Box<dyn ProcessOutput>> {
+            None
+        }
+
+        fn take_stderr(&mut self) -> Option<Box<dyn ProcessOutput>> {
+            None
+        }
+
+        async fn write_stdin(&mut self, _data: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn wait(&mut self) -> Result<RunningProcessExitStatus> {
+            Ok(RunningProcessExitStatus::new(Some(0), None))
+        }
+
+        async fn try_status(&mut self) -> Result<Option<RunningProcessExitStatus>> {
+            Ok(None)
+        }
+
+        async fn stop(&mut self, signal: StopSignal) -> Result<()> {
+            if signal == StopSignal::Graceful {
+                self.group.graceful_stops.fetch_add(1, Ordering::SeqCst);
+            }
+            self.group.empty.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn acp_continuity_runtime() -> (tempfile::TempDir, tempfile::TempDir, RuntimeHandle) {
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+        (home, workspace, runtime)
+    }
+
+    async fn install_test_peer(
+        runtime: &RuntimeHandle,
+        config: TestPeerConfig,
+    ) -> Arc<TestPeerLog> {
+        let log = Arc::new(TestPeerLog::default());
+        let factory_log = Arc::clone(&log);
+        let config = Arc::new(config);
+        runtime
+            .install_acp_test_harness(Arc::new(move |handler| {
+                let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+                tokio::spawn(run_test_peer(
+                    server_io,
+                    Arc::clone(&config),
+                    Arc::clone(&factory_log),
+                ));
+                let client = Arc::new(AcpClient::new(client_io, handler));
+                let group = Arc::new(TestProcessGroup::default());
+                let process: Arc<tokio::sync::Mutex<Box<dyn RunningProcess>>> =
+                    Arc::new(tokio::sync::Mutex::new(Box::new(TestHarnessProcess {
+                        group: Arc::clone(&group),
+                    })));
+                AcpTestHarness {
+                    client,
+                    process,
+                    group: Some(group),
+                }
+            }))
+            .await;
+        log
+    }
+
+    async fn write_peer_frame(writer: &mut (impl AsyncWriteExt + Unpin), frame: Frame) {
+        let mut line = frame.to_line().expect("frame line");
+        line.push('\n');
+        writer.write_all(line.as_bytes()).await.unwrap();
+        writer.flush().await.unwrap();
+    }
+
+    fn param_session_id(params: &Option<Value>) -> String {
+        params
+            .as_ref()
+            .and_then(|params| params.get("sessionId"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn prompt_text(params: &Option<Value>) -> String {
+        params
+            .as_ref()
+            .and_then(|params| params.get("prompt"))
+            .and_then(Value::as_array)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default()
+    }
+
+    async fn run_test_peer(
+        stream: tokio::io::DuplexStream,
+        config: Arc<TestPeerConfig>,
+        log: Arc<TestPeerLog>,
+    ) {
+        let (read_half, mut write_half) = tokio::io::split(stream);
+        let mut lines = BufReader::new(read_half).lines();
+        while let Some(line) = lines.next_line().await.expect("mock peer read") {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let frame = Frame::parse(&line).expect("mock peer frame");
+            let Frame::Request { id, method, params } = frame else {
+                continue;
+            };
+            {
+                log.state.lock().unwrap().methods.push(method.clone());
+            }
+            match method.as_str() {
+                "initialize" => {
+                    log.state.lock().unwrap().handshakes += 1;
+                    let capabilities = json!({
+                        "protocolVersion": 1,
+                        "agentCapabilities": {
+                            "loadSession": config.supports_load,
+                            "sessionCapabilities": if config.supports_resume {
+                                json!({ "resume": {} })
+                            } else {
+                                json!({})
+                            },
+                        },
+                        "authMethods": [],
+                    });
+                    write_peer_frame(
+                        &mut write_half,
+                        Frame::Response {
+                            id,
+                            result: capabilities,
+                        },
+                    )
+                    .await;
+                }
+                "session/new" => {
+                    let session_id = {
+                        let mut state = log.state.lock().unwrap();
+                        let next = TEST_PEER_SESSION_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+                        let session_id = format!("s{next}");
+                        state.new_sessions.push(session_id.clone());
+                        session_id
+                    };
+                    write_peer_frame(
+                        &mut write_half,
+                        Frame::Response {
+                            id,
+                            result: json!({ "sessionId": session_id }),
+                        },
+                    )
+                    .await;
+                }
+                "session/resume" => {
+                    let requested = param_session_id(&params);
+                    log.state
+                        .lock()
+                        .unwrap()
+                        .resumed_sessions
+                        .push(requested.clone());
+                    let reply = if config.resume_missing {
+                        Frame::Error {
+                            id,
+                            error: holon_acp::RpcError {
+                                code: -32002,
+                                message: "session not found".into(),
+                                data: None,
+                            },
+                        }
+                    } else {
+                        Frame::Response {
+                            id,
+                            result: json!({ "sessionId": requested }),
+                        }
+                    };
+                    write_peer_frame(&mut write_half, reply).await;
+                }
+                "session/load" => {
+                    let requested = param_session_id(&params);
+                    log.state
+                        .lock()
+                        .unwrap()
+                        .resumed_sessions
+                        .push(requested.clone());
+                    // Replay history the client must drain without re-writing
+                    // it to the Holon ledger.
+                    write_peer_frame(
+                        &mut write_half,
+                        Frame::Notification {
+                            method: "session/update".into(),
+                            params: Some(json!({
+                                "sessionId": requested,
+                                "update": {
+                                    "sessionUpdate": "agent_message_chunk",
+                                    "content": { "type": "text", "text": "replayed" },
+                                },
+                            })),
+                        },
+                    )
+                    .await;
+                    write_peer_frame(
+                        &mut write_half,
+                        Frame::Response {
+                            id,
+                            result: json!({ "sessionId": requested }),
+                        },
+                    )
+                    .await;
+                }
+                "session/prompt" => {
+                    let session_id = param_session_id(&params);
+                    let text = prompt_text(&params);
+                    let round = {
+                        let mut state = log.state.lock().unwrap();
+                        state.prompts.push((session_id.clone(), text));
+                        state.prompts.len()
+                    };
+                    write_peer_frame(
+                        &mut write_half,
+                        Frame::Notification {
+                            method: "session/update".into(),
+                            params: Some(json!({
+                                "sessionId": session_id,
+                                "update": {
+                                    "sessionUpdate": "agent_message_chunk",
+                                    "content": {
+                                        "type": "text",
+                                        "text": format!("round {round}"),
+                                    },
+                                },
+                            })),
+                        },
+                    )
+                    .await;
+                    write_peer_frame(
+                        &mut write_half,
+                        Frame::Response {
+                            id,
+                            result: json!({ "stopReason": "end_turn" }),
+                        },
+                    )
+                    .await;
+                }
+                other => {
+                    write_peer_frame(
+                        &mut write_half,
+                        Frame::Error {
+                            id: RpcId::Number(0),
+                            error: holon_acp::RpcError {
+                                code: -32601,
+                                message: format!("unsupported method {other}"),
+                                data: None,
+                            },
+                        },
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    fn antigravity_binding() -> AcpDriverBinding {
+        AcpDriverBinding {
+            profile: holon_acp::antigravity::NAME.into(),
+            role: None,
+        }
+    }
+
+    async fn turn(runtime: &RuntimeHandle, execution: &EffectiveExecution, prompt: &str) -> String {
+        runtime
+            .run_acp_turn(
+                "default",
+                prompt,
+                execution,
+                &antigravity_binding(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("ACP turn")
+            .text
+    }
+
+    #[tokio::test]
+    async fn resident_session_reuses_one_peer_across_turns_without_replaying_history() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        let peer = install_test_peer(
+            &runtime,
+            TestPeerConfig {
+                supports_resume: true,
+                supports_load: false,
+                resume_missing: false,
+            },
+        )
+        .await;
+        let root = tempdir().unwrap();
+        let execution = execution(root.path(), true);
+
+        turn(&runtime, &execution, "first request").await;
+        turn(&runtime, &execution, "second request").await;
+
+        assert_eq!(peer.handshakes(), 1, "the resident peer is handshaken once");
+        assert_eq!(peer.method_count("session/new"), 1);
+        assert_eq!(peer.method_count("session/prompt"), 2);
+        let prompts = peer.prompts();
+        assert_eq!(prompts[0].0, prompts[1].0, "both rounds share one session");
+        assert!(prompts[1].1.contains("second request"));
+        assert!(
+            !prompts[1].1.contains("first request"),
+            "the peer must not receive replayed ledger history: {}",
+            prompts[1].1
+        );
+        assert!(
+            !prompts[1].1.contains("<runtime_context>"),
+            "the internal context envelope must never reach the peer: {}",
+            prompts[1].1
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_retirement_resumes_the_persisted_session_on_a_fresh_peer() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        let peer = install_test_peer(
+            &runtime,
+            TestPeerConfig {
+                supports_resume: true,
+                supports_load: false,
+                resume_missing: false,
+            },
+        )
+        .await;
+        let root = tempdir().unwrap();
+        let execution = execution(root.path(), true);
+
+        turn(&runtime, &execution, "first request").await;
+        let persisted = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .acp_session_state
+            .expect("session state is persisted");
+        runtime.retire_acp_session("idle-retirement").await;
+
+        turn(&runtime, &execution, "second request").await;
+
+        assert_eq!(peer.handshakes(), 2, "retirement forces a new handshake");
+        assert_eq!(
+            peer.method_count("session/new"),
+            1,
+            "no session is recreated"
+        );
+        assert_eq!(peer.method_count("session/resume"), 1);
+        assert_eq!(
+            peer.resumed_sessions(),
+            vec![persisted.resume_session_id.clone()]
+        );
+        assert_eq!(peer.prompts()[1].0, persisted.resume_session_id);
+    }
+
+    #[tokio::test]
+    async fn missing_upstream_session_rotates_to_session_new_with_a_bounded_handoff() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        let peer = install_test_peer(
+            &runtime,
+            TestPeerConfig {
+                supports_resume: true,
+                supports_load: false,
+                resume_missing: false,
+            },
+        )
+        .await;
+        let root = tempdir().unwrap();
+        let execution = execution(root.path(), true);
+
+        turn(&runtime, &execution, "first request").await;
+        let first = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .acp_session_state
+            .expect("session state is persisted");
+        runtime.retire_acp_session("idle-retirement").await;
+        runtime
+            .update_agent_state(|state| {
+                state.last_turn_terminal = Some(crate::types::TurnTerminalRecord {
+                    turn_id: "turn-prior".into(),
+                    turn_index: 1,
+                    kind: crate::types::TurnTerminalKind::Completed,
+                    reason: None,
+                    last_assistant_message: Some("prior delegated summary".into()),
+                    no_brief_reason: None,
+                    checkpoint: None,
+                    completed_at: chrono::Utc::now(),
+                    duration_ms: 1,
+                });
+                Ok(())
+            })
+            .await
+            .unwrap();
+        // The next peer no longer knows the persisted session.
+        let resumed = install_test_peer(
+            &runtime,
+            TestPeerConfig {
+                supports_resume: true,
+                supports_load: false,
+                resume_missing: true,
+            },
+        )
+        .await;
+
+        turn(&runtime, &execution, "second request").await;
+
+        assert_eq!(peer.method_count("session/new"), 1);
+        assert_eq!(resumed.method_count("session/resume"), 1);
+        assert_eq!(resumed.method_count("session/new"), 1);
+        assert_eq!(
+            resumed.resumed_sessions(),
+            vec![first.resume_session_id.clone()]
+        );
+        let rotated = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .acp_session_state
+            .expect("rotated session state is persisted");
+        assert_eq!(
+            resumed.new_sessions(),
+            vec![rotated.resume_session_id.clone()]
+        );
+        assert_ne!(rotated.resume_session_id, first.resume_session_id);
+        let prompt = resumed.prompts().pop().expect("a prompt was sent").1;
+        assert!(
+            prompt.contains("Bounded handoff from the previous ACP session:"),
+            "the degraded path injects the bounded handoff: {prompt}"
+        );
+        assert!(prompt.contains("prior delegated summary"));
+        assert!(prompt.contains("second request"));
+
+        let connection = runtime.runtime_db().connection().unwrap();
+        let rotations: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'acp_session_rotated'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rotations, 1, "the rotation is audited");
     }
 }
