@@ -92,6 +92,10 @@ fails the build when a rewritten reference has no staged file. Adding a new
 text-based media type therefore needs no extra step, but removing this script
 brings back `404` responses for diagrams on the asset host.
 
+`../asset-worker.mjs` keeps the day-long cache policy on successful asset
+responses only: misses are returned with `cache-control: no-store` so a missing
+file does not stay cached after it is added.
+
 The zone needs one proxied placeholder record, `assets.holon.run AAAA 100::`:
 a Worker route only matches a hostname that already resolves through
 Cloudflare. The `assets.holon.run/*` route itself is configured once in the
