@@ -3,12 +3,12 @@
     {
       "apply_patch_surface": null,
       "profile": "zero-tools",
-      "rendered_system_chars": 21386,
-      "rendered_system_estimated_tokens": 5347,
-      "shared_prefix_chars": 18755,
-      "shared_prefix_estimated_tokens": 4689,
-      "shared_prefix_fingerprint": "90c16c880530ada2bd642a7bbd60358e665150cad4252c0938f593ed8c94bf26",
-      "shared_prefix_sections": 17,
+      "rendered_system_chars": 13577,
+      "rendered_system_estimated_tokens": 3395,
+      "shared_prefix_chars": 10946,
+      "shared_prefix_estimated_tokens": 2737,
+      "shared_prefix_fingerprint": "f0600bffae5d64f76d4b734080e98ee0b8cf1b1879fcbcaf6389bcbb7c86d13e",
+      "shared_prefix_sections": 7,
       "system_sections": [
         {
           "chars": 180,
@@ -19,131 +19,51 @@
           "stability": "stable"
         },
         {
-          "chars": 522,
-          "estimated_tokens": 131,
-          "id": "core_contract",
+          "chars": 1465,
+          "estimated_tokens": 367,
+          "id": "authority_and_trust",
           "layout": "shared_prefix",
-          "name": "core_contract",
+          "name": "authority_and_trust",
           "stability": "stable"
         },
         {
-          "chars": 1038,
-          "estimated_tokens": 260,
-          "id": "tool_use_contract",
+          "chars": 1626,
+          "estimated_tokens": 407,
+          "id": "work_and_verification",
           "layout": "shared_prefix",
-          "name": "tool_use_contract",
+          "name": "work_and_verification",
           "stability": "stable"
         },
         {
-          "chars": 778,
-          "estimated_tokens": 195,
-          "id": "engineering_guardrails",
+          "chars": 1236,
+          "estimated_tokens": 309,
+          "id": "agent_home_boundary",
           "layout": "shared_prefix",
-          "name": "engineering_guardrails",
+          "name": "agent_home_boundary",
           "stability": "stable"
         },
         {
-          "chars": 665,
-          "estimated_tokens": 167,
-          "id": "instruction_precedence",
+          "chars": 1759,
+          "estimated_tokens": 440,
+          "id": "durable_work_tracking",
           "layout": "shared_prefix",
-          "name": "instruction_precedence",
+          "name": "durable_work_tracking",
           "stability": "stable"
         },
         {
-          "chars": 2110,
-          "estimated_tokens": 528,
-          "id": "agent_home_contract",
-          "layout": "shared_prefix",
-          "name": "agent_home_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 874,
-          "estimated_tokens": 219,
-          "id": "context_completion",
-          "layout": "shared_prefix",
-          "name": "context_completion",
-          "stability": "stable"
-        },
-        {
-          "chars": 3435,
-          "estimated_tokens": 859,
-          "id": "reporting_contract",
-          "layout": "shared_prefix",
-          "name": "reporting_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 827,
-          "estimated_tokens": 207,
-          "id": "file_reference_contract",
-          "layout": "shared_prefix",
-          "name": "file_reference_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 668,
-          "estimated_tokens": 167,
-          "id": "exploration_discipline",
-          "layout": "shared_prefix",
-          "name": "exploration_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 2401,
-          "estimated_tokens": 601,
-          "id": "planning_discipline",
-          "layout": "shared_prefix",
-          "name": "planning_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 1132,
-          "estimated_tokens": 283,
-          "id": "work_item_first_execution",
-          "layout": "shared_prefix",
-          "name": "work_item_first_execution",
-          "stability": "stable"
-        },
-        {
-          "chars": 2142,
-          "estimated_tokens": 536,
+          "chars": 1689,
+          "estimated_tokens": 423,
           "id": "runtime_scheduling_contract",
           "layout": "shared_prefix",
           "name": "runtime_scheduling_contract",
           "stability": "stable"
         },
         {
-          "chars": 157,
-          "estimated_tokens": 40,
-          "id": "trust_boundary",
+          "chars": 2817,
+          "estimated_tokens": 705,
+          "id": "delivery_contract",
           "layout": "shared_prefix",
-          "name": "trust_boundary",
-          "stability": "stable"
-        },
-        {
-          "chars": 180,
-          "estimated_tokens": 45,
-          "id": "verification",
-          "layout": "shared_prefix",
-          "name": "verification",
-          "stability": "stable"
-        },
-        {
-          "chars": 366,
-          "estimated_tokens": 92,
-          "id": "execution_environment_contract",
-          "layout": "shared_prefix",
-          "name": "execution_environment_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 850,
-          "estimated_tokens": 213,
-          "id": "holon_app_mechanism",
-          "layout": "shared_prefix",
-          "name": "holon_app_mechanism",
+          "name": "delivery_contract",
           "stability": "stable"
         },
         {
@@ -179,12 +99,12 @@
     {
       "apply_patch_surface": null,
       "profile": "no-shell-steward",
-      "rendered_system_chars": 40555,
-      "rendered_system_estimated_tokens": 10139,
-      "shared_prefix_chars": 36748,
-      "shared_prefix_estimated_tokens": 9187,
-      "shared_prefix_fingerprint": "22abc1f89d21149da2d196b01bcc3f8b8744e4c47a49343c332474bd83dce9c0",
-      "shared_prefix_sections": 24,
+      "rendered_system_chars": 28762,
+      "rendered_system_estimated_tokens": 7191,
+      "shared_prefix_chars": 24955,
+      "shared_prefix_estimated_tokens": 6239,
+      "shared_prefix_fingerprint": "0c98a1404270cd114cb1daf4069e7d4ea76cc116013ada098075edd56cc08c41",
+      "shared_prefix_sections": 14,
       "system_sections": [
         {
           "chars": 180,
@@ -195,128 +115,56 @@
           "stability": "stable"
         },
         {
-          "chars": 522,
-          "estimated_tokens": 131,
-          "id": "core_contract",
+          "chars": 1465,
+          "estimated_tokens": 367,
+          "id": "authority_and_trust",
           "layout": "shared_prefix",
-          "name": "core_contract",
+          "name": "authority_and_trust",
           "stability": "stable"
         },
         {
-          "chars": 1038,
-          "estimated_tokens": 260,
-          "id": "tool_use_contract",
+          "chars": 1626,
+          "estimated_tokens": 407,
+          "id": "work_and_verification",
           "layout": "shared_prefix",
-          "name": "tool_use_contract",
+          "name": "work_and_verification",
           "stability": "stable"
         },
         {
-          "chars": 778,
-          "estimated_tokens": 195,
-          "id": "engineering_guardrails",
+          "chars": 1236,
+          "estimated_tokens": 309,
+          "id": "agent_home_boundary",
           "layout": "shared_prefix",
-          "name": "engineering_guardrails",
+          "name": "agent_home_boundary",
           "stability": "stable"
         },
         {
-          "chars": 665,
-          "estimated_tokens": 167,
-          "id": "instruction_precedence",
+          "chars": 1759,
+          "estimated_tokens": 440,
+          "id": "durable_work_tracking",
           "layout": "shared_prefix",
-          "name": "instruction_precedence",
+          "name": "durable_work_tracking",
           "stability": "stable"
         },
         {
-          "chars": 2110,
-          "estimated_tokens": 528,
-          "id": "agent_home_contract",
-          "layout": "shared_prefix",
-          "name": "agent_home_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 874,
-          "estimated_tokens": 219,
-          "id": "context_completion",
-          "layout": "shared_prefix",
-          "name": "context_completion",
-          "stability": "stable"
-        },
-        {
-          "chars": 3435,
-          "estimated_tokens": 859,
-          "id": "reporting_contract",
-          "layout": "shared_prefix",
-          "name": "reporting_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 827,
-          "estimated_tokens": 207,
-          "id": "file_reference_contract",
-          "layout": "shared_prefix",
-          "name": "file_reference_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 668,
-          "estimated_tokens": 167,
-          "id": "exploration_discipline",
-          "layout": "shared_prefix",
-          "name": "exploration_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 2401,
-          "estimated_tokens": 601,
-          "id": "planning_discipline",
-          "layout": "shared_prefix",
-          "name": "planning_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 1132,
-          "estimated_tokens": 283,
-          "id": "work_item_first_execution",
-          "layout": "shared_prefix",
-          "name": "work_item_first_execution",
-          "stability": "stable"
-        },
-        {
-          "chars": 2142,
-          "estimated_tokens": 536,
+          "chars": 1689,
+          "estimated_tokens": 423,
           "id": "runtime_scheduling_contract",
           "layout": "shared_prefix",
           "name": "runtime_scheduling_contract",
           "stability": "stable"
         },
         {
-          "chars": 157,
-          "estimated_tokens": 40,
-          "id": "trust_boundary",
+          "chars": 2817,
+          "estimated_tokens": 705,
+          "id": "delivery_contract",
           "layout": "shared_prefix",
-          "name": "trust_boundary",
+          "name": "delivery_contract",
           "stability": "stable"
         },
         {
-          "chars": 180,
-          "estimated_tokens": 45,
-          "id": "verification",
-          "layout": "shared_prefix",
-          "name": "verification",
-          "stability": "stable"
-        },
-        {
-          "chars": 366,
-          "estimated_tokens": 92,
-          "id": "execution_environment_contract",
-          "layout": "shared_prefix",
-          "name": "execution_environment_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 3729,
-          "estimated_tokens": 933,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_wait_for",
           "layout": "shared_prefix",
           "name": "tool_wait_for",
@@ -355,27 +203,19 @@
           "stability": "stable"
         },
         {
-          "chars": 3330,
-          "estimated_tokens": 833,
+          "chars": 1474,
+          "estimated_tokens": 369,
           "id": "tool_work_item_write",
           "layout": "shared_prefix",
           "name": "tool_work_item_write",
           "stability": "stable"
         },
         {
-          "chars": 795,
-          "estimated_tokens": 199,
+          "chars": 807,
+          "estimated_tokens": 202,
           "id": "tool_work_item_read",
           "layout": "shared_prefix",
           "name": "tool_work_item_read",
-          "stability": "stable"
-        },
-        {
-          "chars": 850,
-          "estimated_tokens": 213,
-          "id": "holon_app_mechanism",
-          "layout": "shared_prefix",
-          "name": "holon_app_mechanism",
           "stability": "stable"
         },
         {
@@ -428,8 +268,8 @@
         }
       ],
       "tool_count": 18,
-      "tool_description_chars": 15993,
-      "tool_description_estimated_tokens": 4005,
+      "tool_description_chars": 11334,
+      "tool_description_estimated_tokens": 2840,
       "tool_names": [
         "WaitFor",
         "CreateWorkItem",
@@ -454,12 +294,12 @@
     {
       "apply_patch_surface": "unified_diff_json",
       "profile": "coding-shell-patch-json",
-      "rendered_system_chars": 50684,
-      "rendered_system_estimated_tokens": 12671,
-      "shared_prefix_chars": 47215,
-      "shared_prefix_estimated_tokens": 11804,
-      "shared_prefix_fingerprint": "03c5141f69a75ebad3e6eb6be7711d6286da0bee94f103e13234ad3bff972c9d",
-      "shared_prefix_sections": 28,
+      "rendered_system_chars": 29064,
+      "rendered_system_estimated_tokens": 7266,
+      "shared_prefix_chars": 25595,
+      "shared_prefix_estimated_tokens": 6399,
+      "shared_prefix_fingerprint": "be9ce41dc6836ce0cb6e614a7ecbc06861e06c2850be95aca30ef4aa27f6d2f0",
+      "shared_prefix_sections": 17,
       "system_sections": [
         {
           "chars": 180,
@@ -470,128 +310,56 @@
           "stability": "stable"
         },
         {
-          "chars": 522,
-          "estimated_tokens": 131,
-          "id": "core_contract",
+          "chars": 1465,
+          "estimated_tokens": 367,
+          "id": "authority_and_trust",
           "layout": "shared_prefix",
-          "name": "core_contract",
+          "name": "authority_and_trust",
           "stability": "stable"
         },
         {
-          "chars": 1038,
-          "estimated_tokens": 260,
-          "id": "tool_use_contract",
+          "chars": 1626,
+          "estimated_tokens": 407,
+          "id": "work_and_verification",
           "layout": "shared_prefix",
-          "name": "tool_use_contract",
+          "name": "work_and_verification",
           "stability": "stable"
         },
         {
-          "chars": 778,
-          "estimated_tokens": 195,
-          "id": "engineering_guardrails",
+          "chars": 1236,
+          "estimated_tokens": 309,
+          "id": "agent_home_boundary",
           "layout": "shared_prefix",
-          "name": "engineering_guardrails",
+          "name": "agent_home_boundary",
           "stability": "stable"
         },
         {
-          "chars": 665,
-          "estimated_tokens": 167,
-          "id": "instruction_precedence",
+          "chars": 1759,
+          "estimated_tokens": 440,
+          "id": "durable_work_tracking",
           "layout": "shared_prefix",
-          "name": "instruction_precedence",
+          "name": "durable_work_tracking",
           "stability": "stable"
         },
         {
-          "chars": 2110,
-          "estimated_tokens": 528,
-          "id": "agent_home_contract",
-          "layout": "shared_prefix",
-          "name": "agent_home_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 874,
-          "estimated_tokens": 219,
-          "id": "context_completion",
-          "layout": "shared_prefix",
-          "name": "context_completion",
-          "stability": "stable"
-        },
-        {
-          "chars": 3435,
-          "estimated_tokens": 859,
-          "id": "reporting_contract",
-          "layout": "shared_prefix",
-          "name": "reporting_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 827,
-          "estimated_tokens": 207,
-          "id": "file_reference_contract",
-          "layout": "shared_prefix",
-          "name": "file_reference_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 668,
-          "estimated_tokens": 167,
-          "id": "exploration_discipline",
-          "layout": "shared_prefix",
-          "name": "exploration_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 2401,
-          "estimated_tokens": 601,
-          "id": "planning_discipline",
-          "layout": "shared_prefix",
-          "name": "planning_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 1132,
-          "estimated_tokens": 283,
-          "id": "work_item_first_execution",
-          "layout": "shared_prefix",
-          "name": "work_item_first_execution",
-          "stability": "stable"
-        },
-        {
-          "chars": 2142,
-          "estimated_tokens": 536,
+          "chars": 1689,
+          "estimated_tokens": 423,
           "id": "runtime_scheduling_contract",
           "layout": "shared_prefix",
           "name": "runtime_scheduling_contract",
           "stability": "stable"
         },
         {
-          "chars": 157,
-          "estimated_tokens": 40,
-          "id": "trust_boundary",
+          "chars": 2817,
+          "estimated_tokens": 705,
+          "id": "delivery_contract",
           "layout": "shared_prefix",
-          "name": "trust_boundary",
+          "name": "delivery_contract",
           "stability": "stable"
         },
         {
-          "chars": 180,
-          "estimated_tokens": 45,
-          "id": "verification",
-          "layout": "shared_prefix",
-          "name": "verification",
-          "stability": "stable"
-        },
-        {
-          "chars": 366,
-          "estimated_tokens": 92,
-          "id": "execution_environment_contract",
-          "layout": "shared_prefix",
-          "name": "execution_environment_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 3729,
-          "estimated_tokens": 933,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_wait_for",
           "layout": "shared_prefix",
           "name": "tool_wait_for",
@@ -606,32 +374,32 @@
           "stability": "stable"
         },
         {
-          "chars": 3330,
-          "estimated_tokens": 833,
+          "chars": 1474,
+          "estimated_tokens": 369,
           "id": "tool_work_item_write",
           "layout": "shared_prefix",
           "name": "tool_work_item_write",
           "stability": "stable"
         },
         {
-          "chars": 795,
-          "estimated_tokens": 199,
+          "chars": 807,
+          "estimated_tokens": 202,
           "id": "tool_work_item_read",
           "layout": "shared_prefix",
           "name": "tool_work_item_read",
           "stability": "stable"
         },
         {
-          "chars": 2010,
-          "estimated_tokens": 503,
+          "chars": 808,
+          "estimated_tokens": 202,
           "id": "tool_task_control",
           "layout": "shared_prefix",
           "name": "tool_task_control",
           "stability": "stable"
         },
         {
-          "chars": 2748,
-          "estimated_tokens": 687,
+          "chars": 980,
+          "estimated_tokens": 245,
           "id": "tool_exec_command",
           "layout": "shared_prefix",
           "name": "tool_exec_command",
@@ -646,43 +414,27 @@
           "stability": "stable"
         },
         {
-          "chars": 2276,
-          "estimated_tokens": 569,
+          "chars": 694,
+          "estimated_tokens": 174,
           "id": "tool_exec_command_batch",
           "layout": "shared_prefix",
           "name": "tool_exec_command_batch",
           "stability": "stable"
         },
         {
-          "chars": 1515,
-          "estimated_tokens": 379,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_apply_patch",
           "layout": "shared_prefix",
           "name": "tool_apply_patch",
           "stability": "stable"
         },
         {
-          "chars": 2461,
-          "estimated_tokens": 616,
-          "id": "tool_file_mutation",
-          "layout": "shared_prefix",
-          "name": "tool_file_mutation",
-          "stability": "stable"
-        },
-        {
-          "chars": 3922,
-          "estimated_tokens": 981,
+          "chars": 1058,
+          "estimated_tokens": 265,
           "id": "tool_workspace",
           "layout": "shared_prefix",
           "name": "tool_workspace",
-          "stability": "stable"
-        },
-        {
-          "chars": 850,
-          "estimated_tokens": 213,
-          "id": "holon_app_mechanism",
-          "layout": "shared_prefix",
-          "name": "holon_app_mechanism",
           "stability": "stable"
         },
         {
@@ -727,8 +479,8 @@
         }
       ],
       "tool_count": 14,
-      "tool_description_chars": 10939,
-      "tool_description_estimated_tokens": 2740,
+      "tool_description_chars": 5946,
+      "tool_description_estimated_tokens": 1493,
       "tool_names": [
         "ExecCommand",
         "ExecCommandBatch",
@@ -749,12 +501,12 @@
     {
       "apply_patch_surface": "codex_dsl_freeform",
       "profile": "coding-shell-patch-dsl",
-      "rendered_system_chars": 50301,
-      "rendered_system_estimated_tokens": 12576,
-      "shared_prefix_chars": 46832,
-      "shared_prefix_estimated_tokens": 11708,
-      "shared_prefix_fingerprint": "875debb146dcaee153bb067c256f9b059546de475e247e9a51a26500b7e63b3c",
-      "shared_prefix_sections": 28,
+      "rendered_system_chars": 28903,
+      "rendered_system_estimated_tokens": 7226,
+      "shared_prefix_chars": 25434,
+      "shared_prefix_estimated_tokens": 6359,
+      "shared_prefix_fingerprint": "62a7e4c859988bbaba065a9d8c325096ba5c9de4e933267e00bea3f95eb76641",
+      "shared_prefix_sections": 17,
       "system_sections": [
         {
           "chars": 180,
@@ -765,128 +517,56 @@
           "stability": "stable"
         },
         {
-          "chars": 522,
-          "estimated_tokens": 131,
-          "id": "core_contract",
+          "chars": 1465,
+          "estimated_tokens": 367,
+          "id": "authority_and_trust",
           "layout": "shared_prefix",
-          "name": "core_contract",
+          "name": "authority_and_trust",
           "stability": "stable"
         },
         {
-          "chars": 1038,
-          "estimated_tokens": 260,
-          "id": "tool_use_contract",
+          "chars": 1626,
+          "estimated_tokens": 407,
+          "id": "work_and_verification",
           "layout": "shared_prefix",
-          "name": "tool_use_contract",
+          "name": "work_and_verification",
           "stability": "stable"
         },
         {
-          "chars": 778,
-          "estimated_tokens": 195,
-          "id": "engineering_guardrails",
+          "chars": 1236,
+          "estimated_tokens": 309,
+          "id": "agent_home_boundary",
           "layout": "shared_prefix",
-          "name": "engineering_guardrails",
+          "name": "agent_home_boundary",
           "stability": "stable"
         },
         {
-          "chars": 665,
-          "estimated_tokens": 167,
-          "id": "instruction_precedence",
+          "chars": 1759,
+          "estimated_tokens": 440,
+          "id": "durable_work_tracking",
           "layout": "shared_prefix",
-          "name": "instruction_precedence",
+          "name": "durable_work_tracking",
           "stability": "stable"
         },
         {
-          "chars": 2110,
-          "estimated_tokens": 528,
-          "id": "agent_home_contract",
-          "layout": "shared_prefix",
-          "name": "agent_home_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 874,
-          "estimated_tokens": 219,
-          "id": "context_completion",
-          "layout": "shared_prefix",
-          "name": "context_completion",
-          "stability": "stable"
-        },
-        {
-          "chars": 3435,
-          "estimated_tokens": 859,
-          "id": "reporting_contract",
-          "layout": "shared_prefix",
-          "name": "reporting_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 827,
-          "estimated_tokens": 207,
-          "id": "file_reference_contract",
-          "layout": "shared_prefix",
-          "name": "file_reference_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 668,
-          "estimated_tokens": 167,
-          "id": "exploration_discipline",
-          "layout": "shared_prefix",
-          "name": "exploration_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 2401,
-          "estimated_tokens": 601,
-          "id": "planning_discipline",
-          "layout": "shared_prefix",
-          "name": "planning_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 1132,
-          "estimated_tokens": 283,
-          "id": "work_item_first_execution",
-          "layout": "shared_prefix",
-          "name": "work_item_first_execution",
-          "stability": "stable"
-        },
-        {
-          "chars": 2142,
-          "estimated_tokens": 536,
+          "chars": 1689,
+          "estimated_tokens": 423,
           "id": "runtime_scheduling_contract",
           "layout": "shared_prefix",
           "name": "runtime_scheduling_contract",
           "stability": "stable"
         },
         {
-          "chars": 157,
-          "estimated_tokens": 40,
-          "id": "trust_boundary",
+          "chars": 2817,
+          "estimated_tokens": 705,
+          "id": "delivery_contract",
           "layout": "shared_prefix",
-          "name": "trust_boundary",
+          "name": "delivery_contract",
           "stability": "stable"
         },
         {
-          "chars": 180,
-          "estimated_tokens": 45,
-          "id": "verification",
-          "layout": "shared_prefix",
-          "name": "verification",
-          "stability": "stable"
-        },
-        {
-          "chars": 366,
-          "estimated_tokens": 92,
-          "id": "execution_environment_contract",
-          "layout": "shared_prefix",
-          "name": "execution_environment_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 3729,
-          "estimated_tokens": 933,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_wait_for",
           "layout": "shared_prefix",
           "name": "tool_wait_for",
@@ -901,32 +581,32 @@
           "stability": "stable"
         },
         {
-          "chars": 3330,
-          "estimated_tokens": 833,
+          "chars": 1474,
+          "estimated_tokens": 369,
           "id": "tool_work_item_write",
           "layout": "shared_prefix",
           "name": "tool_work_item_write",
           "stability": "stable"
         },
         {
-          "chars": 795,
-          "estimated_tokens": 199,
+          "chars": 807,
+          "estimated_tokens": 202,
           "id": "tool_work_item_read",
           "layout": "shared_prefix",
           "name": "tool_work_item_read",
           "stability": "stable"
         },
         {
-          "chars": 2010,
-          "estimated_tokens": 503,
+          "chars": 808,
+          "estimated_tokens": 202,
           "id": "tool_task_control",
           "layout": "shared_prefix",
           "name": "tool_task_control",
           "stability": "stable"
         },
         {
-          "chars": 2748,
-          "estimated_tokens": 687,
+          "chars": 980,
+          "estimated_tokens": 245,
           "id": "tool_exec_command",
           "layout": "shared_prefix",
           "name": "tool_exec_command",
@@ -941,43 +621,27 @@
           "stability": "stable"
         },
         {
-          "chars": 2276,
-          "estimated_tokens": 569,
+          "chars": 694,
+          "estimated_tokens": 174,
           "id": "tool_exec_command_batch",
           "layout": "shared_prefix",
           "name": "tool_exec_command_batch",
           "stability": "stable"
         },
         {
-          "chars": 1546,
-          "estimated_tokens": 387,
+          "chars": 1428,
+          "estimated_tokens": 357,
           "id": "tool_apply_patch",
           "layout": "shared_prefix",
           "name": "tool_apply_patch",
           "stability": "stable"
         },
         {
-          "chars": 2047,
-          "estimated_tokens": 512,
-          "id": "tool_file_mutation",
-          "layout": "shared_prefix",
-          "name": "tool_file_mutation",
-          "stability": "stable"
-        },
-        {
-          "chars": 3922,
-          "estimated_tokens": 981,
+          "chars": 1058,
+          "estimated_tokens": 265,
           "id": "tool_workspace",
           "layout": "shared_prefix",
           "name": "tool_workspace",
-          "stability": "stable"
-        },
-        {
-          "chars": 850,
-          "estimated_tokens": 213,
-          "id": "holon_app_mechanism",
-          "layout": "shared_prefix",
-          "name": "holon_app_mechanism",
           "stability": "stable"
         },
         {
@@ -1022,8 +686,8 @@
         }
       ],
       "tool_count": 14,
-      "tool_description_chars": 10939,
-      "tool_description_estimated_tokens": 2740,
+      "tool_description_chars": 5946,
+      "tool_description_estimated_tokens": 1493,
       "tool_names": [
         "ExecCommand",
         "ExecCommandBatch",
@@ -1044,12 +708,12 @@
     {
       "apply_patch_surface": "unified_diff_json",
       "profile": "delegated-child",
-      "rendered_system_chars": 45825,
-      "rendered_system_estimated_tokens": 11457,
-      "shared_prefix_chars": 42134,
-      "shared_prefix_estimated_tokens": 10534,
-      "shared_prefix_fingerprint": "56bd62365de79ac0c968a11f46620140e28310deea9df5f1265f038d0cc08232",
-      "shared_prefix_sections": 23,
+      "rendered_system_chars": 31697,
+      "rendered_system_estimated_tokens": 7925,
+      "shared_prefix_chars": 28006,
+      "shared_prefix_estimated_tokens": 7002,
+      "shared_prefix_fingerprint": "db9224cdbf68a1407b3446fe89e5a0379352c1f60cb1dff94b0f1162e7fb55d0",
+      "shared_prefix_sections": 12,
       "system_sections": [
         {
           "chars": 180,
@@ -1060,128 +724,56 @@
           "stability": "stable"
         },
         {
-          "chars": 522,
-          "estimated_tokens": 131,
-          "id": "core_contract",
+          "chars": 1465,
+          "estimated_tokens": 367,
+          "id": "authority_and_trust",
           "layout": "shared_prefix",
-          "name": "core_contract",
+          "name": "authority_and_trust",
           "stability": "stable"
         },
         {
-          "chars": 1038,
-          "estimated_tokens": 260,
-          "id": "tool_use_contract",
+          "chars": 1626,
+          "estimated_tokens": 407,
+          "id": "work_and_verification",
           "layout": "shared_prefix",
-          "name": "tool_use_contract",
+          "name": "work_and_verification",
           "stability": "stable"
         },
         {
-          "chars": 778,
-          "estimated_tokens": 195,
-          "id": "engineering_guardrails",
+          "chars": 1236,
+          "estimated_tokens": 309,
+          "id": "agent_home_boundary",
           "layout": "shared_prefix",
-          "name": "engineering_guardrails",
+          "name": "agent_home_boundary",
           "stability": "stable"
         },
         {
-          "chars": 665,
-          "estimated_tokens": 167,
-          "id": "instruction_precedence",
+          "chars": 1759,
+          "estimated_tokens": 440,
+          "id": "durable_work_tracking",
           "layout": "shared_prefix",
-          "name": "instruction_precedence",
+          "name": "durable_work_tracking",
           "stability": "stable"
         },
         {
-          "chars": 2110,
-          "estimated_tokens": 528,
-          "id": "agent_home_contract",
-          "layout": "shared_prefix",
-          "name": "agent_home_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 874,
-          "estimated_tokens": 219,
-          "id": "context_completion",
-          "layout": "shared_prefix",
-          "name": "context_completion",
-          "stability": "stable"
-        },
-        {
-          "chars": 3435,
-          "estimated_tokens": 859,
-          "id": "reporting_contract",
-          "layout": "shared_prefix",
-          "name": "reporting_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 827,
-          "estimated_tokens": 207,
-          "id": "file_reference_contract",
-          "layout": "shared_prefix",
-          "name": "file_reference_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 668,
-          "estimated_tokens": 167,
-          "id": "exploration_discipline",
-          "layout": "shared_prefix",
-          "name": "exploration_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 2401,
-          "estimated_tokens": 601,
-          "id": "planning_discipline",
-          "layout": "shared_prefix",
-          "name": "planning_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 1132,
-          "estimated_tokens": 283,
-          "id": "work_item_first_execution",
-          "layout": "shared_prefix",
-          "name": "work_item_first_execution",
-          "stability": "stable"
-        },
-        {
-          "chars": 2142,
-          "estimated_tokens": 536,
+          "chars": 1689,
+          "estimated_tokens": 423,
           "id": "runtime_scheduling_contract",
           "layout": "shared_prefix",
           "name": "runtime_scheduling_contract",
           "stability": "stable"
         },
         {
-          "chars": 157,
-          "estimated_tokens": 40,
-          "id": "trust_boundary",
+          "chars": 2817,
+          "estimated_tokens": 705,
+          "id": "delivery_contract",
           "layout": "shared_prefix",
-          "name": "trust_boundary",
+          "name": "delivery_contract",
           "stability": "stable"
         },
         {
-          "chars": 180,
-          "estimated_tokens": 45,
-          "id": "verification",
-          "layout": "shared_prefix",
-          "name": "verification",
-          "stability": "stable"
-        },
-        {
-          "chars": 366,
-          "estimated_tokens": 92,
-          "id": "execution_environment_contract",
-          "layout": "shared_prefix",
-          "name": "execution_environment_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 3729,
-          "estimated_tokens": 933,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_wait_for",
           "layout": "shared_prefix",
           "name": "tool_wait_for",
@@ -1196,8 +788,8 @@
           "stability": "stable"
         },
         {
-          "chars": 2748,
-          "estimated_tokens": 687,
+          "chars": 980,
+          "estimated_tokens": 245,
           "id": "tool_exec_command",
           "layout": "shared_prefix",
           "name": "tool_exec_command",
@@ -1212,27 +804,11 @@
           "stability": "stable"
         },
         {
-          "chars": 1515,
-          "estimated_tokens": 379,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_apply_patch",
           "layout": "shared_prefix",
           "name": "tool_apply_patch",
-          "stability": "stable"
-        },
-        {
-          "chars": 2461,
-          "estimated_tokens": 616,
-          "id": "tool_file_mutation",
-          "layout": "shared_prefix",
-          "name": "tool_file_mutation",
-          "stability": "stable"
-        },
-        {
-          "chars": 850,
-          "estimated_tokens": 213,
-          "id": "holon_app_mechanism",
-          "layout": "shared_prefix",
-          "name": "holon_app_mechanism",
           "stability": "stable"
         },
         {
@@ -1269,8 +845,8 @@
         }
       ],
       "tool_count": 4,
-      "tool_description_chars": 6023,
-      "tool_description_estimated_tokens": 1506,
+      "tool_description_chars": 2963,
+      "tool_description_estimated_tokens": 742,
       "tool_names": [
         "ExecCommand",
         "ApplyPatch",
@@ -1281,12 +857,12 @@
     {
       "apply_patch_surface": "unified_diff_json",
       "profile": "full-surface",
-      "rendered_system_chars": 62494,
-      "rendered_system_estimated_tokens": 15624,
-      "shared_prefix_chars": 57516,
-      "shared_prefix_estimated_tokens": 14379,
-      "shared_prefix_fingerprint": "4ae9ca7e69a431110217def2ff3ec8693a5abb7cff6afed3b45b5af88b4048d2",
-      "shared_prefix_sections": 32,
+      "rendered_system_chars": 40486,
+      "rendered_system_estimated_tokens": 10122,
+      "shared_prefix_chars": 35508,
+      "shared_prefix_estimated_tokens": 8877,
+      "shared_prefix_fingerprint": "eddc2171acc46303f94c73a30b4f32789ac17928ad3850e8bd78c025ec4b61e0",
+      "shared_prefix_sections": 21,
       "system_sections": [
         {
           "chars": 180,
@@ -1297,128 +873,56 @@
           "stability": "stable"
         },
         {
-          "chars": 522,
-          "estimated_tokens": 131,
-          "id": "core_contract",
+          "chars": 1465,
+          "estimated_tokens": 367,
+          "id": "authority_and_trust",
           "layout": "shared_prefix",
-          "name": "core_contract",
+          "name": "authority_and_trust",
           "stability": "stable"
         },
         {
-          "chars": 1038,
-          "estimated_tokens": 260,
-          "id": "tool_use_contract",
+          "chars": 1626,
+          "estimated_tokens": 407,
+          "id": "work_and_verification",
           "layout": "shared_prefix",
-          "name": "tool_use_contract",
+          "name": "work_and_verification",
           "stability": "stable"
         },
         {
-          "chars": 778,
-          "estimated_tokens": 195,
-          "id": "engineering_guardrails",
+          "chars": 1236,
+          "estimated_tokens": 309,
+          "id": "agent_home_boundary",
           "layout": "shared_prefix",
-          "name": "engineering_guardrails",
+          "name": "agent_home_boundary",
           "stability": "stable"
         },
         {
-          "chars": 665,
-          "estimated_tokens": 167,
-          "id": "instruction_precedence",
+          "chars": 1759,
+          "estimated_tokens": 440,
+          "id": "durable_work_tracking",
           "layout": "shared_prefix",
-          "name": "instruction_precedence",
+          "name": "durable_work_tracking",
           "stability": "stable"
         },
         {
-          "chars": 2110,
-          "estimated_tokens": 528,
-          "id": "agent_home_contract",
-          "layout": "shared_prefix",
-          "name": "agent_home_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 874,
-          "estimated_tokens": 219,
-          "id": "context_completion",
-          "layout": "shared_prefix",
-          "name": "context_completion",
-          "stability": "stable"
-        },
-        {
-          "chars": 3435,
-          "estimated_tokens": 859,
-          "id": "reporting_contract",
-          "layout": "shared_prefix",
-          "name": "reporting_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 827,
-          "estimated_tokens": 207,
-          "id": "file_reference_contract",
-          "layout": "shared_prefix",
-          "name": "file_reference_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 668,
-          "estimated_tokens": 167,
-          "id": "exploration_discipline",
-          "layout": "shared_prefix",
-          "name": "exploration_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 2401,
-          "estimated_tokens": 601,
-          "id": "planning_discipline",
-          "layout": "shared_prefix",
-          "name": "planning_discipline",
-          "stability": "stable"
-        },
-        {
-          "chars": 1132,
-          "estimated_tokens": 283,
-          "id": "work_item_first_execution",
-          "layout": "shared_prefix",
-          "name": "work_item_first_execution",
-          "stability": "stable"
-        },
-        {
-          "chars": 2142,
-          "estimated_tokens": 536,
+          "chars": 1689,
+          "estimated_tokens": 423,
           "id": "runtime_scheduling_contract",
           "layout": "shared_prefix",
           "name": "runtime_scheduling_contract",
           "stability": "stable"
         },
         {
-          "chars": 157,
-          "estimated_tokens": 40,
-          "id": "trust_boundary",
+          "chars": 2817,
+          "estimated_tokens": 705,
+          "id": "delivery_contract",
           "layout": "shared_prefix",
-          "name": "trust_boundary",
+          "name": "delivery_contract",
           "stability": "stable"
         },
         {
-          "chars": 180,
-          "estimated_tokens": 45,
-          "id": "verification",
-          "layout": "shared_prefix",
-          "name": "verification",
-          "stability": "stable"
-        },
-        {
-          "chars": 366,
-          "estimated_tokens": 92,
-          "id": "execution_environment_contract",
-          "layout": "shared_prefix",
-          "name": "execution_environment_contract",
-          "stability": "stable"
-        },
-        {
-          "chars": 3729,
-          "estimated_tokens": 933,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_wait_for",
           "layout": "shared_prefix",
           "name": "tool_wait_for",
@@ -1441,8 +945,8 @@
           "stability": "stable"
         },
         {
-          "chars": 699,
-          "estimated_tokens": 175,
+          "chars": 311,
+          "estimated_tokens": 78,
           "id": "tool_get_agent",
           "layout": "shared_prefix",
           "name": "tool_get_agent",
@@ -1465,32 +969,32 @@
           "stability": "stable"
         },
         {
-          "chars": 3330,
-          "estimated_tokens": 833,
+          "chars": 1474,
+          "estimated_tokens": 369,
           "id": "tool_work_item_write",
           "layout": "shared_prefix",
           "name": "tool_work_item_write",
           "stability": "stable"
         },
         {
-          "chars": 795,
-          "estimated_tokens": 199,
+          "chars": 807,
+          "estimated_tokens": 202,
           "id": "tool_work_item_read",
           "layout": "shared_prefix",
           "name": "tool_work_item_read",
           "stability": "stable"
         },
         {
-          "chars": 2010,
-          "estimated_tokens": 503,
+          "chars": 808,
+          "estimated_tokens": 202,
           "id": "tool_task_control",
           "layout": "shared_prefix",
           "name": "tool_task_control",
           "stability": "stable"
         },
         {
-          "chars": 2748,
-          "estimated_tokens": 687,
+          "chars": 980,
+          "estimated_tokens": 245,
           "id": "tool_exec_command",
           "layout": "shared_prefix",
           "name": "tool_exec_command",
@@ -1505,43 +1009,27 @@
           "stability": "stable"
         },
         {
-          "chars": 2276,
-          "estimated_tokens": 569,
+          "chars": 694,
+          "estimated_tokens": 174,
           "id": "tool_exec_command_batch",
           "layout": "shared_prefix",
           "name": "tool_exec_command_batch",
           "stability": "stable"
         },
         {
-          "chars": 1515,
-          "estimated_tokens": 379,
+          "chars": 1589,
+          "estimated_tokens": 398,
           "id": "tool_apply_patch",
           "layout": "shared_prefix",
           "name": "tool_apply_patch",
           "stability": "stable"
         },
         {
-          "chars": 2461,
-          "estimated_tokens": 616,
-          "id": "tool_file_mutation",
-          "layout": "shared_prefix",
-          "name": "tool_file_mutation",
-          "stability": "stable"
-        },
-        {
-          "chars": 3922,
-          "estimated_tokens": 981,
+          "chars": 1058,
+          "estimated_tokens": 265,
           "id": "tool_workspace",
           "layout": "shared_prefix",
           "name": "tool_workspace",
-          "stability": "stable"
-        },
-        {
-          "chars": 850,
-          "estimated_tokens": 213,
-          "id": "holon_app_mechanism",
-          "layout": "shared_prefix",
-          "name": "holon_app_mechanism",
           "stability": "stable"
         },
         {
@@ -1626,8 +1114,8 @@
         }
       ],
       "tool_count": 44,
-      "tool_description_chars": 34079,
-      "tool_description_estimated_tokens": 8536,
+      "tool_description_chars": 24455,
+      "tool_description_estimated_tokens": 6130,
       "tool_names": [
         "AdvisoryDecision",
         "WaitFor",

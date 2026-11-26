@@ -48,7 +48,6 @@ struct PreparedLoadedContext {
     identity: AgentIdentityView,
     material: crate::prompt::ResourcePromptMaterial,
     tools: Option<(Vec<crate::tool::ToolSpec>, crate::tool::ApplyPatchSurface)>,
-    ready_media_defaults: Option<crate::provider::media::MediaToolDefaults>,
     admission_source_matches: bool,
 }
 
@@ -172,8 +171,7 @@ impl RuntimeHandle {
             prepared.snapshot.agent().current_turn_id.as_deref() == Some(dispatch_turn_id),
             "context execution differs from the original dispatch Turn"
         );
-        self.project_loaded_context_prompt(prepared, fallback_model)
-            .await
+        self.project_loaded_context_prompt(prepared)
     }
 
     pub(super) async fn prepare_input_admission_tokens(
@@ -295,8 +293,7 @@ impl RuntimeHandle {
                     0,
                 )
                 .await?;
-            self.project_loaded_context_prompt(prepared, fallback_model)
-                .await
+            self.project_loaded_context_prompt(prepared)
         })
     }
 
@@ -838,15 +835,6 @@ impl RuntimeHandle {
             resource_material.finish()?;
             snapshot?
         };
-        let ready_media_defaults =
-            if admission.is_none() && matches!(&publication, ContextPublication::Ready(_)) {
-                Some(
-                    self.media_tool_defaults_for_state(state, &config_version, fallback_model)
-                        .await,
-                )
-            } else {
-                None
-            };
         drop(acquisition_timer);
         #[cfg(test)]
         if self
@@ -888,22 +876,19 @@ impl RuntimeHandle {
                 model: Some(model),
             },
             tools,
-            ready_media_defaults,
             admission_source_matches,
         })
     }
 
-    async fn project_loaded_context_prompt(
+    fn project_loaded_context_prompt(
         &self,
         prepared: PreparedLoadedContext,
-        fallback_model: Option<&ModelRouteRef>,
     ) -> Result<EffectivePrompt> {
         let PreparedLoadedContext {
             snapshot,
             identity,
             material,
             tools,
-            ready_media_defaults,
             ..
         } = prepared;
         let observation = &material.observation;
@@ -914,10 +899,6 @@ impl RuntimeHandle {
         let (prompt_tools, apply_patch_surface) =
             tools.ok_or_else(|| anyhow!("admission snapshot has no execution tool selection"))?;
         let agent_home = self.agent_home();
-        let media_defaults = match ready_media_defaults {
-            Some(defaults) => defaults,
-            None => self.media_tool_defaults(fallback_model).await?,
-        };
         let mut prompt = build_effective_prompt_from_context_snapshot(
             &snapshot,
             &snapshot.execution().execution_root,
@@ -930,7 +911,7 @@ impl RuntimeHandle {
                 apply_patch_surface: Some(apply_patch_surface),
             },
         )?
-        .with_media_tool_defaults(&media_defaults, &prompt_tools);
+        .with_media_tool_defaults(&prompt_tools);
         prompt._resource_read_material = Some(material);
         Ok(prompt)
     }

@@ -42,7 +42,9 @@ pub(crate) async fn execute(
                 "wait_registered": false,
                 "expected_output": "non_empty_final_text",
             }),
-            Some("Awaiting the final operator-facing report before committing the wait.".into()),
+            Some(
+                "Awaiting the final operator-facing report before committing the wait: no wait is registered yet. Finish any remaining authorized cleanup or verification with ordinary tools, then provide non-empty operator-facing final text; do not call WaitFor, CompleteWorkItem, PickWorkItem, or Sleep while this report is pending (changes to task state, WorkItem revision, execution binding, or wake state before settlement invalidate or clear this pending wait).".into(),
+            ),
             ToolLoopDirective::AwaitWaitReport(AwaitWaitReportDirective {
                 input: input.clone(),
             }),

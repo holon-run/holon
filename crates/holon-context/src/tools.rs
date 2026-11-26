@@ -103,24 +103,16 @@ pub fn tool_sections_with_context(
             guidance(include_str!("tool_guidance/tool_external_trigger.md")),
         ));
     }
-    if names.contains(&"CreateWorkItem")
+    if names.contains(&tn::CREATE_WORK_ITEM)
         || names.contains(&tn::PICK_WORK_ITEM)
         || names.contains(&tn::UPDATE_WORK_ITEM)
         || names.contains(&tn::COMPLETE_WORK_ITEM)
-        || names.contains(&tn::GET_WORK_ITEM)
-        || names.contains(&tn::LIST_WORK_ITEMS)
     {
         sections.push(section(
             "tool_work_item_scheduling",
             PromptStability::Stable,
             guidance(include_str!("tool_guidance/tool_work_item_scheduling.md")),
         ));
-    }
-    if names.contains(&tn::CREATE_WORK_ITEM)
-        || names.contains(&tn::PICK_WORK_ITEM)
-        || names.contains(&tn::UPDATE_WORK_ITEM)
-        || names.contains(&tn::COMPLETE_WORK_ITEM)
-    {
         sections.push(section(
             "tool_work_item_write",
             PromptStability::Stable,
@@ -173,18 +165,21 @@ pub fn tool_sections_with_context(
                 ApplyPatchSurface::UnifiedDiffJson
             }
         });
-        let invocation_contract = if matches!(
+        let (patch_language, invocation_contract, format_guidance) = if matches!(
             apply_patch_surface,
             ApplyPatchSurface::CodexDslFreeform
         ) {
-            "Current ApplyPatch surface is Codex DSL freeform: send raw `*** Begin Patch` / `*** End Patch` text directly. Do not wrap it in JSON, and do not use `patch` or `input` fields."
+            (
+                "express ordinary file mutation as Codex DSL with `*** Add File: `, `*** Delete File: `, or `*** Update File: ` hunks",
+                "Current ApplyPatch surface is Codex DSL freeform: send raw `*** Begin Patch` / `*** End Patch` text directly. Do not wrap it in JSON, and do not use `patch` or `input` fields.",
+                "Use Codex DSL file hunks: `*** Add File: `, `*** Delete File: `, `*** Update File: `, optional `*** Move to: `, and `@@` chunk separators when useful. Prefer focused chunks with unambiguous context, and keep a single space prefix on blank context lines.",
+            )
         } else {
-            "Current ApplyPatch surface is a JSON/function tool: call it with exactly `{\"patch\":\"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}`. Do not use `input`, and do not send a raw freeform diff body."
-        };
-        let patch_language = if matches!(apply_patch_surface, ApplyPatchSurface::CodexDslFreeform) {
-            "express ordinary file mutation as Codex DSL with `*** Add File`, `*** Delete File`, or `*** Update File` hunks"
-        } else {
-            "express ordinary file mutation as unified diff text"
+            (
+                "express ordinary file mutation as unified diff text",
+                "Current ApplyPatch surface is a JSON/function tool: call it with exactly `{\"patch\":\"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}`. Do not use `input`, and do not send a raw freeform diff body.",
+                "Use unified diff `---`/`+++` file headers and `@@` hunks: write `--- a/relative/path` for workspace-relative paths and `--- /abs/path` (without `a/`) for explicit absolute paths outside the workspace. Keep `--- a/path` and `+++ b/path` identical unless performing a move with `rename from`/`rename to`, include at least 3 context lines before and after each changed line (5-10 around repeated patterns), and keep a space prefix on blank context lines.",
+            )
         };
         sections.push(section(
             "tool_apply_patch",
@@ -194,33 +189,8 @@ pub fn tool_sections_with_context(
                 &[
                     ("{patch_language}", patch_language),
                     ("{invocation_contract}", invocation_contract),
+                    ("{format_guidance}", format_guidance),
                 ],
-            ),
-        ));
-    }
-    if names.contains(&tn::APPLY_PATCH) {
-        let apply_patch_surface = context.apply_patch_surface.unwrap_or_else(|| {
-            if apply_patch_tool
-                .and_then(|tool| tool.freeform_grammar.as_ref())
-                .is_some()
-            {
-                ApplyPatchSurface::CodexDslFreeform
-            } else {
-                ApplyPatchSurface::UnifiedDiffJson
-            }
-        });
-        let format_guidance = if matches!(apply_patch_surface, ApplyPatchSurface::CodexDslFreeform)
-        {
-            "Use Codex DSL file hunks: `*** Add File`, `*** Delete File`, `*** Update File`, optional `*** Move to`, and `@@` chunk separators when useful. Prefer focused chunks with enough surrounding context to stay unambiguous. Blank context lines within update chunks must have a space prefix."
-        } else {
-            "Use unified diff `---`/`+++` file headers and `@@` hunks for deletes, precise edits, and renames. For ordinary edits, the `--- a/path` and `+++ b/path` headers must refer to the same path; different paths are treated as a rename/move and require explicit `rename from` and `rename to` headers. Do not put old/new prose text in `---`/`+++` header lines; those lines must contain file paths. Prefer focused hunks with enough surrounding context to stay unambiguous. Include at least 3 context lines before and after each changed line, and expand to 5-10 lines when the file contains repeated structures or similar patterns. Blank lines within hunks must have a space prefix to be valid context lines."
-        };
-        sections.push(section(
-            "tool_file_mutation",
-            PromptStability::Stable,
-            guidance_template(
-                include_str!("tool_guidance/tool_file_mutation.md"),
-                &[("{format_guidance}", format_guidance)],
             ),
         ));
     }

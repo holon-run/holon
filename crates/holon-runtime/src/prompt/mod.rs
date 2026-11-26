@@ -148,11 +148,7 @@ pub(crate) enum HistoryReprojectionOutcome {
 }
 
 impl EffectivePrompt {
-    pub(crate) fn with_media_tool_defaults(
-        mut self,
-        defaults: &crate::provider::media::MediaToolDefaults,
-        available_tools: &[ToolSpec],
-    ) -> Self {
+    pub(crate) fn with_media_tool_defaults(mut self, available_tools: &[ToolSpec]) -> Self {
         let view = available_tools
             .iter()
             .any(|tool| tool.name == crate::tool::names::VIEW_IMAGE);
@@ -165,27 +161,12 @@ impl EffectivePrompt {
         let mut lines = vec![
             "Media model overrides are optional and single-call only; omission preserves configured/default routing. Exact overrides do not silently fall back. Discover operation-specific candidates with ListModelProviders/ListProviderModels.".to_string(),
         ];
-        // Route identifiers may come from remote catalogs, not trusted instructions.
-        // Keep concrete candidates in discovery/tool results, out of system text.
-        if view {
-            lines.push(format!(
-                "ViewImage default candidate: {} (automatic health/availability checks still apply).",
-                if defaults.view_image.is_some() {
-                    "available"
-                } else {
-                    "unavailable; configure or discover a vision route"
-                },
-            ));
-        }
+        // Route identifiers and live availability stay in tool results/error hints so
+        // transient route-health shifts never churn the system prompt or cache key.
         if generate {
-            lines.push(format!(
-                "GenerateImage default candidate: {}. Final output_format defaults to PNG; runtime converts locally when needed. Omit size/background/aspect_ratio/resolution to use route-specific defaults; consult the selected model's generation contract before explicitly setting them.",
-                if defaults.generate_image.is_some() {
-                    "available"
-                } else {
-                    "unavailable; configure or select an image generation route"
-                },
-            ));
+            lines.push(
+                "GenerateImage final output_format defaults to PNG; omit size/background/aspect_ratio/resolution to use route-specific defaults unless the selected model's generation contract is known.".to_string(),
+            );
         }
         self.system_sections
             .retain(|section| section.name != "media_tool_defaults");
@@ -1242,14 +1223,9 @@ mod tests {
             frozen_recent_message_limit: None,
             _resource_read_material: None,
         };
-        let defaults = crate::provider::media::MediaToolDefaults {
-            view_image: Some("test@default/vision-a".into()),
-            generate_image: Some("test@default/image-a".into()),
-            output_format: "png".into(),
-        };
         assert!(prompt
             .clone()
-            .with_media_tool_defaults(&defaults, &[])
+            .with_media_tool_defaults(&[])
             .system_sections
             .is_empty());
         let media_tools = crate::tool::ToolRegistry::new(".".into())
@@ -1275,9 +1251,7 @@ mod tests {
                 .filter(|tool| visible_tools.contains(&tool.name.as_str()))
                 .cloned()
                 .collect::<Vec<_>>();
-            let first = prompt.clone().with_media_tool_defaults(&defaults, &tools);
-            assert!(!first.rendered_system_prompt.contains("vision-a"));
-            assert!(!first.rendered_system_prompt.contains("image-a"));
+            let first = prompt.clone().with_media_tool_defaults(&tools);
             assert!(first.context_sections.is_empty());
             assert!(first
                 .rendered_system_prompt
@@ -1288,62 +1262,30 @@ mod tests {
             assert!(first
                 .rendered_system_prompt
                 .contains("ListModelProviders/ListProviderModels"));
-            for (name, label) in [
-                (crate::tool::names::VIEW_IMAGE, "ViewImage"),
-                (crate::tool::names::GENERATE_IMAGE, "GenerateImage"),
-            ] {
-                assert_eq!(
-                    first
-                        .rendered_system_prompt
-                        .contains(&format!("{label} default candidate: available")),
-                    visible_tools.contains(&name),
-                );
-            }
+            assert!(!first
+                .rendered_system_prompt
+                .contains("default candidate: available"));
+            assert!(!first
+                .rendered_system_prompt
+                .contains("default candidate: unavailable"));
             if visible_tools.contains(&crate::tool::names::GENERATE_IMAGE) {
                 assert!(first
                     .rendered_system_prompt
-                    .contains("Final output_format defaults to PNG"));
+                    .contains("final output_format defaults to PNG"));
             }
-            let renamed = crate::provider::media::MediaToolDefaults {
-                view_image: Some("test@plan/vision-b".into()),
-                generate_image: Some("test@plan/image-b".into()),
-                ..defaults.clone()
-            };
-            let second = first.clone().with_media_tool_defaults(&renamed, &tools);
-            assert_eq!(second.system_sections.len(), 1);
-            assert_eq!(first.rendered_system_prompt, second.rendered_system_prompt);
+            let repeated = first.clone().with_media_tool_defaults(&tools);
+            assert_eq!(repeated.system_sections.len(), 1);
+            assert_eq!(
+                first.rendered_system_prompt,
+                repeated.rendered_system_prompt
+            );
             assert_eq!(
                 first.cache_identity.prompt_cache_key,
-                second.cache_identity.prompt_cache_key
+                repeated.cache_identity.prompt_cache_key
             );
             assert_eq!(
                 first.cache_identity.context_fingerprint,
-                second.cache_identity.context_fingerprint
-            );
-            let unavailable = crate::provider::media::MediaToolDefaults::default();
-            let third = second
-                .clone()
-                .with_media_tool_defaults(&unavailable, &tools);
-            assert_eq!(third.system_sections.len(), 1);
-            assert!(third
-                .rendered_system_prompt
-                .contains("default candidate: unavailable; configure or"));
-            assert_ne!(
-                second.cache_identity.prompt_cache_key,
-                third.cache_identity.prompt_cache_key
-            );
-            assert_ne!(
-                second.cache_identity.context_fingerprint,
-                third.cache_identity.context_fingerprint
-            );
-            let repeated = third.clone().with_media_tool_defaults(&unavailable, &tools);
-            assert_eq!(
-                third.cache_identity.context_fingerprint,
                 repeated.cache_identity.context_fingerprint
-            );
-            assert_eq!(
-                third.cache_identity.prompt_cache_key,
-                repeated.cache_identity.prompt_cache_key
             );
         }
         let mut canonical = prompt;
@@ -1358,7 +1300,7 @@ mod tests {
             ToolPromptContext::default(),
         );
         let prefix = shared_prefix_fingerprint(&canonical.system_sections);
-        let updated = canonical.with_media_tool_defaults(&defaults, &media_tools);
+        let updated = canonical.with_media_tool_defaults(&media_tools);
         assert_eq!(
             updated.system_sections.last().unwrap().name,
             "response_language"

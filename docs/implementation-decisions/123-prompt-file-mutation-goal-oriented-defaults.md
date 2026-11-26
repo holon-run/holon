@@ -3,12 +3,13 @@
 ## Choice
 
 The system prompt no longer mandates ApplyPatch mechanically for every file
-mutation. `core_contract` states the goal (small, local, explicitly verifiable
-mutations) and delegates primitive choice to the file-mutation guidance.
-`tool_file_mutation.md` now states scenario defaults: edits to existing files
-default to ApplyPatch; creating a new file may use ApplyPatch or a bounded
-heredoc, whichever is cheaper and safer; very large, generated, or wholesale
-changes follow the existing lower-context path.
+mutation. `work_and_verification` (formerly `core_contract`) states the goal
+(small, local, explicitly verifiable mutations), and `tool_apply_patch.md`
+(consolidating the former `tool_file_mutation.md` into a single active-surface
+section) states scenario defaults: edits to existing files default to
+ApplyPatch; creating a new file may use ApplyPatch or a bounded heredoc,
+whichever is cheaper and safer; very large, generated, or wholesale changes
+follow the lower-context path.
 
 ## Reason
 

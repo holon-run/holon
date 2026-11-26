@@ -66,7 +66,7 @@ impl RuntimeHandle {
             )
             .await
         {
-            Ok(prepared) => return self.project_loaded_context_prompt(prepared, None).await,
+            Ok(prepared) => return self.project_loaded_context_prompt(prepared),
             Err(error) if ready_context_requires_preparation(&error) => {
                 ContextPreparationRetries::after(&error)
             }
@@ -94,7 +94,7 @@ impl RuntimeHandle {
                 retries,
             )
             .await?;
-        self.project_loaded_context_prompt(prepared, None).await
+        self.project_loaded_context_prompt(prepared)
     }
 
     pub(super) async fn capture_ready_turn_context(

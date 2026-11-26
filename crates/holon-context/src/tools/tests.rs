@@ -151,12 +151,23 @@ fn test_work_item_sections_preserve_lifecycle_invariants() {
     assert!(sched.content.contains("continuation frame"));
 
     let read_sections = tool_sections(&[spec("GetWorkItem"), spec("ListWorkItems")]);
-    let read = read_sections
-        .iter()
-        .find(|s| s.name == "tool_work_item_read")
-        .expect("work item read section");
+    assert_eq!(
+        read_sections
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["tool_work_item_read"],
+        "read-only WorkItem surfaces must not emit write or scheduling transition sections"
+    );
+    let read = &read_sections[0];
     assert!(read.content.contains("ListWorkItems"));
     assert!(read.content.contains("GetWorkItem"));
+    for write_tool in ["PickWorkItem", "UpdateWorkItem", "CompleteWorkItem"] {
+        assert!(
+            !read.content.contains(write_tool),
+            "read-only WorkItem guidance must not recommend absent write tool {write_tool}"
+        );
+    }
 }
 
 #[test]
@@ -208,6 +219,10 @@ fn test_external_trigger_section_prefers_canonical_names() {
 #[test]
 fn test_apply_patch_surface_exclusivity_between_json_and_codex_dsl() {
     let json_sections = tool_sections(&[spec("ApplyPatch")]);
+    assert!(
+        !json_sections.iter().any(|s| s.name == "tool_file_mutation"),
+        "file mutation guidance must be consolidated into tool_apply_patch"
+    );
     let json_patch = json_sections
         .iter()
         .find(|s| s.name == "tool_apply_patch")
@@ -215,6 +230,7 @@ fn test_apply_patch_surface_exclusivity_between_json_and_codex_dsl() {
     assert!(json_patch
         .content
         .contains("Current ApplyPatch surface is a JSON/function tool"));
+    assert!(json_patch.content.contains("--- a/relative/path"));
     assert!(!json_patch
         .content
         .contains("Current ApplyPatch surface is Codex DSL freeform"));
@@ -229,6 +245,7 @@ fn test_apply_patch_surface_exclusivity_between_json_and_codex_dsl() {
             definition: "start: /.+/".into(),
         }),
     }]);
+    assert!(!dsl_sections.iter().any(|s| s.name == "tool_file_mutation"));
     let dsl_patch = dsl_sections
         .iter()
         .find(|s| s.name == "tool_apply_patch")
@@ -237,6 +254,7 @@ fn test_apply_patch_surface_exclusivity_between_json_and_codex_dsl() {
         .content
         .contains("Current ApplyPatch surface is Codex DSL freeform"));
     assert!(dsl_patch.content.contains("*** Begin Patch"));
+    assert!(!dsl_patch.content.contains("--- a/relative/path"));
     assert!(!dsl_patch
         .content
         .contains("Current ApplyPatch surface is a JSON/function tool"));
