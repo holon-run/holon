@@ -104,3 +104,70 @@ the [Web GUI](./use-web-gui.md):
 
 To see how an actual engineering team uses this setup in practice, read
 [How a small team works with long-lived AI assistants](/blog/agents-in-a-small-team).
+
+## Day-to-day teamwork
+
+Deployment gets the assistant running. These three habits decide whether the
+team actually shares it or quietly drifts back to individual chat windows.
+
+### Put the acceptance criteria in the WorkItem
+
+Anyone on the team can assign work. What makes it shareable is that the task
+carries its own definition of done: the objective, the boundaries (which files
+or systems are out of scope), and how the result will be judged.
+
+```text
+Upgrade dependency X. Keep the change to the manifest and lockfile.
+Do not reformat unrelated code. Acceptance: the full check passes and the
+CI workflow is green.
+```
+
+Instructions that exist only in a chat message disappear as soon as the
+conversation scrolls. A tracked work item keeps its plan, checklist, and
+acceptance criteria readable for whoever picks the work up next—including the
+person who assigned it, a week later.
+
+### Hand work off instead of restarting it
+
+When the assistant stops and waits, read the recorded wait reason before
+writing anything. It may need your decision, a background task result, or an
+external event such as CI or a review. If it needs a decision, answering that
+question continues the same work item; there is no need to create a new one or
+re-explain the context.
+
+A request sent while the assistant is still working is queued as a message for
+it. You do not have to wait for it to finish before adding information, and the
+in-flight turn is not discarded.
+
+Keep the two levels of completion separate before treating anything as done:
+
+- **A finished Task** means one command, build, or delegated subagent call
+  returned a result. It is evidence.
+- **A finished WorkItem** means the objective and its acceptance criteria are
+  met. A green build is not the same as a reviewed change.
+
+### Revoke access in the identity provider, keep the history
+
+With OIDC enabled, each prompt records a stable `actor_id` for the authenticated
+user, plus `actor_display_name` captured at send time. History therefore stays
+self-contained: it keeps who sent a request even after that person is renamed,
+and nothing needs to be rewritten when someone leaves.
+
+When a teammate leaves the project, disable their account in your identity
+provider. That is the step that ends their access.
+
+OIDC answers "who asked for this". It does not partition files or tool output
+between teammates: everyone operating the same runtime works against the same
+workspaces, so use the identity provider for access and the work items for
+accountability rather than expecting per-user isolation.
+
+## See Also
+
+- [Work items and tasks](../concepts/work-items-and-tasks.md) — durable
+  objectives versus execution tasks
+- [Observe agent work](./observe-agent-work.md) — follow progress, waits, and
+  results in the Web GUI
+- [Configure OIDC authentication](./configure-oidc-authentication.md) — IdP
+  registration, claims, and session lifetime
+- [Connect to a remote Holon runtime](./connect-remote-runtime.md) — network
+  modes, verification, and troubleshooting
