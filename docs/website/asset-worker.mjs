@@ -26,6 +26,11 @@ export default {
     const result = new Response(response.body, response);
     if (result.status === 200 || result.status === 304) {
       result.headers.set("cache-control", CACHE_CONTROL);
+    } else {
+      // The static asset layer applies its `_headers` cache policy to every
+      // response, including misses. Leaving a 404 cacheable would keep a
+      // missing diagram broken for a day after the file is added.
+      result.headers.set("cache-control", "no-store");
     }
     return result;
   },
