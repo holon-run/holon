@@ -1033,6 +1033,92 @@ pub async fn control_agent_deletion_abandon_resolves_needs_attention() -> Result
     Ok(())
 }
 
+/// States that no longer admit an abandonment must surface as typed 409
+/// conflicts. Losing the deletable precondition is a caller-visible state
+/// conflict, never a 500 `runtime_error` that hides a real server fault.
+pub async fn control_agent_deletion_resolve_rejects_unresolvable_states() -> Result<()> {
+    async fn resolve_abandon(client: &Client, base: &str, agent_id: &str) -> Result<()> {
+        let response = client
+            .post(format!(
+                "{base}/api/control/agents/{agent_id}/deletion/resolve"
+            ))
+            .json(&serde_json::json!({ "decision": "abandon" }))
+            .send()
+            .await?;
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::CONFLICT,
+            "resolve abandon for {agent_id} must be a typed conflict"
+        );
+        let body: serde_json::Value = response.json().await?;
+        assert_eq!(body["code"], "agent_delete_forbidden", "body: {body}");
+        assert_ne!(body["code"], "runtime_error", "body: {body}");
+        Ok(())
+    }
+
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+
+    // 1) The identity is still deleting, but its job row is gone.
+    host.create_named_agent("abandon-no-job", None).await?;
+    let (_, _, created) = host
+        .begin_public_agent_deletion("abandon-no-job", false, "operator")
+        .await?;
+    assert!(created);
+    host.runtime_db().transaction(|tx| {
+        tx.execute(
+            "DELETE FROM agent_deletion_jobs WHERE agent_id = ?1",
+            ["abandon-no-job"],
+        )?;
+        Ok(())
+    })?;
+    resolve_abandon(&client, &base, "abandon-no-job").await?;
+
+    // 2) The job is still non-terminal (pending), not needs_attention.
+    host.create_named_agent("abandon-pending", None).await?;
+    let (_, _, created) = host
+        .begin_public_agent_deletion("abandon-pending", false, "operator")
+        .await?;
+    assert!(created);
+    let status: serde_json::Value = client
+        .get(format!(
+            "{base}/api/control/agents/abandon-pending/delete-status"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(status["job"]["status"], serde_json::json!("pending"));
+    resolve_abandon(&client, &base, "abandon-pending").await?;
+
+    // 3) A completed deletion is terminal and cannot be re-resolved.
+    host.create_named_agent("abandon-completed", None).await?;
+    host.get_or_create_agent("abandon-completed").await?;
+    host.spawn_daemon_deletion_coordinator();
+    client
+        .delete(format!("{base}/api/control/agents/abandon-completed"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    wait_until_async_for(Duration::from_secs(20), || {
+        let client = client.clone();
+        let url = format!("{base}/api/control/agents/abandon-completed/delete-status");
+        async move {
+            let status: serde_json::Value = client.get(url).send().await?.json().await?;
+            Ok(status["job"]["status"] == serde_json::json!("completed"))
+        }
+    })
+    .await?;
+    resolve_abandon(&client, &base, "abandon-completed").await?;
+
+    host.shutdown_daemon_deletion_coordinator().await;
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_agent_create_admits_cleanup_repair_when_proof_is_missing() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     attach_default_workspace(&host).await?;
