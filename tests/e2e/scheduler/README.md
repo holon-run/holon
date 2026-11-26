@@ -54,6 +54,7 @@ implicitly.
 | SCHED-E2E-012 | `scheduler-compaction-continuity` | WorkItem survives compaction and restart | compaction triggered; WorkItem completes; brief intact; restart persistence |
 | SCHED-E2E-013 | `scheduler-worktree-isolation` | Agent creates and removes a worktree through model tools | worktree lifecycle; execution binding; clean git state; restart persistence |
 | SCHED-E2E-014 | `scheduler-spawn-agent-supervision` | Agent invokes a new supervised subagent and completes parent WorkItem | InvokeAgent returns agent_id + task_id; brief intact; restart persistence |
+| SCHED-E2E-014 note | `scheduler-spawn-agent-supervision` | Retryable storage busy tolerance (issue #4577) | retryable `runtime_db_busy` (`domain=storage`, `retryable=true`) tool failures tolerated within bounded caps (≤2 events, ≤60s window); each tolerated busy recorded to `<label>-tolerated-storage-busy.json`; non-retryable or over-cap failures still fail |
 | SCHED-E2E-015 | `scheduler-checkpoint-replay` | Multiple WorkItems survive restart and converge | B completes; A waits; restart preserves states; both converge; exactly-once |
 
 ### Tier-3 (Release)

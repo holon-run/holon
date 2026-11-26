@@ -4257,6 +4257,126 @@ class DockerE2ERunnerTests(unittest.TestCase):
             )
 
 
+class StorageBusyToleranceTests(unittest.TestCase):
+    """Issue #4577: bounded, visible tolerance for retryable storage busy failures."""
+
+    TOLERANCE = runner.StorageBusyTolerance(max_events=2, max_window_seconds=60.0)
+
+    @staticmethod
+    def busy_failure(
+        *,
+        ts: str = "2026-11-26T03:00:00Z",
+        seq: int = 1,
+        retryable: bool = True,
+        domain: str = "storage",
+    ) -> dict:
+        return {
+            "id": f"evt-{seq}",
+            "event_seq": seq,
+            "ts": ts,
+            "type": "tool_execution_failed",
+            "payload": {
+                "turn_id": "turn-busy",
+                "tool_name": "TaskStatus",
+                "status": "error",
+                "error_kind": "runtime_db_busy",
+                "tool_error": {
+                    "kind": "runtime_db_busy",
+                    "message": (
+                        "runtime database operation child observer publication "
+                        "is temporarily unavailable"
+                    ),
+                    "domain": domain,
+                    "retryable": retryable,
+                },
+            },
+        }
+
+    def test_one_retry_then_success_is_tolerated_and_recorded(self) -> None:
+        failure = self.busy_failure(ts="2026-11-26T03:00:05Z", seq=7)
+        intolerable, records = runner.partition_storage_busy_failures(
+            "spawn-check", [failure], self.TOLERANCE
+        )
+        self.assertEqual(intolerable, [])
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["event_seq"], 7)
+        self.assertEqual(record["ts"], "2026-11-26T03:00:05Z")
+        self.assertEqual(record["tool_name"], "TaskStatus")
+        self.assertEqual(record["error_kind"], "runtime_db_busy")
+        self.assertIn("child observer publication", record["message"])
+
+    def test_over_event_cap_fails_even_if_eventually_successful(self) -> None:
+        failures = [
+            self.busy_failure(ts=f"2026-11-26T03:00:{index:02d}Z", seq=index)
+            for index in range(3)
+        ]
+        with self.assertRaisesRegex(AssertionError, "count cap"):
+            runner.partition_storage_busy_failures(
+                "spawn-check", failures, self.TOLERANCE
+            )
+
+    def test_over_window_cap_fails(self) -> None:
+        failures = [
+            self.busy_failure(ts="2026-11-26T03:00:00Z", seq=1),
+            self.busy_failure(ts="2026-11-26T03:02:01Z", seq=2),
+        ]
+        with self.assertRaisesRegex(AssertionError, "window cap"):
+            runner.partition_storage_busy_failures(
+                "spawn-check", failures, self.TOLERANCE
+            )
+
+    def test_non_retryable_failure_is_never_tolerated(self) -> None:
+        failure = self.busy_failure(seq=3, retryable=False)
+        intolerable, records = runner.partition_storage_busy_failures(
+            "spawn-check", [failure], self.TOLERANCE
+        )
+        self.assertEqual(intolerable, [failure])
+        self.assertEqual(records, [])
+
+    def test_other_storage_error_kind_is_never_tolerated(self) -> None:
+        failure = self.busy_failure(seq=4, domain="provider")
+        intolerable, records = runner.partition_storage_busy_failures(
+            "spawn-check", [failure], self.TOLERANCE
+        )
+        self.assertEqual(intolerable, [failure])
+        self.assertEqual(records, [])
+
+    def test_successful_tool_events_publishes_visible_tolerance_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = Path(tmp)
+            turn_id = "turn-busy"
+            events = [
+                {
+                    "type": "turn_started",
+                    "payload": {"turn_id": turn_id, "turn_index": 1},
+                },
+                self.busy_failure(ts="2026-11-26T03:00:05Z", seq=9),
+            ]
+            harness = type(
+                "Harness",
+                (),
+                {"events": lambda self, label: events, "evidence": evidence},
+            )()
+            tolerated = runner.CaseHarness.successful_tool_events(
+                harness,
+                "spawn-check",
+                0,
+                storage_busy_tolerance=self.TOLERANCE,
+            )
+            self.assertEqual(tolerated, [])
+            data = json.loads(
+                (evidence / "spawn-check-tolerated-storage-busy.json").read_text()
+            )
+            self.assertEqual(data["tolerance"]["max_events"], 2)
+            self.assertEqual(data["tolerance"]["max_window_seconds"], 60.0)
+            self.assertEqual(data["tolerated_count"], 1)
+            self.assertEqual(data["window_seconds"], 0.0)
+            self.assertEqual(data["tolerated"][0]["event_seq"], 9)
+
+
 class LiveAcceptanceEvidenceTests(unittest.TestCase):
     def test_live_input_batch_accepts_async_sender_creation_before_bootstrap(self) -> None:
         for status in (200, 202):
