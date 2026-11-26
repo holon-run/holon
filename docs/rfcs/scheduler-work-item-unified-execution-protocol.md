@@ -21,6 +21,12 @@ host, and agent-control records remain authoritative for their own lifecycle.
 Candidate construction is ephemeral. Admission and settlement are each one
 business command and one SQLite transaction.
 
+The ExecutionProtocol readers in `holon-storage` load from the connection or
+transaction supplied by the caller and share the persisted row decoders.
+Runtime binds closure reads to the admitted transaction and Agent scope and
+charges the read material before decoding. Closure retains the WorkItem map
+and validates Attempt and Outcome history one row at a time.
+
 This RFC supersedes the control-state model in
 [Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)
 where activation slot, dispatch reservation, WorkDemand, scheduler wait

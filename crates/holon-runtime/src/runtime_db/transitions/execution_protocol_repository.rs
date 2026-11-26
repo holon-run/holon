@@ -1,23 +1,29 @@
-#[path = "execution_protocol_closure_read.rs"]
-mod closure_read;
-pub(in crate::runtime_db) use closure_read::closure_protocol_material_tx;
-pub(crate) use closure_read::{read_validated_closure_protocol_tx, ValidatedClosureProtocol};
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
-use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 use crate::domain::execution_protocol::{
-    self, ExecutionAttempt, ExecutionOutcomeRecord, ExecutionProtocolCommand,
-    ExecutionProtocolState, ExecutionTransition, WorkItemExecutionState,
+    self, ExecutionAttempt, ExecutionProtocolCommand, ExecutionProtocolState, ExecutionTransition,
+    WorkItemExecutionState,
 };
 use crate::runtime_db::transitions::{
     ExecutionAuthorityFences, RuntimeTransitionRepository, WorkItemMutation,
 };
+
+pub(in crate::runtime_db) use holon_storage::execution::closure_protocol_material_tx;
+pub(crate) use holon_storage::execution::ValidatedClosureProtocol;
+use holon_storage::execution::{
+    self as execution_storage, partition_exists_on as partition_exists_tx,
+};
+
+const EXECUTION_READ_MATERIAL: execution_storage::ExecutionReadMaterial =
+    execution_storage::ExecutionReadMaterial {
+        charge_owned_metadata: crate::diagnostics::resource_io::charge_owned_metadata,
+        admit_typed_json_payload: crate::diagnostics::resource_io::admit_typed_json_payload,
+    };
 
 pub(crate) struct PreparedExecutionProtocolCommands {
     state: ExecutionProtocolState,
@@ -1503,17 +1509,6 @@ fn validate_reconcile_work_item_continuation_yield(
     Ok(())
 }
 
-fn partition_exists_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<bool> {
-    tx.query_row(
-        "SELECT EXISTS(
-           SELECT 1 FROM execution_protocol_partitions WHERE agent_id = ?1
-         )",
-        [agent_id],
-        |row| row.get(0),
-    )
-    .map_err(Into::into)
-}
-
 pub(crate) use holon_storage::execution::authority_fences_tx;
 
 fn validate_wait_ingress_tx(
@@ -1644,9 +1639,9 @@ impl RuntimeTransitionRepository<'_> {
         &self,
         agent_id: &str,
     ) -> Result<BTreeMap<String, crate::domain::execution_protocol::WorkItemExecutionRecord>> {
-        self.db.with_read(|connection| load_work_items_with_migration(connection, agent_id,
-            "SELECT work_item_id, payload_json, source_revision||':'||generation||':'||lifecycle_state
-             FROM execution_protocol_work_items WHERE agent_id=?1 AND lifecycle_state!='terminal' AND EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id=?1)"))
+        self.db.with_read(|connection| {
+            execution_storage::load_live_work_items_on(connection, agent_id)
+        })
     }
 
     pub(crate) fn load_execution_protocol_state_if_initialized(
@@ -1979,34 +1974,14 @@ pub(crate) fn load_state_unchecked_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<ExecutionProtocolState> {
-    load_state_unchecked_on(tx, agent_id)
+    execution_storage::load_state_unchecked_on(tx, agent_id, EXECUTION_READ_MATERIAL)
 }
 
-/// The pre-v47 offline fallback can open a database before schema migrations.
-/// Project its retired rows as Runnable only for the repair's before-image;
-/// the fallback itself advances those generations when it writes the repair.
-///
-/// The revision marker is rewritten together with the payload: a row projected
-/// to a canonical `runnable` record must not still claim the retired
-/// `in_flight` lifecycle, or the shared pre-migration decoder sees a marker and
-/// payload that disagree (#4571).
 pub(crate) fn load_retired_scheduler_state_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<ExecutionProtocolState> {
-    load_state_unchecked_with_work_items_on(
-        tx,
-        agent_id,
-        "SELECT work_item_id,
-                CASE WHEN lifecycle_state = 'in_flight'
-                     THEN json_set(payload_json, '$.state', json_object(
-                          'state', 'runnable', 'generation', generation))
-                     ELSE payload_json END,
-                source_revision||':'||generation||':'||
-                CASE WHEN lifecycle_state = 'in_flight'
-                     THEN 'runnable' ELSE lifecycle_state END
-         FROM execution_protocol_work_items WHERE agent_id = ?1",
-    )
+    execution_storage::load_retired_scheduler_state_tx(tx, agent_id, EXECUTION_READ_MATERIAL)
 }
 
 pub(crate) fn load_state_tx(
@@ -2014,12 +1989,10 @@ pub(crate) fn load_state_tx(
     agent_id: &str,
 ) -> Result<ExecutionProtocolState> {
     let load_started = std::time::Instant::now();
-    if !partition_exists_tx(tx, agent_id)? {
-        bail!("execution protocol partition for agent {agent_id} is not initialized");
-    }
-    let state = load_state_unchecked_tx(tx, agent_id)?;
-    execution_protocol::assert_invariants(&state)
-        .map_err(|error| anyhow!("stored execution protocol state is invalid: {error}"))?;
+    let state = execution_storage::load_state_on(tx, agent_id, EXECUTION_READ_MATERIAL)?
+        .ok_or_else(|| {
+            anyhow!("execution protocol partition for agent {agent_id} is not initialized")
+        })?;
     tracing::debug!(
         protocol_state_load_us = load_started.elapsed().as_micros(),
         attempts = state.attempts.len() as u64,
@@ -2031,36 +2004,33 @@ pub(crate) fn load_state_tx(
     Ok(state)
 }
 
-fn load_payload_map<T: DeserializeOwned>(
-    tx: &Connection,
-    sql: &str,
+pub(crate) fn context_execution_protocol_on(
+    connection: &Connection,
     agent_id: &str,
-) -> Result<BTreeMap<String, T>> {
-    let mut statement = tx.prepare(sql)?;
-    let mut rows = statement.query([agent_id])?;
-    let mut records = BTreeMap::new();
-    while let Some(row) = rows.next()? {
-        let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?;
-        let payload = crate::runtime_db::repositories::borrowed_sql_text(row, 1)?;
-        let metadata = id
-            .len()
-            .checked_add(std::mem::size_of::<(String, T)>())
-            .and_then(|bytes| bytes.checked_add(64))
-            .context("execution source map metadata overflow")?;
-        crate::diagnostics::resource_io::charge_owned_metadata(u64::try_from(metadata)?, 1)?;
-        crate::diagnostics::resource_io::admit_typed_json_payload(payload)?;
-        let value = serde_json::from_str(payload)
-            .with_context(|| format!("decoding execution protocol record {id}"))?;
-        records.insert(id.to_owned(), value);
+) -> Result<Option<ExecutionProtocolState>> {
+    execution_storage::load_state_on(connection, agent_id, EXECUTION_READ_MATERIAL)
+}
+
+pub(crate) fn read_validated_closure_protocol_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    admitted: &crate::runtime_db::dispatch_memory::AdmittedFinalWork<'_, '_>,
+) -> Result<Option<ValidatedClosureProtocol>> {
+    admitted.validate_protocol_read(tx, agent_id)?;
+    if !partition_exists_tx(tx, agent_id)? {
+        return Ok(None);
     }
-    Ok(records)
+    let (bytes, records) = closure_protocol_material_tx(tx, agent_id)?;
+    admitted.validate_protocol_material(bytes, records)?;
+    crate::diagnostics::resource_io::charge_owned_metadata(u64::try_from(bytes)?, records)?;
+    execution_storage::read_closure_rows_tx(tx, agent_id, EXECUTION_READ_MATERIAL).map(Some)
 }
 
 #[cfg(holon_lib_test_shard = "e")]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::execution_protocol::WaitReference;
+    use crate::domain::execution_protocol::{ExecutionOutcomeRecord, WaitReference};
     use crate::runtime_db::RuntimeDb;
     use crate::types::{AgentIdentityRecord, AgentRegistryStatus, AgentState};
     use crate::types::{AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility};
@@ -2948,108 +2918,4 @@ mod tests {
         );
         Ok(())
     }
-}
-
-fn load_state_unchecked_on(
-    connection: &Connection,
-    agent_id: &str,
-) -> Result<ExecutionProtocolState> {
-    load_state_unchecked_with_work_items_on(
-        connection,
-        agent_id,
-        "SELECT work_item_id, payload_json, source_revision||':'||generation||':'||lifecycle_state
-         FROM execution_protocol_work_items WHERE agent_id = ?1",
-    )
-}
-
-fn load_state_unchecked_with_work_items_on(
-    connection: &Connection,
-    agent_id: &str,
-    work_items_sql: &str,
-) -> Result<ExecutionProtocolState> {
-    Ok(ExecutionProtocolState {
-        agent_id: agent_id.to_owned(),
-        attempts: load_payload_map(
-            connection,
-            "SELECT attempt_id, payload_json
-             FROM execution_protocol_attempts WHERE agent_id = ?1",
-            agent_id,
-        )?,
-        work_items: load_work_items_with_migration(connection, agent_id, work_items_sql)?,
-        outcomes: load_outcomes_with_migration(connection, agent_id)?,
-    })
-}
-
-fn load_work_items_with_migration(
-    tx: &Connection,
-    agent_id: &str,
-    sql: &str,
-) -> Result<BTreeMap<String, crate::domain::execution_protocol::WorkItemExecutionRecord>> {
-    let mut statement = tx.prepare(sql)?;
-    let mut rows = statement.query([agent_id])?;
-    let mut records = BTreeMap::new();
-    while let Some(row) = rows.next()? {
-        let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?.to_owned();
-        let payload = crate::runtime_db::repositories::borrowed_sql_text(row, 1)?;
-        let marker = crate::runtime_db::repositories::borrowed_sql_text(row, 2)?;
-        let (record, legacy_projection) =
-            holon_storage::execution::project_legacy_in_flight_work_item(
-                tx, agent_id, &id, payload, marker,
-            )
-            .with_context(|| format!("decoding execution protocol record {}", id))?;
-        if let Some(evidence) = legacy_projection {
-            tracing::info!(
-                agent_id = %evidence.agent_id,
-                work_item_id = %evidence.work_item_id,
-                lifecycle = %evidence.original_lifecycle,
-                attempt_id = %evidence.attempt_id,
-                matching_open_attempt = evidence.matching_open_attempt,
-                wait_source = ?evidence.wait_source,
-                wait_id = evidence.wait_id.as_deref(),
-                generation_before = evidence.generation_before,
-                generation_after = evidence.generation_after,
-                "projected legacy in_flight work item from a pre-migration database"
-            );
-        }
-        records.insert(id, record);
-    }
-    Ok(records)
-}
-
-fn load_outcomes_with_migration(
-    tx: &Connection,
-    agent_id: &str,
-) -> Result<BTreeMap<String, crate::domain::execution_protocol::ExecutionOutcomeRecord>> {
-    let mut statement = tx.prepare(
-        "SELECT outcome_id, payload_json
-         FROM execution_protocol_outcomes WHERE agent_id = ?1",
-    )?;
-    let mut rows = statement.query([agent_id])?;
-    let mut records = BTreeMap::new();
-    while let Some(row) = rows.next()? {
-        let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?.to_owned();
-        let payload = crate::runtime_db::repositories::borrowed_sql_text(row, 1)?;
-        let record = crate::runtime_db::outcome_reads::decode_outcome_payload(payload)
-            .with_context(|| format!("decoding execution protocol record {}", id))?;
-        records.insert(id, record);
-    }
-    Ok(records)
-}
-
-pub(crate) fn context_execution_protocol_on(
-    connection: &Connection,
-    agent_id: &str,
-) -> Result<Option<ExecutionProtocolState>> {
-    let initialized: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id = ?1)",
-        [agent_id],
-        |row| row.get(0),
-    )?;
-    if !initialized {
-        return Ok(None);
-    }
-    let state = load_state_unchecked_on(connection, agent_id)?;
-    execution_protocol::assert_invariants(&state)
-        .map_err(|error| anyhow!("stored execution protocol state is invalid: {error}"))?;
-    Ok(Some(state))
 }

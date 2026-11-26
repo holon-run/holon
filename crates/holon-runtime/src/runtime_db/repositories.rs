@@ -143,27 +143,7 @@ pub(in crate::runtime_db) fn clone_timer_body<T: Clone + serde::Serialize>(value
     Ok(value.clone())
 }
 
-/// Borrow SQLite text until admission completes, preserving Row::get<String>
-/// conversion errors without allocating the successful column first.
-pub(crate) fn borrowed_sql_text<'a>(
-    row: &'a rusqlite::Row<'_>,
-    index: usize,
-) -> rusqlite::Result<&'a str> {
-    let value = row.get_ref(index)?;
-    value.as_str().map_err(|error| match error {
-        rusqlite::types::FromSqlError::InvalidType => rusqlite::Error::InvalidColumnType(
-            index,
-            row.as_ref().column_name(index).unwrap_or("").to_owned(),
-            value.data_type(),
-        ),
-        rusqlite::types::FromSqlError::Other(error) => {
-            rusqlite::Error::FromSqlConversionFailure(index, value.data_type(), error)
-        }
-        error => {
-            rusqlite::Error::FromSqlConversionFailure(index, value.data_type(), Box::new(error))
-        }
-    })
-}
+pub(crate) use holon_storage::codec::borrowed_sql_text;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) enum AgentDeletionAdmission {
