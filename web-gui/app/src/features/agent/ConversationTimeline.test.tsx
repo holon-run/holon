@@ -13,7 +13,7 @@ import type {
 } from "@holon/conversation-sdk";
 
 import "../../i18n";
-import { ConversationSyncStatus, ConversationTimeline, TaskResultRow, executionProcessActivities, isInputPreviewTruncated, parseInputPreview, summarizeActivity, conversationActivityToInspectorActivity } from "./ConversationTimeline";
+import { ConversationSyncStatus, ConversationTimeline, TaskResultRow, deduplicateTurnResponseBriefs, executionProcessActivities, isInputPreviewTruncated, parseInputPreview, summarizeActivity, conversationActivityToInspectorActivity } from "./ConversationTimeline";
 import { taskResultFailureReason, taskResultPreview } from "../../runtime/conversation-input";
 import taskResultInputs from "../../../../../tests/fixtures/client-wire/task-result-inputs.json";
 import { decodeTurnInputSummary } from "@holon/conversation-sdk";
@@ -104,18 +104,18 @@ function renderTimeline(
     options.pendingInputs === undefined && options.localPendingPrompts === undefined
       ? model
       : {
-          ...model,
-          pendingInputs: options.pendingInputs ?? model.pendingInputs,
-          localPendingPrompts: options.localPendingPrompts ?? model.localPendingPrompts,
-        };
+        ...model,
+        pendingInputs: options.pendingInputs ?? model.pendingInputs,
+        localPendingPrompts: options.localPendingPrompts ?? model.localPendingPrompts,
+      };
   return renderToStaticMarkup(
     <ConversationTimeline
       historyOnly={options.historyOnly}
       model={withPending}
-      onLoadBrief={options.onLoadBrief ?? (() => {})}
-      onLoadDetail={() => {}}
-      onLoadOlderActivities={() => {}}
-      onRetry={() => {}}
+      onLoadBrief={options.onLoadBrief ?? (() => { })}
+      onLoadDetail={() => { }}
+      onLoadOlderActivities={() => { }}
+      onRetry={() => { }}
       briefRecord={(id) => (id === "brief-1" ? options.brief ?? brief : null)}
       briefLoadState={(id) =>
         id === "brief-1" ? ({ kind: "ready", brief: options.brief ?? brief } as ConversationBriefLoadState) : null
@@ -139,8 +139,8 @@ describe("executionProcessActivities", () => {
 
   it("removes only the final duplicate and preserves progress, tools, errors and waits without mutating the log", () => {
     const entries = [activity("input", "Question", "operator"), activity("progress", "Done"),
-      activity("tool", "Read file", "tool"), activity("final", "Done"),
-      activity("error", "Delivery error", "error"), activity("wait", "Waiting", "wait")];
+    activity("tool", "Read file", "tool"), activity("final", "Done"),
+    activity("error", "Delivery error", "error"), activity("wait", "Waiting", "wait")];
     const original = structuredClone(entries);
     const inputs = [{ message_id: "message", preview: "Question", activity_key: entries[0].key }];
     expect(executionProcessActivities(entries, ["Other brief", "Done"], true, inputs).map((item) => item.id))
@@ -162,6 +162,67 @@ describe("executionProcessActivities", () => {
     expect(executionProcessActivities(entries, ["Different"], true)).toEqual(entries);
   });
 
+  it("deduplicates identical-body briefs within the same turn while preserving work_item_id and deep-link anchor", () => {
+    const workBrief: BriefRecord = {
+      ...brief,
+      id: "brief-work",
+      work_item_id: "work_123",
+      text: "下一单 #4016 已关闭，不用再讨论。\n\n本轮候选已看完。",
+    };
+    const replyBrief: BriefRecord = {
+      ...brief,
+      id: "brief-reply",
+      text: "  下一单 #4016 已关闭，不用再讨论。\r\n\r\n本轮候选已看完。  ",
+    };
+    const records = new Map<string, BriefRecord>([
+      ["brief-work", workBrief],
+      ["brief-reply", replyBrief],
+    ]);
+    const collapsed = deduplicateTurnResponseBriefs(
+      ["brief-reply", "brief-work"],
+      (id) => records.get(id) ?? null,
+      "brief:brief-work",
+    );
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0].primaryId).toBe("brief-reply");
+    expect(collapsed[0].anchorId).toBe("brief-work");
+    expect(collapsed[0].mergedBrief?.work_item_id).toBe("work_123");
+
+    const model = buildConversationSessionModel({
+      status: { kind: "ready" },
+      view: stateView([
+        turnSummary("turn-dup", 4949, {
+          execution: { kind: "terminal", outcome: "completed" },
+          result: { kind: "available" },
+          settled: true,
+          brief_ids: ["brief-work", "brief-reply"],
+        }),
+      ]),
+      historyState: { kind: "idle" },
+      briefs: records,
+      briefLoadStates: new Map(),
+      detailLoadStates: new Map(),
+    });
+    const html = renderToStaticMarkup(
+      <ConversationTimeline
+        model={model}
+        onOpenWorkItemId={() => { }}
+        onLoadBrief={() => { }}
+        onLoadDetail={() => { }}
+        onLoadOlderActivities={() => { }}
+        onRetry={() => { }}
+        briefRecord={(id) => records.get(id) ?? null}
+        briefLoadState={(id) => {
+          const b = records.get(id);
+          return b ? ({ kind: "ready", brief: b } as ConversationBriefLoadState) : null;
+        }}
+        detailLoadState={(): ConversationDetailLoadState => ({ kind: "idle" })}
+      />,
+    );
+    expect(html.match(/data-conversation-anchor="brief:/g)).toHaveLength(1);
+    expect(html).toContain("View work item");
+  });
+
   it("does not remove earlier matching progress or a truncated prefix", () => {
     const entries = [activity("progress", "Done"), activity("final", "Done with details")];
     expect(executionProcessActivities(entries, ["Done"], true)).toEqual(entries);
@@ -176,10 +237,12 @@ describe("executionProcessActivities", () => {
   });
 
   it("compares legacy assistant text blocks through the existing safe renderer", () => {
-    const entries = [activity("final", JSON.stringify({ blocks: [
-      { type: "thinking", thinking: "private" }, { type: "text", text: "Done" },
-      { type: "text", text: "Details" },
-    ] }))];
+    const entries = [activity("final", JSON.stringify({
+      blocks: [
+        { type: "thinking", thinking: "private" }, { type: "text", text: "Done" },
+        { type: "text", text: "Details" },
+      ]
+    }))];
     expect(executionProcessActivities(entries, ["Done\n\nDetails"], true)).toEqual([]);
     const hidden = [activity("thinking", JSON.stringify({ blocks: [{ type: "thinking", thinking: "private" }] }))];
     expect(executionProcessActivities(hidden, [""], true)).toEqual([]);
@@ -187,10 +250,10 @@ describe("executionProcessActivities", () => {
 
   it.each([false, true])("skips assistant rounds without display text while preserving other activities (terminal=%s)", (terminal) => {
     const hidden = [activity("empty", ""), activity("space", " \n\t"),
-      activity("tools-only", JSON.stringify({ blocks: [{ type: "tool_use", name: "ExecCommand" }] })),
-      activity("partial-legacy", '{"blocks":[')];
+    activity("tools-only", JSON.stringify({ blocks: [{ type: "tool_use", name: "ExecCommand" }] })),
+    activity("partial-legacy", '{"blocks":[')];
     const visible = [activity("progress", "Reading files"), activity("tool", "", "tool"),
-      activity("error", "", "error"), activity("wait", "", "wait")];
+    activity("error", "", "error"), activity("wait", "", "wait")];
     expect(executionProcessActivities([...hidden, ...visible], [], terminal)).toEqual(visible);
     // An initially empty round becomes visible when the next revision contains text.
     expect(executionProcessActivities([{ ...hidden[0], revision: 2, summary: "Now reading" }], [], terminal))
@@ -333,10 +396,10 @@ describe("ConversationTimeline", () => {
           briefLoadStates: new Map(),
           detailLoadStates: new Map(),
         })}
-        onLoadBrief={() => {}}
-        onLoadDetail={() => {}}
-        onLoadOlderActivities={() => {}}
-        onRetry={() => {}}
+        onLoadBrief={() => { }}
+        onLoadDetail={() => { }}
+        onLoadOlderActivities={() => { }}
+        onRetry={() => { }}
         briefRecord={() => null}
         briefLoadState={() => null}
         detailLoadState={() => ({ kind: "idle" })}
@@ -365,10 +428,10 @@ describe("ConversationTimeline", () => {
           briefLoadStates: new Map(),
           detailLoadStates: new Map(),
         })}
-        onLoadBrief={() => {}}
-        onLoadDetail={() => {}}
-        onLoadOlderActivities={() => {}}
-        onRetry={() => {}}
+        onLoadBrief={() => { }}
+        onLoadDetail={() => { }}
+        onLoadOlderActivities={() => { }}
+        onRetry={() => { }}
         briefRecord={() => null}
         briefLoadState={() => null}
         detailLoadState={() => ({ kind: "idle" })}
@@ -501,13 +564,13 @@ describe("conversation presentation boundaries", () => {
       status: { kind }, view: stateView([]), historyState: { kind: "idle" },
       briefs: new Map(), briefLoadStates: new Map(), detailLoadStates: new Map(),
     });
-    expect(renderToStaticMarkup(<ConversationSyncStatus model={model} onRetry={() => {}} />))
+    expect(renderToStaticMarkup(<ConversationSyncStatus model={model} onRetry={() => { }} />))
       .toContain("conversation-status-banner");
-    expect(renderToStaticMarkup(<ConversationSyncStatus model={model} onRetry={() => {}} backgroundAccessCheck />))
+    expect(renderToStaticMarkup(<ConversationSyncStatus model={model} onRetry={() => { }} backgroundAccessCheck />))
       .not.toContain("conversation-status-banner");
     expect(renderToStaticMarkup(<ConversationSyncStatus model={{
       ...model, status: { kind: "reconnecting", attempt: 1, delayMs: 500 },
-    }} onRetry={() => {}} backgroundAccessCheck />)).toContain("is-reconnecting");
+    }} onRetry={() => { }} backgroundAccessCheck />)).toContain("is-reconnecting");
   });
   it.each(["loading", "paused", "reconnecting"])("keeps active execution expanded during %s without an inline banner", (kind) => {
     const html = renderTimeline([turnSummary("active", 1)], { status: { kind, attempt: 1, delayMs: 500 } } as never);
@@ -529,10 +592,12 @@ describe("conversation presentation boundaries", () => {
   });
 
   it("keeps task and unknown pending sources in a collapsed event area before the latest turn", () => {
-    const html = renderTimeline([turnSummary("latest", 1)], { pendingInputs: [
-      { message_id: "task", revision: 1, state: "queued", preview: "command task completed", presentation_class: "task" },
-      { message_id: "legacy", revision: 1, state: "queued", preview: "unknown provenance" },
-    ] } as never);
+    const html = renderTimeline([turnSummary("latest", 1)], {
+      pendingInputs: [
+        { message_id: "task", revision: 1, state: "queued", preview: "command task completed", presentation_class: "task" },
+        { message_id: "legacy", revision: 1, state: "queued", preview: "unknown provenance" },
+      ]
+    } as never);
     expect(html).toContain("Task result");
     expect(html).toContain("Incoming message");
     expect(html).not.toContain('class="conversation-pending-chip"');
@@ -543,15 +608,19 @@ describe("conversation presentation boundaries", () => {
 
 describe("operator sender attribution", () => {
   it("shows each message's sender in initial, interjected and pending inputs", () => {
-    const html = renderTimeline([turnSummary("senders", 1, { inputs: [
-      { message_id: "alice", preview: "Initial", actor_display_name: "Alice" },
-      { message_id: "bob", preview: "Correction", actor_display_name: "Bob", presentation_class: "operator", interjected: true },
-      { message_id: "local", preview: "Local control" },
-      { message_id: "empty", preview: "Blank name", actor_display_name: "  " },
-    ] })], { pendingInputs: [
-      { message_id: "pending", revision: 1, state: "queued", preview: "Next", presentation_class: "operator", actor_display_name: "Carol" },
-      { message_id: "system", revision: 1, state: "queued", preview: "Event", presentation_class: "system", actor_display_name: "Not an operator" },
-    ] } as never);
+    const html = renderTimeline([turnSummary("senders", 1, {
+      inputs: [
+        { message_id: "alice", preview: "Initial", actor_display_name: "Alice" },
+        { message_id: "bob", preview: "Correction", actor_display_name: "Bob", presentation_class: "operator", interjected: true },
+        { message_id: "local", preview: "Local control" },
+        { message_id: "empty", preview: "Blank name", actor_display_name: "  " },
+      ]
+    })], {
+      pendingInputs: [
+        { message_id: "pending", revision: 1, state: "queued", preview: "Next", presentation_class: "operator", actor_display_name: "Carol" },
+        { message_id: "system", revision: 1, state: "queued", preview: "Event", presentation_class: "system", actor_display_name: "Not an operator" },
+      ]
+    } as never);
     expect(html.match(/class="conversation-input-sender"/g)).toHaveLength(3);
     for (const name of ["Alice", "Bob", "Carol"]) expect(html).toContain(`>${name}</span>`);
     expect(html).not.toContain("Not an operator");
@@ -562,7 +631,8 @@ describe("input event presentation", () => {
   it.each(["operator", "system", "task", "timer"] as const)("renders initial %s inputs once while retaining execution progress", (source) => {
     const input = { message_id: "initial", preview: "Start work", presentation_class: source };
     const html = renderTimeline([turnSummary("dedup", 1, { presentation_class: source, inputs: [input] })], {
-      details: [{ turn_id: "dedup", detail_revision: 1, coverage: { kind: "complete" },
+      details: [{
+        turn_id: "dedup", detail_revision: 1, coverage: { kind: "complete" },
         has_more: false, next_before_cursor: null, invalidated: false, truncated: false,
         activities: [
           { kind: "operator", id: "operator:initial", key: { event_seq: 1, activity_id: "operator:initial" }, revision: 1, summary: "Start work" },
@@ -577,8 +647,10 @@ describe("input event presentation", () => {
 
   it("keeps unmatched input identity for full-message hydration without assuming a human sender", () => {
     const summary = JSON.stringify({ type: "text", text: "A long task result" }).slice(0, -5);
-    const activity: ConversationActivity = { kind: "operator", id: "operator:old-message", revision: 1,
-      key: { event_seq: 10, activity_id: "operator:old-message" }, summary };
+    const activity: ConversationActivity = {
+      kind: "operator", id: "operator:old-message", revision: 1,
+      key: { event_seq: 10, activity_id: "operator:old-message" }, summary
+    };
     const inspector = conversationActivityToInspectorActivity(activity);
     expect(inspector).toMatchObject({ id: activity.id, messageId: "old-message", kind: "event", label: "Input message" });
     expect(inspector.body).toBe("Structured event");
@@ -624,11 +696,16 @@ describe("message timestamps", () => {
 
 
 describe("task result presentation", () => {
-  const input = { message_id: "result-message", preview: "raw body", presentation_class: "task" as const,
-    task_result: { task_id: "task-secret-id", status: "completed" as const, summary: "Run verification",
-      preview: "bounded runtime output", response_message_id: null } };
+  const input = {
+    message_id: "result-message", preview: "raw body", presentation_class: "task" as const,
+    task_result: {
+      task_id: "task-secret-id", status: "completed" as const, summary: "Run verification",
+      preview: "bounded runtime output", response_message_id: null
+    }
+  };
   it("hides completed task receipts that never triggered a model turn", () => {
-    const html = renderTimeline([turnSummary("result-only", 1, { inputs: [input], presentation_class: "task",
+    const html = renderTimeline([turnSummary("result-only", 1, {
+      inputs: [input], presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, settled: true,
       result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
     })]);
@@ -636,7 +713,8 @@ describe("task result presentation", () => {
     expect(html).not.toContain("Run verification");
     expect(html).not.toContain("bounded runtime output");
     expect(html).not.toContain("task-secret-id");
-    const explicit = renderTimeline([turnSummary("explicit-model", 1, { presentation_class: "task",
+    const explicit = renderTimeline([turnSummary("explicit-model", 1, {
+      presentation_class: "task",
       inputs: [{ ...input, task_result: { ...input.task_result, runtime_only: false } }],
       execution: { kind: "terminal", outcome: "completed" }, settled: true,
       result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
@@ -644,8 +722,11 @@ describe("task result presentation", () => {
     expect(explicit).toContain('data-turn-id="explicit-model"');
   });
   it("keeps a collapsed receipt turn for explicit provenance without leaking task bodies", () => {
-    const html = renderTimeline([turnSummary("collapsed-receipt", 1, { inputs: [{ ...input,
-      task_result: { ...input.task_result, runtime_only: false } }], presentation_class: "task",
+    const html = renderTimeline([turnSummary("collapsed-receipt", 1, {
+      inputs: [{
+        ...input,
+        task_result: { ...input.task_result, runtime_only: false }
+      }], presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, settled: true,
       result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
     })]);
@@ -659,8 +740,11 @@ describe("task result presentation", () => {
     expect(html).not.toContain('class="conversation-task-result-row');
   });
   it("uses labelled icons without visible source or disclosure text", () => {
-    const html = renderTimeline([turnSummary("icon-header", 1, { inputs: [{ ...input,
-      task_result: { ...input.task_result, runtime_only: false } }], presentation_class: "task",
+    const html = renderTimeline([turnSummary("icon-header", 1, {
+      inputs: [{
+        ...input,
+        task_result: { ...input.task_result, runtime_only: false }
+      }], presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, settled: true,
       result: { kind: "none", reason: { kind: "reducer_only", reason: "done" } },
     })]);
@@ -670,8 +754,11 @@ describe("task result presentation", () => {
     expect(header).toContain('aria-label="Execution details"');
   });
   it("never compacts visible replies, prompts, steering, notices or active executions", () => {
-    const base = turnSummary("not-empty", 1, { inputs: [{ ...input,
-      task_result: { ...input.task_result, runtime_only: false } }], presentation_class: "task",
+    const base = turnSummary("not-empty", 1, {
+      inputs: [{
+        ...input,
+        task_result: { ...input.task_result, runtime_only: false }
+      }], presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, settled: true,
       result: { kind: "none", reason: { kind: "reducer_only", reason: "done" } },
     });
@@ -690,7 +777,8 @@ describe("task result presentation", () => {
     }
   });
   it("shows the model response once and folds its task source into the process", () => {
-    const html = renderTimeline([turnSummary("response", 1, { inputs: [input], presentation_class: "task",
+    const html = renderTimeline([turnSummary("response", 1, {
+      inputs: [input], presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, brief_ids: ["brief-1"],
       result: { kind: "available" }, settled: true,
     })]);
@@ -701,23 +789,32 @@ describe("task result presentation", () => {
   });
   it("uses durable runtime provenance to hide legacy briefs and preserves explicit model replies", () => {
     const legacyBrief = { ...brief, text: "Legacy synthetic runtime result", related_message_id: input.message_id, related_task_id: input.task_result.task_id };
-    const runtimeTurn = turnSummary("legacy-runtime", 1, { inputs: [{ ...input,
-      task_result: { ...input.task_result, runtime_only: true } }], presentation_class: "task",
+    const runtimeTurn = turnSummary("legacy-runtime", 1, {
+      inputs: [{
+        ...input,
+        task_result: { ...input.task_result, runtime_only: true }
+      }], presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, brief_ids: ["brief-1"],
-      result: { kind: "available" }, settled: true });
+      result: { kind: "available" }, settled: true
+    });
     const html = renderTimeline([runtimeTurn], { brief: legacyBrief });
     expect(html).not.toContain("bounded runtime output");
     expect(html).not.toContain("Legacy synthetic runtime result");
     expect(html).not.toContain("conversation-response");
-    const modelTurn = { ...runtimeTurn, inputs: [{ ...input,
-      task_result: { ...input.task_result, runtime_only: false } }] };
+    const modelTurn = {
+      ...runtimeTurn, inputs: [{
+        ...input,
+        task_result: { ...input.task_result, runtime_only: false }
+      }]
+    };
     const modelHtml = renderTimeline([modelTurn], { brief: legacyBrief });
     expect(modelHtml).toContain("Legacy synthetic runtime result");
     expect(modelHtml).not.toContain("bounded runtime output");
   });
   it("shows all terminal states and hides the reference signal body", () => {
     for (const status of ["failed", "cancelled", "interrupted"] as const) {
-      const html = renderTimeline([turnSummary(status, 1, { inputs: [{ ...input, task_result: { ...input.task_result, status } }],
+      const html = renderTimeline([turnSummary(status, 1, {
+        inputs: [{ ...input, task_result: { ...input.task_result, status } }],
         presentation_class: "task",
         execution: { kind: "terminal", outcome: "completed" }, settled: true,
         result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
@@ -726,8 +823,12 @@ describe("task result presentation", () => {
       expect(html).not.toContain("conversation-task-summary");
       expect(html).not.toContain("bounded runtime output");
     }
-    const html = renderTimeline([turnSummary("reference", 1, { inputs: [{ ...input, task_result: {
-      ...input.task_result, response_message_id: "reply-message", preview: "internal reference text" } }],
+    const html = renderTimeline([turnSummary("reference", 1, {
+      inputs: [{
+        ...input, task_result: {
+          ...input.task_result, response_message_id: "reply-message", preview: "internal reference text"
+        }
+      }],
       presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, settled: true,
       result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },

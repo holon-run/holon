@@ -361,6 +361,7 @@ impl SlimAgentDto {
             waiting_reason: self.closure.waiting_reason,
             model,
             active_workspace_entry,
+            attached_workspaces: Vec::new(),
         }
         .into_agent_summary_placeholder();
         // This is an internal TUI projection, not a full domain roundtrip. Fields omitted from

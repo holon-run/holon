@@ -26,6 +26,7 @@ interface TemplatesPageProps {
   onInstallTemplate: (githubUrl: string) => Promise<boolean>;
   onRemoveTemplate: (templateId: string) => Promise<boolean>;
   onOpenTemplate: (catalogId: string) => void;
+  onCreateAgent?: (template: string) => void;
   onAddRemoteSource: (sourceId: string, url: string, gitRef?: string) => Promise<boolean>;
   onRemoveRemoteSource: (sourceId: string) => Promise<boolean>;
   onDismissDiagnostics: () => void;
@@ -54,6 +55,7 @@ export function TemplatesPage({
   onInstallTemplate,
   onRemoveTemplate,
   onOpenTemplate,
+  onCreateAgent,
   onAddRemoteSource,
   onRemoveRemoteSource,
   onDismissDiagnostics,
@@ -239,6 +241,7 @@ export function TemplatesPage({
                   template={template}
                   loading={loading}
                   onOpen={onOpenTemplate}
+                  onCreateAgent={onCreateAgent}
                   onRemove={onRemoveTemplate}
                 />
               ))}
@@ -462,11 +465,13 @@ function TemplateCard({
   template,
   loading,
   onOpen,
+  onCreateAgent,
   onRemove,
 }: {
   template: AgentTemplateCatalogEntry;
   loading: boolean;
   onOpen: (catalogId: string) => void;
+  onCreateAgent?: (template: string) => void;
   onRemove: (templateId: string) => Promise<boolean>;
 }) {
   const { t } = useTranslation();
@@ -476,7 +481,7 @@ function TemplateCard({
       <button className="template-card-open" type="button" onClick={() => onOpen(template.catalogId)}>
         <span className="template-card-title">
           <strong>{template.name}</strong>
-          <StatusBadge className="state-chip" kind="connection" value={template.source} />
+          <StatusBadge className="state-chip" kind="connection" value={template.source} showLabel />
         </span>
         <span className="template-card-description">{template.description || template.template}</span>
         <span className="template-card-meta">
@@ -485,13 +490,30 @@ function TemplateCard({
           {template.sourceId ? <span>{template.sourceId}</span> : null}
         </span>
       </button>
-      <div className="template-card-actions">
-        {canRemove ? (
-          <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void onRemove(template.templateId)}>
-            {t("templatesPage.remove")}
-          </Button>
-        ) : null}
-      </div>
+      {onCreateAgent || canRemove ? (
+        <div className="template-card-actions">
+          {onCreateAgent ? (
+            <Button type="button" size="sm" variant="accent" disabled={loading} onClick={() => onCreateAgent(template.template)}>
+              {t("templatesPage.createAgent")}
+            </Button>
+          ) : null}
+          {canRemove ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={loading}
+              onClick={() => {
+                if (typeof window === "undefined" || window.confirm(t("templatesPage.removeConfirm", { name: template.name }))) {
+                  void onRemove(template.templateId);
+                }
+              }}
+            >
+              {t("templatesPage.remove")}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </li>
   );
 }

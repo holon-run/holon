@@ -90,6 +90,7 @@ function statusIcon(kind: StatusKind, value: string): IconResult {
     if (value === "archived") return { Icon: CirclePause, spin: false };
   }
   if (kind === "stream") {
+    if (value === "idle") return { Icon: CircleCheck, spin: false };
     if (value === "streaming" || value === "live") return { Icon: Radio, spin: false };
     if (value === "error") return { Icon: TriangleAlert, spin: false };
     if (value === "stale") return { Icon: Clock, spin: false };

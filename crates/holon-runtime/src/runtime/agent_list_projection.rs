@@ -25,8 +25,8 @@ use crate::{
     storage::derive_agent_posture_from_state,
     types::{
         ActiveWorkspaceEntry, AgentIdentityRecord, AgentIdentityView, AgentListEntry,
-        AgentPostureProjection, AgentRegistryStatus, AgentState, AgentStatus, AgentVisibility,
-        WaitingReason,
+        AgentListWorkspaceEntry, AgentPostureProjection, AgentRegistryStatus, AgentState,
+        AgentStatus, AgentVisibility, WaitingReason,
     },
     work_item_scheduling::{compare_queue_work_rank, queue_work_rank, QueueWorkRank},
 };
@@ -79,6 +79,7 @@ pub(crate) struct AgentListProjection {
     current_run_id: Option<String>,
     waiting_reason: Option<WaitingReason>,
     workspace: Option<ActiveWorkspaceEntry>,
+    attached_workspaces: Vec<AgentListWorkspaceEntry>,
     model_override: Option<ModelRouteRef>,
     model_override_reasoning_effort: Option<String>,
     model_override_service_tier: Option<ServiceTier>,
@@ -94,6 +95,7 @@ impl AgentListProjection {
     fn new(
         identity: &AgentIdentityRecord,
         state: &AgentState,
+        attached_workspaces: Vec<AgentListWorkspaceEntry>,
         loaded_posture: AgentPostureProjection,
         cold_posture: AgentPostureProjection,
         ledger: &InputEvidenceBudgetLedger,
@@ -110,6 +112,7 @@ impl AgentListProjection {
                     &state.status,
                     &state.current_run_id,
                     &state.active_workspace_entry,
+                    &attached_workspaces,
                     AgentModelSummaryFields::from(state),
                     &loaded_posture,
                     &cold_posture,
@@ -127,6 +130,7 @@ impl AgentListProjection {
                 .active_workspace_entry
                 .clone()
                 .map(ActiveWorkspaceEntry::without_projection_metadata),
+            attached_workspaces,
             model_override: state.model_override.clone(),
             model_override_reasoning_effort: state.model_override_reasoning_effort.clone(),
             model_override_service_tier: state.model_override_service_tier,
@@ -155,6 +159,7 @@ impl AgentListProjection {
             &self.status,
             &self.current_run_id,
             &self.workspace,
+            &self.attached_workspaces,
             posture,
         ))?;
         let model = try_agent_model_list_summary_for_fields(
@@ -181,6 +186,7 @@ impl AgentListProjection {
             waiting_reason: self.waiting_reason,
             model,
             active_workspace_entry: self.workspace.clone(),
+            attached_workspaces: self.attached_workspaces.clone(),
         })
     }
 }
@@ -257,7 +263,15 @@ impl AgentListProjectionSource {
                 let (loaded, cold) = read_work_postures(tx, &state, queue)?;
                 Ok((state, loaded, cold))
             })?;
-            AgentListProjection::new(identity, &state, loaded, cold, &self.ledger)
+            let attached_workspaces = self.db.agent_secondary_workspace_list_entries(&state);
+            AgentListProjection::new(
+                identity,
+                &state,
+                attached_workspaces,
+                loaded,
+                cold,
+                &self.ledger,
+            )
         })
     }
 
@@ -271,6 +285,7 @@ impl AgentListProjectionSource {
     ) -> Result<Option<AgentListProjection>> {
         ResourceReadMaterial::without_current(|| {
             ensure!(state.id == identity.agent_id, "list State scope differs");
+            let attached_workspaces = self.db.agent_secondary_workspace_list_entries(state);
             let posture = derive_agent_posture_from_state(
                 state,
                 queue.is_some_and(|queue| queue.has_queued),
@@ -279,6 +294,7 @@ impl AgentListProjectionSource {
                 return AgentListProjection::new(
                     identity,
                     state,
+                    attached_workspaces,
                     posture.clone(),
                     posture,
                     &self.ledger,
@@ -330,7 +346,15 @@ impl AgentListProjectionSource {
                 };
                 Ok((loaded, cold))
             })?;
-            AgentListProjection::new(identity, state, loaded, cold, &self.ledger).map(Some)
+            AgentListProjection::new(
+                identity,
+                state,
+                attached_workspaces,
+                loaded,
+                cold,
+                &self.ledger,
+            )
+            .map(Some)
         })
     }
 }

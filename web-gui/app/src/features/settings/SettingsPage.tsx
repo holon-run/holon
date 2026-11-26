@@ -18,6 +18,7 @@ import { useServeStatus } from "./useServeStatus";
 import { PairingCard } from "./PairingCard";
 import { readSettingsTab, rememberSettingsTab, type SettingsTabKey } from "./settings-preferences";
 import { TailscaleServeCard } from "./TailscaleServeCard";
+import { SystemNotificationSettingsCard } from "../notifications/NotificationCenter";
 import {
   clearRuntimeTraceRecords,
   getRuntimeTraceRecords,
@@ -1103,6 +1104,9 @@ export function SettingsPage({
                 </p>
               ) : null}
             </Card>
+
+            {/* ── System notifications ── */}
+            <SystemNotificationSettingsCard />
           </div>
         ) : null}
 

@@ -8085,6 +8085,10 @@ impl RuntimeHost {
             None => crate::types::AgentPostureProjection::default(),
         };
         let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
+        let attached_workspaces = self
+            .inner
+            .runtime_db
+            .agent_secondary_workspace_list_entries(&agent);
         AgentListEntry {
             observation: None,
             identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
@@ -8098,6 +8102,7 @@ impl RuntimeHost {
             active_workspace_entry: agent
                 .active_workspace_entry
                 .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
+            attached_workspaces,
         }
     }
 
@@ -8142,7 +8147,11 @@ impl RuntimeHost {
             }
         };
         let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
-        crate::diagnostics::resource_io::admit_cloned_value(identity)?;
+        let attached_workspaces = self
+            .inner
+            .runtime_db
+            .agent_secondary_workspace_list_entries(&agent);
+        crate::diagnostics::resource_io::admit_cloned_value(&(identity, &attached_workspaces))?;
         Ok(AgentListEntry {
             observation: None,
             identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
@@ -8159,6 +8168,7 @@ impl RuntimeHost {
             active_workspace_entry: agent
                 .active_workspace_entry
                 .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
+            attached_workspaces,
         })
     }
 
@@ -8503,6 +8513,7 @@ impl RuntimeHost {
         let model = crate::runtime::try_agent_model_list_summary_for_catalog(catalog, &agent)?;
         let scheduling_posture = read_models.agent_posture_for_snapshot(&agent)?;
         let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
+        let attached_workspaces = db.agent_secondary_workspace_list_entries(&agent);
         Ok(AgentListEntry {
             observation: None,
             identity: AgentIdentityView::from_owned_record(
@@ -8522,6 +8533,7 @@ impl RuntimeHost {
             active_workspace_entry: agent
                 .active_workspace_entry
                 .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
+            attached_workspaces,
         })
     }
 

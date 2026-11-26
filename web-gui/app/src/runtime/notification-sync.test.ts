@@ -176,4 +176,47 @@ describe("notification synchronization", () => {
     await advance(20_000);
     expect(snapshot()).toMatchObject({ status: "ready", recent: [item("recovered")], toasts: [] });
   });
+
+  it("manually ignores pending notifications and prunes resolved IDs on later reads", async () => {
+    let persisted = new Set<string>();
+    let state: NotificationSnapshot = emptyNotifications;
+    const waitA = item("wait-a", "agent-a", "operator_input_required");
+    const waitB = item("wait-b", "agent-b", "operator_input_required");
+    const waitC = item("wait-c", "agent-c", "operator_input_required");
+    const load = vi.fn(async () => lists([], [waitA, waitB, waitC]));
+    const sync = createNotificationSync({
+      load,
+      isHidden: () => false,
+      isViewing: () => false,
+      publish: (next) => { state = next; },
+      readIgnoredPendingIds: () => persisted,
+      writeIgnoredPendingIds: (ids) => { persisted = new Set(ids); },
+    });
+    sync.start();
+    sync.connected();
+    await advance();
+    expect(state.pending).toEqual([waitA, waitB, waitC]);
+
+    sync.ignorePending("wait-a");
+    expect(state.pending).toEqual([waitB, waitC]);
+    expect(Array.from(persisted)).toEqual(["wait-a"]);
+
+    // Subsequent server reads keep wait-a hidden while still active on server.
+    sync.hint();
+    await advance();
+    expect(state.pending).toEqual([waitB, waitC]);
+
+    // Ignoring all remaining pending items clears pending immediately.
+    sync.ignoreAllPending();
+    expect(state.pending).toEqual([]);
+    expect(persisted.has("wait-b")).toBe(true);
+    expect(persisted.has("wait-c")).toBe(true);
+
+    // Once wait-a and wait-b resolve on server, stored ignored IDs are pruned.
+    load.mockResolvedValueOnce(lists([], [waitC]));
+    sync.hint();
+    await advance();
+    expect(state.pending).toEqual([]);
+    expect(Array.from(persisted)).toEqual(["wait-c"]);
+  });
 });

@@ -108,7 +108,7 @@ export function SearchPage({
               <option value="all">{t("searchPage.allAgents")}</option>
               {agentOptions.map((agent) => (
                 <option key={agent.id} value={agent.id}>
-                  {agent.id}
+                  {agent.name && agent.name !== agent.id ? `${agent.name} (${agent.id})` : agent.id}
                 </option>
               ))}
             </select>

@@ -28,6 +28,7 @@ import run.holon.client.wire.generated.models.AgentIdentityView
 import run.holon.client.wire.generated.models.AgentLifecycleHint
 import run.holon.client.wire.generated.models.AgentListModelSummary
 import run.holon.client.wire.generated.models.AgentListObservation
+import run.holon.client.wire.generated.models.AgentListWorkspaceEntry
 import run.holon.client.wire.generated.models.AgentPostureProjection
 import run.holon.client.wire.generated.models.AgentStatus
 import run.holon.client.wire.generated.models.WaitingReason
@@ -43,6 +44,7 @@ import kotlinx.serialization.Contextual
  * @param model
  * @param status
  * @param activeWorkspaceEntry
+ * @param attachedWorkspaces
  * @param currentRunId
  * @param lifecycle
  * @param observation
@@ -65,6 +67,9 @@ data class AgentListEntry (
 
     @SerialName(value = "active_workspace_entry")
     val activeWorkspaceEntry: ActiveWorkspaceEntry? = null,
+
+    @SerialName(value = "attached_workspaces")
+    val attachedWorkspaces: kotlin.collections.List<AgentListWorkspaceEntry>? = null,
 
     @SerialName(value = "current_run_id")
     val currentRunId: kotlin.String? = null,

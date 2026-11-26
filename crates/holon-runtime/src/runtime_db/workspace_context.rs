@@ -68,6 +68,27 @@ impl RuntimeDb {
         })
     }
 
+    pub fn agent_secondary_workspace_list_entries(
+        &self,
+        agent: &crate::types::AgentState,
+    ) -> Vec<crate::types::AgentListWorkspaceEntry> {
+        if agent.attached_workspaces.is_empty() {
+            return Vec::new();
+        }
+        let active_id = agent
+            .active_workspace_entry
+            .as_ref()
+            .map(|entry| entry.workspace_id.as_str());
+        let Ok(entries) = self.agent_workspace_registry_entries(agent) else {
+            return Vec::new();
+        };
+        entries
+            .into_iter()
+            .filter(|entry| Some(entry.workspace_id.as_str()) != active_id)
+            .map(crate::types::AgentListWorkspaceEntry::from)
+            .collect()
+    }
+
     #[cfg(feature = "http-test-support")]
     pub fn check_workspace_context_for_test(&self) -> Result<()> {
         self.with_workspace_context(|_| Ok(()))

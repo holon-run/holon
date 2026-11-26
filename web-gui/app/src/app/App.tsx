@@ -6,10 +6,11 @@ import { BLANK_AGENT_TEMPLATE, canSubmitCreateAgent, resolveCreateAgentTemplate 
 import { AgentCreationError, AgentCreationStatus } from "../features/agent/AgentCreationFeedback";
 import { useCopyText } from "../components/ClipboardProvider";
 import { NotificationCenter } from "../features/notifications/NotificationCenter";
+import { runtimeNotificationSync, useRuntimeNotifications } from "../runtime/runtime-notifications";
 import { clearConversationCaches } from "../runtime/conversation-cache-lifecycle";
 import { useI18nSettings } from "../i18n";
 import { initialResponseLanguage } from "../runtime/initial-language";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
@@ -23,9 +24,11 @@ import {
   LoaderCircle,
   LogOut,
   Menu,
+  PanelRight,
   RefreshCw,
   Search as SearchIcon,
   Settings as SettingsIcon,
+  X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -46,7 +49,12 @@ import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { RightSidePanel } from "../features/right-panel/RightSidePanel";
 import { AgentOverviewPlaceholder } from "../features/right-panel/AgentOverviewPlaceholder";
 import { usePanelLayout } from "../features/right-panel/usePanelLayout";
-import { NAV_WIDTH } from "../features/right-panel/panel-layout";
+import { NAV_WIDTH, PANEL_DEFAULT, panelLayout as computePanelLayout } from "../features/right-panel/panel-layout";
+import {
+  ALL_WORKSPACES_FILTER,
+  agentMatchesWorkspaceFilter,
+  buildWorkspaceFilterOptions,
+} from "../lib/agent-workspaces";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
@@ -73,12 +81,15 @@ import type { AgentSummary, RouteKey, RuntimeConnection } from "../runtime/types
 import { truncateToWidth } from "../lib/utils";
 import { isPlainLeftClick, pathForRoute, pushBrowserRoute, replaceBrowserRoute, routeFromLocation, searchQueryForLocation } from "./routes";
 
-const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }> = [
-  { key: "dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
-  { key: "search", labelKey: "nav.search", icon: SearchIcon },
-  { key: "skills", labelKey: "nav.skills", icon: Boxes },
-  { key: "templates", labelKey: "nav.templates", icon: LayoutTemplate },
-  { key: "settings", labelKey: "nav.settings", icon: SettingsIcon },
+const primaryGlobalRoutes: Array<{ key: RouteKey; activeRoutes: RouteKey[]; labelKey: string; icon: LucideIcon }> = [
+  { key: "dashboard", activeRoutes: ["dashboard"], labelKey: "nav.dashboard", icon: LayoutDashboard },
+  { key: "search", activeRoutes: ["search"], labelKey: "nav.search", icon: SearchIcon },
+];
+
+const secondaryGlobalRoutes: Array<{ key: RouteKey; activeRoutes: RouteKey[]; labelKey: string; icon: LucideIcon }> = [
+  { key: "skills", activeRoutes: ["skills", "skillDetail"], labelKey: "nav.skills", icon: Boxes },
+  { key: "templates", activeRoutes: ["templates", "templateDetail"], labelKey: "nav.templates", icon: LayoutTemplate },
+  { key: "settings", activeRoutes: ["settings"], labelKey: "nav.settings", icon: SettingsIcon },
 ];
 
 const APP_WINDOW_TITLE = "Holon";
@@ -111,12 +122,15 @@ export function App() {
   const [setupTarget, setSetupTarget] = useState<{ action: string; provider: string | null }>();
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [createAgentId, setCreateAgentId] = useState("");
+  const [createAgentName, setCreateAgentName] = useState("");
   const [createAgentTemplate, setCreateAgentTemplate] = useState("");
   const [createAgentError, setCreateAgentError] = useState<AgentCreationResult>();
   const [createAgentBusy, setCreateAgentBusy] = useState(false);
   const createAgentSubmitting = useRef(false);
   const [agentFilter, setAgentFilter] = useState("");
+  const [sidebarWorkspaceFilter, setSidebarWorkspaceFilter] = useState(ALL_WORKSPACES_FILTER);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const agentListRef = useRef<HTMLDivElement>(null);
   const route = useRuntimeStore((state) => state.route);
   const navigationRequestId = useRef(0);
   const searchRouteQuery = useRef<Record<string, string | undefined>>({});
@@ -135,7 +149,8 @@ export function App() {
   const rightPanelMode = useRuntimeStore((state) => state.rightPanelMode);
   const toggleRightPanelExpanded = useRuntimeStore((state) => state.toggleRightPanelExpanded);
   const navPreference = useRuntimeStore((state) => state.navCollapsed);
-  const panelLayout = usePanelLayout(rightPanelOpen, rightPanelMode === "expanded", navPreference);
+  const effectiveRightPanelOpen = route === "agent" && rightPanelOpen;
+  const panelLayout = usePanelLayout(effectiveRightPanelOpen, rightPanelMode === "expanded", navPreference);
   const navCollapsed = panelLayout.navCollapsed;
   const setRoute = useRuntimeStore((state) => state.setRoute);
   const openAgent = useRuntimeStore((state) => state.openAgent);
@@ -340,7 +355,22 @@ export function App() {
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
   const agentStateIsCurrent = !bootstrap.connection.error && discovery.freshness === "fresh";
-  const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent, t, agentStateIsCurrent) : undefined;
+  const isInitialBootstrapping = loading && bootstrap.agents.length === 0 && !bootstrap.connection.error;
+  const visibleAgents = bootstrap.agents.filter((a) => a.lifecycle.toLowerCase() !== "deleting");
+  const pendingNotifications = useRuntimeNotifications((state) => state.pending);
+  const pendingNotificationsByAgentId = useMemo(() => {
+    const map = new Map<string, typeof pendingNotifications>();
+    for (const item of pendingNotifications) {
+      const list = map.get(item.target.agent_id);
+      if (list) list.push(item);
+      else map.set(item.target.agent_id, [item]);
+    }
+    return map;
+  }, [pendingNotifications]);
+  const activeAgentPendingReminders = activeAgent ? (pendingNotificationsByAgentId.get(activeAgent.id) ?? []) : [];
+  const selectedAgentStatus = route === "agent" && activeAgent
+    ? deriveAgentDisplayStatus(activeAgent, t, agentStateIsCurrent)
+    : undefined;
   const selectedAgentSourceStatus =
     agentDetailLoading && !selectedAgentDetail
       ? "syncing"
@@ -378,8 +408,83 @@ export function App() {
         </div>
       </div>
     ) : null;
-  const isInitialBootstrapping = loading && bootstrap.agents.length === 0 && !bootstrap.connection.error;
-  const visibleAgents = bootstrap.agents.filter((a) => a.lifecycle.toLowerCase() !== "deleting");
+  const effectiveAttentionAgentCount = pendingNotificationsByAgentId.size;
+  const effectiveAttentionCount = pendingNotifications.length;
+  const dashboardMetrics = useMemo(
+    () =>
+      bootstrap.metrics.map((metric) =>
+        metric.label === "dashboard.needsAttention"
+          ? {
+              ...metric,
+              value: String(effectiveAttentionAgentCount),
+              tone: effectiveAttentionAgentCount > 0 ? ("attention" as const) : ("muted" as const),
+            }
+          : metric,
+      ),
+    [bootstrap.metrics, effectiveAttentionAgentCount],
+  );
+  const unreadByAgentId = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [id, entry] of Object.entries(briefReadStateByAgentId)) {
+      if (entry && entry.unread_count > 0) out[id] = entry.unread_count;
+    }
+    return out;
+  }, [briefReadStateByAgentId]);
+
+  const sidebarWorkspaceOptions = useMemo(
+    () => buildWorkspaceFilterOptions(visibleAgents, t("app.standaloneWorkspace")),
+    [t, visibleAgents],
+  );
+
+  useEffect(() => {
+    if (sidebarWorkspaceFilter === ALL_WORKSPACES_FILTER) return;
+    if (!sidebarWorkspaceOptions.some((opt) => opt.key === sidebarWorkspaceFilter)) {
+      setSidebarWorkspaceFilter(ALL_WORKSPACES_FILTER);
+    }
+  }, [sidebarWorkspaceFilter, sidebarWorkspaceOptions]);
+
+  // Keep `visibleAgents`'s synchronous `rosterActivityByAgentId` ordering (stopped last ->
+  // recent operator/brief activity -> ID) so async `/notifications/pending` and
+  // `/brief-read-states` updates never shuffle the sidebar list under the user's cursor.
+  const sortedSidebarAgents = useMemo(() => {
+    const normalizedFilter = agentFilter.trim().toLowerCase();
+    return visibleAgents.filter((agent) => {
+      if (navCollapsed) return true;
+      if (!agentMatchesWorkspaceFilter(agent, sidebarWorkspaceFilter)) return false;
+      if (!normalizedFilter) return true;
+      return `${agent.name ?? ""} ${agent.id} ${agent.workspaceSummary?.name ?? agent.workspace}`
+        .toLowerCase()
+        .includes(normalizedFilter);
+    });
+  }, [agentFilter, navCollapsed, sidebarWorkspaceFilter, visibleAgents]);
+
+  // On narrow viewports where the right panel covers the conversation as an
+  // overlay, start in the conversation rather than behind an inert sheet.
+  useEffect(() => {
+    if (computePanelLayout(window.innerWidth, true, false, false, PANEL_DEFAULT).full) {
+      setRightPanelOpen(false);
+    }
+  }, [setRightPanelOpen]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        if (showCreateAgentModal || showOnboardingModal) return;
+        event.preventDefault();
+        setMobileNavOpen(false);
+        setRoute("search");
+        pushBrowserRoute("search", selectedAgentId, undefined, searchRouteQuery.current);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedAgentId, setRoute, showCreateAgentModal, showOnboardingModal]);
+
+  useEffect(() => {
+    if (route !== "agent" || !selectedAgentId) return;
+    const selectedRow = agentListRef.current?.querySelector<HTMLElement>(".agent-row.is-selected");
+    selectedRow?.scrollIntoView({ block: "nearest" });
+  }, [selectedAgentId, route]);
 
   useLayoutEffect(() => {
     const applyBrowserRoute = () => {
@@ -501,6 +606,9 @@ export function App() {
   function navigateAgent(agentId: string, sourceRef?: string, context?: { incarnation?: number; fromAgentId?: string }) {
     if (route === "search") searchRouteQuery.current = searchQueryForLocation(window.location);
     setMobileNavOpen(false);
+    if (computePanelLayout(window.innerWidth, true, false, navPreference, PANEL_DEFAULT).full) {
+      setRightPanelOpen(false);
+    }
     setAgentNavigation(sourceRef ? {
       agentId,
       navigation: { requestId: ++navigationRequestId.current, sourceRef, runtimeId: discovery.identity?.runtimeId },
@@ -513,6 +621,15 @@ export function App() {
       from: context?.fromAgentId,
     };
     pushBrowserRoute("agent", agentId, undefined, query);
+  }
+
+  function openNotificationTarget(target: { agent_id: string; work_item_id?: string | null }) {
+    navigateAgent(target.agent_id);
+    if (target.work_item_id) {
+      const id = target.work_item_id;
+      const work = useRuntimeStore.getState().sessionsByAgentId[target.agent_id]?.workItemDetailsById[id]?.workItem;
+      showWorkItemDetail(target.agent_id, work ?? { id, objective: id, state: "unknown" });
+    }
   }
 
   async function handleCreateAgentSubmit(): Promise<void> {
@@ -529,9 +646,10 @@ export function App() {
     setCreateAgentBusy(true);
     setCreateAgentError(undefined);
     try {
-      const result = await createTemplateAgent(id, tmpl);
+      const result = await createTemplateAgent(id, tmpl, createAgentName.trim() || undefined);
       if (result.kind === "accepted") {
         setCreateAgentId("");
+        setCreateAgentName("");
         setCreateAgentTemplate("");
         setShowCreateAgentModal(false);
       } else if (result.kind !== "stale") setCreateAgentError(result);
@@ -605,10 +723,61 @@ export function App() {
 
   if (route === "files") return <FilePreviewPage />;
 
+  const renderSidebarAgentEntry = (agent: AgentSummary) => {
+    const status = deriveAgentDisplayStatus(agent, t, agentStateIsCurrent);
+    const workSummary = agent.currentWork?.objective;
+    const secondaryText = workSummary || (agent.name && agent.name !== agent.id ? agent.id : undefined);
+    const unreadView = briefReadStateByAgentId[agent.id]
+      ? { mode: "exact" as const, count: briefReadStateByAgentId[agent.id].unread_count }
+      : null;
+    const isSelected = route === "agent" && selectedAgentId === agent.id;
+
+    return (
+      <div className="agent-list-entry" key={agent.id}>
+        <button
+          className={`agent-row ${isSelected ? "is-selected" : ""} ${agent.lifecycle}`}
+          title={`${agent.name ? `${agent.name} (${agent.id})` : agent.id} · ${agent.focusSummary} · ${status.title}${workSummary ? ` · ${workSummary}` : ""}`}
+          type="button"
+          onClick={() => navigateAgent(agent.id)}
+        >
+          <AgentAvatar
+            agentId={agent.id}
+            expression={deriveAgentAvatarExpression(agent, agentStateIsCurrent)}
+          />
+          <span className="agent-row-main">
+            <span className="agent-row-title">
+              <strong>{agent.name ?? agent.id}</strong>
+            </span>
+            {secondaryText ? (
+              <span className="agent-row-meta" title={secondaryText}>
+                <span>{workSummary ? truncateToWidth(workSummary, AGENT_ROW_SUMMARY_MAX_WIDTH) : secondaryText}</span>
+              </span>
+            ) : null}
+          </span>
+          <span className="agent-row-indicators">
+            {unreadView && unreadView.count > 0 ? (
+              <span
+                className="agent-row-unread"
+                aria-label={unreadTitle(unreadView.count, t)}
+                title={unreadTitle(unreadView.count, t)}
+              >
+                {formatUnreadBadge(unreadView.count, false)}
+              </span>
+            ) : null}
+            {status.kind !== "ready" ? (
+              <AgentStatusIndicator className="agent-row-status-dot" status={status} />
+            ) : null}
+          </span>
+        </button>
+        <AgentIdCopyButton agentId={agent.id} />
+      </div>
+    );
+  };
+
   return (
     <div
       className="app-shell"
-      data-panel={rightPanelOpen ? "open" : "closed"}
+      data-panel={effectiveRightPanelOpen ? "open" : "closed"}
       data-panel-mode={rightPanelMode}
       data-nav-collapsed={navCollapsed}
       data-panel-full={panelLayout.full}
@@ -662,26 +831,34 @@ export function App() {
           </button>
         </div>
 
-        <nav className="global-nav" aria-label="Global navigation">
-          {globalRoutes.map((item) => (
-            <button
-              className={route === item.key ? "is-active" : ""}
-              key={item.key}
-              type="button"
-              aria-label={t(item.labelKey)}
-              title={t(item.labelKey)}
-              onClick={() => navigateRoute(item.key)}
-            >
-              <item.icon size={16} />
-              <strong>{t(item.labelKey)}</strong>
-            </button>
-          ))}
+        <nav className="global-nav primary-global-nav" aria-label="Global navigation">
+          {primaryGlobalRoutes.map((item) => {
+            const isActive = item.activeRoutes.includes(route);
+            return (
+              <button
+                className={isActive ? "is-active" : ""}
+                key={item.key}
+                type="button"
+                aria-label={t(item.labelKey)}
+                title={t(item.labelKey)}
+                onClick={() => navigateRoute(item.key)}
+              >
+                <item.icon size={16} />
+                <strong>{t(item.labelKey)}</strong>
+                {item.key === "dashboard" && effectiveAttentionCount > 0 ? (
+                  <span className="nav-attention-badge">{effectiveAttentionCount}</span>
+                ) : item.key === "search" ? (
+                  <kbd className="nav-shortcut" aria-hidden="true">⌘K</kbd>
+                ) : null}
+              </button>
+            );
+          })}
         </nav>
 
         <section className="side-section agent-switcher" aria-label={t("app.agents")}>
           <div className="side-heading">
             <span>{t("app.agents")}</span>
-            <strong>{bootstrap.agents.length}</strong>
+            <strong>{visibleAgents.length}</strong>
             <button
               className="side-heading-add"
               type="button"
@@ -697,8 +874,31 @@ export function App() {
               +
             </button>
           </div>
-          <input className="agent-filter" aria-label={t("rightPanel.filterAgents")} placeholder={t("rightPanel.filterAgents")} value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} />
-          <div className="agent-list">
+          <div className="agent-sidebar-filters">
+            <input
+              className="agent-filter"
+              aria-label={t("rightPanel.filterAgents")}
+              placeholder={t("rightPanel.filterAgents")}
+              value={agentFilter}
+              onChange={(event) => setAgentFilter(event.target.value)}
+            />
+            {sidebarWorkspaceOptions.length > 1 ? (
+              <select
+                className="agent-workspace-filter"
+                aria-label={t("app.filterByWorkspace")}
+                value={sidebarWorkspaceFilter}
+                onChange={(event) => setSidebarWorkspaceFilter(event.target.value)}
+              >
+                <option value={ALL_WORKSPACES_FILTER}>{t("app.allWorkspaces")}</option>
+                {sidebarWorkspaceOptions.map((opt) => (
+                  <option key={opt.key} value={opt.key}>
+                    {opt.label} ({opt.count})
+                  </option>
+                ))}
+              </select>
+            ) : null}
+          </div>
+          <div className="agent-list" ref={agentListRef}>
             {bootstrap.agents.length === 0 ? (
               <div className="agent-list-state" role="status">
                 <strong>{loading ? t("status.syncing") : t("dashboard.noAgentsTitle")}</strong>
@@ -713,59 +913,35 @@ export function App() {
                   </button>
                 ) : null}
               </div>
+            ) : sortedSidebarAgents.length === 0 ? (
+              <div className="agent-list-state" role="status">
+                <strong>{t("dashboard.noMatchingAgents")}</strong>
+              </div>
             ) : (
-              visibleAgents.filter((agent) => navCollapsed || `${agent.name ?? ""} ${agent.id}`.toLowerCase().includes(agentFilter.toLowerCase())).map((agent) => {
-                const status = deriveAgentDisplayStatus(agent, t, agentStateIsCurrent);
-                const workSummary = agent.currentWork?.objective;
-                const secondaryText = workSummary || (agent.name && agent.name !== agent.id ? agent.id : undefined);
-                const unreadView = briefReadStateByAgentId[agent.id]
-                  ? { mode: "exact" as const, count: briefReadStateByAgentId[agent.id].unread_count }
-                  : null;
-
-                return (
-                  <div className="agent-list-entry" key={agent.id}>
-                    <button
-                      className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
-                      title={`${agent.name ? `${agent.name} (${agent.id})` : agent.id} · ${agent.focusSummary} · ${status.title}${workSummary ? ` · ${workSummary}` : ""}`}
-                      type="button"
-                      onClick={() => navigateAgent(agent.id)}
-                    >
-                      <AgentAvatar
-                        agentId={agent.id}
-                        expression={deriveAgentAvatarExpression(agent, agentStateIsCurrent)}
-                      />
-                      <span className="agent-row-main">
-                        <span className="agent-row-title">
-                          <strong>{agent.name ?? agent.id}</strong>
-                        </span>
-                        {secondaryText ? (
-                          <span className="agent-row-meta" title={secondaryText}>
-                            <span>{workSummary ? truncateToWidth(workSummary, AGENT_ROW_SUMMARY_MAX_WIDTH) : secondaryText}</span>
-                          </span>
-                        ) : null}
-                      </span>
-                      <span className="agent-row-indicators">
-                        {unreadView && unreadView.count > 0 ? (
-                          <span
-                            className="agent-row-unread"
-                            aria-label={unreadTitle(unreadView.count, t)}
-                            title={unreadTitle(unreadView.count, t)}
-                          >
-                            {formatUnreadBadge(unreadView.count, false)}
-                          </span>
-                        ) : null}
-                        <AgentStatusIndicator className="agent-row-status-dot" status={status} />
-                      </span>
-                    </button>
-                    <AgentIdCopyButton agentId={agent.id} />
-                  </div>
-                );
-              })
+              sortedSidebarAgents.map(renderSidebarAgentEntry)
             )}
           </div>
         </section>
 
         <div className="sidebar-bottom">
+          <nav className="global-nav secondary-global-nav" aria-label={t("app.systemNav")}>
+            {secondaryGlobalRoutes.map((item) => {
+              const isActive = item.activeRoutes.includes(route);
+              return (
+                <button
+                  className={isActive ? "is-active" : ""}
+                  key={item.key}
+                  type="button"
+                  aria-label={t(item.labelKey)}
+                  title={t(item.labelKey)}
+                  onClick={() => navigateRoute(item.key)}
+                >
+                  <item.icon size={15} />
+                  <strong>{t(item.labelKey)}</strong>
+                </button>
+              );
+            })}
+          </nav>
           <ConnectionStatus connection={bootstrap.connection} loading={loading} onRetry={() => refresh()} />
         </div>
       </aside>
@@ -778,7 +954,8 @@ export function App() {
         />
       ) : null}
 
-      <main className="main-shell" inert={panelLayout.full}>
+      <main className="main-shell" inert={effectiveRightPanelOpen && panelLayout.full}>
+        <NotificationCenter onNavigate={openNotificationTarget} />
         <header className="topbar">
           <div className="topbar-primary">
             <div className="top-title">
@@ -792,6 +969,9 @@ export function App() {
                 onClick={() => setMobileNavOpen((open) => !open)}
               >
                 <Menu size={18} />
+                {effectiveAttentionCount > 0 ? (
+                  <span className="mobile-nav-attention-dot" aria-hidden="true" />
+                ) : null}
               </Button>
               {route === "agent" ? (
                 <Button
@@ -808,25 +988,54 @@ export function App() {
               <div>
                 <strong title={route === "agent" && selectedAgent?.name ? `${selectedAgent.name} (${selectedAgent.id})` : undefined}>{route === "agent" ? (selectedAgent?.name ?? selectedAgent?.id ?? selectedAgentId) || t("rightPanel.agent") : route === "search" ? t("nav.search") : route === "skills" || route === "skillDetail" ? t("nav.skills") : route === "templates" || route === "templateDetail" ? t("nav.templates") : route === "settings" ? t("nav.settings") : t("nav.dashboard")}</strong>
                 {route === "agent" && selectedAgentStatus ? (
-                  <AgentStatusIndicator className="header-status" status={selectedAgentStatus} data-tooltip-pos="bottom" />
+                  <>
+                    <AgentStatusIndicator
+                      className="header-status"
+                      status={selectedAgentStatus}
+                      showLabel={selectedAgentStatus.kind !== "ready"}
+                      data-tooltip-pos="bottom"
+                    />
+                    {activeAgent && activeAgentPendingReminders.length > 0 ? (
+                      <span className="header-pending-reminder">
+                        {activeAgentPendingReminders[0]?.target.work_item_id ? (
+                          <button
+                            type="button"
+                            className="header-pending-open"
+                            onClick={() => {
+                              const id = activeAgentPendingReminders[0]!.target.work_item_id!;
+                              const work = useRuntimeStore.getState().sessionsByAgentId[activeAgent.id]?.workItemDetailsById[id]?.workItem;
+                              showWorkItemDetail(activeAgent.id, work ?? { id, objective: id, state: "unknown" });
+                            }}
+                          >
+                            {t("dashboard.triageOpenWorkItem")}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="header-pending-ignore"
+                          aria-label={t("notifications.ignoreItem")}
+                          title={t("notifications.ignore")}
+                          onClick={() => {
+                            for (const item of activeAgentPendingReminders) {
+                              runtimeNotificationSync.ignorePending(item.id);
+                            }
+                          }}
+                        >
+                          <X size={12} aria-hidden="true" />
+                        </button>
+                      </span>
+                    ) : null}
+                  </>
                 ) : route === "dashboard" ? (
                   <span>
-                    {bootstrap.attentionCount > 0
-                      ? t("app.subtitleDashboard", { count: bootstrap.agents.length, attention: bootstrap.attentionCount })
+                    {effectiveAttentionCount > 0
+                      ? t("app.subtitleDashboard", { count: bootstrap.agents.length, attention: effectiveAttentionCount })
                       : t("app.subtitleDashboardAllClear", { count: bootstrap.agents.length })}
                   </span>
                 ) : null}
               </div>
             </div>
             <div className="top-actions">
-              <NotificationCenter onNavigate={(target) => {
-                navigateAgent(target.agent_id);
-                if (target.work_item_id) {
-                  const id = target.work_item_id;
-                  const work = useRuntimeStore.getState().sessionsByAgentId[target.agent_id]?.workItemDetailsById[id]?.workItem;
-                  showWorkItemDetail(target.agent_id, work ?? { id, objective: id, state: "unknown" });
-                }
-              }} />
               {developerDiagnosticsEnabled ? (
                 <button
                   className="runtime-trace-global-indicator"
@@ -838,16 +1047,19 @@ export function App() {
                 </button>
               ) : null}
               {agentTopControls}
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                aria-label={t("rightPanel.contextPanel")}
-                title={t("rightPanel.contextPanel")}
-                onClick={toggleRightPanel}
-              >
-                ▭
-              </Button>
+              {route === "agent" ? (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant={effectiveRightPanelOpen ? "secondary" : "ghost"}
+                  aria-label={t("rightPanel.contextPanel")}
+                  aria-pressed={effectiveRightPanelOpen}
+                  title={t("rightPanel.contextPanel")}
+                  onClick={toggleRightPanel}
+                >
+                  <PanelRight size={16} aria-hidden="true" />
+                </Button>
+              ) : null}
             </div>
           </div>
         </header>
@@ -855,7 +1067,12 @@ export function App() {
         {route === "dashboard" ? (
           <DashboardPage
             agents={visibleAgents}
-            metrics={bootstrap.metrics}
+            metrics={dashboardMetrics}
+            pendingNotifications={pendingNotifications}
+            unreadByAgentId={unreadByAgentId}
+            onIgnoreNotification={(id) => runtimeNotificationSync.ignorePending(id)}
+            onIgnoreAllNotifications={() => runtimeNotificationSync.ignoreAllPending()}
+            onOpenNotificationTarget={openNotificationTarget}
             connection={bootstrap.connection}
             discovery={discovery}
             loading={loading}
@@ -1046,6 +1263,7 @@ export function App() {
             onInstallTemplate={installTemplate}
             onRemoveTemplate={removeTemplate}
             onOpenTemplate={navigateTemplate}
+            onCreateAgent={(template) => { setCreateAgentTemplate(template); setShowCreateAgentModal(true); }}
             onAddRemoteSource={addTemplateRemoteSource}
             onRemoveRemoteSource={removeTemplateRemoteSource}
            onDismissDiagnostics={dismissTemplateDiagnostics}
@@ -1093,7 +1311,7 @@ export function App() {
         ) : null}
       </main>
 
-      {selectedAgent ? (
+      {route === "agent" && selectedAgent ? (
         <RightSidePanel
           key={`${bootstrap.connection.mode}:${bootstrap.connection.baseUrl}:${panelScopeGeneration}:${selectedAgent.id}`}
           full={panelLayout.full}
@@ -1116,7 +1334,7 @@ export function App() {
           taskDetailsById={selectedAgentSession?.taskDetailsById ?? {}}
           toolExecutionDetailsById={selectedAgentSession?.toolExecutionDetailsById ?? {}}
           view={rightPanelView?.agentId === selectedAgent.id ? rightPanelView : undefined}
-          open={rightPanelOpen}
+          open={effectiveRightPanelOpen}
           mode={rightPanelMode}
           onToggleMode={toggleRightPanelExpanded}
           onOpenWorkItemDetail={(workItem) => {
@@ -1162,7 +1380,7 @@ export function App() {
         <AgentOverviewPlaceholder
           status={agentAccess.status}
           error={agentAccess.error}
-          open={rightPanelOpen}
+          open={effectiveRightPanelOpen}
           mode={rightPanelMode}
           full={panelLayout.full}
           onClose={() => setRightPanelOpen(false)}
@@ -1214,6 +1432,15 @@ export function App() {
                   onChange={(e) => { setCreateAgentId(e.target.value); setCreateAgentError(undefined); }}
                   placeholder="new-agent-id"
                   autoFocus
+                  disabled={createAgentBusy || createAgentError?.kind === "uncertain"}
+                />
+              </label>
+              <label>
+                <span>{t("app.agentDisplayNameOptional")}</span>
+                <input
+                  value={createAgentName}
+                  onChange={(e) => setCreateAgentName(e.target.value)}
+                  placeholder={t("app.agentDisplayNamePlaceholder")}
                   disabled={createAgentBusy || createAgentError?.kind === "uncertain"}
                 />
               </label>

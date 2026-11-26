@@ -25,9 +25,14 @@ fn retry_keeps_the_original_cause_and_the_highest_priority() -> Result<()> {
     )?;
     for brief in [&first, &retry] {
         transaction.execute(
-            "INSERT INTO briefs (evidence_id, agent_id, created_at, kind, payload_json)
-             VALUES (?1, ?2, ?3, 'result', '{}')",
-            params![brief.id, brief.agent_id, brief.created_at.to_rfc3339()],
+            "INSERT INTO briefs (evidence_id, agent_id, created_at, kind, preview, payload_json)
+             VALUES (?1, ?2, ?3, 'result', ?4, '{}')",
+            params![
+                brief.id,
+                brief.agent_id,
+                brief.created_at.to_rfc3339(),
+                "Release check finished"
+            ],
         )?;
     }
     let recipient = "user";
@@ -69,5 +74,6 @@ fn retry_keeps_the_original_cause_and_the_highest_priority() -> Result<()> {
     assert_eq!(recent.len(), 1);
     assert_eq!(recent[0].id, first.id);
     assert_eq!(recent[0].kind, NotificationKind::OperatorInputRequired);
+    assert_eq!(recent[0].summary.as_deref(), Some("Release check finished"));
     Ok(())
 }

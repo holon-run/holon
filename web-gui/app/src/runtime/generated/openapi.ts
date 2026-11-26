@@ -3647,6 +3647,7 @@ export interface components {
         };
         AgentListEntry: {
             active_workspace_entry?: components["schemas"]["ActiveWorkspaceEntry"] | null;
+            attached_workspaces?: components["schemas"]["AgentListWorkspaceEntry"][];
             current_run_id?: string | null;
             identity: components["schemas"]["AgentIdentityView"];
             /**
@@ -3703,6 +3704,13 @@ export interface components {
         AgentListObservationStatus: "current" | "committing" | "reconciliation_pending" | "repair_pending" | "owner_pending";
         /** Array_of_AgentListEntry */
         AgentListResponse: components["schemas"]["AgentListEntry"][];
+        AgentListWorkspaceEntry: {
+            repo_name?: string | null;
+            workspace_alias?: string | null;
+            workspace_anchor: string;
+            workspace_id: string;
+            workspace_kind?: string | null;
+        };
         /** @enum {string} */
         AgentModelSource: "runtime_default" | "agent_override";
         AgentPostureProjection: {
@@ -4322,6 +4330,13 @@ export interface components {
                     workspace_anchor: string;
                     workspace_id: string;
                 } | null;
+                attached_workspaces?: {
+                    repo_name?: string | null;
+                    workspace_alias?: string | null;
+                    workspace_anchor: string;
+                    workspace_id: string;
+                    workspace_kind?: string | null;
+                }[];
                 current_run_id?: string | null;
                 identity: {
                     agent_id: string;
@@ -4548,6 +4563,13 @@ export interface components {
                         workspace_anchor: string;
                         workspace_id: string;
                     } | null;
+                    attached_workspaces?: {
+                        repo_name?: string | null;
+                        workspace_alias?: string | null;
+                        workspace_anchor: string;
+                        workspace_id: string;
+                        workspace_kind?: string | null;
+                    }[];
                     current_run_id?: string | null;
                     identity: {
                         agent_id: string;
@@ -6443,10 +6465,12 @@ export interface components {
                 id: string;
                 /** @enum {string} */
                 kind: "operator_first_brief" | "work_item_completed" | "operator_input_required";
+                summary?: string | null;
                 target: {
                     agent_id: string;
                     work_item_id?: string | null;
                 };
+                title?: string | null;
             }[];
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */

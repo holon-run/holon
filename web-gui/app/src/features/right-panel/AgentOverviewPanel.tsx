@@ -55,6 +55,12 @@ interface AgentOverviewPanelProps {
   onRenameAgent?: (name: string) => Promise<void>;
 }
 
+function cleanSkillDescription(description: string | undefined): string | undefined {
+  const trimmed = description?.trim();
+  if (!trimmed || /^[>|][+-]?$/.test(trimmed)) return undefined;
+  return trimmed;
+}
+
 function AgentSkillItem({
   skill,
   disabled,
@@ -73,9 +79,9 @@ function AgentSkillItem({
       <button type="button" className="agent-skill-open" onClick={() => onOpen(skill.skillId)}>
         <div className="inspector-list-head">
           <strong>{skill.name}</strong>
-          <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
+          <StatusBadge className="state-chip" kind="connection" value={skill.scope} showLabel />
         </div>
-        <small>{skill.description || skill.path || skill.name}</small>
+        <small>{cleanSkillDescription(skill.description) || skill.path || skill.name}</small>
       </button>
       {canDisable ? (
         <div className="agent-skill-row-actions">
@@ -102,9 +108,9 @@ function ManageAgentSkillItem({
     <li>
       <div className="inspector-list-head">
         <strong>{skill.name}</strong>
-        <StatusBadge className="state-chip" kind="connection" value={skill.scope} />
+        <StatusBadge className="state-chip" kind="connection" value={skill.scope} showLabel />
       </div>
-      <small>{skill.description || skill.skillId}</small>
+      <small>{cleanSkillDescription(skill.description) || skill.skillId}</small>
       <div className="agent-skill-row-actions">
         <button type="button" disabled={disabled} onClick={() => onEnable(skill.name)}>
           {t("rightPanel.enable")}
