@@ -5557,6 +5557,21 @@ impl RuntimeHost {
             Ok(abandoned) => Ok(abandoned),
             Err(error) => {
                 let Some(abandoned) = acknowledged else {
+                    if let Some(conflict) =
+                        crate::runtime_db::repositories::agent_deletion_abandon_conflict(&error)
+                    {
+                        return Err(match conflict {
+                            crate::runtime_db::repositories::AgentDeletionAbandonConflict::IdentityNotFound {
+                                agent_id,
+                            } => PublicAgentError::NotFound {
+                                agent_id: agent_id.clone(),
+                            },
+                            conflict => PublicAgentError::DeleteForbidden {
+                                agent_id: agent_id.to_string(),
+                                reason: conflict.to_string(),
+                            },
+                        });
+                    }
                     return Err(PublicAgentError::Runtime(error));
                 };
                 self.reconcile_external_mutations(&mut reservations)

@@ -1958,6 +1958,43 @@ fn ensure_agent_deletion_inner_tx(
     Ok((identity, job, true))
 }
 
+/// A caller-visible state conflict while resolving a stopped deletion.
+///
+/// Abandonment is only admitted while the identity is `Deleting` and its job is
+/// `needs_attention`. Losing that precondition between the caller's read and
+/// the write is a typed conflict (409), never an infrastructure failure, so the
+/// HTTP layer can distinguish it from a real server fault.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum AgentDeletionAbandonConflict {
+    #[error("agent {agent_id} not found")]
+    IdentityNotFound { agent_id: String },
+    #[error(
+        "agent {agent_id} is not being deleted (status {status:?}); only a stopped deletion can be resolved"
+    )]
+    NotDeleting {
+        agent_id: String,
+        status: AgentRegistryStatus,
+    },
+    #[error("agent {agent_id} has no deletion job to abandon")]
+    NoDeletionJob { agent_id: String },
+    #[error(
+        "deletion job {deletion_id} for {agent_id} cannot be abandoned from status {status:?}; only needs_attention jobs are resolvable"
+    )]
+    JobNotAbandonable {
+        agent_id: String,
+        deletion_id: String,
+        status: AgentDeletionStatus,
+    },
+}
+
+pub(crate) fn agent_deletion_abandon_conflict(
+    error: &anyhow::Error,
+) -> Option<&AgentDeletionAbandonConflict> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<AgentDeletionAbandonConflict>())
+}
+
 impl AgentDeletionRepository<'_> {
     pub fn latest_for_agent(&self, agent_id: &str) -> Result<Option<AgentDeletionJob>> {
         self.db.with_read(|connection| {
@@ -2254,13 +2291,17 @@ impl AgentDeletionRepository<'_> {
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?
-                .ok_or_else(|| anyhow!("agent {agent_id} not found"))?;
+                .ok_or_else(|| AgentDeletionAbandonConflict::IdentityNotFound {
+                    agent_id: agent_id.to_string(),
+                })?;
             let mut identity = decode_agent_identity_payload(&identity_payload)?;
-            anyhow::ensure!(
-                identity.status == AgentRegistryStatus::Deleting,
-                "agent {agent_id} is not being deleted (status {:?})",
-                identity.status
-            );
+            if identity.status != AgentRegistryStatus::Deleting {
+                return Err(AgentDeletionAbandonConflict::NotDeleting {
+                    agent_id: agent_id.to_string(),
+                    status: identity.status,
+                }
+                .into());
+            }
             let job_payload = tx
                 .query_row(
                     "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
@@ -2268,15 +2309,19 @@ impl AgentDeletionRepository<'_> {
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?
-                .ok_or_else(|| anyhow!("agent {agent_id} has no deletion job to abandon"))?;
+                .ok_or_else(|| AgentDeletionAbandonConflict::NoDeletionJob {
+                    agent_id: agent_id.to_string(),
+                })?;
             let mut job: AgentDeletionJob = serde_json::from_str(&job_payload)
                 .context("decoding deletion job for abandonment")?;
-            anyhow::ensure!(
-                job.status == AgentDeletionStatus::NeedsAttention,
-                "deletion job {} for {agent_id} cannot be abandoned from status {:?}; only needs_attention jobs are resolvable",
-                job.deletion_id,
-                job.status
-            );
+            if job.status != AgentDeletionStatus::NeedsAttention {
+                return Err(AgentDeletionAbandonConflict::JobNotAbandonable {
+                    agent_id: agent_id.to_string(),
+                    deletion_id: job.deletion_id.clone(),
+                    status: job.status,
+                }
+                .into());
+            }
 
             let completed_phases = AgentDeletionPhase::ALL
                 .iter()
