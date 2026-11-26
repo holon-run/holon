@@ -1,0 +1,38 @@
+# Holon
+
+> Open-source, local-first Rust workbench for always-on AI agents — explicit work items (`WorkItem`), event-driven wait/wake (`WaitFor`), linked `git worktree` isolation, and explicit origin/trust boundaries.
+
+ Every page on `https://holon.run` supports native Markdown negotiation (`Accept: text/markdown`) as well as direct `.md` routes. Full-text search is available at `https://holon.run/api/search?q=<query>`.
+
+## Getting Started
+
+- [Home & Overview](https://holon.run/README.md): Product overview, quickstart commands, and client downloads.
+- [Quickstart](https://holon.run/getting-started/README.md): Fastest path from installation to a running local agent.
+- [Create Your First Agent](https://holon.run/getting-started/first-agent.md): Install Holon, configure a provider, start the daemon, and verify a named agent.
+- [Onboarding Guide](https://holon.run/getting-started/onboarding.md): Interactive credential, model, and search setup with `holon onboard`.
+
+## Core Concepts
+
+- [Runtime Model](https://holon.run/concepts/runtime-model.md): How the daemon, clients, agents, work items, tasks, and workspaces fit together.
+- [Work Items and Tasks](https://holon.run/concepts/work-items-and-tasks.md): Durable multi-turn objectives (`WorkItem`) vs. supervised execution handles (`Task`).
+- [Events, Waits, and Wakeups](https://holon.run/concepts/events-and-waits.md): Zero-token suspension on `WaitFor` conditions and event-driven resumption.
+- [Workspaces and Worktrees](https://holon.run/concepts/workspaces.md): Separating `agent_home` from project workspaces and isolating parallel edits with `git worktree`.
+- [Trust Boundaries](https://holon.run/concepts/trust-boundaries.md): Separating operator authority, agent guidance, tool results, and untrusted external wakes.
+- [Architecture Comparison](https://holon.run/concepts/architecture-comparison.md): Self-owned Rust agent runtime vs. CLI orchestration shells and hosted cloud bots.
+
+## Key Guides
+
+- [Run a Long-Lived Task](https://holon.run/guides/run-long-lived-task.md): Track progress across sessions and survive daemon restarts.
+- [Build a Local PR Code Reviewer](https://holon.run/guides/build-code-reviewer.md): Continuous event-driven PR review with `code-reviewer`.
+- [Connect External Events](https://holon.run/guides/connect-external-events.md): Webhook ingress and `wake_hint` verification.
+- [Automate Holon over HTTP](https://holon.run/guides/automate-over-http.md): Submit and monitor work through the HTTP control plane.
+- [Configure and Switch Models](https://holon.run/guides/configure-models.md): Local Ollama/vLLM setup, cloud providers, and failover chains.
+
+## Authoritative Reference & Schemas
+
+- [CLI Reference](https://holon.run/reference/cli.md): Verified `holon` command-line tree and flags.
+- [Configuration Reference](https://holon.run/reference/configuration.md): `config.json` schema, credentials, and environment variables.
+- [HTTP Control Plane](https://holon.run/reference/http-control-plane.md): REST endpoints, auth tokens, and SSE/payload contracts.
+- [OpenAPI 3.1 Specification](https://holon.run/reference/openapi.json): Machine-readable HTTP control plane OpenAPI schema.
+- [Agent Templates Catalog (JSON)](https://holon.run/assets/agent-templates.json): Official pre-built role templates and skill references.
+- [Supported Models](https://holon.run/reference/models.md): Built-in model and provider catalog.

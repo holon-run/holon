@@ -14,75 +14,82 @@ order: 4
 </header>
 
 <a class="blog-feature" href="/blog/what-is-holon">
-<img src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" decoding="async" fetchpriority="high">
+<img src="/assets/holon-agent-workspace-cover.webp" width="1600" height="900" alt="" decoding="async" fetchpriority="high">
 <div class="blog-feature__copy">
-<span class="blog-category">START HERE · PRODUCT</span>
+<span class="blog-category">START HERE · PRODUCT · 2026-09-13</span>
 <h2>What is Holon? Let agents keep working in your environment.</h2>
 <p>Give recurring work to agents with ongoing roles. A tour of the local workbench, from continuous review to remote development and team use.</p>
 <span class="blog-read">Meet Holon <span aria-hidden="true">→</span></span>
 </div>
 </a>
 
+<section class="blog-stories" aria-labelledby="blog-arch-title">
+<div class="blog-section-heading">
+<h2 id="blog-arch-title">Architecture &amp; benchmarks</h2>
+<p>Runtime internals, verification layers, and local model evaluations.</p>
+</div>
+<a class="blog-story" href="/blog/local-model-agent-benchmark">
+<img src="/assets/local-model-agent-benchmark-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">BENCHMARK · 2026-11-18</span>
+<h3>Can Local LLMs Complete Multi-Turn Coding Agent Tasks? Benchmarking GGUF, MoE Turn Bloat, and Prompt Caching</h3>
+<p>Single-turn coding benchmarks do not predict multi-turn agent success. We benchmarked local Ollama setups on a 64GB Apple M5 Pro across 8 real repo tasks.</p>
+<span class="blog-read">Read the benchmark <span aria-hidden="true">→</span></span></div>
+</a>
+<a class="blog-story" href="/blog/why-agents-need-skill-isolation">
+<img src="/assets/why-agents-need-skill-isolation-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">SYSTEM DESIGN · 2026-11-08</span>
+<h3>Why your agent gets dumber with more skills (and how to fix it)</h3>
+<p>Adding 30 skills to a single agent triggers context dilution, instruction conflicts, and safety risks. Here is how Holon isolates skills across long-lived roles.</p>
+<span class="blog-read">Read the analysis <span aria-hidden="true">→</span></span></div>
+</a>
+<a class="blog-story" href="/blog/ai-delivery-quality-and-verification">
+<img src="/assets/ai-delivery-verification-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">ENGINEERING PRACTICE · 2026-10-14</span>
+<h3>How to Guarantee Quality in AI Delivery Pipelines: Four Layers of Verification and Acceptance in Real-World Engineering</h3>
+<p>Code generation is faster than ever, but software nobody dares deploy remains the real bottleneck. Drawing from an engineering team adopting Holon across cross-platform apps and hardware protocols, this article explores four pragmatic verification layers.</p>
+<span class="blog-read">Read the guide <span aria-hidden="true">→</span></span></div>
+</a>
+<a class="blog-story" href="/blog/event-driven-kernel">
+<img src="/assets/event-driven-kernel-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">ARCHITECTURE · 2026-10-09</span>
+<h3>From Request-Response to Event-Driven: Designing the Kernel for Long-Lived Agents</h3>
+<p>Why while(true) loops fail in production engineering. Drawing from OS history, we explore durable wait-wake scheduling and causal context design.</p>
+<span class="blog-read">Read the architecture <span aria-hidden="true">→</span></span></div>
+</a>
+</section>
+
 <section class="blog-stories" aria-labelledby="blog-stories-title">
 <div class="blog-section-heading">
-<h2 id="blog-stories-title">Design &amp; practice</h2>
-<p>How it works. How to use it.</p>
+<h2 id="blog-stories-title">Workflows &amp; team practice</h2>
+<p>Hands-on guides and real-world team case studies.</p>
 </div>
 <a class="blog-story" href="/blog/from-prompt-to-finished-work">
-<img src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">HANDS-ON GUIDE</span>
+<img src="/assets/holon-agent-workspace-cover.webp" width="1600" height="900" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">HANDS-ON GUIDE · 2026-10-06</span>
 <h3>From prompt to finished work</h3>
 <p>A repeatable workflow for giving an agent a real repository task, letting it work past the prompt, and checking the result when it comes back.</p>
 <span class="blog-read">Follow the workflow <span aria-hidden="true">→</span></span></div>
 </a>
-<a class="blog-story" href="/blog/why-work-items">
-<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">DESIGN</span>
-<h3>WorkItems: separating work state from conversations</h3>
-<p>An API migration and two PRs show why goals, progress, and waiting conditions need a home of their own.</p>
-<span class="blog-read">Explore the design <span aria-hidden="true">→</span></span></div>
-</a>
 <a class="blog-story" href="/blog/one-pr-one-work-item">
-<img src="/assets/continuous-pr-reviewer-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">HANDS-ON GUIDE</span>
+<img src="/assets/continuous-pr-reviewer-cover.webp" width="1600" height="900" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">HANDS-ON GUIDE · 2026-09-13</span>
 <h3>Build a reviewer that follows PRs through</h3>
 <p>Set up the code-reviewer template, agree on permissions, and subscribe to PRs. Follow revisions and CI through to the merge decision.</p>
 <span class="blog-read">Set up continuous review <span aria-hidden="true">→</span></span></div>
 </a>
 <a class="blog-story" href="/blog/agents-in-a-small-team">
 <img src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">TEAM STORY</span>
+<div><span class="blog-category">TEAM STORY · 2026-09-13</span>
 <h3>From personal AI tools to shared team agents</h3>
 <p>A small team's 131 days of recorded usage, wake-source breakdown, device investigations, and hands-on testing show where shared agents fit—and where people still step in.</p>
 <span class="blog-read">Read the team story <span aria-hidden="true">→</span></span></div>
 </a>
-<a class="blog-story" href="/blog/event-driven-kernel">
-<img src="/assets/event-driven-kernel-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">ARCHITECTURE</span>
-<h3>From Request-Response to Event-Driven: Designing the Kernel for Long-Lived Agents</h3>
-<p>Why while(true) loops fail in production engineering. Drawing from OS history, we explore durable wait-wake scheduling and causal context design.</p>
-<span class="blog-read">Read the architecture <span aria-hidden="true">→</span></span></div>
-</a>
-<a class="blog-story" href="/blog/ai-delivery-quality-and-verification">
-<img src="/assets/ai-delivery-verification-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">ENGINEERING PRACTICE</span>
-<h3>How to Guarantee Quality in AI Delivery Pipelines: Four Layers of Verification and Acceptance in Real-World Engineering</h3>
-<p>Code generation is faster than ever, but software nobody dares deploy remains the real bottleneck. Drawing from an engineering team adopting Holon across cross-platform apps and hardware protocols, this article explores four pragmatic verification layers.</p>
-<span class="blog-read">Read the guide <span aria-hidden="true">→</span></span></div>
-</a>
-<a class="blog-story" href="/blog/why-agents-need-skill-isolation">
-<img src="/assets/why-agents-need-skill-isolation-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">SYSTEM DESIGN</span>
-<h3>Why your agent gets dumber with more skills (and how to fix it)</h3>
-<p>Adding 30 skills to a single agent triggers context dilution, instruction conflicts, and safety risks. Here is how Holon isolates skills across long-lived roles.</p>
-<span class="blog-read">Read the analysis <span aria-hidden="true">→</span></span></div>
-</a>
-<a class="blog-story" href="/blog/local-model-agent-benchmark">
-<img src="/assets/local-model-agent-benchmark-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">BENCHMARK</span>
-<h3>Can Local LLMs Complete Multi-Turn Coding Agent Tasks? Benchmarking GGUF, MoE Turn Bloat, and Prompt Caching</h3>
-<p>Single-turn coding benchmarks do not predict multi-turn agent success. We benchmarked local Ollama setups on a 64GB Apple M5 Pro across 8 real repo tasks.</p>
-<span class="blog-read">Read the benchmark <span aria-hidden="true">→</span></span></div>
+<a class="blog-story" href="/blog/why-work-items">
+<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">DESIGN · 2026-09-13</span>
+<h3>WorkItems: separating work state from conversations</h3>
+<p>An API migration and two PRs show why goals, progress, and waiting conditions need a home of their own.</p>
+<span class="blog-read">Explore the design <span aria-hidden="true">→</span></span></div>
 </a>
 </section>
 

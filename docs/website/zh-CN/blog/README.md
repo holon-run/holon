@@ -14,75 +14,82 @@ order: 4
 </header>
 
 <a class="blog-feature" href="/zh-CN/blog/what-is-holon">
-<img src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" decoding="async" fetchpriority="high">
+<img src="/assets/holon-agent-workspace-cover.webp" width="1600" height="900" alt="" decoding="async" fetchpriority="high">
 <div class="blog-feature__copy">
-<span class="blog-category">从这里开始 · 产品介绍</span>
+<span class="blog-category">从这里开始 · 产品介绍 · 2026-09-13</span>
 <h2>Holon 是什么：让多个 Agent 在你的工作环境里持续做事</h2>
 <p>把反复发生的工作交给固定角色，在后台跟进，需要时接入。从持续审阅出发，认识这套本地工作台及其在远程开发和团队协作中的用法。</p>
 <span class="blog-read">认识 Holon <span aria-hidden="true">→</span></span>
 </div>
 </a>
 
+<section class="blog-stories" aria-labelledby="blog-arch-title">
+<div class="blog-section-heading">
+<h2 id="blog-arch-title">架构设计与工程实测</h2>
+<p>深入运行时内核、交付防线与本地大模型基准测试。</p>
+</div>
+<a class="blog-story" href="/zh-CN/blog/local-model-agent-benchmark">
+<img src="/assets/local-model-agent-benchmark-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">基准实测 · 2026-11-18</span>
+<h3>本地大模型能跑通多轮编码 Agent 吗？GGUF、MoE 轮次膨胀与 Prompt Cache 实测</h3>
+<p>单轮盲测能写代码，接进带 30k 系统契约的多轮编码 Agent 却经常超时。我们在 Apple M5 Pro 64GB 上用 8 个真实仓库任务实测了推理后端、MoE 轮次膨胀与缓存表现。</p>
+<span class="blog-read">阅读实测报告 <span aria-hidden="true">→</span></span></div>
+</a>
+<a class="blog-story" href="/zh-CN/blog/why-agents-need-skill-isolation">
+<img src="/assets/why-agents-need-skill-isolation-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">系统设计 · 2026-11-08</span>
+<h3>为什么技能塞得越多，Agent 反而越笨？聊聊技能膨胀与隔离设计</h3>
+<p>以为装满 30 个 Skill 能得到全能助手，却常遭遇上下文稀释、指令互斥与工具误调用。深入剖析技能膨胀的根源，以及 Holon 的多 Agent 技能隔离机制。</p>
+<span class="blog-read">阅读架构分析 <span aria-hidden="true">→</span></span></div>
+</a>
+<a class="blog-story" href="/zh-CN/blog/ai-delivery-quality-and-verification">
+<img src="/assets/ai-delivery-verification-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">工程实践 · 2026-10-14</span>
+<h3>AI 自动交付流如何保证质量：真实工程中的四层验证与验收防线</h3>
+<p>代码生成速度越来越快，但无人敢把改动推上线才是真正的瓶颈。结合一个采用 Holon 的工程团队在跨端与硬件协议项目中的实践，拆解四层务实的验收防线。</p>
+<span class="blog-read">阅读实践解析 <span aria-hidden="true">→</span></span></div>
+</a>
+<a class="blog-story" href="/zh-CN/blog/event-driven-kernel">
+<img src="/assets/event-driven-kernel-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">系统架构 · 2026-10-09</span>
+<h3>从请求-响应到事件驱动：长周期 Agent 系统的内核设计</h3>
+<p>为什么死循环无法支撑生产级工作？融合操作系统中断演进史与直观工程隐喻，解析长周期 Agent 的事件驱动内核。</p>
+<span class="blog-read">阅读架构设计 <span aria-hidden="true">→</span></span></div>
+</a>
+</section>
+
 <section class="blog-stories" aria-labelledby="blog-stories-title">
 <div class="blog-section-heading">
-<h2 id="blog-stories-title">设计与实践</h2>
-<p>理解它如何工作，再把它用起来。</p>
+<h2 id="blog-stories-title">工作流与团队实践</h2>
+<p>实操指南与真实小团队的协作案例。</p>
 </div>
 <a class="blog-story" href="/zh-CN/blog/from-prompt-to-finished-work">
-<img src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">操作指南</span>
+<img src="/assets/holon-agent-workspace-cover.webp" width="1600" height="900" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">操作指南 · 2026-10-06</span>
 <h3>从 Prompt 到完成工作</h3>
 <p>给 Agent 一项真实的仓库任务，让它在 Prompt 结束后继续工作，并在回来时检查结果。</p>
 <span class="blog-read">跟着流程开始 <span aria-hidden="true">→</span></span></div>
 </a>
-<a class="blog-story" href="/zh-CN/blog/why-work-items">
-<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">技术设计</span>
-<h3>WorkItem 架构：把工作状态从对话中分离</h3>
-<p>从接口迁移到两个 PR 交替推进，看目标、进度和等待条件为什么需要独立于对话保存。</p>
-<span class="blog-read">拆解 WorkItem <span aria-hidden="true">→</span></span></div>
-</a>
 <a class="blog-story" href="/zh-CN/blog/one-pr-one-work-item">
-<img src="/assets/continuous-pr-reviewer-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">操作指南</span>
+<img src="/assets/continuous-pr-reviewer-cover.webp" width="1600" height="900" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">操作指南 · 2026-09-13</span>
 <h3>不止审一次代码：搭建持续跟进 PR 的 Reviewer</h3>
 <p>从 code-reviewer 模板开始，确认权限，订阅仓库 PR。让同一个 reviewer 跟进修订与 CI，直到可以做出合并决定。</p>
 <span class="blog-read">配置持续审阅 <span aria-hidden="true">→</span></span></div>
 </a>
 <a class="blog-story" href="/zh-CN/blog/agents-in-a-small-team">
 <img src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">团队案例</span>
+<div><span class="blog-category">团队案例 · 2026-09-13</span>
 <h3>从个人 AI 工具到团队协作：一个小团队的 Agent Native 实践</h3>
 <p>131 天的留存用量、运行唤醒结构、设备故障调查和真机测试，记录共享 Agent 怎样接入团队分工，以及哪些环节仍需要人。</p>
 <span class="blog-read">看团队如何协作 <span aria-hidden="true">→</span></span></div>
 </a>
-<a class="blog-story" href="/zh-CN/blog/event-driven-kernel">
-<img src="/assets/event-driven-kernel-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">系统架构</span>
-<h3>从请求-响应到事件驱动：长周期 Agent 系统的内核设计</h3>
-<p>为什么死循环无法支撑生产级工作？融合操作系统中断演进史与直观工程隐喻，解析长周期 Agent 的事件驱动内核。</p>
-<span class="blog-read">阅读架构设计 <span aria-hidden="true">→</span></span></div>
-</a>
-<a class="blog-story" href="/zh-CN/blog/ai-delivery-quality-and-verification">
-<img src="/assets/ai-delivery-verification-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">工程实践</span>
-<h3>AI 自动交付流如何保证质量：真实工程中的四层验证与验收防线</h3>
-<p>代码生成速度越来越快，但无人敢把改动推上线才是真正的瓶颈。结合一个采用 Holon 的工程团队在跨端与硬件协议项目中的实践，拆解四层务实的验收防线。</p>
-<span class="blog-read">阅读实践解析 <span aria-hidden="true">→</span></span></div>
-</a>
-<a class="blog-story" href="/zh-CN/blog/why-agents-need-skill-isolation">
-<img src="/assets/why-agents-need-skill-isolation-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">系统设计</span>
-<h3>为什么技能塞得越多，Agent 反而越笨？聊聊技能膨胀与隔离设计</h3>
-<p>以为装满 30 个 Skill 能得到全能助手，却常遭遇上下文稀释、指令互斥与工具误调用。深入剖析技能膨胀的根源，以及 Holon 的多 Agent 技能隔离机制。</p>
-<span class="blog-read">阅读架构分析 <span aria-hidden="true">→</span></span></div>
-</a>
-<a class="blog-story" href="/zh-CN/blog/local-model-agent-benchmark">
-<img src="/assets/local-model-agent-benchmark-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
-<div><span class="blog-category">基准实测</span>
-<h3>本地大模型能跑通多轮编码 Agent 吗？GGUF、MoE 轮次膨胀与 Prompt Cache 实测</h3>
-<p>单轮盲测能写代码，接进带 30k 系统契约的多轮编码 Agent 却经常超时。我们在 Apple M5 Pro 64GB 上用 8 个真实仓库任务实测了推理后端、MoE 轮次膨胀与缓存表现。</p>
-<span class="blog-read">阅读实测报告 <span aria-hidden="true">→</span></span></div>
+<a class="blog-story" href="/zh-CN/blog/why-work-items">
+<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">技术设计 · 2026-09-13</span>
+<h3>WorkItem 架构：把工作状态从对话中分离</h3>
+<p>从接口迁移到两个 PR 交替推进，看目标、进度和等待条件为什么需要独立于对话保存。</p>
+<span class="blog-read">拆解 WorkItem <span aria-hidden="true">→</span></span></div>
 </a>
 </section>
 

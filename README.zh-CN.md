@@ -153,7 +153,7 @@ Holon 把 Agent 工作拆成几个明确的运行时对象：
 ## 状态与兼容性
 
 Holon 正在积极开发中。当前推荐版本为
-[`v0.29.0`](https://github.com/holon-run/holon/releases/tag/v0.29.0)。
+[`v0.61.1`](https://github.com/holon-run/holon/releases/tag/v0.61.1)。
 
 当前项目重心仍是 Rust 运行时：agent 生命周期、队列、WaitFor/wake、task、WorkItem、
 信任边界、本地 workspace 和结构化交付。

@@ -70,11 +70,12 @@
     "enabled": true,
     "redirect": "root"
   },
-  "favicon": "/favicon.svg",
+  "llmsTxt": true,
+  "favicon": "/assets/holon-mark.png",
   "socialImage": "/assets/social-card.png",
   "stylesheet": "./assets/site.css",
   "logo": {
-    "src": "/assets/logo.webp",
+    "src": "/assets/holon-mark.webp",
     "alt": "Holon"
   },
   "topNav": [

@@ -10,9 +10,9 @@ order: 1
 
 <p class="home-eyebrow">为需要持续跟进的工作而建</p>
 
-# 在自己的电脑或服务器上，创建和运行 AI 助手。
+# 在你的电脑或<span class="home-nowrap">服务器上，</span>创建并运行常驻 AI 助手。
 
-<p class="home-hero__lede">开源、本地优先的 Rust 常驻 AI Agent（Always-on AI Agent）工作台，面向个人和团队。分配显式工作项（WorkItem）、跨会话保留持久状态，并让 Agent 基于事件等待与唤醒持续跟进工作。</p>
+<p class="home-hero__lede">开源、本地优先的 Rust 常驻 Agent 工作台，面向个人与团队。分配显式工作项（WorkItem）、跨会话保留持久状态，让 Agent 基于事件等待与唤醒持续跟进工作。</p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="#install">安装并开始</a>
@@ -20,20 +20,16 @@ order: 1
 </div>
 
 <div class="home-mobile" id="clients" role="group" aria-labelledby="clients-title">
-<h2 id="clients-title">下载手机客户端</h2>
-<div class="home-actions">
-<a class="home-button home-button--quiet" href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS · App Store ↗</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.61.1/holon-android-v0.61.1.apk">下载 Android APK ↗</a>
+<div class="home-mobile__header">
+<h2 id="clients-title">客户端下载</h2>
+<span>连接电脑或服务器上的 Holon 服务</span>
 </div>
-<p>连接电脑或服务器上的 Holon，使用时请保持 Holon 服务运行。</p>
-<p>备用渠道：<a href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight 测试版 ↗</a>（以测试名额和版本可用性为准）。</p>
+<div class="home-client-pills">
+<a class="home-pill" href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS · App Store ↗</a>
+<a class="home-pill" href="https://github.com/holon-run/holon/releases/download/v0.61.1/holon-android-v0.61.1.apk">下载 Android APK ↗</a>
+<a class="home-pill" href="https://github.com/holon-run/holon/releases/latest">macOS 菜单栏应用 (.dmg) ↗</a>
 </div>
-
-<p class="home-hero__note">给助手明确的职责和任务。查看进展，在需要时补充信息，并验收结果。<a href="/zh-CN/concepts/architecture-comparison">对比 Holon 运行时架构 →</a></p>
-
-<div class="home-litepaper" role="group" aria-label="Holon 产品概览 PDF">
-<span class="home-litepaper__label">产品概览</span>
-<a href="/assets/lite-paper/holon-lite-paper-zh-CN.pdf" type="application/pdf" hreflang="zh-CN" aria-label="阅读中文版 Holon Lite Paper（PDF）">阅读 <span aria-hidden="true">↗</span></a>
+<p class="home-mobile__links"><a href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight 测试版 ↗</a> · <a href="/zh-CN/concepts/architecture-comparison">运行时架构对比 →</a> · <a href="/assets/lite-paper/holon-lite-paper-zh-CN.pdf" type="application/pdf" hreflang="zh-CN" aria-label="阅读中文版 Holon Lite Paper（PDF）">产品白皮书 (PDF) ↗</a></p>
 </div>
 
 </div>
@@ -79,7 +75,13 @@ order: 1
 
 </div>
 
-<div class="home-start__commands">
+<div class="home-start__commands" data-install-tabs>
+<div class="home-install-tablist" role="tablist" aria-label="安装方式" hidden>
+<button type="button" role="tab" data-install-tab="brew" aria-selected="true">macOS · Homebrew</button>
+<button type="button" role="tab" data-install-tab="docker" aria-selected="false">Docker Compose</button>
+<button type="button" role="tab" data-install-tab="binary" aria-selected="false">Linux 与二进制</button>
+</div>
+<div class="home-install-panel" data-install-panel="brew">
 <p class="home-start__command-label">macOS · Homebrew</p>
 
 ```bash
@@ -88,6 +90,27 @@ holon onboard
 holon daemon start
 ```
 
+</div>
+<div class="home-install-panel" data-install-panel="docker" hidden>
+<p class="home-start__command-label">Docker Compose · 浏览器向导</p>
+
+```bash
+git clone https://github.com/holon-run/holon.git && cd holon
+docker compose up -d
+# 打开 http://localhost:7878/settings 配置模型提供商凭据
+```
+
+</div>
+<div class="home-install-panel" data-install-panel="binary" hidden>
+<p class="home-start__command-label">Linux amd64 / macOS · 预编译二进制</p>
+
+```bash
+# 从 https://github.com/holon-run/holon/releases/latest 下载二进制
+chmod +x holon && mv holon ~/.local/bin/
+holon onboard && holon daemon start
+```
+
+</div>
 </div>
 
 </div>
@@ -152,12 +175,12 @@ holon daemon start
 
 </div>
 <div class="home-reading-grid">
-<a class="home-reading-card" href="/zh-CN/blog/from-prompt-to-finished-work">
-<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
+<a class="home-reading-card" href="/zh-CN/blog/one-pr-one-work-item">
+<img class="home-reading-card__cover" src="/assets/continuous-pr-reviewer-cover.webp" width="1600" height="900" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">01 · 工作流</span>
-<h3>从 Prompt 到完成工作</h3>
-<p>给 Agent 一项边界清楚的仓库任务，让它在 Prompt 结束后继续工作，并在回来时检查结果。</p>
-<span class="home-reading-card__cta">跟着流程开始 →</span>
+<h3>不止审一次代码：搭建持续跟进 PR 的 Reviewer</h3>
+<p>从 code-reviewer 模板起步，约定职责与权限，让同一个 Reviewer 持续跟进修订与 CI 直至合并。</p>
+<span class="home-reading-card__cta">配置持续审阅 →</span>
 </a>
 <a class="home-reading-card" href="/zh-CN/blog/agents-in-a-small-team">
 <img class="home-reading-card__cover" src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
@@ -167,7 +190,7 @@ holon daemon start
 <span class="home-reading-card__cta">看团队如何协作 →</span>
 </a>
 <a class="home-reading-card" href="/zh-CN/blog/what-is-holon">
-<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
+<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1600" height="900" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">03 · 产品故事</span>
 <h3>让多个 Agent 在你的工作环境里持续做事</h3>
 <p>从每次叫 AI 帮忙，到让固定角色持续跟进。认识支撑这种协作方式的本地工作台。</p>

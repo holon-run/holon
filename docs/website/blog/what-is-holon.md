@@ -77,7 +77,10 @@ Holon's background runtime manages agent execution and work state. The terminal 
 
 This is straightforward for remote development: if compilers, repositories, and the test environment are already on the development machine, run the agent there. Whether you check results in a browser or continue giving instructions through a terminal, you connect to the same backend.
 
+<picture class="home-architecture">
+<source media="(max-width: 640px)" srcset="/assets/runtime-architecture-en-narrow.png" width="480" height="550">
 <img class="article-architecture" src="/assets/runtime-architecture-en.png" width="1200" height="350" alt="The terminal TUI and Web UI connect to the same persistent Holon runtime; a mobile entry point has a dashed border and connection. Holon supports ongoing work, saved state, and event-driven wakeups, manages agents and work items, and uses workspaces, files, and toolchains on the host." loading="lazy" decoding="async">
+</picture>
 
 The backend and host must remain available. Closing a client and shutting down the runtime environment are different things. The machine boundary in the diagram shows where things run, not additional permission isolation.
 

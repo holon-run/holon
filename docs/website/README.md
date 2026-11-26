@@ -20,20 +20,16 @@ order: 1
 </div>
 
 <div class="home-mobile" id="clients" role="group" aria-labelledby="clients-title">
-<h2 id="clients-title">Mobile apps</h2>
-<div class="home-actions">
-<a class="home-button home-button--quiet" href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS · App Store ↗</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.61.1/holon-android-v0.61.1.apk">Download Android APK ↗</a>
+<div class="home-mobile__header">
+<h2 id="clients-title">Clients &amp; apps</h2>
+<span>Connect to your running Holon daemon</span>
 </div>
-<p>Connect to Holon on your computer or server. Keep the Holon service running.</p>
-<p>Also available: <a href="https://testflight.apple.com/join/XkTfN12S">iOS beta via TestFlight ↗</a> (subject to beta availability).</p>
+<div class="home-client-pills">
+<a class="home-pill" href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS · App Store ↗</a>
+<a class="home-pill" href="https://github.com/holon-run/holon/releases/download/v0.61.1/holon-android-v0.61.1.apk">Android APK ↗</a>
+<a class="home-pill" href="https://github.com/holon-run/holon/releases/latest">macOS Menu Bar (.dmg) ↗</a>
 </div>
-
-<p class="home-hero__note">Give each assistant a role and a task, check progress, and review the result. <a href="/concepts/architecture-comparison">Compare Holon's runtime architecture →</a></p>
-
-<div class="home-litepaper" role="group" aria-label="Holon product overview PDF">
-<span class="home-litepaper__label">Product overview</span>
-<a href="/assets/lite-paper/holon-lite-paper-en.pdf" type="application/pdf" hreflang="en" aria-label="Read the Holon lite paper in English (PDF)">Read <span aria-hidden="true">↗</span></a>
+<p class="home-mobile__links"><a href="https://testflight.apple.com/join/XkTfN12S">iOS beta via TestFlight ↗</a> · <a href="/concepts/architecture-comparison">Architecture comparison →</a> · <a href="/assets/lite-paper/holon-lite-paper-en.pdf" type="application/pdf" hreflang="en" aria-label="Read the Holon lite paper in English (PDF)">Lite paper (PDF) ↗</a></p>
 </div>
 
 </div>
@@ -79,7 +75,13 @@ Open `http://localhost:7878` or run `holon tui` to create your first assistant a
 
 </div>
 
-<div class="home-start__commands">
+<div class="home-start__commands" data-install-tabs>
+<div class="home-install-tablist" role="tablist" aria-label="Installation methods" hidden>
+<button type="button" role="tab" data-install-tab="brew" aria-selected="true">macOS · Homebrew</button>
+<button type="button" role="tab" data-install-tab="docker" aria-selected="false">Docker Compose</button>
+<button type="button" role="tab" data-install-tab="binary" aria-selected="false">Linux &amp; Binary</button>
+</div>
+<div class="home-install-panel" data-install-panel="brew">
 <p class="home-start__command-label">macOS · Homebrew</p>
 
 ```bash
@@ -88,6 +90,27 @@ holon onboard
 holon daemon start
 ```
 
+</div>
+<div class="home-install-panel" data-install-panel="docker" hidden>
+<p class="home-start__command-label">Docker Compose · Browser setup</p>
+
+```bash
+git clone https://github.com/holon-run/holon.git && cd holon
+docker compose up -d
+# Open http://localhost:7878/settings to configure a model provider
+```
+
+</div>
+<div class="home-install-panel" data-install-panel="binary" hidden>
+<p class="home-start__command-label">Linux amd64 &amp; macOS · Prebuilt release</p>
+
+```bash
+# Download from https://github.com/holon-run/holon/releases/latest
+chmod +x holon && mv holon ~/.local/bin/
+holon onboard && holon daemon start
+```
+
+</div>
 </div>
 
 </div>
@@ -152,12 +175,12 @@ Start with a hands-on task, see how a team shares an assistant, and get to know 
 
 </div>
 <div class="home-reading-grid">
-<a class="home-reading-card" href="/blog/from-prompt-to-finished-work">
-<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
+<a class="home-reading-card" href="/blog/one-pr-one-work-item">
+<img class="home-reading-card__cover" src="/assets/continuous-pr-reviewer-cover.webp" width="1600" height="900" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">01 · WORKFLOW</span>
-<h3>From prompt to finished work</h3>
-<p>Give an agent a bounded repository task, let it work past the prompt, and return to a result you can inspect.</p>
-<span class="home-reading-card__cta">Follow the workflow →</span>
+<h3>Build a reviewer that follows PRs through</h3>
+<p>Set up the code-reviewer template, agree on permissions, and follow revisions and CI checks through to the merge decision.</p>
+<span class="home-reading-card__cta">Set up continuous review →</span>
 </a>
 <a class="home-reading-card" href="/blog/agents-in-a-small-team">
 <img class="home-reading-card__cover" src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
@@ -167,7 +190,7 @@ Start with a hands-on task, see how a team shares an assistant, and get to know 
 <span class="home-reading-card__cta">Read the team story →</span>
 </a>
 <a class="home-reading-card" href="/blog/what-is-holon">
-<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
+<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1600" height="900" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">03 · PRODUCT</span>
 <h3>Let multiple agents keep working in your environment</h3>
 <p>Move from asking AI for help each time to giving agents ongoing roles. Meet the local workbench that supports this way of working.</p>
