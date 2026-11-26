@@ -6,6 +6,7 @@
 
 mod resources;
 pub mod tools;
+mod topology_inventory;
 
 use holon_context::fingerprint::{
     prompt_cache_key, prompt_cache_scope_diagnostics, prompt_cache_scope_fingerprint,
@@ -23,6 +24,7 @@ use holon_context::{
 };
 pub use resources::PromptResource;
 pub use tools::{tool_sections, ToolPromptContext};
+pub use topology_inventory::prompt_topology_inventory;
 
 use std::path::{Path, PathBuf};
 

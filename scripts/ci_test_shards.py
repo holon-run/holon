@@ -58,6 +58,7 @@ CLI_SHARD = (
     "openapi_snapshot",
     "http_route_snapshot",
     "runtime_status_inventory_snapshot",
+    "prompt_topology_snapshot",
     "tool_schema_inventory_snapshot",
     "cli_exit_codes",
     "release_version_contract",

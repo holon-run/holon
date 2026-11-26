@@ -896,8 +896,11 @@ fn system_prompt_explains_durable_work_tracking_and_scheduling_boundaries() {
     assert!(scheduling.content.contains("does not migrate that task"));
     assert!(scheduling
         .content
-        .contains("then the execution-bound WorkItem"));
+        .contains("from the execution-bound WorkItem first"));
     assert!(scheduling
+        .content
+        .contains("any WorkItem of that agent may hold the wait without migrating"));
+    assert!(!scheduling
         .content
         .contains("a task-result wait must still match"));
     assert!(scheduling
@@ -1239,6 +1242,12 @@ fn system_prompt_includes_runtime_scheduling_contract() {
         .content
         .contains("A task keeps the WorkItem owner captured when it was created"));
     assert!(section
+        .content
+        .contains("WaitFor resolves ownership from the execution-bound WorkItem first"));
+    assert!(section
+        .content
+        .contains("then an explicit owned open work_item_id"));
+    assert!(!section
         .content
         .contains("WaitFor resolves ownership from an explicit owned open work_item_id"));
     assert!(section

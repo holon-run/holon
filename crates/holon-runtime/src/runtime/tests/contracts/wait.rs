@@ -1179,6 +1179,100 @@ async fn explicit_task_result_waiter_decouples_from_task_owner() {
 }
 
 #[tokio::test]
+async fn execution_bound_waiter_ignores_conflicting_explicit_selector_for_cross_owner_task_wait() {
+    let harness = LifecycleHarness::new();
+    let task_owner = harness
+        .runtime()
+        .create_work_item("task owner B".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let waiter = harness
+        .runtime()
+        .create_work_item("execution-bound waiter A".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let task = running_task("task-owned-by-b", &task_owner.id, harness.now());
+    harness
+        .runtime()
+        .persist_task_transition(&task, "task_created")
+        .await
+        .unwrap();
+
+    persist_open_work_execution(&harness, &waiter, "attempt-waiter-a").await;
+    {
+        let mut guard = harness.runtime().begin_mutation().await.unwrap();
+        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("attempt-waiter-a".into()),
+            admission_provenance: None,
+            source_message_id: "message:attempt-waiter-a".into(),
+            turn_id: "turn-late-wait".into(),
+            owner: None,
+            work_item_id: Some(waiter.id.clone()),
+            claimed_work_revision: Some(waiter.revision.max(1)),
+        });
+        guard
+            .persist_state(&harness.runtime().inner.storage)
+            .await
+            .unwrap();
+    }
+
+    let result = crate::tool::tools::wait_for::execute(
+        harness.runtime(),
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &serde_json::json!({
+            "wake": "task_result",
+            "resource": task.id,
+            "work_item_id": task_owner.id,
+            "delivery": "silent",
+            "reason": "waiter A depends on task owned by B",
+        }),
+        &crate::tool::spec::ToolExecutionContext::default(),
+    )
+    .await
+    .unwrap();
+
+    let payload = result
+        .envelope
+        .result
+        .as_ref()
+        .expect("wait_for result payload");
+    assert_eq!(payload["owner_selection"], "execution_binding");
+    assert_eq!(payload["requested_work_item_id"], task_owner.id);
+    assert_eq!(payload["work_item_id"], waiter.id);
+    assert!(
+        result
+            .envelope
+            .summary_text
+            .as_deref()
+            .is_some_and(|summary| summary.contains(&task_owner.id) && summary.contains(&waiter.id)),
+        "summary_text should disclose ignored explicit work_item_id: {:?}",
+        result.envelope.summary_text
+    );
+
+    let prepared = result
+        .runtime_state
+        .prepared_wait_for
+        .expect("prepared wait registration");
+    assert_eq!(
+        prepared.registration.condition.work_item_id.as_deref(),
+        Some(waiter.id.as_str())
+    );
+    assert_eq!(
+        harness
+            .snapshot()
+            .tasks
+            .iter()
+            .find(|record| record.id == task.id)
+            .expect("task record")
+            .work_item_id
+            .as_deref(),
+        Some(task_owner.id.as_str()),
+        "task ownership must remain on B"
+    );
+}
+
+#[tokio::test]
 async fn cross_agent_task_result_wait_is_still_rejected() {
     let harness = LifecycleHarness::new();
     let work_item = harness
