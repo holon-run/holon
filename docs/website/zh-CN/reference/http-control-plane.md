@@ -689,6 +689,31 @@ control token 凭据访问，拒绝受信任本地准入、浏览器 session 与
 响应带有 `Cache-Control: no-store`；目标 Agent 或触发器不存在时返回 `404`，
 已吊销返回 `409 trigger_not_active`，无可用或无法校验的存储 token 返回 `409 token_unavailable`。
 
+**`GET /api/control/agents/:id/acp-interactions`** — 列出待处理的 ACP 交互请求
+
+列出已加载的 `acp` 驱动 Agent 当前等待操作者处理的权限审批与表单输入请求（返回 `agent_id`
+与 `interactions` 数组）。已加载但没有待处理交互的 Agent 返回空数组；该请求不会唤醒处于休眠状态的 Agent。
+
+**`POST /api/control/agents/:id/acp-interactions/:interaction_id`** — 响应待处理的 ACP 交互请求
+
+提交对单条待处理 ACP 权限审批或表单请求的裁决结果。
+
+- 权限审批使用 `decision`（`allow_once`、`allow_always`、`reject_once` 或 `reject_always`）：
+
+```json
+{ "decision": "allow_once" }
+```
+
+- 表单输入（elicitation）使用 `action`（`accept`、`decline` 或 `cancel`）；选择 `accept` 时可附带 `content` 表单数据：
+
+```json
+{ "action": "accept", "content": { "answer": "yes" } }
+```
+
+成功返回 `200` 及 `{"agent_id": "...", "interaction_id": "...", "resolved": true}`。
+请求体格式无效时返回 `400`，目标 Agent 或交互 ID 不存在时返回 `404`；若交互已被结算，返回 `409`
+并附带 `settled_reason`（`timed_out`、`cancelled` 或 `resolved`）。超时回退后补发的答复不会授予任何权限。
+
 **`GET /api/control/network/tailscale/serve`** — Tailscale Serve 状态
 
 返回当前 Tailscale Serve 的运行状态、本地目标端口以及激活的 tailnet 域名。`control_authentication_available` 表示有效的 TCP 控制认证，不暴露凭据；禁用认证不算可用。
