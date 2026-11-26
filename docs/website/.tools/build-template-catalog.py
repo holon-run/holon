@@ -402,7 +402,8 @@ def build(repo: Path, output: Path, sha: str):
     catalog = read_catalog(repo, sha)
     # Never copy tools, dependency trees, build output or symlink targets.
     ignored = {".tools", ".git", "node_modules", "dist", "__pycache__",
-               "template-display.json", "wrangler.jsonc", ".gitignore", "legacy-static"}
+               "template-display.json", "wrangler.jsonc", "wrangler.assets.jsonc",
+               "asset-worker.mjs", ".gitignore", "legacy-static"}
 
     def ignore(directory, names):
         for name in names:

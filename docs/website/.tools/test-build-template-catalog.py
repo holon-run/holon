@@ -685,12 +685,13 @@ class TemplateCatalogTests(unittest.TestCase):
         for base in (self.site, self.site / "assets/nested"):
             for name in ignored:
                 self.write(base / name / "sentinel", "must never be copied")
-        for name in ("wrangler.jsonc", ".gitignore"):
+        for name in ("wrangler.jsonc", "wrangler.assets.jsonc", "asset-worker.mjs", ".gitignore"):
             self.write(self.site / name, "must never be copied")
         self.build()
         for path in self.output.rglob("*"):
             self.assertTrue(set(path.relative_to(self.output).parts).isdisjoint(ignored))
-        for name in ("template-display.json", "wrangler.jsonc", ".gitignore"):
+        for name in ("template-display.json", "wrangler.jsonc",
+                     "wrangler.assets.jsonc", "asset-worker.mjs", ".gitignore"):
             self.assertFalse((self.output / name).exists())
 
     def test_default_tools_dist_output_is_supported(self):
