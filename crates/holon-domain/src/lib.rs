@@ -32,6 +32,7 @@ mod context_config;
 mod error_sanitization;
 mod image_contract;
 mod input;
+pub mod input_mutation_receipt;
 mod instructions;
 mod language;
 mod media;

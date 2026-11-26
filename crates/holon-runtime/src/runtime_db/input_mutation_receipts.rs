@@ -8,161 +8,19 @@ use std::sync::{
 };
 
 use anyhow::{ensure, Context, Result};
-use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use chrono::{DateTime, Utc};
+pub(crate) use holon_domain::input_mutation_receipt::{
+    canonical_command_digest, InputMutationFamily, PreparedInputMutation, ReceiptError,
+};
+use holon_domain::input_mutation_receipt::{canonical_result_digest, valid_sha256};
+use holon_storage::input_mutation_receipts as receipt_storage;
+use rusqlite::{params, Connection, Transaction};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{
     runtime::resident_input_evidence::InputEvidenceScope,
     types::{AgentMessageDeliveryReceipt, AgentMessageDeliveryRecord, AuditEvent},
 };
-
-const PHASE_VERSION: u32 = 1;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum InputMutationFamily {
-    Audit,
-    AgentPosture,
-    Evidence,
-    Retention,
-    Queue,
-    QueueHeadNoProgress,
-    Terminal,
-    Task,
-    TaskResult,
-    LiveInputAttachment,
-    LiveInputRecovery,
-    ContextBudgetStopRecovery,
-    ProviderResultHandoff,
-    Timer,
-    ExternalTrigger,
-    WorkItem,
-    Wait,
-    Focus,
-}
-impl InputMutationFamily {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Audit => "audit",
-            Self::AgentPosture => "agent_posture",
-            Self::Evidence => "evidence",
-            Self::Retention => "retention",
-            Self::Queue => "queue",
-            Self::QueueHeadNoProgress => "queue_head_no_progress",
-            Self::Terminal => "terminal",
-            Self::Task => "task",
-            Self::TaskResult => "task_result",
-            Self::LiveInputAttachment => "live_input_attachment",
-            Self::LiveInputRecovery => "live_input_recovery",
-            Self::ContextBudgetStopRecovery => "context_budget_stop_recovery",
-            Self::ProviderResultHandoff => "provider_result_handoff",
-            Self::Timer => "timer",
-            Self::ExternalTrigger => "external_trigger",
-            Self::WorkItem => "work_item",
-            Self::Wait => "wait",
-            Self::Focus => "focus",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PreparedInputMutation {
-    family: InputMutationFamily,
-    phase_version: u32,
-    command_nonce: String,
-    command_digest: String,
-    scopes: Vec<InputEvidenceScope>,
-    scope_digest: String,
-    prepared_at: DateTime<Utc>,
-}
-impl PreparedInputMutation {
-    /// `command_digest` hashes the frozen typed command, never Debug output or
-    /// SQL-produced sequences/counts. The nonce is the original attempt address.
-    pub(crate) fn new(
-        family: InputMutationFamily,
-        command_nonce: String,
-        mut scopes: Vec<InputEvidenceScope>,
-        command_digest: String,
-        prepared_at: DateTime<Utc>,
-    ) -> Result<Self> {
-        ensure!(
-            !command_nonce.trim().is_empty(),
-            ReceiptError::InvalidDescriptor("empty nonce")
-        );
-        ensure!(
-            valid_sha256(&command_digest),
-            ReceiptError::InvalidDescriptor("invalid SHA256 command digest")
-        );
-        ensure!(
-            !scopes.is_empty(),
-            ReceiptError::InvalidDescriptor("empty scope group")
-        );
-        ensure!(
-            scopes.iter().all(|scope| !scope.agent_id.trim().is_empty()
-                && scope.identity_incarnation > 0
-                && scope.identity_incarnation <= i64::MAX as u64),
-            ReceiptError::InvalidDescriptor("invalid scope")
-        );
-        scopes.sort_by(|a, b| {
-            (&a.agent_id, a.identity_incarnation).cmp(&(&b.agent_id, b.identity_incarnation))
-        });
-        ensure!(
-            scopes.windows(2).all(|pair| pair[0] != pair[1]),
-            ReceiptError::InvalidDescriptor("duplicate scope")
-        );
-        let scope_digest = canonical_command_digest(&serde_json::json!({
-            "family": family,
-            "phase_version": PHASE_VERSION,
-            "command_digest": command_digest,
-            "scopes": scopes,
-        }))?;
-        Ok(Self {
-            family,
-            phase_version: PHASE_VERSION,
-            command_nonce,
-            command_digest,
-            scopes,
-            scope_digest,
-            prepared_at,
-        })
-    }
-    pub(crate) fn family(&self) -> InputMutationFamily {
-        self.family
-    }
-    pub(crate) fn command_nonce(&self) -> &str {
-        &self.command_nonce
-    }
-    pub(crate) fn command_digest(&self) -> &str {
-        &self.command_digest
-    }
-    pub(crate) fn scopes(&self) -> &[InputEvidenceScope] {
-        &self.scopes
-    }
-    pub(crate) fn prepared_at(&self) -> DateTime<Utc> {
-        self.prepared_at
-    }
-    pub(crate) fn scope_digest(&self) -> &str {
-        &self.scope_digest
-    }
-
-    fn validate(&self) -> Result<()> {
-        let expected = Self::new(
-            self.family,
-            self.command_nonce.clone(),
-            self.scopes.clone(),
-            self.command_digest.clone(),
-            self.prepared_at,
-        )?;
-        ensure!(
-            *self == expected,
-            ReceiptError::CorruptReceipt("invalid prepared projection")
-        );
-        Ok(())
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -524,7 +382,7 @@ impl InputMutationOutcome {
             self.scopes
                 .iter()
                 .map(|item| &item.scope)
-                .eq(prepared.scopes.iter()),
+                .eq(prepared.scopes().iter()),
             ReceiptError::GroupConflict
         );
         let mut ids = std::collections::BTreeSet::new();
@@ -547,7 +405,7 @@ impl InputMutationOutcome {
         if let Some(receipt) = &self.delivery_receipt {
             ensure!(
                 prepared
-                    .scopes
+                    .scopes()
                     .iter()
                     .any(|scope| scope.agent_id == receipt.target_agent_id),
                 ReceiptError::InvalidOutcome("delivery target is outside original group")
@@ -567,22 +425,6 @@ pub(crate) struct InputMutationReceipt {
     pub prepared: PreparedInputMutation,
     pub outcome: InputMutationOutcome,
     pub committed_at: DateTime<Utc>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum ReceiptError {
-    #[error("invalid prepared input mutation: {0}")]
-    InvalidDescriptor(&'static str),
-    #[error("original input command nonce has a different family or payload")]
-    CommandConflict,
-    #[error("original input command has a different complete scope group")]
-    GroupConflict,
-    #[error("input mutation receipt is inconsistent: {0}")]
-    CorruptReceipt(&'static str),
-    #[error("invalid input mutation outcome: {0}")]
-    InvalidOutcome(&'static str),
-    #[error("original synchronous input mutation attempt has not finished")]
-    OriginalAttemptNotFinished,
 }
 
 /// Retained with the owner recovery group before SQL. A second attempt with the
@@ -634,70 +476,18 @@ pub(super) fn lookup_input_mutation_receipt_in(
     tx: &Connection,
     prepared: &PreparedInputMutation,
 ) -> Result<Option<InputMutationReceipt>> {
-    prepared.validate()?;
-    type Row = (
-        String,
-        u32,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    );
-    let row: Option<Row> = tx.query_row(
-        "SELECT family,phase_version,command_digest,scope_digest,scopes_json,prepared_at,prepared_json,outcome_json,committed_at,result_digest
-         FROM input_mutation_receipts WHERE command_nonce=?1", [prepared.command_nonce()],
-        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)),
-    ).optional()?;
-    let Some((
-        family,
-        version,
-        digest,
-        scope_digest,
-        scopes_json,
-        prepared_at,
-        prepared_json,
-        outcome_json,
-        committed_at,
-        result_digest,
-    )) = row
-    else {
+    let Some(stored) = receipt_storage::lookup_receipt_on(tx, prepared)? else {
         return Ok(None);
     };
-    let stored: PreparedInputMutation = serde_json::from_str(&prepared_json)
-        .context("decoding original input mutation descriptor")?;
-    stored.validate()?;
-    let scopes: Vec<InputEvidenceScope> = serde_json::from_str(&scopes_json)?;
+    let outcome: InputMutationOutcome = serde_json::from_str(&stored.outcome_json)?;
+    outcome.validate(&stored.prepared)?;
+    let committed_at = DateTime::parse_from_rfc3339(&stored.committed_at)?.with_timezone(&Utc);
     ensure!(
-        stored.family.as_str() == family
-            && stored.phase_version == version
-            && stored.command_nonce == prepared.command_nonce
-            && stored.command_digest == digest
-            && stored.scope_digest == scope_digest
-            && stored.scopes == scopes
-            && timestamp(stored.prepared_at) == prepared_at,
-        ReceiptError::CorruptReceipt("normalized descriptor differs from payload")
-    );
-    ensure!(
-        stored.scopes == prepared.scopes,
-        ReceiptError::GroupConflict
-    );
-    ensure!(stored == *prepared, ReceiptError::CommandConflict);
-    let outcome: InputMutationOutcome = serde_json::from_str(&outcome_json)?;
-    outcome.validate(&stored)?;
-    let committed_at = DateTime::parse_from_rfc3339(&committed_at)?.with_timezone(&Utc);
-    ensure!(
-        result_digest
-            == canonical_command_digest(&serde_json::json!({
-                "prepared":stored,"outcome":outcome,"committed_at":committed_at,
-            }))?,
+        stored.result_digest == canonical_result_digest(&stored.prepared, &outcome, committed_at)?,
         ReceiptError::CorruptReceipt("original result checksum differs")
     );
     Ok(Some(InputMutationReceipt {
-        prepared: stored,
+        prepared: stored.prepared,
         outcome,
         committed_at,
     }))
@@ -766,14 +556,12 @@ pub(crate) fn insert_input_mutation_receipt_tx(
             ReceiptError::InvalidOutcome("delivery outcome differs from actual SQL ACK")
         );
     }
-    tx.execute(
-        "INSERT INTO input_mutation_receipts(command_nonce,family,phase_version,command_digest,scope_digest,scopes_json,prepared_at,prepared_json,outcome_json,committed_at,result_digest)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-        params![prepared.command_nonce,prepared.family.as_str(),prepared.phase_version,
-            prepared.command_digest,prepared.scope_digest,serde_json::to_string(&prepared.scopes)?,
-            timestamp(prepared.prepared_at),serde_json::to_string(prepared)?,
-            serde_json::to_string(outcome)?,timestamp(committed_at),
-            canonical_command_digest(&serde_json::json!({"prepared":prepared,"outcome":outcome,"committed_at":committed_at}))?],
+    receipt_storage::insert_receipt_tx(
+        tx,
+        prepared,
+        &serde_json::to_string(outcome)?,
+        committed_at,
+        &canonical_result_digest(prepared, outcome, committed_at)?,
     )?;
     let stored = lookup_input_mutation_receipt_tx(tx, prepared)?
         .context("input mutation receipt missing after write")?;
@@ -851,26 +639,6 @@ pub(crate) fn with_fresh_input_mutation_preparation_and_preflight<T, G>(
         prepare_current(tx, resolution)
     })
     .map_err(super::persistence::mark_original_input_recovery_failure)
-}
-
-/// Stable serde encoding with recursively ordered object keys. Callers freeze
-/// typed command clocks/IDs first; results allocated by SQL are not inputs.
-pub(crate) fn canonical_command_digest(command: &impl Serialize) -> Result<String> {
-    let mut command = serde_json::to_value(command)?;
-    command.sort_all_objects();
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&command)?)
-    ))
-}
-fn valid_sha256(digest: &str) -> bool {
-    digest.len() == 64
-        && digest
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
-fn timestamp(value: DateTime<Utc>) -> String {
-    value.to_rfc3339_opts(SecondsFormat::Nanos, true)
 }
 
 #[cfg(holon_lib_test_shard = "b")]

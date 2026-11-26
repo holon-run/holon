@@ -3347,6 +3347,12 @@ Control, startup, deletion/import actors and coherent root/read integration
 preserve this qualification and publication contract. Ordinary readers cannot
 fall back to storage or create a NoState Ready domain.
 
+Domain defines the prepared mutation descriptor and canonical digests.
+Storage checks the normalized descriptor and reads or inserts the receipt
+on the caller's SQLite view, retaining the original outcome JSON. Runtime
+validates the typed outcome against the business writes and resolves lost
+acknowledgements from a fresh view of the original attempt.
+
 
 Control Stop maintains Scheduling qualification in its original transaction. Its
 finite target set includes active Timers, the independent complete pending-Wake
