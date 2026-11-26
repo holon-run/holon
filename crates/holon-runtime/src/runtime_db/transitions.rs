@@ -5375,11 +5375,8 @@ fn agent_message_reply_trigger_tx<'a>(
     else {
         bail!("agent reply reference has no durable request boundary");
     };
-    let reply_rowid: i64 = tx.query_row(
-        "SELECT rowid FROM agent_message_deliveries WHERE delivery_id = ?1",
-        [&delivery.delivery_id],
-        |row| row.get(0),
-    )?;
+    let reply_rowid =
+        holon_storage::agent_message_delivery::delivery_rowid_on(tx, &delivery.delivery_id)?;
     if task.agent_id != message.agent_id
         || task.kind != crate::types::TaskKind::AgentMessageWait
         || response_delivery_id != Some(delivery.delivery_id.as_str())

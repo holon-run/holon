@@ -5,7 +5,7 @@
 //! no per-hop countdown on routing metadata and no client-supplied chain id.
 
 use anyhow::{bail, Context, Result};
-use chrono::Utc;
+use holon_storage::agent_message_delivery::chain_budget_exists_tx;
 use rusqlite::{params, OptionalExtension, Transaction};
 
 use super::delivery_by_message_id_tx;
@@ -17,9 +17,6 @@ use crate::types::{
     AdmissionContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryRecord, AuthorityClass,
     MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, TaskKind, TaskRecord,
 };
-
-/// First-release fixed allowance for one chain, including its first delivery.
-pub(crate) const MESSAGE_CHAIN_MAX_DELIVERIES: i64 = 16;
 
 /// Resolve the chain a newly prepared delivery is charged to.
 ///
@@ -91,12 +88,7 @@ fn chain_of_delivery_tx(
             chain_id: delivery.delivery_id.clone(),
         });
     };
-    let recorded: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM agent_message_chain_budgets WHERE chain_id = ?1)",
-        [&chain_id],
-        |row| row.get(0),
-    )?;
-    if !recorded {
+    if !chain_budget_exists_tx(tx, &chain_id)? {
         bail!(
             "delivery {} records message chain {chain_id} without its budget row",
             delivery.delivery_id
@@ -362,20 +354,12 @@ fn task_result_request_chain_tx(
     else {
         return Ok(None);
     };
-    let delivery = tx
-        .query_row(
-            "SELECT payload_json FROM agent_message_deliveries WHERE delivery_id = ?1",
-            [request_delivery_id],
-            |row| row.get::<_, String>(0),
+    let delivery = super::delivery_by_id(tx, request_delivery_id)?.with_context(|| {
+        format!(
+            "task {} records request delivery {request_delivery_id} without a ledger row",
+            task.id
         )
-        .optional()?
-        .with_context(|| {
-            format!(
-                "task {} records request delivery {request_delivery_id} without a ledger row",
-                task.id
-            )
-        })?;
-    let delivery: AgentMessageDeliveryRecord = serde_json::from_str(&delivery)?;
+    })?;
     if delivery.outcome != AgentMessageDeliveryOutcome::Accepted
         || delivery.caller.current_task_id.as_deref() != Some(task.id.as_str())
         || delivery.caller.caller_agent_id.as_deref() != Some(task.agent_id.as_str())
@@ -386,55 +370,4 @@ fn task_result_request_chain_tx(
         );
     }
     chain_of_delivery_tx(tx, &delivery).map(Some)
-}
-
-/// Check the limit before any target queue or wait writes in the admission transaction.
-pub(crate) fn exhausted_chain_limit_tx(
-    tx: &Transaction<'_>,
-    chain_id: &str,
-) -> Result<Option<i64>> {
-    Ok(tx
-        .query_row(
-            "SELECT max_deliveries FROM agent_message_chain_budgets
-             WHERE chain_id = ?1 AND accepted_count = max_deliveries",
-            [chain_id],
-            |row| row.get(0),
-        )
-        .optional()?)
-}
-
-/// Charge only after the queue write applies, in the same transaction that
-/// checked the limit and will commit the delivery ledger.
-pub(crate) fn charge_chain_budget_tx(tx: &Transaction<'_>, chain_id: &str) -> Result<()> {
-    let changed = tx.execute(
-        "UPDATE agent_message_chain_budgets
-         SET accepted_count = accepted_count + 1
-         WHERE chain_id = ?1 AND accepted_count < max_deliveries",
-        [chain_id],
-    )?;
-    if changed == 1 {
-        return Ok(());
-    }
-    // A compatibility anchor already stands for one accepted delivery.
-    let compatibility_anchor: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM agent_message_deliveries
-         WHERE delivery_id = ?1
-           AND json_extract(payload_json, '$.outcome') = 'accepted'
-           AND json_extract(payload_json, '$.message_chain_id') IS NULL)",
-        [chain_id],
-        |row| row.get(0),
-    )?;
-    let initial_count = if compatibility_anchor { 2 } else { 1 };
-    tx.execute(
-        "INSERT INTO agent_message_chain_budgets
-           (chain_id, max_deliveries, accepted_count, created_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![
-            chain_id,
-            MESSAGE_CHAIN_MAX_DELIVERIES,
-            initial_count,
-            super::timestamp(Utc::now()),
-        ],
-    )?;
-    Ok(())
 }

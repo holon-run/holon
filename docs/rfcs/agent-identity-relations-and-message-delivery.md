@@ -823,6 +823,11 @@ while preserving the internal rejection reason in restricted audit evidence.
 
 ## 8. Delivery Receipt And State
 
+Domain defines delivery state transitions. Storage reads the delivery ledger,
+persists receipts, compares state versions, and updates chain counters on the
+caller's SQLite transaction. Runtime authorizes routes and owns the transaction
+that records the delivery together with its queue and wait-task effects.
+
 The durable receipt is:
 
 ```text
