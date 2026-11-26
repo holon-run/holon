@@ -375,6 +375,7 @@ impl AgentProvider for UpdateThenCompleteWorkItemProvider {
         }
         assert!(!blocks.is_empty(), "unexpected provider call {call}");
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: request.material,
             blocks,
             stop_reason: None,
@@ -525,6 +526,7 @@ impl AgentProvider for CompleteWorkItemReportProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -576,6 +578,7 @@ impl AgentProvider for DetachedCompletionThenWaitProvider {
             call => panic!("unexpected provider call {call}"),
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -1260,6 +1263,7 @@ impl AgentProvider for AbandonCompletionReportProvider {
         }
         *calls += 1;
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::ToolUse {
                 id: format!("complete-work-{}", *calls),
@@ -1458,6 +1462,7 @@ impl AgentProvider for CompletionReportCleanupProvider {
             call => panic!("unexpected provider call {call}"),
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -1503,6 +1508,7 @@ impl AgentProvider for RevisionChangeCompletionReportProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -1557,6 +1563,7 @@ impl AgentProvider for CompleteThenExecProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -1608,6 +1615,7 @@ impl AgentProvider for StaleTextThenCompleteProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -1657,6 +1665,7 @@ impl AgentProvider for MultiCompleteWorkItemReportProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,

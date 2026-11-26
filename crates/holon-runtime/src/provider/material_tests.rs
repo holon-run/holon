@@ -34,6 +34,7 @@ async fn image_turn_result_and_error_keep_material_without_changing_classificati
                     Err(error)
                 } else {
                     Ok(crate::provider::ProviderTurnResponse {
+                        normalized_token_usage: None,
                         material: Default::default(),
                         blocks: Vec::new(),
                         stop_reason: None,

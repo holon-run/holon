@@ -600,6 +600,10 @@ impl OpenAiChatCompletionsProvider {
 
 #[async_trait]
 impl AgentProvider for OpenAiProvider {
+    fn transport_id(&self) -> Option<&'static str> {
+        Some("openai_responses")
+    }
+
     fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
         self.quota_identity.clone()
     }
@@ -1106,6 +1110,10 @@ pub(in super::super) fn native_search_transport_failure(
 
 #[async_trait]
 impl AgentProvider for OpenAiCodexProvider {
+    fn transport_id(&self) -> Option<&'static str> {
+        Some("openai_responses")
+    }
+
     fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
         Some(self.quota_identity.clone())
     }
@@ -1553,6 +1561,10 @@ impl AgentProvider for OpenAiCodexProvider {
 
 #[async_trait]
 impl AgentProvider for OpenAiChatCompletionsProvider {
+    fn transport_id(&self) -> Option<&'static str> {
+        Some("openai_chat")
+    }
+
     fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
         self.quota_identity.clone()
     }

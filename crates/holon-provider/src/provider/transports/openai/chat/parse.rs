@@ -1,8 +1,17 @@
 use super::super::*;
 use crate::openai_chat::{decode_response, ChatResponse, ChatResponseError};
+use crate::provider::{set_provider_transport_usage_evidence, AttemptTokenUsage};
 use holon_model_client::ContentPart;
 
 pub fn parse_chat_completion_response(response: Value) -> Result<ParsedOpenAiResponse> {
+    // `reasoning_tokens` lives in the raw usage block; the decoded `Usage`
+    // struct does not carry it. Capture it before `decode_response` consumes
+    // the payload.
+    let reasoning_tokens = response
+        .get("usage")
+        .and_then(|usage| usage.get("completion_tokens_details"))
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(Value::as_u64);
     let ChatResponse {
         completion: parsed,
         raw_message,
@@ -45,6 +54,17 @@ pub fn parse_chat_completion_response(response: Value) -> Result<ParsedOpenAiRes
         read_input_tokens: usage.cached_input_tokens.unwrap_or(0),
         creation_input_tokens: 0,
     });
+    // OpenAI Chat Completions `input_tokens` includes cache hits, so normalize
+    // as inclusive input. `output_tokens` already includes reasoning tokens.
+    let normalized_token_usage = usage.map(|usage| {
+        AttemptTokenUsage::from_inclusive_input(
+            usage.input_tokens,
+            usage.cached_input_tokens.unwrap_or(0),
+            0,
+            usage.output_tokens,
+            reasoning_tokens,
+        )
+    });
 
     // #4295: a completed turn with no usable text or tool calls must classify
     // as a retryable empty provider response instead of settling an empty
@@ -52,10 +72,14 @@ pub fn parse_chat_completion_response(response: Value) -> Result<ParsedOpenAiRes
     if parsed.finish_reason.as_deref() != Some("length")
         && !openai_blocks_have_countable_content(&blocks)
     {
-        return Err(empty_response_error(
-            "empty OpenAI Chat Completions response",
-            "response contained no usable text or tool calls",
-            crate::types::TokenUsage::new(input_tokens, output_tokens),
+        return Err(set_provider_transport_usage_evidence(
+            empty_response_error(
+                "empty OpenAI Chat Completions response",
+                "response contained no usable text or tool calls",
+                crate::types::TokenUsage::new(input_tokens, output_tokens),
+            ),
+            cache_usage,
+            normalized_token_usage,
         ));
     }
 
@@ -68,6 +92,7 @@ pub fn parse_chat_completion_response(response: Value) -> Result<ParsedOpenAiRes
             input_tokens,
             output_tokens,
             cache_usage,
+            normalized_token_usage,
             provider_message_id: response_id.clone(),
             provider_request_id: None,
             request_diagnostics: None,

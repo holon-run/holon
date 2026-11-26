@@ -927,6 +927,7 @@ impl AgentProvider for OneToolThenTextProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -1076,6 +1077,7 @@ impl AgentProvider for ReportCompactionProvider {
         }) {
             *self.checkpoint_calls.lock().await += 1;
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: request.material,
                 blocks: match self.checkpoint_output {
                     ReportCheckpointOutput::Text => vec![ModelBlock::Text {
@@ -1173,6 +1175,7 @@ impl AgentProvider for TruncatingProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -1206,6 +1209,7 @@ impl AgentProvider for TruncatingProvider {
         }));
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![
                 ModelBlock::Text {
@@ -1239,6 +1243,7 @@ impl AgentProvider for TruncatingProvider {
 impl AgentProvider for EmptyTruncatingProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: Vec::new(),
             stop_reason: Some("max_tokens".into()),
@@ -1256,6 +1261,7 @@ impl AgentProvider for EmptyTruncatingProvider {
 impl AgentProvider for TimelineProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "done with fallback history".into(),
@@ -1295,11 +1301,14 @@ impl AgentProvider for TimelineProvider {
                         backoff_source: None,
                         token_usage: None,
                         cache_usage: None,
+                        normalized_token_usage: None,
                         provider_message_id: None,
                         provider_request_id: None,
                         provider_http_trace_id: None,
                         transport_timeline: None,
                         transport_diagnostics: None,
+                        transport: None,
+                        served_service_tier: None,
                     },
                     ProviderAttemptRecord {
                         provider: "anthropic".into(),
@@ -1317,11 +1326,14 @@ impl AgentProvider for TimelineProvider {
                         backoff_source: None,
                         token_usage: Some(TokenUsage::new(12, 6)),
                         cache_usage: None,
+                        normalized_token_usage: None,
                         provider_message_id: None,
                         provider_request_id: None,
                         provider_http_trace_id: None,
                         transport_timeline: None,
                         transport_diagnostics: None,
+                        transport: None,
+                        served_service_tier: None,
                     },
                 ],
                 aggregated_token_usage: Some(TokenUsage::new(12, 6)),
@@ -1346,6 +1358,7 @@ impl AgentProvider for ToolCaptureProvider {
                 .collect::<Vec<_>>(),
         );
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "captured tool set".into(),
@@ -1369,6 +1382,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
         *calls += 1;
         let response = match *calls {
             1 => ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -1394,6 +1408,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 request_diagnostics: None,
             },
             2 => ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -1419,6 +1434,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 request_diagnostics: None,
             },
             3 => ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -1444,6 +1460,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 request_diagnostics: None,
             },
             5 => ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: Vec::new(),
                 stop_reason: Some("end_turn".into()),
@@ -1455,6 +1472,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 request_diagnostics: None,
             },
             _ => ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Finished after compacted continuation.".into(),
@@ -1479,6 +1497,7 @@ impl AgentProvider for BaselineOverBudgetProbeProvider {
         *calls += 1;
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-baseline-over-budget".into(),
@@ -1509,6 +1528,7 @@ impl AgentProvider for LargeBudgetContinuationProbeProvider {
         *calls += 1;
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-large-budget-continuation".into(),
@@ -1528,6 +1548,7 @@ impl AgentProvider for LargeBudgetContinuationProbeProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Finished within the resolved model prompt budget.".into(),
@@ -1559,6 +1580,7 @@ impl AgentProvider for SleepOnlyToolProvider {
         );
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::ToolUse {
                 id: "sleep-1".into(),
@@ -1595,6 +1617,7 @@ impl AgentProvider for WaitForOnlyToolProvider {
         );
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::ToolUse {
                 id: "wait-for-1".into(),
@@ -1910,6 +1933,7 @@ impl AgentProvider for WaitForFinalReportProvider {
             }
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -1945,6 +1969,7 @@ impl AgentProvider for AbandonWaitForFinalReportProvider {
             Vec::new()
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -1965,6 +1990,7 @@ impl AgentProvider for DisallowedToolThenTextProvider {
         *calls += 1;
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "legacy-task".into(),
@@ -2000,6 +2026,7 @@ impl AgentProvider for DisallowedToolThenTextProvider {
                     "continuation should receive a structured error for the unavailable tool"
                 );
                 Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                     blocks: vec![ModelBlock::Text {
                         text: "Recovered after unavailable tool.".into(),
@@ -2025,6 +2052,7 @@ impl AgentProvider for MaxOutputMutationToolProvider {
         *calls += 1;
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "truncated-patch".into(),
@@ -2060,6 +2088,7 @@ impl AgentProvider for MaxOutputMutationToolProvider {
                     "continuation should receive a structured truncation error"
                 );
                 Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                     blocks: vec![ModelBlock::Text {
                         text: "Recovered after rejected truncated mutation.".into(),
@@ -2100,6 +2129,7 @@ impl AgentProvider for FailingTimelineProvider {
                     backoff_source: None,
                     token_usage: None,
                     cache_usage: None,
+                    normalized_token_usage: None,
                     provider_message_id: None,
                     provider_request_id: None,
                     provider_http_trace_id: None,
@@ -2134,8 +2164,10 @@ impl AgentProvider for FailingTimelineProvider {
                         quota_identity: None,
                         retry_after_not_before: None,
                         throttle: None,
-                        source_chain: vec!["connection reset by peer".into()]
-                    })
+                        source_chain: vec!["connection reset by peer".into()],
+                    }),
+                    transport: None,
+                    served_service_tier: None,
                 }],
                 aggregated_token_usage: None,
                 requested_model_ref: "openai/gpt-5.4".into(),
@@ -2157,6 +2189,7 @@ impl AgentProvider for RecentTurnsRecoveryProbeProvider {
         *calls += 1;
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-recent-turns-recovery".into(),
@@ -2176,6 +2209,7 @@ impl AgentProvider for RecentTurnsRecoveryProbeProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Recovered by shrinking recent turns.".into(),
@@ -2215,11 +2249,14 @@ impl AgentProvider for ContextLengthExceededProvider {
                     backoff_source: None,
                     token_usage: Some(TokenUsage::new(125_166, 0)),
                     cache_usage: None,
+                    normalized_token_usage: None,
                     provider_message_id: None,
                     provider_request_id: None,
                     provider_http_trace_id: None,
                     transport_timeline: None,
-                    transport_diagnostics: None
+                    transport_diagnostics: None,
+                    transport: None,
+                    served_service_tier: None,
                 }],
                 aggregated_token_usage: Some(TokenUsage::new(125_166, 0)),
                 requested_model_ref: "openai-codex/gpt-5.3-codex-spark".into(),
@@ -2268,6 +2305,7 @@ impl AgentProvider for RecoveringContextLengthProvider {
                         backoff_source: None,
                         token_usage: None,
                         cache_usage: None,
+                        normalized_token_usage: None,
                         provider_message_id: None,
                         provider_request_id: None,
                         provider_http_trace_id: None,
@@ -2279,6 +2317,8 @@ impl AgentProvider for RecoveringContextLengthProvider {
                             streaming: false,
                         }),
                         transport_diagnostics: None,
+                        transport: None,
+                        served_service_tier: None,
                     }],
                     requested_model_ref: "test/model".into(),
                     active_model_ref: None,
@@ -2300,6 +2340,7 @@ impl AgentProvider for RecoveringContextLengthProvider {
             ));
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Recovered after reducing recent turns.".into(),
@@ -2337,11 +2378,14 @@ impl AgentProvider for DeferredFallbackProvider {
                     backoff_source: None,
                     token_usage: None,
                     cache_usage: None,
+                    normalized_token_usage: None,
                     provider_message_id: None,
                     provider_request_id: None,
                     provider_http_trace_id: None,
                     transport_timeline: None,
                     transport_diagnostics: None,
+                    transport: None,
+                    served_service_tier: None,
                 }],
                 aggregated_token_usage: None,
                 requested_model_ref: "openai/gpt-5.4".into(),
@@ -2379,11 +2423,14 @@ impl AgentProvider for DeferredNetworkFallbackProvider {
                     backoff_source: None,
                     token_usage: None,
                     cache_usage: None,
+                    normalized_token_usage: None,
                     provider_message_id: None,
                     provider_request_id: None,
                     provider_http_trace_id: None,
                     transport_diagnostics: None,
                     transport_timeline: None,
+                    transport: None,
+                    served_service_tier: None,
                 }],
                 aggregated_token_usage: None,
                 requested_model_ref: "openai/gpt-5.4".into(),
@@ -2406,6 +2453,7 @@ impl AgentProvider for TextThenFailingFallbackProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Partial report heading".into(),
@@ -2439,11 +2487,14 @@ impl AgentProvider for TextThenFailingFallbackProvider {
                     backoff_source: None,
                     token_usage: None,
                     cache_usage: None,
+                    normalized_token_usage: None,
                     provider_message_id: None,
                     provider_request_id: None,
                     provider_http_trace_id: None,
                     transport_timeline: None,
                     transport_diagnostics: None,
+                    transport: None,
+                    served_service_tier: None,
                 }],
                 aggregated_token_usage: None,
                 requested_model_ref: "openai/gpt-5.4".into(),
@@ -2515,6 +2566,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         if request.tools.is_empty() {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "What changed: app.txt\nWhy: to address the requested task.\nVerification: successful verification command completed.".into()
@@ -2574,6 +2626,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
         };
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -2610,6 +2663,7 @@ impl AgentProvider for SkillReadProvider {
         };
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -2643,6 +2697,7 @@ impl AgentProvider for SkillActivationCommandProvider {
         };
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -2662,6 +2717,7 @@ impl AgentProvider for CountingProvider {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: self.reply.into(),

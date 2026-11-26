@@ -1,5 +1,5 @@
 pub use holon_domain::diagnostics::{
-    RecentTrace, RecentTraceSummary, TraceAttributes, TraceSpan, TraceSpanStatus,
+    RecentTrace, RecentTraceSummary, TraceAttributes, TraceSpan, TraceSpanStatus, TraceTokenUsage,
 };
 
 use std::collections::VecDeque;

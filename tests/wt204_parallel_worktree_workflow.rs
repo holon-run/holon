@@ -127,6 +127,7 @@ impl AgentProvider for DelayedProvider {
             .unwrap_or("worktree attempt");
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: format!("Completed candidate worktree attempt for: {}", prompt),

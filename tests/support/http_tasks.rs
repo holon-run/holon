@@ -53,6 +53,7 @@ impl AgentProvider for BlockingCompletionProvider {
         self.entered.notify_one();
         self.release.notified().await;
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![holon::provider::ModelBlock::Text {
                 text: "active execution released".into(),

@@ -338,6 +338,7 @@ pub fn single_route(
         vec![ProviderCandidate {
             model_ref: format!("{provider_name}@default/{model}"),
             provider_name: provider_name.into(),
+            transport_id: None,
             resolved_image_input: true,
             provider,
         }],

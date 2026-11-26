@@ -324,6 +324,7 @@ impl AgentProvider for ImmediateWaitContinuationProvider {
                 .await
                 .unwrap();
                 return Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                     blocks: vec![ModelBlock::Text {
                         text: "Obsolete waiting report.".into(),
@@ -417,6 +418,7 @@ impl AgentProvider for ImmediateWaitContinuationProvider {
             ),
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -1660,6 +1662,7 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
 impl AgentProvider for StablePrefixDiagnosticsProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "done".into(),
@@ -1820,6 +1823,7 @@ impl AgentProvider for PickThenExecProvider {
             panic!("terminal PickWorkItem should end the turn");
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![
                 ModelBlock::ToolUse {
@@ -2949,6 +2953,7 @@ impl AgentProvider for PickThenSilentOperatorWaitProvider {
                 .clone()
                 .expect("target work item id must be set before the turn");
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -2986,6 +2991,7 @@ impl AgentProvider for PickThenSilentOperatorWaitProvider {
             });
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Waiting for the operator decision.".into(),
@@ -4972,11 +4978,14 @@ async fn single_candidate_quota_failures_park_without_recovery_enqueue() {
                 backoff_source: None,
                 token_usage: None,
                 cache_usage: None,
+                normalized_token_usage: None,
                 provider_message_id: None,
                 provider_request_id: None,
                 provider_http_trace_id: None,
                 transport_diagnostics: None,
                 transport_timeline: None,
+                transport: None,
+                served_service_tier: None,
             }],
             requested_model_ref: "test/model".into(),
             active_model_ref: Some("test/model".into()),
@@ -5082,11 +5091,14 @@ async fn parked_quota_work_item_probes_after_deadline_and_resolves_on_success() 
                 backoff_source: None,
                 token_usage: None,
                 cache_usage: None,
+                normalized_token_usage: None,
                 provider_message_id: None,
                 provider_request_id: None,
                 provider_http_trace_id: None,
                 transport_diagnostics: None,
                 transport_timeline: None,
+                transport: None,
+                served_service_tier: None,
             }],
             requested_model_ref: "default".into(),
             active_model_ref: Some("default".into()),
@@ -6192,16 +6204,20 @@ fn turn_event_attempt(
         backoff_source: None,
         token_usage: None,
         cache_usage: None,
+        normalized_token_usage: None,
         provider_message_id: None,
         provider_request_id: None,
         provider_http_trace_id: None,
         transport_diagnostics: None,
         transport_timeline: None,
+        transport: None,
+        served_service_tier: None,
     }
 }
 
 fn turn_event_response(text: &str) -> ProviderTurnResponse {
     ProviderTurnResponse {
+        normalized_token_usage: None,
         material: Default::default(),
         blocks: vec![ModelBlock::Text { text: text.into() }],
         stop_reason: Some("end_turn".into()),

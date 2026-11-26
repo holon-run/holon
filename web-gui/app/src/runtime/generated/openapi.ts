@@ -7496,19 +7496,80 @@ export interface components {
                     /** Format: uint64 */
                     max_attempts?: number | null;
                     message_id?: string | null;
+                    /** @description Full resolved route ref (`provider@endpoint/model`) for this attempt. */
+                    model_ref?: string | null;
                     outcome?: string | null;
                     /** Format: uint64 */
                     output_tokens?: number | null;
                     provider?: string | null;
+                    /**
+                     * @description Endpoint segment of `model_ref` (`default`, `token-plan`, `messages`,
+                     *      ...). Paired with `provider` it is the surviving route identity when one
+                     *      provider id folds several billing endpoints.
+                     */
+                    provider_endpoint?: string | null;
                     provider_http_trace_id?: string | null;
                     provider_message_id?: string | null;
                     provider_request_id?: string | null;
                     /** Format: uint64 */
                     round?: number | null;
                     run_id?: string | null;
+                    /**
+                     * @description Service tier the provider actually served, when the transport reports
+                     *      it. `None` means "not reported", not "default".
+                     */
+                    served_service_tier?: string | null;
                     task_id?: string | null;
                     tool_name?: string | null;
+                    /**
+                     * @description Wire transport of this attempt (`anthropic_messages`, `openai_chat`,
+                     *      `openai_responses`, `gemini_generate_content`).
+                     */
+                    transport?: string | null;
                     turn_id?: string | null;
+                    /**
+                     * @description Transport-normalized token usage for one provider attempt
+                     *      (`attempt_token_usage.v1`).
+                     *
+                     *      The four flat token fields on [`TraceAttributes`]
+                     *      (`input_tokens`/`output_tokens`/`cache_read_input_tokens`/
+                     *      `cache_creation_input_tokens`) stay as raw per-transport wire evidence and
+                     *      keep their historical (transport-dependent) meaning. This object is the
+                     *      normalized view that downstream cost code can use without branching on
+                     *      transport.
+                     */
+                    usage?: {
+                        /**
+                         * Format: uint64
+                         * @description Cache read hits.
+                         */
+                        cache_read_tokens: number;
+                        /**
+                         * Format: uint64
+                         * @description Cache writes.
+                         */
+                        cache_write_tokens: number;
+                        /**
+                         * Format: uint64
+                         * @description Total billed output, including reasoning / thinking tokens.
+                         */
+                        output_tokens: number;
+                        /**
+                         * Format: uint64
+                         * @description Subset of `output_tokens`; `None` when the transport does not report it.
+                         */
+                        reasoning_tokens?: number | null;
+                        /**
+                         * @description Schema version of the normalization contract, currently
+                         *      `"attempt_token_usage.v1"`.
+                         */
+                        semantics: string;
+                        /**
+                         * Format: uint64
+                         * @description Input billed at full price (cache reads/writes excluded).
+                         */
+                        uncached_input_tokens: number;
+                    } | null;
                     work_item_id?: string | null;
                 };
                 /** Format: date-time */

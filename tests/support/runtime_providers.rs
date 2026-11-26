@@ -49,6 +49,7 @@ impl AgentProvider for ToolUsingProvider {
         if *calls == 1 {
             assert!(!request.tools.is_empty());
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "tool-1".into(),
@@ -69,6 +70,7 @@ impl AgentProvider for ToolUsingProvider {
 
         assert!(preserves_prior_tool_context(&request));
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "tool loop complete".into(),
@@ -106,6 +108,7 @@ impl AgentProvider for FileEditingProvider {
             assert!(request.tools.iter().any(|tool| tool.name == "ApplyPatch"));
             assert!(request.tools.iter().any(|tool| tool.name == "ExecCommand"));
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::ToolUse {
@@ -140,6 +143,7 @@ impl AgentProvider for FileEditingProvider {
 
         assert!(preserves_prior_tool_context(&request));
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "file tools complete".into(),
@@ -179,6 +183,7 @@ impl AgentProvider for TerminalResultBriefProvider {
                 assert!(request.tools.iter().any(|tool| tool.name == "ApplyPatch"));
                 assert!(request.tools.iter().any(|tool| tool.name == "ExecCommand"));
                 Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                     blocks: vec![
                         ModelBlock::Text {
@@ -214,6 +219,7 @@ impl AgentProvider for TerminalResultBriefProvider {
                 })
             }
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -249,6 +255,7 @@ impl AgentProvider for TerminalResultBriefProvider {
                     "terminal delivery round should have no tools"
                 );
                 Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                     blocks: vec![ModelBlock::Text {
                         text: "What changed: notes/result.txt\nWhy: to address the requested task: write and verify a file.\nVerification: successful verification command completed with exit status 0.".into()
@@ -289,6 +296,7 @@ impl AgentProvider for SleepOnlyCompletionAfterTextProvider {
             1 => {
                 assert!(request.tools.iter().any(|tool| tool.name == "ApplyPatch"));
                 Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                     blocks: vec![
                         ModelBlock::Text {
@@ -315,6 +323,7 @@ impl AgentProvider for SleepOnlyCompletionAfterTextProvider {
                 })
             }
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep-1".into(),
@@ -359,6 +368,7 @@ impl AgentProvider for ShellProvider {
         if *calls == 1 {
             assert!(request.tools.iter().any(|tool| tool.name == "ExecCommand"));
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-1".into(),
@@ -395,6 +405,7 @@ impl AgentProvider for ShellProvider {
             .unwrap_or_default();
         assert!(tool_result_text.contains("shell_ok"));
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "shell tools complete".into(),
@@ -433,6 +444,7 @@ impl AgentProvider for TruncatedShellReinjectionProvider {
         if *calls == 1 {
             assert!(request.tools.iter().any(|tool| tool.name == "ExecCommand"));
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-truncated-1".into(),
@@ -485,6 +497,7 @@ impl AgentProvider for TruncatedShellReinjectionProvider {
         assert!(!tool_result_text.contains("SHELL_OUTPUT_END"));
         assert!(!tool_result_text.contains(&self.payload));
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "truncated shell reinjection observed".into(),
@@ -520,6 +533,7 @@ impl AgentProvider for LongShellProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-long-1".into(),
@@ -559,6 +573,7 @@ impl AgentProvider for LongShellProvider {
         assert!(tool_result_text.contains("Task:"));
         assert!(tool_result_text.contains("Initial output:"));
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "auto promotion observed".into(),
@@ -598,6 +613,7 @@ impl AgentProvider for DelegatedBoundaryProvider {
         }
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text { text: text.into() }],
             stop_reason: None,
@@ -660,6 +676,7 @@ impl AgentProvider for WakeHintProvider {
                 .expect("wake hint provider semaphore should remain open")
                 .forget();
             Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -687,6 +704,7 @@ impl AgentProvider for WakeHintProvider {
             })
         } else {
             Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "wake follow-up complete".into(),
@@ -773,6 +791,7 @@ impl AgentProvider for RecordingPromptProvider {
             .unwrap_or_else(|| "recorded turn".into());
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text { text: reply }],
             stop_reason: None,
@@ -806,6 +825,7 @@ impl AgentProvider for ToolErrorProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::ToolUse {
@@ -874,6 +894,7 @@ impl AgentProvider for ToolErrorProvider {
             .contains("tool Read was not exposed in this round")));
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "tool failures handled".into(),
@@ -957,6 +978,7 @@ impl AgentProvider for UseWorkspaceProvider {
                 .iter()
                 .any(|tool| tool.name == "CreateWorktree"));
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "workspace-1".into(),
@@ -997,6 +1019,7 @@ impl AgentProvider for UseWorkspaceProvider {
         assert!(tool_result_text.contains("\"base_ref_applied\":true"));
         assert!(tool_result_text.contains("\"activated\":true"));
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "entered worktree successfully".into(),
@@ -1051,6 +1074,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                     .iter()
                     .any(|tool| tool.name == "CreateWorktree"));
                 Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                     blocks: vec![ModelBlock::ToolUse {
                         id: "use-1".into(),
@@ -1073,6 +1097,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                 })
             }
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "entered worktree".into(),
@@ -1091,6 +1116,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                     .iter()
                     .any(|tool| tool.name == "SwitchWorkspace"));
                 Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                     blocks: vec![ModelBlock::ToolUse {
                         id: "use-home-1".into(),
@@ -1124,6 +1150,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                     .iter()
                     .any(|result| result.content.contains(&self.expected_exit_result)));
                 Ok(ProviderTurnResponse {
+                    normalized_token_usage: None,
                     material: Default::default(),
                     blocks: vec![ModelBlock::Text {
                         text: "exited worktree".into(),
@@ -1138,6 +1165,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                 })
             }
             _ => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "done".into(),
@@ -1181,6 +1209,7 @@ impl AgentProvider for WorktreeCapturingProvider {
             .await
             .push(request.prompt_frame.system_prompt.clone());
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: self.reply.clone(),
@@ -1204,6 +1233,7 @@ impl AgentProvider for DelayedTextProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         sleep(Duration::from_millis(250)).await;
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Made changes in worktree".into(),

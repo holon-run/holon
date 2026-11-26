@@ -441,6 +441,7 @@ async fn messages_responses_comparison_matrix() -> anyhow::Result<()> {
 fn comparison_fixture_validates_repair_errors_and_policy() {
     fn response(blocks: Vec<ModelBlock>) -> ProviderTurnResponse {
         ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,

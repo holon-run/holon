@@ -1,6 +1,8 @@
 use super::super::*;
 use super::continuation::{canonicalize_openai_provider_item, normalize_openai_function_arguments};
-use crate::provider::ProviderRequestMaterial;
+use crate::provider::{
+    set_provider_transport_usage_evidence, AttemptTokenUsage, ProviderRequestMaterial,
+};
 use crate::resource_io;
 use crate::types::Citation;
 use std::collections::HashSet;
@@ -439,6 +441,39 @@ pub fn parse_openai_response_with_transport_state(response: Value) -> Result<Par
         .and_then(|usage| usage.get("output_tokens"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    // `reasoning_tokens` lives under `output_tokens_details` on the raw usage
+    // object. OpenAI responses `input_tokens` includes cache hits, so normalize
+    // as inclusive input; `output_tokens` already includes reasoning tokens.
+    let reasoning_tokens = usage
+        .and_then(|usage| usage.get("output_tokens_details"))
+        .and_then(Value::as_object)
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(Value::as_u64);
+    let cache_usage = usage.map(|usage| ProviderCacheUsage {
+        read_input_tokens: usage
+            .get("input_tokens_details")
+            .and_then(Value::as_object)
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                usage
+                    .get("prompt_tokens_details")
+                    .and_then(Value::as_object)
+                    .and_then(|details| details.get("cached_tokens"))
+                    .and_then(Value::as_u64)
+            })
+            .unwrap_or(0),
+        creation_input_tokens: 0,
+    });
+    let normalized_token_usage = cache_usage.as_ref().map(|cache| {
+        AttemptTokenUsage::from_inclusive_input(
+            input_tokens,
+            cache.read_input_tokens,
+            0,
+            output_tokens,
+            reasoning_tokens,
+        )
+    });
     let mut blocks = Vec::new();
     let mut saw_nonempty_wire_item = false;
 
@@ -549,10 +584,14 @@ pub fn parse_openai_response_with_transport_state(response: Value) -> Result<Par
 
     if blocks.is_empty() {
         if !saw_nonempty_wire_item {
-            return Err(empty_response_error(
-                "empty OpenAI-style response",
-                "response contained no output/content items",
-                crate::types::TokenUsage::new(input_tokens, output_tokens),
+            return Err(set_provider_transport_usage_evidence(
+                empty_response_error(
+                    "empty OpenAI-style response",
+                    "response contained no output/content items",
+                    crate::types::TokenUsage::new(input_tokens, output_tokens),
+                ),
+                cache_usage,
+                normalized_token_usage,
             ));
         }
         return Err(invalid_response_error(
@@ -566,29 +605,17 @@ pub fn parse_openai_response_with_transport_state(response: Value) -> Result<Par
     // citations-only output). Classify those as retryable empty responses
     // instead of successful turns, mirroring the zero-block guard above.
     if !openai_blocks_have_countable_content(&blocks) {
-        return Err(empty_response_error(
-            "empty OpenAI-style response",
-            "response contained no countable content blocks",
-            crate::types::TokenUsage::new(input_tokens, output_tokens),
+        return Err(set_provider_transport_usage_evidence(
+            empty_response_error(
+                "empty OpenAI-style response",
+                "response contained no countable content blocks",
+                crate::types::TokenUsage::new(input_tokens, output_tokens),
+            ),
+            cache_usage,
+            normalized_token_usage,
         ));
     }
 
-    let cache_usage = usage.map(|usage| ProviderCacheUsage {
-        read_input_tokens: usage
-            .get("input_tokens_details")
-            .and_then(Value::as_object)
-            .and_then(|details| details.get("cached_tokens"))
-            .and_then(Value::as_u64)
-            .or_else(|| {
-                usage
-                    .get("prompt_tokens_details")
-                    .and_then(Value::as_object)
-                    .and_then(|details| details.get("cached_tokens"))
-                    .and_then(Value::as_u64)
-            })
-            .unwrap_or(0),
-        creation_input_tokens: 0,
-    });
     Ok(ParsedOpenAiResponse {
         served_service_tier: response
             .get("service_tier")
@@ -617,6 +644,7 @@ pub fn parse_openai_response_with_transport_state(response: Value) -> Result<Par
             input_tokens,
             output_tokens,
             cache_usage,
+            normalized_token_usage,
             provider_message_id: response_id.clone(),
             provider_request_id: None,
             request_diagnostics: None,
@@ -673,6 +701,7 @@ pub fn parse_native_web_search_response_with_transport_state(
             input_tokens,
             output_tokens,
             cache_usage: None,
+            normalized_token_usage: None,
             provider_message_id: response_id.clone(),
             provider_request_id: None,
             request_diagnostics: None,

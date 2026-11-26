@@ -12,8 +12,8 @@ use crate::{
     provider::{
         builtin_web_search_probe_turn_request,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
-        native_web_search_turn_request, AgentProvider, ConversationMessage, ModelBlock,
-        ModelToolCallKind, ProviderBlockData, ProviderBuiltinWebSearchCapability,
+        native_web_search_turn_request, AgentProvider, AttemptTokenUsage, ConversationMessage,
+        ModelBlock, ModelToolCallKind, ProviderBlockData, ProviderBuiltinWebSearchCapability,
         ProviderCacheUsage, ProviderContextBudgetDiagnostics, ProviderImageData,
         ProviderNativeSearchFailure, ProviderNativeSearchOutcome,
         ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
@@ -30,8 +30,9 @@ use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
     empty_response_error_with_trace, invalid_response_error_with_trace, parse_retry_after,
     provider_transport_error_with_code, provider_transport_error_with_evidence,
-    sanitize_transport_url, timeout_transport_error_with_trace, ProviderFailureClassification,
-    ProviderFailureKind, RetryDisposition,
+    sanitize_transport_url, set_provider_transport_usage_evidence,
+    timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
+    RetryDisposition,
 };
 use crate::types::TokenUsage;
 
@@ -363,6 +364,10 @@ impl GeminiProvider {
 
 #[async_trait]
 impl AgentProvider for GeminiProvider {
+    fn transport_id(&self) -> Option<&'static str> {
+        Some("gemini_generate_content")
+    }
+
     fn quota_identity(&self) -> Option<crate::provider::ProviderQuotaIdentity> {
         self.quota_identity.clone()
     }
@@ -922,6 +927,18 @@ fn gemini_response_to_provider_turn_response(
         read_input_tokens: usage.cached_content_token_count.unwrap_or(0),
         creation_input_tokens: 0,
     });
+    // `promptTokenCount` includes cached content, so normalize as inclusive
+    // input. Gemini output already folds thoughts into `output_tokens`, and
+    // `thoughtsTokenCount` is reported separately for tiered pricing.
+    let normalized_token_usage = usage_metadata.map(|usage| {
+        AttemptTokenUsage::from_inclusive_input(
+            usage.prompt_token_count.unwrap_or(0),
+            usage.cached_content_token_count.unwrap_or(0),
+            0,
+            usage.candidates_token_count.unwrap_or(0) + usage.thoughts_token_count.unwrap_or(0),
+            usage.thoughts_token_count,
+        )
+    });
     let candidate = parsed.candidates.into_iter().next();
     let prompt_block = parsed
         .prompt_feedback
@@ -1000,15 +1017,19 @@ fn gemini_response_to_provider_turn_response(
             _ => false,
         })
     {
-        return Err(empty_response_error_with_trace(
-            "empty Gemini response",
-            "response_protocol",
-            "gemini",
-            model_ref,
-            url,
-            "response contained no usable text or tool calls",
-            trace,
-            usage,
+        return Err(set_provider_transport_usage_evidence(
+            empty_response_error_with_trace(
+                "empty Gemini response",
+                "response_protocol",
+                "gemini",
+                model_ref,
+                url,
+                "response contained no usable text or tool calls",
+                trace,
+                usage,
+            ),
+            cache_usage,
+            normalized_token_usage,
         ));
     }
     Ok(ProviderTurnResponse {
@@ -1018,6 +1039,7 @@ fn gemini_response_to_provider_turn_response(
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         cache_usage,
+        normalized_token_usage,
         provider_message_id: None,
         provider_request_id: None,
         request_diagnostics: Some(ProviderRequestDiagnostics {

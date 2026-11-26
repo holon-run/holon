@@ -8,9 +8,10 @@ use thiserror::Error;
 use tokio::time::Duration;
 
 use super::{
-    http_trace::ProviderHttpTraceRequest, ProviderFallbackDisposition, ProviderThrottleHintSource,
-    ProviderThrottleKind, ProviderThrottleMetadata, ProviderThrottleReason,
-    ProviderTransportDiagnostics, ReqwestTransportDiagnostics,
+    http_trace::ProviderHttpTraceRequest, AttemptTokenUsage, ProviderCacheUsage,
+    ProviderFallbackDisposition, ProviderThrottleHintSource, ProviderThrottleKind,
+    ProviderThrottleMetadata, ProviderThrottleReason, ProviderTransportDiagnostics,
+    ReqwestTransportDiagnostics,
 };
 use crate::types::TokenUsage;
 
@@ -64,6 +65,13 @@ pub struct ProviderTransportError {
     pub retry_after: Option<Duration>,
     pub diagnostics: Option<ProviderTransportDiagnostics>,
     pub token_usage: Option<TokenUsage>,
+    /// Raw prompt-cache accounting observed on the failing response, when the
+    /// transport parsed a usage block before classifying the failure. Mirrors
+    /// `ProviderTurnResponse.cache_usage` on the success path so failed
+    /// attempts do not silently drop cache attribution.
+    pub cache_usage: Option<ProviderCacheUsage>,
+    /// Transport-normalized usage for this attempt (`attempt_token_usage.v1`).
+    pub normalized_token_usage: Option<AttemptTokenUsage>,
     /// Bounded, locally-authored evidence about the failure (for example
     /// attachment budget counts). Entries are presentation evidence only:
     /// they never come from provider payloads and never affect retry,
@@ -443,11 +451,33 @@ pub fn provider_transport_error_with_evidence(
         status,
         diagnostics,
         token_usage,
+        cache_usage: None,
+        normalized_token_usage: None,
         retry_after,
         details: BTreeMap::new(),
         message: message.into(),
     }
     .into()
+}
+
+/// Attach raw cache accounting and transport-normalized usage to a transport
+/// error. Called by transports when the failing response already carried a
+/// usage block, so failed attempts keep cache/token attribution instead of
+/// collapsing to `None` in the attempt record.
+pub fn set_provider_transport_usage_evidence(
+    mut error: anyhow::Error,
+    cache_usage: Option<ProviderCacheUsage>,
+    normalized_token_usage: Option<AttemptTokenUsage>,
+) -> anyhow::Error {
+    if let Some(transport_error) = error.downcast_mut::<ProviderTransportError>() {
+        if cache_usage.is_some() {
+            transport_error.cache_usage = cache_usage;
+        }
+        if normalized_token_usage.is_some() {
+            transport_error.normalized_token_usage = normalized_token_usage;
+        }
+    }
+    error
 }
 
 pub fn provider_transport_error_with_code(

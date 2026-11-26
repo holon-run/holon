@@ -110,6 +110,7 @@ struct TokenReportingProvider;
 impl AgentProvider for TokenReportingProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "token counted result".into(),
@@ -137,6 +138,7 @@ impl AgentProvider for DelayedProvider {
             sleep(Duration::from_millis(1_300)).await;
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: if call == 0 {
@@ -266,6 +268,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         if request.tools.is_empty() {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Implemented broad prompt/context snapshot coverage, then fixed annotation warnings in a later continuation. Verification: focused tests passed.".into(),
@@ -288,6 +291,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
             .expect("test should seed a work item id before provider use");
         if *self.after_completion.lock().await {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Fixed two test annotation issues.".into(),
@@ -305,6 +309,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
             *self.complete_next.lock().await = false;
             *self.after_completion.lock().await = true;
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -354,6 +359,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
         };
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,
@@ -500,6 +506,7 @@ impl AgentProvider for FileEditingProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::ToolUse {
@@ -533,6 +540,7 @@ impl AgentProvider for FileEditingProvider {
         }
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "file tools complete".into(),
@@ -592,6 +600,7 @@ impl AgentProvider for MultiMutatingToolsProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::ToolUse {
@@ -633,6 +642,7 @@ impl AgentProvider for MultiMutatingToolsProvider {
         }
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "multiple mutating tools complete".into(),
@@ -715,6 +725,7 @@ impl AgentProvider for TerminalDeliveryProvider {
 
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::ToolUse {
@@ -746,6 +757,7 @@ impl AgentProvider for TerminalDeliveryProvider {
             request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -806,6 +818,7 @@ impl AgentProvider for SleepOnlyTerminalProvider {
 
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "patch-1".into(),
@@ -825,6 +838,7 @@ impl AgentProvider for SleepOnlyTerminalProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep-1".into(),
@@ -856,6 +870,7 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
 
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::ToolUse {
@@ -887,6 +902,7 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
@@ -1011,6 +1027,7 @@ impl AgentProvider for SleepTaskProvider {
             assert!(request.tools.iter().all(|tool| tool.name != "Sleep"));
             assert!(request.tools.iter().any(|tool| tool.name == "WaitFor"));
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),
@@ -1033,6 +1050,7 @@ impl AgentProvider for SleepTaskProvider {
         }
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "sleep finished".into(),
@@ -1094,6 +1112,7 @@ impl AgentProvider for CommandTaskProvider {
         if *calls == 1 {
             assert!(request.tools.iter().any(|tool| tool.name == "ExecCommand"));
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),
@@ -1120,6 +1139,7 @@ impl AgentProvider for CommandTaskProvider {
         }
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "command task queued".into(),
@@ -1358,6 +1378,7 @@ impl AgentProvider for DelegatedRunOnceProvider {
         if request.tools.is_empty() {
             sleep(Duration::from_millis(100)).await;
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "child delegated result".into(),
@@ -1376,6 +1397,7 @@ impl AgentProvider for DelegatedRunOnceProvider {
         *parent_calls += 1;
         match *parent_calls {
             1 => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),
@@ -1399,6 +1421,7 @@ impl AgentProvider for DelegatedRunOnceProvider {
                 request_diagnostics: None,
             }),
             _ => Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "parent final result".into(),
@@ -1431,6 +1454,7 @@ impl AgentProvider for TwoRoundProvider {
         if *calls == 1 {
             assert!(request.tools.iter().any(|tool| tool.name == "GetAgent"));
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "tool-1".into(),
@@ -1449,6 +1473,7 @@ impl AgentProvider for TwoRoundProvider {
             });
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "two rounds complete".into(),
@@ -1668,6 +1693,7 @@ impl AgentProvider for BudgetWarningCheckProvider {
             // Round 1: make a no-op tool call so the budget warning is
             // injected on round 2 via the runtime_reminder projection path.
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-1".into(),
@@ -1699,6 +1725,7 @@ impl AgentProvider for BudgetWarningCheckProvider {
             "no budget warning"
         };
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text { text: text.into() }],
             stop_reason: None,
@@ -1729,6 +1756,7 @@ impl AgentProvider for WorktreeTaskProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         if request.tools.is_empty() {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "worktree subagent finished".into(),
@@ -1747,6 +1775,7 @@ impl AgentProvider for WorktreeTaskProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                normalized_token_usage: None,
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),
@@ -1772,6 +1801,7 @@ impl AgentProvider for WorktreeTaskProvider {
         }
 
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "worktree task queued".into(),

@@ -129,6 +129,7 @@ pub struct ProviderTurnResponse {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_usage: Option<ProviderCacheUsage>,
+    pub normalized_token_usage: Option<AttemptTokenUsage>,
     pub provider_message_id: Option<String>,
     pub provider_request_id: Option<String>,
     pub request_diagnostics: Option<ProviderRequestDiagnostics>,
@@ -228,6 +229,87 @@ pub struct ProviderCacheUsage {
     pub read_input_tokens: u64,
     #[serde(default)]
     pub creation_input_tokens: u64,
+}
+
+/// Transport-agnostic token accounting for one provider attempt.
+///
+/// Contract (`attempt_token_usage.v1`): every transport adapter normalizes its
+/// raw wire usage into these fields exactly once, so downstream cost code never
+/// branches on transport. The raw `token_usage` / `cache_usage` fields remain
+/// the unmodified wire evidence.
+///
+/// Semantics (do not change without bumping the version):
+/// - `uncached_input_tokens`: input the provider billed at full price.
+/// - `cache_read_tokens`: cache read hits.
+/// - `cache_write_tokens`: cache writes.
+/// - `output_tokens`: total billed output, *including* reasoning / thinking.
+/// - `reasoning_tokens`: subset of `output_tokens`, for tiered unit pricing;
+///   `None` means the transport does not or cannot report it separately.
+///
+/// Invariants:
+/// - `prompt_total == uncached_input_tokens + cache_read_tokens + cache_write_tokens`
+/// - `reasoning_tokens <= output_tokens` when `Some`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttemptTokenUsage {
+    #[serde(default)]
+    pub uncached_input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+}
+
+impl AttemptTokenUsage {
+    /// Schema version carried on the trace `usage` object.
+    pub const SEMANTICS: &'static str = "attempt_token_usage.v1";
+
+    /// Normalize a transport whose input count already excludes cache tokens
+    /// (Anthropic Messages: `input_tokens` is uncached-only).
+    pub fn from_exclusive_input(
+        uncached_input_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        output_tokens: u64,
+        reasoning_tokens: Option<u64>,
+    ) -> Self {
+        Self {
+            uncached_input_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            output_tokens,
+            reasoning_tokens,
+        }
+    }
+
+    /// Normalize a transport whose input count already includes cache reads
+    /// (OpenAI chat/responses and Gemini: prompt/input includes cached tokens).
+    /// `cache_read_tokens` is subtracted to recover the full-price portion.
+    pub fn from_inclusive_input(
+        input_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        output_tokens: u64,
+        reasoning_tokens: Option<u64>,
+    ) -> Self {
+        Self {
+            uncached_input_tokens: input_tokens.saturating_sub(cache_read_tokens),
+            cache_read_tokens,
+            cache_write_tokens,
+            output_tokens,
+            reasoning_tokens,
+        }
+    }
+
+    /// Sum of all prompt-side tokens for this normalized attempt.
+    pub fn prompt_total(&self) -> u64 {
+        self.uncached_input_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_tokens)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -667,6 +749,12 @@ impl ToolResultBlock {
 pub trait AgentProvider: Send + Sync {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse>;
 
+    /// Wire transport this provider speaks, when it has one. Recorded on
+    /// attempts so a failed attempt is still attributable without a response.
+    fn transport_id(&self) -> Option<&'static str> {
+        None
+    }
+
     fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
         None
     }
@@ -823,6 +911,7 @@ impl AgentProvider for StubProvider {
             input_tokens: 0,
             output_tokens: 0,
             cache_usage: None,
+            normalized_token_usage: None,
             provider_message_id: None,
             provider_request_id: None,
             request_diagnostics: None,
@@ -877,6 +966,14 @@ pub enum ProviderFallbackDisposition {
 pub struct ProviderAttemptRecord {
     pub provider: String,
     pub model_ref: String,
+    /// Wire transport of this attempt (`anthropic_messages`, `openai_chat`,
+    /// `openai_responses`, `gemini_generate_content`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    /// Service tier the provider actually served. `None` means the transport
+    /// has no served-tier reporting surface or did not report one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served_service_tier: Option<String>,
     pub attempt: usize,
     pub max_attempts: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -899,6 +996,8 @@ pub struct ProviderAttemptRecord {
     pub token_usage: Option<TokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_usage: Option<ProviderCacheUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized_token_usage: Option<AttemptTokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1140,6 +1239,20 @@ pub fn provider_error_token_usage(error: &anyhow::Error) -> Option<&TokenUsage> 
         .and_then(|error| error.token_usage.as_ref())
 }
 
+pub fn provider_error_cache_usage(error: &anyhow::Error) -> Option<&ProviderCacheUsage> {
+    error
+        .chain()
+        .find_map(|source| source.downcast_ref::<retry::ProviderTransportError>())
+        .and_then(|error| error.cache_usage.as_ref())
+}
+
+pub fn provider_error_normalized_token_usage(error: &anyhow::Error) -> Option<&AttemptTokenUsage> {
+    error
+        .chain()
+        .find_map(|source| source.downcast_ref::<retry::ProviderTransportError>())
+        .and_then(|error| error.normalized_token_usage.as_ref())
+}
+
 pub fn provider_error_is_context_length_exceeded(error: &anyhow::Error) -> bool {
     provider_error_code(error) == Some("context_length_exceeded")
 }
@@ -1172,9 +1285,108 @@ pub fn aggregate_attempt_token_usage(attempts: &[ProviderAttemptRecord]) -> Opti
 
 pub use retry::{
     classify_provider_error, provider_transport_error_with_code, set_provider_transport_details,
-    ProviderFailureClassification, ProviderFailureKind, ProviderTransportError, RetryDisposition,
-    PROVIDER_RECOVERY_BASE_BACKOFF_MS, PROVIDER_RECOVERY_MAX_BACKOFF_MS,
-    PROVIDER_RECOVERY_MAX_FALLBACKS,
+    set_provider_transport_usage_evidence, ProviderFailureClassification, ProviderFailureKind,
+    ProviderTransportError, RetryDisposition, PROVIDER_RECOVERY_BASE_BACKOFF_MS,
+    PROVIDER_RECOVERY_MAX_BACKOFF_MS, PROVIDER_RECOVERY_MAX_FALLBACKS,
 };
 
 pub use tool_schema::{emitted_tool_json_schema, ToolSchemaContract};
+
+#[cfg(test)]
+mod attempt_token_usage_tests {
+    use super::*;
+
+    fn assert_invariants(usage: AttemptTokenUsage) {
+        assert_eq!(
+            usage.prompt_total(),
+            usage
+                .uncached_input_tokens
+                .saturating_add(usage.cache_read_tokens)
+                .saturating_add(usage.cache_write_tokens),
+        );
+        if let Some(reasoning) = usage.reasoning_tokens {
+            assert!(
+                reasoning <= usage.output_tokens,
+                "reasoning {reasoning} must be a subset of output {}",
+                usage.output_tokens
+            );
+        }
+    }
+
+    // Table-driven per-transport mapping (acceptance 1-4). Each case feeds the
+    // transport's wire fields through the matching normalizer.
+    #[test]
+    fn gemini_inclusive_input_splits_cache_and_folds_thoughts() {
+        // prompt=5000, cached=1000, candidates=400, thoughts=100
+        let usage = AttemptTokenUsage::from_inclusive_input(5000, 1000, 0, 400 + 100, Some(100));
+        assert_eq!(usage.uncached_input_tokens, 4000);
+        assert_eq!(usage.cache_read_tokens, 1000);
+        assert_eq!(usage.cache_write_tokens, 0);
+        assert_eq!(usage.output_tokens, 500);
+        assert_eq!(usage.reasoning_tokens, Some(100));
+        assert_invariants(usage);
+    }
+
+    #[test]
+    fn openai_chat_inclusive_input_never_double_counts_cache() {
+        // prompt=5000 includes cached=1000; output=800 includes reasoning=200.
+        let usage = AttemptTokenUsage::from_inclusive_input(5000, 1000, 0, 800, Some(200));
+        assert_eq!(usage.uncached_input_tokens, 4000);
+        assert_eq!(usage.cache_read_tokens, 1000);
+        assert_eq!(usage.prompt_total(), 5000);
+        assert_eq!(usage.output_tokens, 800);
+        assert_invariants(usage);
+    }
+
+    #[test]
+    fn anthropic_exclusive_input_keeps_cache_and_output_separate() {
+        // input=4000 is uncached-only; cache read/creation are separate.
+        let usage = AttemptTokenUsage::from_exclusive_input(4000, 1000, 500, 300, None);
+        assert_eq!(usage.uncached_input_tokens, 4000);
+        assert_eq!(usage.cache_read_tokens, 1000);
+        assert_eq!(usage.cache_write_tokens, 500);
+        assert_eq!(usage.output_tokens, 300);
+        assert_eq!(usage.reasoning_tokens, None);
+        assert_invariants(usage);
+    }
+
+    #[test]
+    fn inclusive_input_saturates_when_cache_exceeds_input() {
+        let usage = AttemptTokenUsage::from_inclusive_input(100, 500, 0, 10, None);
+        assert_eq!(usage.uncached_input_tokens, 0);
+        assert_invariants(usage);
+    }
+
+    #[test]
+    fn failed_attempt_keeps_normalized_usage_and_cache() {
+        // A failing response that still carried usage must retain cache and the
+        // normalized view on the transport error (acceptance 5).
+        let error = super::retry::provider_transport_error_with_evidence(
+            ProviderFailureClassification {
+                kind: ProviderFailureKind::EmptyResponse,
+                disposition: RetryDisposition::Retryable,
+            },
+            None,
+            None,
+            None,
+            Some(TokenUsage::new(5000, 500)),
+            None,
+            "empty response with usage",
+        );
+        let normalized = AttemptTokenUsage::from_inclusive_input(5000, 1000, 0, 500, Some(100));
+        let cache = ProviderCacheUsage {
+            read_input_tokens: 1000,
+            creation_input_tokens: 0,
+        };
+        let error = set_provider_transport_usage_evidence(error, Some(cache), Some(normalized));
+
+        assert_eq!(
+            provider_error_cache_usage(&error).map(|cache| cache.read_input_tokens),
+            Some(1000)
+        );
+        assert_eq!(
+            provider_error_normalized_token_usage(&error).copied(),
+            Some(normalized)
+        );
+    }
+}

@@ -36,6 +36,7 @@ impl AgentProvider for RoundAdmissionProvider {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let blocks = self.rounds.lock().await.pop_front().unwrap_or_default();
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks,
             stop_reason: None,

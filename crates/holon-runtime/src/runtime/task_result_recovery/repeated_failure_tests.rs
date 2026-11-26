@@ -595,6 +595,7 @@ impl AgentProvider for FailureProvider {
             }
         }
         Ok(ProviderTurnResponse {
+            normalized_token_usage: None,
             material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "delivered".into(),

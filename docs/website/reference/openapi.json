@@ -15656,6 +15656,13 @@
                         "null"
                       ]
                     },
+                    "model_ref": {
+                      "description": "Full resolved route ref (`provider@endpoint/model`) for this attempt.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "outcome": {
                       "type": [
                         "string",
@@ -15671,6 +15678,13 @@
                       ]
                     },
                     "provider": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "provider_endpoint": {
+                      "description": "Endpoint segment of `model_ref` (`default`, `token-plan`, `messages`,\n ...). Paired with `provider` it is the surviving route identity when one\n provider id folds several billing endpoints.",
                       "type": [
                         "string",
                         "null"
@@ -15708,6 +15722,13 @@
                         "null"
                       ]
                     },
+                    "served_service_tier": {
+                      "description": "Service tier the provider actually served, when the transport reports\n it. `None` means \"not reported\", not \"default\".",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "task_id": {
                       "type": [
                         "string",
@@ -15720,9 +15741,69 @@
                         "null"
                       ]
                     },
+                    "transport": {
+                      "description": "Wire transport of this attempt (`anthropic_messages`, `openai_chat`,\n `openai_responses`, `gemini_generate_content`).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "turn_id": {
                       "type": [
                         "string",
+                        "null"
+                      ]
+                    },
+                    "usage": {
+                      "description": "Transport-normalized token usage for one provider attempt\n (`attempt_token_usage.v1`).\n\n The four flat token fields on [`TraceAttributes`]\n (`input_tokens`/`output_tokens`/`cache_read_input_tokens`/\n `cache_creation_input_tokens`) stay as raw per-transport wire evidence and\n keep their historical (transport-dependent) meaning. This object is the\n normalized view that downstream cost code can use without branching on\n transport.",
+                      "properties": {
+                        "cache_read_tokens": {
+                          "description": "Cache read hits.",
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "cache_write_tokens": {
+                          "description": "Cache writes.",
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "output_tokens": {
+                          "description": "Total billed output, including reasoning / thinking tokens.",
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "reasoning_tokens": {
+                          "description": "Subset of `output_tokens`; `None` when the transport does not report it.",
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "semantics": {
+                          "description": "Schema version of the normalization contract, currently\n `\"attempt_token_usage.v1\"`.",
+                          "type": "string"
+                        },
+                        "uncached_input_tokens": {
+                          "description": "Input billed at full price (cache reads/writes excluded).",
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "uncached_input_tokens",
+                        "cache_read_tokens",
+                        "cache_write_tokens",
+                        "output_tokens",
+                        "semantics"
+                      ],
+                      "type": [
+                        "object",
                         "null"
                       ]
                     },
