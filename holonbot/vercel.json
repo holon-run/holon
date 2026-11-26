@@ -1,6 +1,9 @@
 {
   "version": 2,
   "name": "holonbot",
+  "git": {
+    "deploymentEnabled": false
+  },
   "functions": {
     "api/*.js": {
       "memory": 512,
