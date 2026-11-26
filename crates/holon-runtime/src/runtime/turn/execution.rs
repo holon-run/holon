@@ -326,6 +326,21 @@ fn merge_reselected_provider_attempts(
     }
 }
 
+/// Attach carried attempts to an error that ends the loop before the merge
+/// point, so the attempt ledger still records earlier-round attempts.
+fn attach_carried_provider_attempts(
+    previous: Option<&ProviderAttemptTimeline>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    match merge_reselected_provider_attempts(
+        previous,
+        Err::<(ProviderTurnResponse, Option<ProviderAttemptTimeline>), _>(error),
+    ) {
+        Err(error) => error,
+        Ok(_) => unreachable!("an error input cannot merge into a successful result"),
+    }
+}
+
 fn report_tools(available_tools: &[ToolSpec]) -> Vec<ToolSpec> {
     available_tools
         .iter()
@@ -1327,7 +1342,11 @@ impl RuntimeHandle {
                     .await
                 {
                     Ok(pending) => pending,
-                    Err(error) => break ProviderRoundDispatch::Completed(Err(error)),
+                    Err(error) => {
+                        let error =
+                            attach_carried_provider_attempts(retained_attempts.as_ref(), error);
+                        break ProviderRoundDispatch::Completed(Err(error));
+                    }
                 }
             };
             interject = false;
@@ -1354,7 +1373,11 @@ impl RuntimeHandle {
                 {
                     Ok(true) => break ProviderRoundDispatch::Interjected(retained_attempts),
                     Ok(false) => {}
-                    Err(error) => break ProviderRoundDispatch::Completed(Err(error)),
+                    Err(error) => {
+                        let error =
+                            attach_carried_provider_attempts(retained_attempts.as_ref(), error);
+                        break ProviderRoundDispatch::Completed(Err(error));
+                    }
                 }
             }
             if input.round > 1 {
@@ -1367,6 +1390,7 @@ impl RuntimeHandle {
                     })
                 });
                 if let Err(error) = fence {
+                    let error = attach_carried_provider_attempts(retained_attempts.as_ref(), error);
                     break ProviderRoundDispatch::Completed(Err(error));
                 }
             }
@@ -6866,9 +6890,9 @@ fn provider_quota_clean_success_identities(
 #[cfg(test)]
 mod tests {
     use super::{
-        corrective_replay_blocks, merge_reselected_provider_attempts,
-        provider_error_is_safe_for_context_recovery, provider_quota_incident_identities_to_resolve,
-        report_tool_allowed,
+        attach_carried_provider_attempts, corrective_replay_blocks,
+        merge_reselected_provider_attempts, provider_error_is_safe_for_context_recovery,
+        provider_quota_incident_identities_to_resolve, report_tool_allowed,
     };
     use crate::provider::{
         provider_turn_error, ModelBlock, ModelToolCallKind, ProviderAttemptOutcome,
@@ -7058,6 +7082,21 @@ mod tests {
         .unwrap_err();
         let aborted = error.downcast_ref::<super::CurrentRunAborted>().unwrap();
         assert_eq!(aborted.run_id, "cancelled-run");
+    }
+
+    #[test]
+    fn early_break_error_keeps_carried_attempts() {
+        let previous = reselection_failure_timeline("primary/model", 7, 11);
+        let error =
+            attach_carried_provider_attempts(Some(&previous), anyhow!("interjection probe failed"));
+        assert_eq!(
+            crate::provider::provider_attempt_timeline(&error),
+            Some(&previous)
+        );
+        assert!(error.to_string().contains("interjection probe failed"));
+
+        let error = attach_carried_provider_attempts(None, anyhow!("no carried attempts"));
+        assert_eq!(crate::provider::provider_attempt_timeline(&error), None);
     }
 
     #[test]

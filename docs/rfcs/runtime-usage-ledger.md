@@ -65,9 +65,9 @@ a missing or pruned trace never invalidates a usage row.
 attempt's ordinal within its dispatch, route, and start time) instead of a
 random value, so the primary key keeps its promise: re-reporting one attempt
 through two paths stays an ignored duplicate. A round records its attempts once,
-after its terminal result; when an abort keeps the carried attempts out of the
-merged terminal timeline, they are recorded on their own so no dispatched
-attempt loses its row.
+after its terminal result; when an abort or an early loop error keeps the
+carried attempts out of the merged terminal timeline, they are still attached
+to the terminal error and recorded, so no dispatched attempt loses its row.
 
 ## Retention
 
