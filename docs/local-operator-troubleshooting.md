@@ -276,6 +276,116 @@ Current recovery contract:
 If you need to debug startup itself, run `holon serve` in the foreground
 instead of repeatedly guessing from background behavior alone.
 
+## ACP Harness Agents (`agy acp`)
+
+An agent whose execution driver is `acp` does not run Holon's model loop. A
+separate `agy acp` process owns the model turn, its tools, and its context.
+Holon supervises the process, decides permission requests, and projects the
+observable updates into its ledger.
+
+### Installation and login
+
+1. Check the binary: `agy --version`.
+2. Log in once on the host: `agy acp --login`.
+3. Without a terminal login, provide an explicit allowlisted credential:
+   - Gemini API: `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+   - Vertex / Enterprise ADC: `GOOGLE_APPLICATION_CREDENTIALS`,
+     `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, and `AGY_ADC_AUTH`
+
+Never copy or scrape `agy` private session files. Holon passes only allowlisted
+environment variables to the harness process.
+
+### Error codes
+
+- `-32000` authentication required: the peer has no usable credential. Log in
+  with `agy acp --login` or configure the environment variables above. Holon
+  settles the turn as a structured runtime error; it does not retry in a loop
+  and does not fall back to another model.
+- `-32002` session not found: the persisted ACP session no longer exists. Holon
+  rebuilds the session with `session/new` and records an
+  `acp_session_rotated` audit event with reason `resume_session_not_found` or
+  `load_session_not_found`. Session-scoped `allow_always` grants are dropped
+  with the old session.
+
+### Permission modes
+
+The default `unattended` mode never waits for a human. Requests that stay
+inside the bound execution root are allowed once; anything outside the root, a
+read-only workspace write, or a disallowed process execution is rejected with
+recorded evidence.
+
+`interactive` mode surfaces requests through the control plane and waits up to
+`acp.interaction_timeout_ms` (default 120000). Configure it per harness profile:
+
+```json
+{
+  "acp": {
+    "interaction_timeout_ms": 120000,
+    "profiles": {
+      "antigravity": { "permission_mode": "interactive" }
+    }
+  }
+}
+```
+
+List pending requests and answer them:
+
+```sh
+curl -H "Authorization: Bearer $HOLON_CONTROL_TOKEN" \
+  "$HOLON_BASE_URL/api/control/agents/<agent_id>/acp-interactions"
+curl -H "Authorization: Bearer $HOLON_CONTROL_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"decision":"allow_once"}' \
+  "$HOLON_BASE_URL/api/control/agents/<agent_id>/acp-interactions/<interaction_id>"
+curl -H "Authorization: Bearer $HOLON_CONTROL_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"action":"accept","content":{"answer":"yes"}}' \
+  "$HOLON_BASE_URL/api/control/agents/<agent_id>/acp-interactions/<interaction_id>"
+```
+
+All routes require `Authorization: Bearer <control-token>`. Permission
+decisions are `allow_once`, `allow_always`, `reject_once`, and `reject_always`.
+Elicitation actions are `accept` (with optional `content`), `decline`, and
+`cancel`.
+
+`allow_always` is scoped to the current ACP session and workspace trust domain
+(the bound execution root plus attached directories), and to the same tool kind
+and path set. It is re-checked against policy on every request and is dropped
+when the session is rebuilt, rotated, or the agent is deleted. It is never a
+global or cross-agent approval. A timeout, cancelled interaction, or closed
+channel falls back to rejection instead of hanging the turn.
+
+`reject_always` is not remembered session-wide: it rejects only the current
+request, so the same tool call asks again next time. Only `allow_always`
+carries a session grant.
+
+Interactive mode is deliberately stricter than unattended: even a request that
+stays inside the bound execution root waits for an operator and is rejected if
+the interaction times out. In unattended mode the same in-root request is
+allowed once immediately.
+
+A pending interaction leaves the list as soon as it settles. Answering an id
+that already timed out, was cancelled, or was answered returns `409` with a
+`settled_reason` (`timed_out`, `cancelled`, or `resolved`); an id that never
+existed returns `404`. A late answer never grants authority after the fallback.
+
+### Observability
+
+The event stream carries one audit event per observable ACP family:
+
+- `acp_plan_updated`: the harness plan snapshot.
+- `acp_subagents_updated`: a read-only patch for a harness-internal child
+  session. It is display evidence only and never enters Holon's supervision
+  tree.
+- `acp_usage_updated`: session context-window occupancy (`used` / `size`) and
+  optional cumulative cost. It is not a per-turn token delta.
+- `acp_interaction_requested` / `acp_interaction_resolved`: the operator
+  approval lifecycle.
+
+Plan, subagent, and usage events are emitted once per turn when the turn
+settles. Within a long turn they are buffered, so treat them as turn-level
+snapshots rather than a live stream.
+
 ## Recommended Quick Paths
 
 If one prompt failed:

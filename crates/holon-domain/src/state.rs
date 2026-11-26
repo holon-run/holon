@@ -206,6 +206,31 @@ pub struct AcpSessionState {
     pub bound_execution_root: String,
     #[serde(default)]
     pub bound_additional_dirs: Vec<String>,
+    /// `allow_always` grants recorded for this logical ACP session.
+    ///
+    /// A grant is scoped to one tool kind and one path scope inside the bound
+    /// trust domain. Rotation to a new session replaces the whole state, so a
+    /// grant can never survive into another session.
+    #[serde(default)]
+    pub session_grants: Vec<AcpSessionGrant>,
+}
+
+/// One session-scoped `allow_always` grant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcpSessionGrant {
+    /// Harness tool kind the grant covers; `None` means only a kind-less
+    /// request can match it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_kind: Option<String>,
+    /// Absolute path scope the grant covers. `None` records that the granted
+    /// request claimed no paths, so only a later request that also claims no
+    /// paths matches; the tool kind is still compared separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_scope: Option<String>,
+    /// Workspace trust domain the grant was issued in (bound execution root
+    /// plus attached directories). A grant never matches another domain.
+    #[serde(default)]
+    pub trust_domain: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

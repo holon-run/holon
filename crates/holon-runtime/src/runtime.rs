@@ -1,4 +1,5 @@
 mod acp;
+pub use acp::AcpInteractionOutcome;
 mod agent_message_delivery;
 mod agent_services;
 mod bootstrap;
@@ -859,6 +860,11 @@ struct RuntimeInner {
     // Boxed: the resident handle is carried across retirement awaits, and
     // inlining it would widen every frame that holds the taken session.
     acp_session: Mutex<Option<Box<acp::AcpResidentSession>>>,
+    /// Pending operator-facing ACP permission and elicitation requests.
+    acp_interactions: Mutex<std::collections::BTreeMap<String, acp::PendingAcpInteraction>>,
+    /// Recently settled interactions, retained briefly so a late operator
+    /// answer is reported as settled instead of nonexistent.
+    acp_settled_interactions: Mutex<std::collections::BTreeMap<String, acp::AcpSettledInteraction>>,
     #[cfg(test)]
     acp_test_harness: Mutex<Option<acp::AcpTestHarnessFactory>>,
     // Fault/cancellation fixtures block the original post-SQL install seam.

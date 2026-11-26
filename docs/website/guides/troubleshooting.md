@@ -176,6 +176,36 @@ Compare snapshots within the same daemon lifetime using the metric definitions i
 
 Use `holon debug trace --search MESSAGE_OR_TURN_ID` for retained traces, or follow [Configure observability](configure-observability.md) to verify OTLP export. Avoid restarting the daemon solely to reset counters before capturing diagnostics.
 
+### ACP harness agents (`agy acp`)
+
+An `acp`-driver agent runs its model turn inside an external `agy acp`
+process. Holon supervises the process and decides its permission requests.
+
+1. Verify the binary with `agy --version`, then log in with `agy acp --login`.
+   Without a terminal login, configure `GEMINI_API_KEY` / `GOOGLE_API_KEY`, or
+   Vertex ADC via `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`,
+   `GOOGLE_CLOUD_LOCATION`, and `AGY_ADC_AUTH`.
+2. `-32000` means authentication is missing. Log in or configure credentials;
+   Holon settles the turn as a structured runtime error instead of retrying.
+3. `-32002` means the persisted session is gone. Holon rebuilds it and records
+   `acp_session_rotated`; session-scoped `allow_always` grants are dropped.
+4. The default `unattended` permission mode never waits for a person. To answer
+   approvals and form questions, set `acp.profiles.<profile>.permission_mode`
+   to `interactive` and tune `acp.interaction_timeout_ms`; then use
+   `GET/POST /api/control/agents/{agent_id}/acp-interactions` with control
+   credentials. Unanswered requests fall back to rejection, and a settled id
+   answers `409` (`settled_reason`) while an unknown id answers `404`.
+   Interactive mode is stricter than unattended: even in-root requests wait and
+   are rejected on timeout. Only `allow_always` is remembered for the session;
+   `reject_always` applies to one request.
+5. Plan, harness-internal subagent, and usage updates appear as
+   `acp_plan_updated`, `acp_subagents_updated`, and `acp_usage_updated` events.
+   They are read-only evidence: harness subagents never enter Holon's own
+   supervision tree. These events are emitted once per turn when it settles.
+
+See the full operator checklist in the repository's
+`docs/local-operator-troubleshooting.md`.
+
 ## When to stop and report a blocker
 
 If the cause remains unresolved after these checks, stop retrying and collect:

@@ -23,9 +23,9 @@ pub struct ClientCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagents: Option<bool>,
+    pub subagents: Option<SubagentCapabilities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub elicitation: Option<bool>,
+    pub elicitation: Option<ElicitationCapabilities>,
 }
 
 impl ClientCapabilities {
@@ -51,7 +51,66 @@ impl ClientCapabilities {
         self.plan = Some(true);
         self
     }
+
+    /// Advertise read-only observation of harness-internal child sessions.
+    ///
+    /// ACP wire v1 declares this capability by supplying an object, not a
+    /// boolean. It grants no delegation, messaging, or mutation authority.
+    pub fn with_subagent_observation(mut self) -> Self {
+        self.subagents = Some(SubagentCapabilities::default());
+        self
+    }
+
+    /// Advertise form elicitation support.
+    ///
+    /// Only call this when the parent execution can actually wait for an
+    /// operator answer: advertising it obliges the client to answer
+    /// `elicitation/create` instead of failing the request.
+    pub fn with_elicitation_form(mut self) -> Self {
+        self.elicitation = Some(ElicitationCapabilities {
+            form: Some(ElicitationFormCapabilities::default()),
+            url: None,
+        });
+        self
+    }
+
+    pub fn advertises_subagents(&self) -> bool {
+        self.subagents.is_some()
+    }
+
+    pub fn advertises_elicitation_form(&self) -> bool {
+        self.elicitation
+            .as_ref()
+            .and_then(|elicitation| elicitation.form.as_ref())
+            .is_some()
+    }
 }
+
+/// `subagents` client capability (ACP wire v1).
+///
+/// Supplying the object advertises child-session association and state
+/// observation. The client never derives control authority from it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentCapabilities {}
+
+/// `elicitation` client capability (ACP wire v1).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<ElicitationFormCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<ElicitationUrlCapabilities>,
+}
+
+/// Form elicitation support marker; supplying the object advertises support.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ElicitationFormCapabilities {}
+
+/// URL elicitation support marker. Holon does not implement browser flows, so
+/// it never advertises this capability.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ElicitationUrlCapabilities {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -453,6 +512,27 @@ pub struct PlanEntry {
     pub status: Option<String>,
 }
 
+/// One `subagent_update` patch (ACP wire v1).
+///
+/// The update announces a child session owned by the enclosing session, or
+/// patches its display metadata and work state. Omitted fields keep their
+/// previous value; `null` clears them. This is read-only progress evidence and
+/// never establishes Holon supervision or control authority.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentUpdate {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub state: Option<Value>,
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AvailableCommand {
@@ -508,6 +588,18 @@ pub enum SessionUpdate {
         #[serde(default)]
         available_commands: Vec<AvailableCommand>,
     },
+    /// Read-only announcement or metadata patch for a child session.
+    #[serde(rename_all = "camelCase")]
+    SubagentUpdate {
+        #[serde(default)]
+        session_id: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        state: Option<Value>,
+    },
     /// Variant this client version does not model; raw payload stays on the notification.
     #[serde(other)]
     Unknown,
@@ -524,6 +616,7 @@ impl SessionUpdate {
             SessionUpdate::UsageUpdate { .. } => "usage_update",
             SessionUpdate::CurrentModeUpdate { .. } => "current_mode_update",
             SessionUpdate::AvailableCommandsUpdate { .. } => "available_commands_update",
+            SessionUpdate::SubagentUpdate { .. } => "subagent_update",
             SessionUpdate::Unknown => "unknown",
         }
     }
@@ -591,6 +684,52 @@ mod tests {
                 "fs": {"readTextFile": true, "writeTextFile": false},
             })
         );
+    }
+
+    #[test]
+    fn optional_observation_capabilities_use_wire_object_markers() {
+        let capabilities = ClientCapabilities::trimmed()
+            .with_plan_observation()
+            .with_subagent_observation()
+            .with_elicitation_form();
+        assert!(capabilities.advertises_subagents());
+        assert!(capabilities.advertises_elicitation_form());
+        assert_eq!(
+            serde_json::to_value(capabilities).unwrap(),
+            json!({
+                "plan": true,
+                "subagents": {},
+                "elicitation": {"form": {}},
+            })
+        );
+    }
+
+    #[test]
+    fn parses_subagent_update_without_granting_supervision() {
+        let notification = SessionNotification::from_params(Some(&json!({
+            "sessionId": "parent",
+            "update": {
+                "sessionUpdate": "subagent_update",
+                "sessionId": "child-1",
+                "title": "Research",
+                "description": "Read-only child",
+                "state": {"status": "working"},
+            },
+        })))
+        .unwrap()
+        .expect("subagent notification");
+        let SessionUpdate::SubagentUpdate {
+            session_id,
+            title,
+            state,
+            ..
+        } = notification.update
+        else {
+            panic!("expected subagent update");
+        };
+        assert_eq!(session_id, "child-1");
+        assert_eq!(title.as_deref(), Some("Research"));
+        assert_eq!(state, Some(json!({"status": "working"})));
     }
 
     #[test]

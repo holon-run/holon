@@ -28,8 +28,8 @@ pub use client::{AcpClient, CancelHandle, Handshake, DEFAULT_CANCEL_SETTLE_TIMEO
 pub use connection::AcpConnection;
 pub use error::{AcpError, RpcError, AUTHENTICATION_REQUIRED, SESSION_NOT_FOUND};
 pub use handler::{
-    AcpClientHandler, DenyAllHandler, ElicitationRequest, PermissionOption, PermissionOutcome,
-    PermissionRequest,
+    AcpClientHandler, DenyAllHandler, ElicitationRequest, ElicitationResponse, PermissionOption,
+    PermissionOutcome, PermissionRequest,
 };
 pub use harness::{
     AcpHarnessRegistry, AcpHarnessSpec, KnownAuthMethod, LaunchCommand, LaunchRequest, SandboxMode,
@@ -39,6 +39,6 @@ pub use jsonrpc::{Frame, RpcId, JSONRPC_VERSION};
 pub use protocol::{
     AgentCapabilities, AuthMethod, ClientCapabilities, ContentBlock, InitializeParams,
     InitializeResult, PromptParams, PromptResult, SessionInfo, SessionLoadParams, SessionNewParams,
-    SessionNotification, SessionResumeParams, SessionUpdate, StopReason, ToolCall, ToolCallStatus,
-    ACP_PROTOCOL_VERSION,
+    SessionNotification, SessionResumeParams, SessionUpdate, StopReason, SubagentUpdate, ToolCall,
+    ToolCallStatus, ACP_PROTOCOL_VERSION,
 };

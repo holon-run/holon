@@ -8,6 +8,7 @@ use super::*;
 use crate::{
     config::{ApiPromptConfigFile, AppConfig},
     daemon::RuntimeStatusResponse,
+    runtime::AcpInteractionOutcome,
     runtime_db::RuntimeDbProtectionStatus,
 };
 use anyhow::Context as _;
@@ -1700,6 +1701,77 @@ pub async fn agent_deletion_status(
         ),
         job,
     }))
+}
+
+/// List the pending ACP permission and elicitation requests for one agent.
+///
+/// A loaded agent with no resident ACP turn returns an empty list. A sleeping
+/// agent is not woken just to answer an operator query.
+pub async fn list_acp_interactions(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let interactions = match state
+        .host
+        .try_get_operator_loaded_runtime(&agent_id)
+        .await
+        .map_err(agent_access_error)?
+    {
+        Some(runtime) => runtime.pending_acp_interactions().await,
+        None => Vec::new(),
+    };
+    Ok(Json(json!({
+        "agent_id": agent_id,
+        "interactions": interactions,
+    })))
+}
+
+/// Resolve one pending ACP interaction with an operator decision or form
+/// answer. The request is rejected when the interaction is unknown or already
+/// settled; a late answer never grants authority after the timeout fallback.
+pub async fn resolve_acp_interaction(
+    Path((agent_id, interaction_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let Some(runtime) = state
+        .host
+        .try_get_operator_loaded_runtime(&agent_id)
+        .await
+        .map_err(agent_access_error)?
+    else {
+        return Err(not_found(format!(
+            "agent `{agent_id}` has no loaded ACP interaction"
+        )));
+    };
+    match runtime
+        .resolve_acp_interaction_decision(&interaction_id, &body)
+        .await
+    {
+        Ok(AcpInteractionOutcome::Resolved) => Ok(Json(json!({
+            "agent_id": agent_id,
+            "interaction_id": interaction_id,
+            "resolved": true,
+        }))),
+        Ok(AcpInteractionOutcome::AlreadySettled(reason)) => Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!(
+                    "ACP interaction `{interaction_id}` is already settled ({reason})"
+                ),
+                "interaction_id": interaction_id,
+                "settled_reason": reason,
+            })),
+        )),
+        Ok(AcpInteractionOutcome::Unknown) => Err(not_found(format!(
+            "no pending ACP interaction `{interaction_id}`"
+        ))),
+        Err(error) => Err(bad_request(error.to_string())),
+    }
 }
 
 /// Operator-scoped resolution for a stopped deletion job.
