@@ -387,6 +387,11 @@ Web GUI 无需任何凭据配置即可发现本地运行的 Ollama 模型，`Vie
 - `--credential-kind`：`none`、`api_key` 或 `session_token`
 - `--credential-env`：环境变量名（当 source 为 `env` 时）
 - `--credential-profile`：凭据存储 profile（当 source 为 `credential_profile` 时）
+- `--credential-external`：外部凭据命令（当 source 为 `external_cli` 时）
+
+通过 HTTP 控制面（`PATCH /api/control/runtime/config`）或 Web GUI 设置页，也可以在
+同一批更新中为一个新的提供商 ID 同时声明 `providers.<id>.transport` 和有效的
+`providers.<id>.base_url` 来创建自定义提供商。
 
 ### 提供商端点与 Plan
 

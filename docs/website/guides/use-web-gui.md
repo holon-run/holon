@@ -270,6 +270,9 @@ Configure Holon from the browser:
   automatically determines the right credential method for each provider
   (API key input for api_key providers, device login link for OAuth
   providers like Codex).
+- **Custom providers** — add custom model providers by entering a provider ID,
+  transport, base URL, optional API key, and model discovery settings; new
+  providers appear once the configuration reload completes.
 - **Ollama discovery** — a locally running Ollama server is discovered
   automatically with no API key; its models appear in the model selectors.
 - **Language** — switch the Web GUI display language. Supported languages are

@@ -422,6 +422,11 @@ Options:
 - `--credential-profile`: Credential store profile (when source is `credential_profile`)
 - `--credential-external`: External credential command (when source is `external_cli`)
 
+Via the HTTP control plane (`PATCH /api/control/runtime/config`) or Web GUI
+Settings, you can also create a custom provider by declaring
+`providers.<id>.transport` together with a valid `providers.<id>.base_url` in
+the same update batch for a new provider ID.
+
 ### Provider Endpoints and Plans
 
 Provider configuration separates a provider account from its concrete endpoints.

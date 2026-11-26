@@ -759,20 +759,31 @@ Holon 支持托管由 Agent 自主拥有的静态 HTML/JS 应用。这些应用�
 
 **`GET /api/control/runtime/config`** — 运行时配置
 
-返回 daemon 当前生效的运行时配置面，以及支撑持久化可变运行时设置的
-`config.json` 路径。
+返回 `config_file_path`、daemon 当前生效的 `runtime_surface`、实时重载 `reload`
+的 generation 状态以及 `setup` 就绪状态。
 
 **`PATCH /api/control/runtime/config`** — 更新运行时配置
 
-持久化可变的运行时配置键更新，并对每次尝试的更改进行分类。当前实现会把受支持的键写入
-`config.json` 并返回 `accepted_requires_restart`，因为在实时重载支持出现之前，
-运行中的宿主会保持当前生效的配置。仅启动时可用或不受支持的键会返回带原因的 `rejected`。
+整批校验并持久化可变运行时配置更新（每项传 `"key"`，配合 `"value"` 或
+`"unset": true`）。只要其中任一项不受支持、仅限启动期或格式无效，或者更新后的
+整体配置未通过校验，整批更新都会被拒绝（`"changed": false`，所有条目均标记为
+`rejected`，`config.json` 保持不变）。
+
+校验通过的更新会写入 `config.json`，调度一次实时配置重载，并返回
+`accepted_reload_scheduled`（`runtime.db_readers.*` 键则返回
+`accepted_requires_restart`）。响应中的 `runtime_surface` 仍是重载前的快照；可轮询
+`GET /api/control/runtime/config`，直到 `reload.completed_generation` 追上
+`reload.requested_generation`。
+
+如需通过该接口声明新的自定义提供商，可在同一批更新中（任意顺序）同时传入
+`providers.<id>.transport` 和有效的 `providers.<id>.base_url`，其中 `<id>` 既不在
+`config.json` 中，也不是内置提供商。缺少 `base_url` 会导致整批被拒绝；对于未知
+ID，单独传入其他 `providers.<id>.*` 键仍会失败。
 
 ```json
 {
   "updates": [
-    { "key": "model.default", "value": "openai/gpt-4.1" },
-    { "key": "home_dir", "value": "/tmp/other-home" }
+    { "key": "model.default", "value": "openai@default/gpt-5.4" }
   ]
 }
 ```
@@ -781,19 +792,17 @@ Holon 支持托管由 Agent 自主拥有的静态 HTML/JS 应用。这些应用�
 {
   "ok": true,
   "changed": true,
+  "config_file_path": "/path/to/holon-home/config.json",
   "results": [
     {
       "key": "model.default",
-      "effect": "accepted_requires_restart",
-      "reason": "persisted in config.json; the running host keeps its current effective config until restart/reload support is added"
-    },
-    {
-      "key": "home_dir",
-      "effect": "rejected",
-      "reason": "unsupported or startup-only config key"
+      "effect": "accepted_reload_scheduled",
+      "reason": "persisted in config.json; reload generation 1 scheduled"
     }
   ],
-  "runtime_surface": { "...": "..." }
+  "runtime_surface": { "...": "..." },
+  "reload": { "requested_generation": 1, "completed_generation": 0, "state": "applying" },
+  "setup": { "status": "blocked", "default_model": "openai@default/gpt-5.4", "provider": "openai", "actions": [] }
 }
 ```
 

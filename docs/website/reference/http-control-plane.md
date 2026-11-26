@@ -843,22 +843,33 @@ token status, and activity markers.
 
 **`GET /api/control/runtime/config`** — Runtime config
 
-Returns the daemon's current effective runtime configuration surface and the
-`config.json` path that backs persisted runtime-mutable settings.
+Returns `config_file_path`, the daemon's current effective `runtime_surface`,
+live `reload` generation status, and `setup` readiness state.
 
 **`PATCH /api/control/runtime/config`** — Update runtime config
 
-Persists runtime-mutable config key updates and classifies each attempted
-change. The current implementation writes supported keys to `config.json` and
-returns `accepted_requires_restart` because the running host keeps its current
-effective config until live reload support exists. Startup-only or unsupported
-keys return `rejected` with a reason.
+Validates and persists a batch of runtime-mutable config updates (`"key"` with
+either `"value"` or `"unset": true`). If any entry is unsupported, startup-only,
+or invalid, or if the resulting configuration fails validation, the whole batch
+is rejected (`"changed": false`, all entries `rejected`, and `config.json`
+left untouched).
+
+Accepted updates write `config.json`, schedule a live configuration reload, and
+report `accepted_reload_scheduled` (`runtime.db_readers.*` keys instead report
+`accepted_requires_restart`). The response's `runtime_surface` still reflects
+the pre-reload snapshot; poll `GET /api/control/runtime/config` until
+`reload.completed_generation` catches up to `reload.requested_generation`.
+
+To declare a new custom provider over this endpoint, include both
+`providers.<id>.transport` and a valid `providers.<id>.base_url` in the same
+batch (in any order) for an `<id>` that is neither in `config.json` nor a
+built-in provider. Omitting `base_url` rejects the batch, and other
+`providers.<id>.*` keys alone still fail for unknown IDs.
 
 ```json
 {
   "updates": [
-    { "key": "model.default", "value": "openai/gpt-4.1" },
-    { "key": "home_dir", "value": "/tmp/other-home" }
+    { "key": "model.default", "value": "openai@default/gpt-5.4" }
   ]
 }
 ```
@@ -867,19 +878,17 @@ keys return `rejected` with a reason.
 {
   "ok": true,
   "changed": true,
+  "config_file_path": "/path/to/holon-home/config.json",
   "results": [
     {
       "key": "model.default",
-      "effect": "accepted_requires_restart",
-      "reason": "persisted in config.json; the running host keeps its current effective config until restart/reload support is added"
-    },
-    {
-      "key": "home_dir",
-      "effect": "rejected",
-      "reason": "unsupported or startup-only config key"
+      "effect": "accepted_reload_scheduled",
+      "reason": "persisted in config.json; reload generation 1 scheduled"
     }
   ],
-  "runtime_surface": { "...": "..." }
+  "runtime_surface": { "...": "..." },
+  "reload": { "requested_generation": 1, "completed_generation": 0, "state": "applying" },
+  "setup": { "status": "blocked", "default_model": "openai@default/gpt-5.4", "provider": "openai", "actions": [] }
 }
 ```
 
