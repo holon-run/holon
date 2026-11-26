@@ -96,6 +96,8 @@ interface AgentPageProps {
   onSendPrompt: (text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   onAbortCurrentRun: (runId: string) => Promise<void>;
   onConversationRead: () => boolean;
+  /** Server-owned unread count for this conversation; drives read-marker retries. */
+  conversationUnreadCount?: number;
   onOpenWorkItem: (work: WorkItemSummary) => void;
   onOpenTask: (task: TaskSummary) => void;
 }
@@ -104,6 +106,15 @@ const BOTTOM_SCROLL_THRESHOLD = 96;
 // How long scroll intent stays active after the last user scroll input
 // (wheel, touch, or scroll keys). Long enough to cover momentum scrolling.
 const USER_SCROLL_INTENT_CLEAR_MS = 500;
+// A reload can finish before the message list has laid out, so the first read
+// attempt is retried on a short timer instead of being dropped for the whole
+// page lifetime.
+const READ_ATTEMPT_RETRY_MS = 250;
+const READ_ATTEMPT_MAX_TRIES = 24;
+// New content can arrive while the conversation stays pinned to the latest
+// viewport. Retry at most once per second so streaming output cannot spam the
+// read-marker gate.
+const CONTENT_READ_ATTEMPT_MIN_INTERVAL_MS = 1_000;
 const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
 const COMPOSER_TEXTAREA_MAX_HEIGHT = 320;
 
@@ -208,6 +219,7 @@ export function AgentPage({
   onSendPrompt,
   onAbortCurrentRun,
   onConversationRead,
+  conversationUnreadCount = 0,
   onOpenWorkItem,
   onOpenTask,
 }: AgentPageProps) {
@@ -443,6 +455,7 @@ export function AgentPage({
 
   const conversationContentVersion = conversation?.model.view?.through_seq ?? 0;
   const initialReadAttemptedRef = useRef(false);
+  const lastContentReadAttemptRef = useRef(0);
 
   function rememberReadingAnchor() {
     const list = messageListRef.current;
@@ -521,21 +534,55 @@ export function AgentPage({
   }, [activeAgent.id]);
 
   useEffect(() => {
-    const list = messageListRef.current;
-    if (
-      conversationReady &&
-      !browsing &&
-      !location &&
-      !initialReadAttemptedRef.current &&
-      document.visibilityState === "visible" &&
-      list &&
-      isScrolledNearBottom(list)
-    ) {
-      if (onConversationRead()) {
-        initialReadAttemptedRef.current = true;
+    if (initialReadAttemptedRef.current) return;
+    if (!conversationReady || browsing || location) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let tries = 0;
+    const attempt = () => {
+      if (cancelled || initialReadAttemptedRef.current) return;
+      const list = messageListRef.current;
+      if (document.visibilityState === "visible" && list && isScrolledNearBottom(list)) {
+        if (onConversationRead()) {
+          initialReadAttemptedRef.current = true;
+          return;
+        }
       }
-    }
+      tries += 1;
+      if (tries < READ_ATTEMPT_MAX_TRIES) {
+        timer = setTimeout(attempt, READ_ATTEMPT_RETRY_MS);
+      }
+    };
+    attempt();
+    return () => {
+      cancelled = true;
+      if (timer != null) clearTimeout(timer);
+    };
   }, [activeAgent.id, conversationReady, onConversationRead, browsing, location]);
+
+  // A conversation that stays open and pinned to the latest viewport should
+  // never keep showing unread for a message it already rendered. The initial
+  // read covers reloads; this covers content that arrives afterwards without
+  // any scroll or visibility change.
+  useEffect(() => {
+    if (conversationUnreadCount <= 0) return;
+    if (!conversationReady || browsing || location) return;
+    if (document.visibilityState !== "visible") return;
+    const list = messageListRef.current;
+    if (!list || !isScrolledNearBottom(list)) return;
+    const now = Date.now();
+    if (now - lastContentReadAttemptRef.current < CONTENT_READ_ATTEMPT_MIN_INTERVAL_MS) return;
+    lastContentReadAttemptRef.current = now;
+    onConversationRead();
+  }, [
+    activeAgent.id,
+    conversationContentVersion,
+    conversationUnreadCount,
+    conversationReady,
+    browsing,
+    location,
+    onConversationRead,
+  ]);
 
   useEffect(() => {
     const markReadIfVisible = () => {

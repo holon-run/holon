@@ -326,8 +326,9 @@ export function App() {
     // Called only by a physically visible latest viewport, never by locating
     // or completing a page fetch. Joined history can now use the normal gate.
     if (conversationSession.scopeKey) setConversationNavigationActive(conversationSession.scopeKey, false);
-    markAgentConversationRead(activeAgentId, conversationSession.scopeKey ?? undefined);
-    return true;
+    // Report the gate's real outcome: a reload can settle before the list has
+    // laid out, and the caller must be able to retry in that case.
+    return markAgentConversationRead(activeAgentId, conversationSession.scopeKey ?? undefined);
   }, [
     activeAgentId,
     markAgentConversationRead,
@@ -960,6 +961,7 @@ export function App() {
             }}
             onAbortCurrentRun={(runId) => abortCurrentRun(activeAgent.id, runId)}
             onConversationRead={markSelectedAgentConversationRead}
+            conversationUnreadCount={activeAgentBriefReadState?.unread_count ?? 0}
             onOpenWorkItem={(work) => {
               showWorkItemDetail(activeAgent.id, work);
             }}
