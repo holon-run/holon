@@ -1,6 +1,63 @@
 use super::*;
 use tempfile::tempdir;
 
+#[test]
+fn transport_declaration_creates_custom_provider_stub() {
+    let mut config = HolonConfigFile::default();
+    let id = ProviderId::parse("self-hosted-gw").unwrap();
+    assert!(create_custom_provider_stub(
+        &mut config,
+        &id,
+        ProviderTransportKind::OpenAiChatCompletions
+    )
+    .unwrap());
+    let provider = config.providers.get(&id).expect("stub created");
+    assert_eq!(
+        provider.transport,
+        ProviderTransportKind::OpenAiChatCompletions
+    );
+    // The declared transport is all the stub carries: the batch still owes a
+    // base_url, and the unused auth default must stay `none/none`.
+    assert!(provider.base_url.is_empty());
+    assert_eq!(provider.auth.source, CredentialSource::None);
+    assert_eq!(provider.auth.kind, CredentialKind::None);
+    assert!(provider.discovery.is_none());
+    assert!(provider.endpoints.is_empty());
+}
+
+#[test]
+fn transport_declaration_keeps_existing_and_builtin_providers() {
+    let mut config = HolonConfigFile::default();
+    let custom = ProviderId::parse("keep-me").unwrap();
+    config.providers.insert(
+        custom.clone(),
+        ProviderConfigFile {
+            transport: ProviderTransportKind::AnthropicMessages,
+            base_url: "https://keep.example/v1".into(),
+            ..Default::default()
+        },
+    );
+    assert!(!create_custom_provider_stub(
+        &mut config,
+        &custom,
+        ProviderTransportKind::OpenAiChatCompletions
+    )
+    .unwrap());
+    let provider = config.providers.get(&custom).unwrap();
+    assert_eq!(provider.transport, ProviderTransportKind::AnthropicMessages);
+    assert_eq!(provider.base_url, "https://keep.example/v1");
+
+    // Built-in ids materialize their defaults instead of being created here.
+    let builtin = ProviderId::parse("zai").unwrap();
+    assert!(!create_custom_provider_stub(
+        &mut config,
+        &builtin,
+        ProviderTransportKind::OpenAiChatCompletions
+    )
+    .unwrap());
+    assert!(!config.providers.contains_key(&builtin));
+}
+
 fn route_ref(value: &str) -> ModelRouteRef {
     ModelRouteRef::parse_compatible(value).unwrap()
 }

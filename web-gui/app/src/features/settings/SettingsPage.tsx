@@ -240,6 +240,48 @@ function isProviderKeyCredential(kind: string): boolean {
   return kind === "api_key" || kind === "bearer_token";
 }
 
+/**
+ * Transports the Settings page may declare for a custom provider. The backend
+ * vocabulary stays authoritative; this is the agent-turn subset, so
+ * `openai_codex_responses` (ChatGPT accounts) and `ai_evaluation_model`
+ * (Decision line) are intentionally absent.
+ */
+const CUSTOM_PROVIDER_TRANSPORTS = [
+  "openai_chat_completions",
+  "openai_responses",
+  "anthropic_messages",
+  "gemini_generate_content",
+] as const;
+
+const CUSTOM_PROVIDER_DISCOVERY_KINDS = ["openai_models", "disabled"] as const;
+
+type CustomProviderDraft = {
+  id: string;
+  transport: (typeof CUSTOM_PROVIDER_TRANSPORTS)[number];
+  baseUrl: string;
+  apiKey: string;
+  discoveryKind: (typeof CUSTOM_PROVIDER_DISCOVERY_KINDS)[number];
+  discoveryPath: string;
+};
+
+const EMPTY_CUSTOM_PROVIDER_DRAFT: CustomProviderDraft = {
+  id: "",
+  transport: "openai_chat_completions",
+  baseUrl: "",
+  apiKey: "",
+  discoveryKind: "openai_models",
+  discoveryPath: "",
+};
+
+function isAbsoluteHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 type ProviderDraft = Pick<
   RuntimeProviderSummary,
   "transport" | "baseUrl" | "oauthSupported" | "apiKeySupported" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
@@ -437,6 +479,8 @@ export function SettingsPage({
   const [providerSearch, setProviderSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState<"connected" | "all">("connected");
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
+  const [customProviderDraft, setCustomProviderDraft] = useState<CustomProviderDraft | null>(null);
+  const [customProviderMessage, setCustomProviderMessage] = useState<string | undefined>(undefined);
   const providerDirectoryRef = useRef<HTMLDivElement>(null);
   const providerBackRef = useRef<HTMLButtonElement>(null);
   const lastProviderRef = useRef<string | null>(null);
@@ -924,6 +968,80 @@ export function SettingsPage({
           ? setupIsReady(result) ? t("setup.ready") : t("setup.savedIncomplete")
           : "No provider config changes were persisted.",
     );
+  }
+
+  function customProviderDraftProblem(draft: CustomProviderDraft): string | undefined {
+    const id = draft.id.trim();
+    if (!/^[a-z0-9_-]+$/.test(id)) return t("settings.customProviderInvalidId");
+    if (sortedProviders.some((provider) => provider.id === id)) {
+      return t("settings.customProviderIdTaken", { provider: id });
+    }
+    if (!isAbsoluteHttpUrl(draft.baseUrl.trim())) {
+      return t("settings.customProviderInvalidBaseUrl");
+    }
+    const path = draft.discoveryPath.trim();
+    if (path && !path.startsWith("/")) {
+      return t("settings.customProviderInvalidDiscoveryPath");
+    }
+    if (draft.discoveryKind === "disabled" && path) {
+      return t("settings.customProviderDiscoveryPathWithDisabled");
+    }
+    return undefined;
+  }
+
+  /**
+   * `providers.<id>.transport` declares the provider, so the batch must carry
+   * the transport and a valid base_url together. Auth is explicit `none/none`
+   * when no key was entered; an entered key is stored first and referenced as a
+   * credential profile in the same batch.
+   */
+  async function createCustomProvider() {
+    if (!customProviderDraft) return;
+    const draft = customProviderDraft;
+    const problem = customProviderDraftProblem(draft);
+    if (problem) {
+      setCustomProviderMessage(problem);
+      return;
+    }
+    setCustomProviderMessage(undefined);
+    const id = draft.id.trim();
+    const key = draft.apiKey.trim();
+    const profile = `${id}:default`;
+    if (key) {
+      const credResult = await onSetCredential(profile, "api_key", key);
+      if (!credResult) {
+        setCustomProviderMessage(t("settings.failedSaveKey"));
+        return;
+      }
+    }
+    const discoveryPath = draft.discoveryPath.trim();
+    const result = await onUpdateRuntimeConfig([
+      { key: `providers.${id}.transport`, value: draft.transport },
+      { key: `providers.${id}.base_url`, value: draft.baseUrl.trim() },
+      ...(key
+        ? [
+            { key: `providers.${id}.auth.source`, value: "credential_profile" },
+            { key: `providers.${id}.auth.kind`, value: "api_key" },
+            { key: `providers.${id}.auth.profile`, value: profile },
+          ]
+        : [
+            { key: `providers.${id}.auth.source`, value: "none" },
+            { key: `providers.${id}.auth.kind`, value: "none" },
+          ]),
+      { key: `providers.${id}.discovery.kind`, value: draft.discoveryKind },
+      ...(discoveryPath ? [{ key: `providers.${id}.discovery.path`, value: discoveryPath }] : []),
+    ]);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    if (rejected.length) {
+      setCustomProviderMessage(rejected[0]?.reason ?? t("settings.customProviderRejected"));
+      return;
+    }
+    setCustomProviderMessage(t("settings.customProviderCreated", { provider: id }));
+    setCustomProviderDraft(null);
+    setProviderFilter("all");
+    setProviderSearch("");
+    setEditingProvider(id);
   }
 
   async function removeProviderConfig(providerId: string) {
@@ -1916,7 +2034,108 @@ export function SettingsPage({
                   <div className="provider-directory-filters" role="group" aria-label={t("modelUi.services")}>
                     {(["connected", "all"] as const).map((filter) => <button key={filter} type="button" aria-pressed={providerFilter === filter} onClick={() => setProviderFilter(filter)}>{t(`modelUi.${filter}`)}</button>)}
                   </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      setCustomProviderMessage(undefined);
+                      setCustomProviderDraft((prev) => (prev ? null : { ...EMPTY_CUSTOM_PROVIDER_DRAFT }));
+                    }}
+                  >
+                    {t("settings.addProvider")}
+                  </Button>
                 </div>
+                {customProviderDraft ? (
+                  <form
+                    className="settings-provider-editor"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void createCustomProvider();
+                    }}
+                  >
+                    <header>
+                      <div>
+                        <strong>{t("settings.addProvider")}</strong>
+                        <small>{t("settings.addProviderHint")}</small>
+                      </div>
+                    </header>
+                    <div className="settings-form-row">
+                      <label>
+                        <span>{t("settings.providerId")}</span>
+                        <input
+                          value={customProviderDraft.id}
+                          placeholder="my-gateway"
+                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, id: event.target.value })}
+                        />
+                      </label>
+                      <label>
+                        <span>{t("settings.transportLabel")}</span>
+                        <select
+                          value={customProviderDraft.transport}
+                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, transport: event.target.value as CustomProviderDraft["transport"] })}
+                        >
+                          {CUSTOM_PROVIDER_TRANSPORTS.map((transport) => (
+                            <option key={transport} value={transport}>{transport}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="settings-form-row">
+                      <label>
+                        <span>{t("settings.baseUrl")}</span>
+                        <input
+                          value={customProviderDraft.baseUrl}
+                          placeholder="https://gateway.example/v1"
+                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, baseUrl: event.target.value })}
+                        />
+                      </label>
+                      <label>
+                        <span>{t("settings.apiKeyLabel")}</span>
+                        <input
+                          type="password"
+                          value={customProviderDraft.apiKey}
+                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, apiKey: event.target.value })}
+                        />
+                      </label>
+                    </div>
+                    <div className="settings-form-row">
+                      <label>
+                        <span>{t("settings.discoveryKind")}</span>
+                        <select
+                          value={customProviderDraft.discoveryKind}
+                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, discoveryKind: event.target.value as CustomProviderDraft["discoveryKind"] })}
+                        >
+                          <option value="openai_models">{t("settings.discoveryKindOpenAiModels")}</option>
+                          <option value="disabled">{t("settings.discoveryKindDisabled")}</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span>{t("settings.discoveryPath")}</span>
+                        <input
+                          value={customProviderDraft.discoveryPath}
+                          placeholder="/v1/models"
+                          disabled={customProviderDraft.discoveryKind === "disabled"}
+                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, discoveryPath: event.target.value })}
+                        />
+                      </label>
+                    </div>
+                    <div className="settings-actions">
+                      <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                        {t("settings.createProvider")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => {
+                          setCustomProviderDraft(null);
+                          setCustomProviderMessage(undefined);
+                        }}
+                      >
+                        {t("common.cancel")}
+                      </Button>
+                    </div>
+                  </form>
+                ) : null}
                 {visibleProviders.map((provider) => {
                   const name = providerPresentation(provider.id);
                   const count = modelCatalog.options.filter((model) => model.routeProvider === provider.id && model.available).length;
@@ -1932,6 +2151,9 @@ export function SettingsPage({
                 {!visibleProviders.length ? <div className="settings-callout"><span>{t("modelUi.noProviders")}</span><button type="button" className="model-browser-more" onClick={() => { setProviderFilter("all"); setProviderSearch(""); }}>{t("modelUi.allServices")}</button></div> : null}
                 <p className="settings-hint">{t("modelUi.credentialHint")}</p>
               </div> : <button ref={providerBackRef} type="button" className="model-browser-more provider-back" onClick={() => setEditingProvider(null)}><ArrowLeft size={15} />{t("modelUi.backServices")}</button>}
+              {/* Kept outside the directory/editor switch: a created provider opens
+                  its editor immediately, so the result message must outlive the list. */}
+              {customProviderMessage ? <span className="settings-save-message">{customProviderMessage}</span> : null}
               {sortedProviders.filter((provider) => provider.id === editingProvider).map((provider) => {
                 const draft = providerDrafts[provider.id];
                 if (!draft) return null;

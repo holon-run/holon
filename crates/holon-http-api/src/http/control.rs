@@ -450,6 +450,249 @@ mod setup_tests {
         assert_eq!(effective["setup"]["actions"], json!([]));
         assert_eq!(effective["setup"]["provider"], "openai");
     }
+
+    // #4563: `providers.<id>.transport` declares (creates) a custom provider.
+
+    async fn await_reload_convergence(host: &RuntimeHost, generation: u64) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while host.config_reload_status().completed_generation < generation {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reload convergence");
+    }
+
+    fn provider_summary<'a>(effective: &'a Value, id: &str) -> Option<&'a Value> {
+        effective["runtime_surface"]["providers"]
+            .as_array()?
+            .iter()
+            .find(|provider| provider["id"] == json!(id))
+    }
+
+    fn rejected_reason<'a>(response: &'a Value, key: &str) -> &'a str {
+        response["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .find(|result| result["key"] == json!(key))
+            .expect("result for key")["reason"]
+            .as_str()
+            .expect("reason string")
+    }
+
+    #[tokio::test]
+    async fn transport_declaration_creates_custom_provider() {
+        let (_home, host) = host();
+        let (status, accepted) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":"providers.self-hosted-gw.transport","value":"openai_chat_completions"},
+                {"key":"providers.self-hosted-gw.base_url","value":"https://gw.example/v1"},
+                {"key":"providers.self-hosted-gw.discovery.kind","value":"openai_models"},
+                {"key":"providers.self-hosted-gw.discovery.path","value":"/v1/models"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{accepted}");
+        assert_eq!(accepted["changed"], true, "{accepted}");
+        for result in accepted["results"].as_array().unwrap() {
+            assert_eq!(result["effect"], "accepted_reload_scheduled", "{accepted}");
+        }
+        let generation = accepted["reload"]["requested_generation"].as_u64().unwrap();
+        assert!(generation > 0, "{accepted}");
+        await_reload_convergence(&host, generation).await;
+
+        let (status, effective) = request(&host, "GET", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        let provider =
+            provider_summary(&effective, "self-hosted-gw").expect("created provider visible");
+        assert_eq!(provider["configured_in_config"], json!(true), "{effective}");
+        assert_eq!(provider["transport"], json!("openai_chat_completions"));
+        assert_eq!(provider["base_url"], json!("https://gw.example/v1"));
+        assert_eq!(provider["discovery"]["kind"], json!("openai_models"));
+
+        let persisted =
+            crate::config::load_persisted_config_at(&host.config().config_file_path).unwrap();
+        let stored = &persisted.providers[&ProviderId::parse("self-hosted-gw").unwrap()];
+        assert_eq!(stored.base_url, "https://gw.example/v1");
+        assert_eq!(stored.transport.as_str(), "openai_chat_completions");
+    }
+
+    #[tokio::test]
+    async fn transport_declaration_ignores_key_order_inside_the_batch() {
+        let (_home, host) = host();
+        let (status, accepted) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":"providers.order-agnostic.base_url","value":"https://gw.example/v1"},
+                {"key":"providers.order-agnostic.transport","value":"anthropic_messages"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{accepted}");
+        assert_eq!(accepted["changed"], true, "{accepted}");
+        for result in accepted["results"].as_array().unwrap() {
+            assert_eq!(result["effect"], "accepted_reload_scheduled", "{accepted}");
+        }
+        let persisted =
+            crate::config::load_persisted_config_at(&host.config().config_file_path).unwrap();
+        let stored = &persisted.providers[&ProviderId::parse("order-agnostic").unwrap()];
+        assert_eq!(stored.base_url, "https://gw.example/v1");
+        assert_eq!(stored.transport.as_str(), "anthropic_messages");
+    }
+
+    #[tokio::test]
+    async fn transport_declaration_without_base_url_rejects_the_batch() {
+        let (_home, host) = host();
+        let generation_before = host.config_reload_status().requested_generation;
+        let (status, rejected) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":"providers.orphan-gw.transport","value":"openai_chat_completions"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{rejected}");
+        assert_eq!(rejected["changed"], false, "{rejected}");
+        for result in rejected["results"].as_array().unwrap() {
+            assert_eq!(result["effect"], "rejected", "{rejected}");
+        }
+        assert!(
+            rejected_reason(&rejected, "providers.orphan-gw.transport")
+                .contains("provider orphan-gw was created by this update batch but requires providers.orphan-gw.base_url"),
+            "{rejected}"
+        );
+        assert_eq!(
+            host.config_reload_status().requested_generation,
+            generation_before
+        );
+        let persisted =
+            crate::config::load_persisted_config_at(&host.config().config_file_path).unwrap();
+        assert!(!persisted
+            .providers
+            .contains_key(&ProviderId::parse("orphan-gw").unwrap()));
+    }
+
+    #[tokio::test]
+    async fn unknown_provider_id_still_rejects_non_transport_keys() {
+        let (_home, host) = host();
+        let (status, rejected) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":"providers.mystery-gw.auth.source","value":"none"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{rejected}");
+        assert_eq!(rejected["changed"], false, "{rejected}");
+        assert!(
+            rejected_reason(&rejected, "providers.mystery-gw.auth.source")
+                .contains("provider mystery-gw not found"),
+            "{rejected}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_declaration_validates_id_and_transport_vocabulary() {
+        let (_home, host) = host();
+        // `ProviderId::parse` normalizes case, so an uppercase id is accepted as
+        // its lowercase form; the Web form's `^[a-z0-9_-]+$` rule is a UI
+        // convention and the config layer stays authoritative for real ids.
+        let (status, invalid_id) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":"providers.bad id.transport","value":"openai_chat_completions"},
+                {"key":"providers.bad id.base_url","value":"https://gw.example/v1"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{invalid_id}");
+        assert_eq!(invalid_id["changed"], false, "{invalid_id}");
+        assert!(
+            rejected_reason(&invalid_id, "providers.bad id.transport")
+                .contains("invalid provider id bad id"),
+            "{invalid_id}"
+        );
+
+        let (status, invalid_transport) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":"providers.gw.transport","value":"bogus"},
+                {"key":"providers.gw.base_url","value":"https://gw.example/v1"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{invalid_transport}");
+        assert_eq!(invalid_transport["changed"], false, "{invalid_transport}");
+        let reason = rejected_reason(&invalid_transport, "providers.gw.transport");
+        assert!(
+            reason.contains("invalid provider transport bogus"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("openai_chat_completions")
+                && reason.contains("gemini_generate_content"),
+            "{reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_declaration_defaults_auth_to_none() {
+        let (_home, host) = host();
+        let (status, accepted) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":"providers.keyless-gw.transport","value":"openai_responses"},
+                {"key":"providers.keyless-gw.base_url","value":"https://gw.example/v1"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{accepted}");
+        assert_eq!(accepted["changed"], true, "{accepted}");
+        let persisted =
+            crate::config::load_persisted_config_at(&host.config().config_file_path).unwrap();
+        let stored = &persisted.providers[&ProviderId::parse("keyless-gw").unwrap()];
+        assert_eq!(stored.auth.source, CredentialSource::None);
+        assert_eq!(stored.auth.kind, CredentialKind::None);
+        let generation = accepted["reload"]["requested_generation"].as_u64().unwrap();
+        await_reload_convergence(&host, generation).await;
+        let (_, effective) = request(&host, "GET", Value::Null).await;
+        let provider =
+            provider_summary(&effective, "keyless-gw").expect("created provider visible");
+        assert_eq!(provider["credential_source"], json!("none"), "{effective}");
+        assert_eq!(provider["credential_kind"], json!("none"), "{effective}");
+        assert_eq!(
+            provider["credential_configured"],
+            json!(true),
+            "{effective}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unconfigured_builtin_transport_write_needs_no_base_url() {
+        let (_home, host) = host();
+        let (status, accepted) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":"providers.zai.transport","value":"anthropic_messages"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{accepted}");
+        assert_eq!(accepted["changed"], true, "{accepted}");
+        for result in accepted["results"].as_array().unwrap() {
+            assert_eq!(result["effect"], "accepted_reload_scheduled", "{accepted}");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
@@ -835,6 +1078,7 @@ fn runtime_config_update_blocking(
     let mut candidate = stored.clone();
     let mut reader_limits = candidate.runtime.db_readers.clone();
     let mut results = Vec::new();
+    let created_provider_ids = stage_custom_provider_creations(&mut candidate, &request.updates);
 
     for update in request.updates {
         if !is_runtime_mutable_config_key(&update.key) {
@@ -888,6 +1132,8 @@ fn runtime_config_update_blocking(
             }),
         }
     }
+
+    reject_creations_missing_base_url(&mut candidate, &created_provider_ids, &mut results);
 
     candidate.runtime.db_readers = reader_limits;
     if results
@@ -1084,6 +1330,79 @@ fn config_value_as_raw(value: Value) -> String {
     match value {
         Value::String(value) => value,
         other => other.to_string(),
+    }
+}
+
+/// D1: a `providers.<id>.transport` write declares a custom provider when the id
+/// is neither configured nor built-in. The stub is created before the batch is
+/// applied so the order of updates inside one request never decides whether the
+/// rest of the keys land.
+///
+/// Ids and transports that fail to parse stay on the per-key path: they report
+/// the same rejection they would without creation support.
+fn stage_custom_provider_creations(
+    candidate: &mut crate::config::HolonConfigFile,
+    updates: &[RuntimeConfigUpdateEntry],
+) -> Vec<crate::config::ProviderId> {
+    let mut created = Vec::new();
+    for update in updates {
+        if update.unset || !is_runtime_mutable_config_key(&update.key) {
+            continue;
+        }
+        let Some(id) = update
+            .key
+            .strip_prefix("providers.")
+            .and_then(|rest| rest.strip_suffix(".transport"))
+        else {
+            continue;
+        };
+        if id.is_empty() || id.contains('.') {
+            continue;
+        }
+        let Some(value) = update.value.clone() else {
+            continue;
+        };
+        let (Ok(id), Ok(transport)) = (
+            crate::config::ProviderId::parse(id),
+            crate::config::ProviderTransportKind::parse(&config_value_as_raw(value)),
+        ) else {
+            continue;
+        };
+        if let Ok(true) = crate::config::create_custom_provider_stub(candidate, &id, transport) {
+            created.push(id);
+        }
+    }
+    created
+}
+
+/// A created custom provider is only complete with a `base_url` in the same
+/// batch. Without one the transport entry reports the missing key, which the
+/// existing batch rejection turns into an all-rejected response.
+fn reject_creations_missing_base_url(
+    candidate: &crate::config::HolonConfigFile,
+    created_provider_ids: &[crate::config::ProviderId],
+    results: &mut [RuntimeConfigUpdateResult],
+) {
+    for id in created_provider_ids {
+        let has_base_url = candidate
+            .providers
+            .get(id)
+            .is_some_and(|provider| !provider.base_url.trim().is_empty());
+        if has_base_url {
+            continue;
+        }
+        let transport_key = format!("providers.{}.transport", id.as_str());
+        if let Some(result) = results
+            .iter_mut()
+            .find(|result| result.key == transport_key)
+        {
+            result.effect = RuntimeConfigUpdateEffect::Rejected;
+            result.reason = format!(
+                "provider {} was created by this update batch but requires providers.{}.base_url",
+                id.as_str(),
+                id.as_str()
+            );
+        }
     }
 }
 
