@@ -2,9 +2,11 @@
 # Real-library startup smoke for a daily beta build.
 #
 # Snapshots the live daemon home's runtime database into a sandbox
-# (WAL-consistent `sqlite3 .backup` of `state/runtime.sqlite`), boots the
-# published beta binary against the snapshot on a spare port, and verifies
-# the daemon starts, passes schema migrations, and accepts connections. This
+# (consistent `sqlite3 VACUUM INTO` of `state/runtime.sqlite`; unlike
+# `.backup`, concurrent daemon writes do not restart the copy, so a large
+# live home still finishes), boots the published beta binary against the
+# snapshot on a spare port, and verifies the daemon starts, passes schema
+# migrations, and accepts connections. This
 # is the gate that catches #4429-class upgrade aborts before any real machine
 # auto-upgrades.
 #
@@ -27,26 +29,42 @@
 #   database shape, so schema migration behavior is verified exactly as
 #   before.
 #
-# Usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--keep] [--no-marker]
+# Usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--db <path>]
+#                                  [--keep] [--no-marker]
 # Env:
 #   SMOKE_HOME_SRC      default ~/.holon (live daemon home to snapshot)
+#   SMOKE_DB_PATH       pre-made offline database copy; skips the snapshot
 #   SMOKE_SANDBOX       default /var/tmp/holon-beta-smoke (reused, replaced)
 #   SMOKE_PORT          default 18099
 #   SMOKE_SETTLE_SECS   seconds the beta must stay healthy (default 45)
+#   SMOKE_STARTUP_WAIT_SECS
+#                       inactivity window for serve opening its port (default
+#                       600); refreshed while the daemon keeps working (new
+#                       migration log lines, log growth, or advancing CPU
+#                       time), so a long large-database migration is not a
+#                       failure
 #   SMOKE_WEB_DIST      optional --web-dist path if the build needs one
+# --db/SMOKE_DB_PATH must point at a frozen copy with no live writer (for
+# example a database produced by `sqlite3 ... "VACUUM INTO ..."` on a
+# stopped daemon). It is still copied into the sandbox as an independent,
+# writable file; the caller's database is never opened in place.
 # On success the `[smoke: pending]` marker in the beta release body is
 # replaced with `[smoke: passed] ...` (requires `gh`; skip with --no-marker).
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+SNAPSHOT="$SCRIPT_DIR/beta-real-lib-snapshot.sh"
 REPO="holon-run/holon"
 TAG=""
 BINARY=""
+DB_SRC="${SMOKE_DB_PATH:-}"
 KEEP=0
 MARKER=1
 HOME_SRC="${SMOKE_HOME_SRC:-$HOME/.holon}"
 SANDBOX="${SMOKE_SANDBOX:-/var/tmp/holon-beta-smoke}"
 PORT="${SMOKE_PORT:-18099}"
 SETTLE="${SMOKE_SETTLE_SECS:-45}"
+STARTUP_WAIT="${SMOKE_STARTUP_WAIT_SECS:-600}"
 WORK=""
 
 log() { printf '[beta-smoke] %s\n' "$*"; }
@@ -60,15 +78,20 @@ trap cleanup EXIT
 while [ $# -gt 0 ]; do
   case "$1" in
     --binary) BINARY="$2"; shift ;;
+    --db) DB_SRC="$2"; shift ;;
     --keep) KEEP=1 ;;
     --no-marker) MARKER=0 ;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) TAG="$1" ;;
   esac
   shift
 done
-[ -n "$TAG" ] || die "usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--keep] [--no-marker]"
+[ -n "$TAG" ] || die "usage: beta-real-lib-smoke.sh <beta-tag> [--binary <path>] [--db <path>] [--keep] [--no-marker]"
 case "$TAG" in *-beta.*) ;; *) die "$TAG does not look like a beta tag" ;; esac
+case "$STARTUP_WAIT" in
+  ''|*[!0-9]*) die "SMOKE_STARTUP_WAIT_SECS must be a positive integer (got '${STARTUP_WAIT}')" ;;
+esac
+[ "$STARTUP_WAIT" -gt 0 ] || die "SMOKE_STARTUP_WAIT_SECS must be greater than 0 (got '${STARTUP_WAIT}')"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -94,16 +117,33 @@ if [ -z "$BINARY" ]; then
 fi
 log "smoking beta binary: $("$BINARY" --version)"
 
-log "snapshotting live daemon home ${HOME_SRC} into sandbox ${SANDBOX}"
-if [ -e "$HOME_SRC/credentials.json" ]; then
-  log "live credentials.json detected; NOT copying it (sandbox must stay credential-free)"
+if [ -n "$DB_SRC" ]; then
+  # A pre-made copy skips the live snapshot, but it must never alias the
+  # sandbox: the sandbox is deleted and rebuilt below.
+  [ -f "$DB_SRC" ] || die "--db/SMOKE_DB_PATH does not exist: $DB_SRC"
+  DB_SRC="$(realpath -e -- "$DB_SRC")" || die "--db/SMOKE_DB_PATH is not a readable path: $DB_SRC"
+  SANDBOX_ABS="$(realpath -m -- "$SANDBOX")"
+  case "$DB_SRC" in
+    "$SANDBOX_ABS"|"$SANDBOX_ABS"/*)
+      die "refusing --db inside the sandbox ($SANDBOX): the sandbox is deleted and rebuilt"
+      ;;
+  esac
+  log "using pre-snapshot database ${DB_SRC}; skipping the live snapshot"
+else
+  log "snapshotting live daemon home ${HOME_SRC} into sandbox ${SANDBOX}"
+  if [ -e "$HOME_SRC/credentials.json" ]; then
+    log "live credentials.json detected; NOT copying it (sandbox must stay credential-free)"
+  fi
 fi
 rm -rf "$SANDBOX"
 mkdir -p "$SANDBOX/.holon/state"
 chmod 700 "$SANDBOX"
 : > "$SANDBOX/.holon/holon.db"
-log "sqlite .backup of state/runtime.sqlite (WAL-consistent; can take minutes on large homes)"
-sqlite3 "$HOME_SRC/state/runtime.sqlite" ".backup '$SANDBOX/.holon/state/runtime.sqlite'"
+if [ -n "$DB_SRC" ]; then
+  "$SNAPSHOT" --src "$DB_SRC" --dst "$SANDBOX/.holon/state/runtime.sqlite" --frozen
+else
+  "$SNAPSHOT" --src "$HOME_SRC/state/runtime.sqlite" --dst "$SANDBOX/.holon/state/runtime.sqlite"
+fi
 log "snapshot size: $(du -sh "$SANDBOX/.holon/state/runtime.sqlite" | awk '{print $1}')"
 
 # Fail closed: the sandbox must be credential-free and config-free before
@@ -168,14 +208,57 @@ if [ "$env_bound" -ne 1 ]; then
   die "serve process is not bound to the sandbox HOLON_HOME/HOME/CODEX_HOME; aborting to protect the real home"
 fi
 
+# A large real-library home migrates for minutes before serve binds its port,
+# so the port wait must not be a fixed wall-clock cap: a healthy multi-minute
+# migration is a pass, not a failure. STARTUP_WAIT is an inactivity window
+# that every new migration log line refreshes; it only expires after the log
+# has been quiet that long. Process exit and abort signatures keep failing
+# fast with their own messages. The wait is therefore about ongoing work, not
+# elapsed wall-clock time.
+#
+# Progress signals: a new "starting"/"finished runtime database migration"
+# line, any log growth, or advancing process CPU time. A single large
+# migration can run for many minutes between its start/finish lines, so line
+# count alone would falsely look stalled on a big database.
+ABORT_RE='migration[^a-z]*(abort|fail)|aborting|migrat[^a-z]*error|panicked|fatal error|failed to start'
+migration_lines() { grep -ciE 'migrat' "$LOG" 2>/dev/null || true; }
+log_bytes() { local v; v="$(wc -c <"$LOG" 2>/dev/null)" || true; printf '%s' "${v:-0}"; }
+# Fields after "pid (comm) state ...": utime and stime are the 12th and 13th.
+proc_cpu_ticks() {
+  local v
+  v="$(sed 's/^.*) //' "/proc/${SERVER_PID}/stat" 2>/dev/null | awk '{print $12 + $13}')" || true
+  printf '%s' "${v:-0}"
+}
+
 healthy=0
-for _ in $(seq 1 120); do
-  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-    break
-  fi
+migration_mark="$(migration_lines)"
+bytes_mark="$(log_bytes)"
+cpu_mark="$(proc_cpu_ticks)"
+last_progress_at="$(date +%s)"
+while :; do
   if (exec 3<>"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; then
     exec 3>&- 3<&- || true
     healthy=1
+    break
+  fi
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    break
+  fi
+  if grep -qiE "$ABORT_RE" "$LOG" 2>/dev/null; then
+    break
+  fi
+  now="$(date +%s)"
+  mark="$(migration_lines)"
+  bytes="$(log_bytes)"
+  cpu="$(proc_cpu_ticks)"
+  if [ "$mark" != "$migration_mark" ] || [ "$bytes" != "$bytes_mark" ] || [ "$cpu" != "$cpu_mark" ]; then
+    migration_mark="$mark"
+    bytes_mark="$bytes"
+    cpu_mark="$cpu"
+    last_progress_at="$now"
+    log "startup still progressing (${mark} migration log line(s), ${bytes} log bytes); extending the port wait"
+  fi
+  if [ "$now" -ge $((last_progress_at + STARTUP_WAIT)) ]; then
     break
   fi
   sleep 1
@@ -185,7 +268,13 @@ if [ "$healthy" -ne 1 ]; then
   tail -n 80 "$LOG" >&2 || true
   echo "---- end ----" >&2
   KEEP=1
-  die "beta did not open port ${PORT} within 120s (sandbox kept at ${SANDBOX})"
+  if grep -qiE "$ABORT_RE" "$LOG"; then
+    die "beta log matches a startup-abort signature before opening port ${PORT} (startup wait ${STARTUP_WAIT}s; sandbox kept at ${SANDBOX})"
+  fi
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    die "beta serve process exited before opening port ${PORT} (startup wait ${STARTUP_WAIT}s; sandbox kept at ${SANDBOX})"
+  fi
+  die "beta did not open port ${PORT} within ${STARTUP_WAIT}s of progress (process still running with ${migration_mark} migration log line(s); if migrations are still advancing raise SMOKE_STARTUP_WAIT_SECS; sandbox kept at ${SANDBOX})"
 fi
 log "daemon is listening on ${PORT}; settling ${SETTLE}s to catch delayed aborts"
 sleep "$SETTLE"
@@ -194,7 +283,7 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
   tail -n 80 "$LOG" >&2 || true
   die "beta daemon exited during the settle window (sandbox kept at ${SANDBOX})"
 fi
-if grep -qiE 'migration[^a-z]*(abort|fail)|aborting|migrat[^a-z]*error|panicked|fatal error|failed to start' "$LOG"; then
+if grep -qiE "$ABORT_RE" "$LOG"; then
   KEEP=1
   tail -n 80 "$LOG" >&2 || true
   die "beta log matches a startup-abort signature (sandbox kept at ${SANDBOX})"
