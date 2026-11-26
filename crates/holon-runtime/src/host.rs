@@ -4030,6 +4030,7 @@ impl RuntimeHost {
         })?;
         candidates = recovery_agent_ids.len();
         dispatch = Some(self.inner.startup_dispatch.begin()?);
+        let mut deferred_bootstrap_recovery = Vec::new();
         for agent_id in recovery_agent_ids {
             let agent_observation = observation.for_agent(&agent_id, None);
             let agent_result = async {
@@ -4059,29 +4060,24 @@ impl RuntimeHost {
                 tracing::info!(startup_id = %observation.startup_id, agent_id, skip_reason, "startup recovery candidate skipped");
                 return Ok(false);
             }
-            let runtime = match agent_observation.observe(
-                "activation",
-                self.activate_agent_observed(&agent_id, RuntimeActivationReason::StartupRecovery, Some(observation.clone())),
-            ).await {
-                Ok(runtime) => runtime,
-                Err(error) if error.downcast_ref::<AgentQuarantined>().is_some() => return Ok(false),
-                Err(error) => return Err(error),
-            };
-            let incarnation = runtime.instance_incarnation();
-            match agent_observation
-                .observe(
-                    "bootstrap_wait",
-                    self.await_bootstrap_isolating_local_failure(&runtime, &agent_id, incarnation),
-                )
-                .await
-            {
-                Ok(()) => {}
-                Err(error) if error.downcast_ref::<AgentQuarantined>().is_some() => {
-                    return Ok(false);
-                }
-                Err(error) => return Err(error),
+            // Onboarding completion is delivered over the serve listener, and
+            // that listener binds only after this recovery pass. Waiting for
+            // the bootstrap provider here deadlocks a cold bootstrap home, so
+            // defer non-default candidates until onboarding publishes a
+            // provider instead of blocking daemon startup.
+            if self.bootstrap_mode_active() && agent_id != self.config().default_agent_id {
+                tracing::info!(
+                    startup_id = %observation.startup_id,
+                    agent_id,
+                    outcome = "deferred",
+                    reason = "bootstrap_provider_not_ready",
+                    "startup recovery candidate deferred until onboarding completes"
+                );
+                deferred_bootstrap_recovery.push(agent_id.clone());
+                return Ok(false);
             }
-            Ok(true)
+            self.recover_startup_candidate_runtime(&agent_id, observation, &agent_observation)
+                .await
             }.await;
             match agent_result {
                 Ok(true) => completed += 1,
@@ -4094,6 +4090,9 @@ impl RuntimeHost {
         }
         self.finish_startup_recovery_report();
         self.start_task_stop_supervisor();
+        if !deferred_bootstrap_recovery.is_empty() {
+            self.spawn_deferred_bootstrap_recovery(deferred_bootstrap_recovery, observation.clone());
+        }
         Ok(recovered_queue_agent_ids)
         }.await;
         tracing::info!(
@@ -4166,6 +4165,92 @@ impl RuntimeHost {
         .await;
         let summary = scope.finish_with_summary(&reconciliation);
         Ok((reconciliation?, summary))
+    }
+
+    /// Activate one startup recovery candidate and await its bootstrap.
+    ///
+    /// `Ok(true)` means the candidate completed bootstrap; `Ok(false)` means
+    /// it was isolated as a quarantined local failure and startup should
+    /// continue. Only global failures are returned as `Err`.
+    async fn recover_startup_candidate_runtime(
+        &self,
+        agent_id: &str,
+        observation: &crate::startup::StartupObservation,
+        agent_observation: &crate::startup::StartupObservation,
+    ) -> Result<bool> {
+        let runtime = match agent_observation
+            .observe(
+                "activation",
+                self.activate_agent_observed(
+                    agent_id,
+                    RuntimeActivationReason::StartupRecovery,
+                    Some(observation.clone()),
+                ),
+            )
+            .await
+        {
+            Ok(runtime) => runtime,
+            Err(error) if error.downcast_ref::<AgentQuarantined>().is_some() => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let incarnation = runtime.instance_incarnation();
+        match agent_observation
+            .observe(
+                "bootstrap_wait",
+                self.await_bootstrap_isolating_local_failure(&runtime, agent_id, incarnation),
+            )
+            .await
+        {
+            Ok(()) => Ok(true),
+            Err(error) if error.downcast_ref::<AgentQuarantined>().is_some() => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Resume recovery candidates that were deferred because the host was
+    /// still waiting for browser onboarding.
+    ///
+    /// Recovery runs before the serve listener binds, while onboarding
+    /// completion arrives over that listener. Deferring keeps daemon startup
+    /// bounded without dropping the recovered runtime state.
+    fn spawn_deferred_bootstrap_recovery(
+        &self,
+        agent_ids: Vec<String>,
+        observation: crate::startup::StartupObservation,
+    ) {
+        let host = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = host.wait_for_bootstrap_ready().await {
+                tracing::debug!(
+                    error = %error,
+                    "deferred startup recovery stopped before onboarding completed"
+                );
+                return;
+            }
+            for agent_id in agent_ids {
+                let agent_observation = observation.for_agent(&agent_id, None);
+                match host
+                    .recover_startup_candidate_runtime(&agent_id, &observation, &agent_observation)
+                    .await
+                {
+                    Ok(true) => tracing::info!(
+                        agent_id,
+                        outcome = "recovered",
+                        "deferred startup recovery candidate completed"
+                    ),
+                    Ok(false) => tracing::info!(
+                        agent_id,
+                        outcome = "isolated",
+                        "deferred startup recovery candidate was isolated"
+                    ),
+                    Err(error) => tracing::warn!(
+                        agent_id,
+                        error = %error,
+                        "deferred startup recovery candidate failed"
+                    ),
+                }
+            }
+        });
     }
 
     #[cfg(test)]
@@ -14280,6 +14365,94 @@ mod tests {
             .unwrap();
         assert!(runtime.has_provider_reconfig());
 
+        host.shutdown().await.unwrap();
+        match original_bootstrap {
+            Some(value) => std::env::set_var("HOLON_BOOTSTRAP", value),
+            None => std::env::remove_var("HOLON_BOOTSTRAP"),
+        }
+        match original_openai_key {
+            Some(value) => std::env::set_var("OPENAI_API_KEY", value),
+            None => std::env::remove_var("OPENAI_API_KEY"),
+        }
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn startup_recovery_defers_bootstrap_blocked_candidates_until_provider_ready() {
+        let _env_lock = crate::test_env::lock_env();
+        let original_bootstrap = std::env::var_os("HOLON_BOOTSTRAP");
+        let original_openai_key = std::env::var_os("OPENAI_API_KEY");
+        std::env::set_var("HOLON_BOOTSTRAP", "1");
+        std::env::remove_var("OPENAI_API_KEY");
+
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
+
+        // Seed a non-default agent whose active timer makes it a startup
+        // recovery candidate on the next boot.
+        let seeded =
+            RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("done")))
+                .unwrap();
+        seeded.ensure_default_agent_identity().unwrap();
+        seeded
+            .create_named_agent("deferred-recovery", None)
+            .await
+            .unwrap();
+        let runtime = seeded
+            .activate_agent("deferred-recovery", RuntimeActivationReason::AgentLifecycle)
+            .await
+            .unwrap();
+        runtime.schedule_timer(60_000, None, None).await.unwrap();
+        seeded.shutdown().await.unwrap();
+        drop(seeded);
+
+        // A credential-free bootstrap home must recover without the serve
+        // listener that browser onboarding needs.
+        let host = RuntimeHost::new(config).unwrap();
+        assert!(host.bootstrap_mode_active());
+        let (_recovered, dispatch) = tokio::time::timeout(
+            Duration::from_secs(3),
+            host.recover_startup_deferred_observed(&crate::startup::StartupObservation::new()),
+        )
+        .await
+        .expect("startup recovery must not wait for browser onboarding")
+        .unwrap();
+        assert!(
+            host.try_get_loaded_runtime("deferred-recovery")
+                .await
+                .is_none(),
+            "bootstrap mode must defer the candidate instead of activating it"
+        );
+
+        // Releasing the bootstrap provider is what onboarding completion does
+        // once the listener is serving. The deferred candidate must resume.
+        host.inner
+            .bootstrap_provider_active
+            .store(false, Ordering::Release);
+        *host
+            .inner
+            .static_provider
+            .lock()
+            .expect("static provider lock poisoned") = Some(Arc::new(StubProvider::new("done")));
+        host.inner.bootstrap_ready_notify.notify_waiters();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if host
+                    .try_get_loaded_runtime("deferred-recovery")
+                    .await
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("deferred candidate must activate after the provider is published");
+
+        drop(dispatch);
         host.shutdown().await.unwrap();
         match original_bootstrap {
             Some(value) => std::env::set_var("HOLON_BOOTSTRAP", value),
