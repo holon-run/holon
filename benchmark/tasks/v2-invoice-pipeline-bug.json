@@ -1,0 +1,22 @@
+{
+  "name": "v2-invoice-pipeline-bug",
+  "mode": "runtime",
+  "workspace": {
+    "type": "fixture",
+    "path": "invoice-pipeline-bug"
+  },
+  "tool_profile": "coding",
+  "timeout_seconds": 900,
+  "prompt": "The invoice pipeline in this workspace produces a report that violates the rules in README.md. Diagnose every divergence between the implementation and the README rules, fix the implementation, and make the verification pass. Keep the fix inside src/, preserve the report shape, and explain the root causes briefly. test.js is the acceptance spec: do not modify test.js, data/, or README.md.",
+  "setup": [
+    "node test.js"
+  ],
+  "verify": [
+    "python3 -c \"import hashlib,sys; sys.exit('protected: test.js') if hashlib.sha256(open('test.js','rb').read()).hexdigest() != '404efcf03f3521ec7484c91052d5c9036ed20784a9eae97f1deb85c3732c5dfb' else None\"",
+    "node test.js"
+  ],
+  "success_criteria": {
+    "verify_exit_code": 0,
+    "min_final_message_length": 100
+  }
+}

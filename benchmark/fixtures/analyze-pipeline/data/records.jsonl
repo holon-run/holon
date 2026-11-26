@@ -1,0 +1,12 @@
+{"id": "a1", "name": "alpha-one", "status": "active", "score": 91.5, "category": "alpha"}
+{"id": "a2", "name": "beta-one", "status": "active", "score": 87.25, "category": "beta"}
+{"id": "a3", "name": "alpha-two", "status": "archived", "score": 99.9, "category": "alpha"}
+{"id": "a4", "name": "beta-two", "status": "active", "score": 87.5, "category": "beta"}
+{"id": "a5", "name": "alpha-three", "status": "pending", "score": 75.0, "category": "alpha"}
+{"id": "a6", "name": "alpha-four", "status": "active", "score": 91.5, "category": "alpha"}
+{"id": "a7", "name": "beta-three", "status": "active", "score": 92.0, "category": "beta"}
+{"id": "a8", "name": "beta-four", "status": "archived", "score": 88.0, "category": "beta"}
+{"id": "a9", "name": "alpha-five", "status": "active", "score": 64.25, "category": "alpha"}
+{"id": "a10", "name": "beta-five", "status": "active", "score": 87.25, "category": "beta"}
+{"id": "a11", "name": "beta-six", "status": "pending", "score": 70.0, "category": "beta"}
+{"id": "a12", "name": "alpha-six", "status": "active", "score": 79.75, "category": "alpha"}
