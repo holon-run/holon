@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildDecisionConfigUpdates,
   buildImageGenerationConfigUpdates,
+  buildProviderDiscoveryConfigUpdates,
   buildSearchProviderConfigUpdates,
   buildStandardSearchProviderDefinitions,
   buildVisionConfigUpdates,
@@ -449,6 +450,64 @@ describe("buildSearchProviderConfigUpdates", () => {
     ).toEqual([
       { key: "web.providers.future-native.kind", value: "future_native" },
       { key: "web.providers.future-native.credential_profile", value: "" },
+    ]);
+  });
+});
+
+describe("buildProviderDiscoveryConfigUpdates", () => {
+  it("clears the whole discovery block when kind is unset", () => {
+    expect(
+      buildProviderDiscoveryConfigUpdates("magpie", {
+        discoveryKind: "",
+        discoveryPath: "/v1/models",
+        discoveryDecoder: "magpie",
+      }),
+    ).toEqual([
+      { key: "providers.magpie.discovery.path", unset: true },
+      { key: "providers.magpie.discovery.decoder", unset: true },
+      { key: "providers.magpie.discovery.kind", unset: true },
+    ]);
+  });
+
+  it("sets kind before path and decoder for openai_models", () => {
+    expect(
+      buildProviderDiscoveryConfigUpdates("magpie", {
+        discoveryKind: "openai_models",
+        discoveryPath: " /v1/models ",
+        discoveryDecoder: "magpie",
+      }),
+    ).toEqual([
+      { key: "providers.magpie.discovery.kind", value: "openai_models" },
+      { key: "providers.magpie.discovery.path", value: "/v1/models" },
+      { key: "providers.magpie.discovery.decoder", value: "magpie" },
+    ]);
+  });
+
+  it("unsets path and decoder when switching to disabled", () => {
+    expect(
+      buildProviderDiscoveryConfigUpdates("magpie", {
+        discoveryKind: "disabled",
+        discoveryPath: "/v1/models",
+        discoveryDecoder: "magpie",
+      }),
+    ).toEqual([
+      { key: "providers.magpie.discovery.kind", value: "disabled" },
+      { key: "providers.magpie.discovery.path", unset: true },
+      { key: "providers.magpie.discovery.decoder", unset: true },
+    ]);
+  });
+
+  it("unsets the decoder when the default decoder is selected", () => {
+    expect(
+      buildProviderDiscoveryConfigUpdates("magpie", {
+        discoveryKind: "openai_models",
+        discoveryPath: "/v1/models",
+        discoveryDecoder: "   ",
+      }),
+    ).toEqual([
+      { key: "providers.magpie.discovery.kind", value: "openai_models" },
+      { key: "providers.magpie.discovery.path", value: "/v1/models" },
+      { key: "providers.magpie.discovery.decoder", unset: true },
     ]);
   });
 });

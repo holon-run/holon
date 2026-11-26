@@ -7572,6 +7572,20 @@ export interface components {
                     credential_kind: string;
                     credential_profile?: string | null;
                     credential_source: string;
+                    /**
+                     * @description Effective model-discovery settings for a provider as resolved at runtime.
+                     *      `None` on [`RuntimeProviderSummary`] means nothing is configured and the
+                     *      built-in/transport default still applies.
+                     */
+                    discovery?: {
+                        /**
+                         * @description Resolved decoder name (`openai_compatible`, `magpie`, ...). Kept as a
+                         *      string so the wire surface stays stable if more decoders are added.
+                         */
+                        decoder?: string | null;
+                        kind: string;
+                        path?: string | null;
+                    } | null;
                     id: string;
                     oauth_supported: boolean;
                     transport: string;
@@ -7771,6 +7785,20 @@ export interface components {
                     credential_kind: string;
                     credential_profile?: string | null;
                     credential_source: string;
+                    /**
+                     * @description Effective model-discovery settings for a provider as resolved at runtime.
+                     *      `None` on [`RuntimeProviderSummary`] means nothing is configured and the
+                     *      built-in/transport default still applies.
+                     */
+                    discovery?: {
+                        /**
+                         * @description Resolved decoder name (`openai_compatible`, `magpie`, ...). Kept as a
+                         *      string so the wire surface stays stable if more decoders are added.
+                         */
+                        decoder?: string | null;
+                        kind: string;
+                        path?: string | null;
+                    } | null;
                     id: string;
                     oauth_supported: boolean;
                     transport: string;

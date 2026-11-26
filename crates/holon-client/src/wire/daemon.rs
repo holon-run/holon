@@ -184,6 +184,22 @@ pub struct RuntimeProviderSummary {
     pub credential_external: Option<String>,
     pub credential_configured: bool,
     pub configured_in_config: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<RuntimeProviderDiscoverySummary>,
+}
+
+/// Effective model-discovery settings for a provider as resolved at runtime.
+/// `None` on [`RuntimeProviderSummary`] means nothing is configured and the
+/// built-in/transport default still applies.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeProviderDiscoverySummary {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Resolved decoder name (`openai_compatible`, `magpie`, ...). Kept as a
+    /// string so the wire surface stays stable if more decoders are added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoder: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

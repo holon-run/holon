@@ -19,8 +19,8 @@ pub enum ControlTransportKind {
 }
 
 pub use holon_domain::model_values::{
-    ProviderDiscoveryConfig, ProviderDiscoveryKind, ProviderId, ProviderTransportKind,
-    TransportCapabilities,
+    ModelDiscoveryDecoder, ProviderDiscoveryConfig, ProviderDiscoveryKind, ProviderId,
+    ProviderTransportKind, TransportCapabilities,
 };
 
 pub const DEFAULT_LOCAL_AGENT_ID: &str = "main";

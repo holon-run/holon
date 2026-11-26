@@ -15927,6 +15927,34 @@
                     "credential_source": {
                       "type": "string"
                     },
+                    "discovery": {
+                      "description": "Effective model-discovery settings for a provider as resolved at runtime.\n `None` on [`RuntimeProviderSummary`] means nothing is configured and the\n built-in/transport default still applies.",
+                      "properties": {
+                        "decoder": {
+                          "description": "Resolved decoder name (`openai_compatible`, `magpie`, ...). Kept as a\n string so the wire surface stays stable if more decoders are added.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
                     "id": {
                       "type": "string"
                     },
@@ -16640,6 +16668,34 @@
                     },
                     "credential_source": {
                       "type": "string"
+                    },
+                    "discovery": {
+                      "description": "Effective model-discovery settings for a provider as resolved at runtime.\n `None` on [`RuntimeProviderSummary`] means nothing is configured and the\n built-in/transport default still applies.",
+                      "properties": {
+                        "decoder": {
+                          "description": "Resolved decoder name (`openai_compatible`, `magpie`, ...). Kept as a\n string so the wire surface stays stable if more decoders are added.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
                     },
                     "id": {
                       "type": "string"

@@ -179,6 +179,17 @@ pub(crate) fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Re
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null));
     }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".discovery.decoder") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.endpoints.get(&endpoint))
+            .and_then(|endpoint| endpoint.discovery.as_ref())
+            .and_then(|discovery| discovery.decoder)
+            .map(|decoder| Value::String(decoder.as_str().to_string()))
+            .unwrap_or(Value::Null));
+    }
     if let Some((id, endpoint)) = provider_endpoint_key(rest, ".base_url") {
         let endpoint = ProviderEndpointId::parse(endpoint)?;
         return Ok(config
@@ -340,6 +351,15 @@ pub(crate) fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Re
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null));
     }
+    if let Some(id) = rest.strip_suffix(".discovery.decoder") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.discovery.as_ref())
+            .and_then(|discovery| discovery.decoder)
+            .map(|decoder| Value::String(decoder.as_str().to_string()))
+            .unwrap_or(Value::Null));
+    }
     if rest.contains('.') {
         return Err(unknown_config_key(key));
     }
@@ -367,12 +387,17 @@ pub(crate) fn set_provider_config_key(
         let provider = persisted_provider_config_mut(config, key, ".discovery.kind")?;
         let discovery = provider
             .discovery
-            .get_or_insert_with(|| ProviderDiscoveryConfig { kind, path: None });
+            .get_or_insert_with(|| ProviderDiscoveryConfig {
+                kind,
+                path: None,
+                decoder: None,
+            });
         discovery.kind = kind;
-        // `disabled` never carries a path; switching kind must not leave the
-        // rejected `disabled` + `path` pair behind in the stored config.
+        // `disabled` never carries a path or decoder; switching kind must not
+        // leave either rejected combination behind in the stored config.
         if kind == ProviderDiscoveryKind::Disabled {
             discovery.path = None;
+            discovery.decoder = None;
         }
         return Ok(());
     }
@@ -396,9 +421,26 @@ pub(crate) fn set_provider_config_key(
         let discovery = ProviderDiscoveryConfig {
             kind: discovery.kind,
             path: Some(value),
+            decoder: discovery.decoder,
         };
         discovery.validate(key.strip_suffix(".path").unwrap_or(key))?;
         provider.discovery = Some(discovery);
+        return Ok(());
+    }
+    if key.ends_with(".discovery.decoder") {
+        let decoder = ModelDiscoveryDecoder::parse(raw_value)?;
+        let provider = persisted_provider_config_mut(config, key, ".discovery.decoder")?;
+        let discovery = provider
+            .discovery
+            .as_mut()
+            .ok_or_else(|| anyhow!("{key} requires discovery.kind to be set first"))?;
+        if discovery.kind == ProviderDiscoveryKind::Disabled {
+            return Err(anyhow!(
+                "{key} cannot be set while discovery kind is disabled; unset discovery or set the kind first"
+            ));
+        }
+        discovery.decoder = Some(decoder);
+        discovery.validate(key.strip_suffix(".decoder").unwrap_or(key))?;
         return Ok(());
     }
     if key.ends_with(".transport") {
@@ -479,6 +521,15 @@ pub(crate) fn unset_provider_config_key(config: &mut HolonConfigFile, key: &str)
         persisted_provider_config_mut(config, key, ".discovery.path")?.discovery = None;
         return Ok(());
     }
+    if key.ends_with(".discovery.decoder") {
+        if let Some(discovery) = persisted_provider_config_mut(config, key, ".discovery.decoder")?
+            .discovery
+            .as_mut()
+        {
+            discovery.decoder = None;
+        }
+        return Ok(());
+    }
     if key.ends_with(".auth.env") {
         persisted_provider_config_mut(config, key, ".auth.env")?
             .auth
@@ -533,12 +584,17 @@ fn set_provider_endpoint_config_key(
         let endpoint = provider.endpoints.entry(endpoint_id).or_default();
         let discovery = endpoint
             .discovery
-            .get_or_insert_with(|| ProviderDiscoveryConfig { kind, path: None });
+            .get_or_insert_with(|| ProviderDiscoveryConfig {
+                kind,
+                path: None,
+                decoder: None,
+            });
         discovery.kind = kind;
-        // `disabled` never carries a path; switching kind must not leave the
-        // rejected `disabled` + `path` pair behind in the stored config.
+        // `disabled` never carries a path or decoder; switching kind must not
+        // leave either rejected combination behind in the stored config.
         if kind == ProviderDiscoveryKind::Disabled {
             discovery.path = None;
+            discovery.decoder = None;
         }
         return Ok(true);
     }
@@ -564,9 +620,28 @@ fn set_provider_endpoint_config_key(
         let discovery = ProviderDiscoveryConfig {
             kind: discovery.kind,
             path: Some(value.to_string()),
+            decoder: discovery.decoder,
         };
         discovery.validate(key.strip_suffix(".path").unwrap_or(key))?;
         endpoint.discovery = Some(discovery);
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".discovery.decoder") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let decoder = ModelDiscoveryDecoder::parse(raw_value)?;
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        let endpoint = provider.endpoints.entry(endpoint_id).or_default();
+        let discovery = endpoint
+            .discovery
+            .as_mut()
+            .ok_or_else(|| anyhow!("{key} requires discovery.kind to be set first"))?;
+        if discovery.kind == ProviderDiscoveryKind::Disabled {
+            return Err(anyhow!(
+                "{key} cannot be set while discovery kind is disabled; unset discovery or set the kind first"
+            ));
+        }
+        discovery.decoder = Some(decoder);
+        discovery.validate(key.strip_suffix(".decoder").unwrap_or(key))?;
         return Ok(true);
     }
     if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".transport") {
@@ -700,6 +775,16 @@ fn unset_provider_endpoint_config_key(config: &mut HolonConfigFile, key: &str) -
         let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
         if let Some(endpoint) = provider.endpoints.get_mut(&endpoint_id) {
             endpoint.discovery = None;
+        }
+        return Ok(true);
+    }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".discovery.decoder") {
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        if let Some(endpoint) = provider.endpoints.get_mut(&endpoint_id) {
+            if let Some(discovery) = endpoint.discovery.as_mut() {
+                discovery.decoder = None;
+            }
         }
         return Ok(true);
     }

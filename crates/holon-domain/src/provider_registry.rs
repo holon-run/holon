@@ -70,6 +70,83 @@ pub enum ModelDiscoveryDecoder {
     VercelAiGateway,
 }
 
+impl ModelDiscoveryDecoder {
+    /// Every decoder the runtime knows how to decode, including `Ollama` whose
+    /// response shape is handled by the dedicated Ollama refresh path rather
+    /// than the generic payload decoder.
+    pub const ALL: [Self; 13] = [
+        Self::Arcee,
+        Self::HuggingFace,
+        Self::Kilo,
+        Self::Magpie,
+        Self::Ollama,
+        Self::OpenAiCompatible,
+        Self::NearAi,
+        Self::OpenCodeGo,
+        Self::OpenRouter,
+        Self::Synthetic,
+        Self::TencentTokenHub,
+        Self::Venice,
+        Self::VercelAiGateway,
+    ];
+
+    /// Decoders accepted in operator configuration. `Ollama` is deliberately
+    /// excluded: its payload decoder branch is `unreachable!()` because the
+    /// dedicated Ollama refresh path owns that shape, so allowing it in config
+    /// would let an operator select a decoder that panics the runtime.
+    pub const CONFIG_ALLOWED: [Self; 12] = [
+        Self::Arcee,
+        Self::HuggingFace,
+        Self::Kilo,
+        Self::Magpie,
+        Self::OpenAiCompatible,
+        Self::NearAi,
+        Self::OpenCodeGo,
+        Self::OpenRouter,
+        Self::Synthetic,
+        Self::TencentTokenHub,
+        Self::Venice,
+        Self::VercelAiGateway,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Arcee => "arcee",
+            Self::HuggingFace => "hugging_face",
+            Self::Kilo => "kilo",
+            Self::Magpie => "magpie",
+            Self::Ollama => "ollama",
+            Self::OpenAiCompatible => "openai_compatible",
+            Self::NearAi => "near_ai",
+            Self::OpenCodeGo => "open_code_go",
+            Self::OpenRouter => "open_router",
+            Self::Synthetic => "synthetic",
+            Self::TencentTokenHub => "tencent_token_hub",
+            Self::Venice => "venice",
+            Self::VercelAiGateway => "vercel_ai_gateway",
+        }
+    }
+
+    /// Parse an operator-configured decoder value. Only [`Self::CONFIG_ALLOWED`]
+    /// values are accepted; `ollama` and unknown strings are rejected.
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        Self::CONFIG_ALLOWED
+            .into_iter()
+            .find(|decoder| decoder.as_str() == normalized)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "invalid provider discovery decoder {normalized}; expected {}",
+                    Self::CONFIG_ALLOWED
+                        .into_iter()
+                        .map(Self::as_str)
+                        .collect::<Vec<_>>()
+                        .join("|")
+                )
+            })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCatalogPolicy {
     StaticOnly,

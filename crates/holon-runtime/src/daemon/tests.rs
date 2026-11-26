@@ -333,6 +333,65 @@ fn runtime_config_surface_reports_credential_free_providers_as_ready() {
 }
 
 #[test]
+fn runtime_config_surface_projects_provider_discovery_decoder() {
+    let mut config = test_config();
+    let magpie_id = crate::config::ProviderId::parse("magpie").unwrap();
+    config.providers.insert(
+        magpie_id.clone(),
+        crate::config::ProviderRuntimeConfig {
+            headers: Default::default(),
+            id: magpie_id.clone(),
+            route_provider: magpie_id.clone(),
+            route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
+            transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "http://magpie.internal:8080".into(),
+            auth: crate::config::ProviderAuthConfig {
+                source: crate::config::CredentialSource::None,
+                kind: crate::config::CredentialKind::None,
+                env: None,
+                profile: None,
+                external: None,
+                client_id: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        },
+    );
+    config.stored_config.providers.insert(
+        magpie_id,
+        crate::config::ProviderConfigFile {
+            transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "http://magpie.internal:8080".into(),
+            discovery: Some(crate::config::ProviderDiscoveryConfig {
+                kind: crate::config::ProviderDiscoveryKind::OpenAiModels,
+                path: Some("/v1/models".into()),
+                decoder: Some(crate::config::ModelDiscoveryDecoder::Magpie),
+            }),
+            ..Default::default()
+        },
+    );
+
+    let surface = RuntimeConfigSurface::new(&config);
+    let magpie = surface
+        .providers
+        .iter()
+        .find(|provider| provider.id == "magpie")
+        .expect("magpie provider should be reported");
+    let discovery = magpie
+        .discovery
+        .as_ref()
+        .expect("configured discovery should be projected");
+    assert_eq!(discovery.kind, "openai_models");
+    assert_eq!(discovery.path.as_deref(), Some("/v1/models"));
+    assert_eq!(discovery.decoder.as_deref(), Some("magpie"));
+}
+
+#[test]
 fn runtime_config_surface_reports_decision_provider_settings() {
     let mut config = test_config();
     config.stored_config.decision.enabled = Some(true);

@@ -463,6 +463,16 @@ export interface RuntimeProviderSummary {
   credentialExternal?: string;
   credentialConfigured: boolean;
   configuredInConfig: boolean;
+  /** Effective model-discovery config; `null`/absent means the built-in or
+   * transport default still applies. */
+  discovery?: RuntimeProviderDiscovery | null;
+}
+
+export interface RuntimeProviderDiscovery {
+  kind: string;
+  path?: string;
+  /** Resolved decoder name (`openai_compatible`, `magpie`, ...). */
+  decoder?: string;
 }
 
 export interface RuntimeConfigSurface {

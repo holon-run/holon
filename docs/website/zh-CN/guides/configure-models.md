@@ -192,6 +192,14 @@ holon config set image_generation.default "openai@default/dall-e-3"
    `--base-url` 可以是网关根地址（`http://gateway.internal:8080`），也可以是显式 `/v1` 地址（`http://gateway.internal:8080/v1`），两者都会解析为 `GET /v1/models`；带路径前缀的地址（如 `http://gateway.internal:8080/gw`）解析为 `GET /gw/v1/models`。对开放匿名发现的网关，可以不配置凭据。
 
    > 自定义（非内置）`openai_chat_completions` provider 的发现地址由 `base_url` 推导：`{base_url}` 或 `{base_url}/v1` 解析为 `{base_url}/v1/models`，路径前缀 `{base_url}/<prefix>` 解析为 `{base_url}/<prefix>/v1/models`。只在根路径提供 `GET /models`（没有 `/v1`）的网关不会被自动发现，请改用 `models.catalog` 登记模型。内置 provider（Copilot、Kilo Code、LiteLLM、vLLM、Ollama 等）都有显式发现定义，不受影响。
+
+   网关返回 **Magpie 形态**列表（带 `display_name`/`owned_by`/`context_window`/`kind` 等扩展字段）时，用 `decoder="magpie"` 选择对应解码器，无需改 Rust 代码即可拿到上下文窗口、模态等能力元数据：
+   ```bash
+   holon config set my-gateway.discovery.kind openai_models
+   holon config set my-gateway.discovery.path /v1/models
+   holon config set my-gateway.discovery.decoder magpie
+   ```
+   `decoder` 缺省为 `openai_compatible`（保持原有行为）；`ollama` 不可配置，未知值或 `disabled` 搭配 `decoder` 会被配置校验拒绝。
 2. **触发发现**（发现从不在启动或 Turn 期间探测，因此网关故障不会阻塞 Agent）：
    ```bash
    holon config models refresh --provider my-gateway

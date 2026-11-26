@@ -2720,6 +2720,7 @@ kind = "none"
 [providers.gateway.discovery]
 kind = "openai_models"
 path = "/models"
+decoder = "magpie"
 
 [providers.gateway.endpoints.anthropic]
 transport = "anthropic_messages"
@@ -2746,6 +2747,7 @@ path = "/v1/models"
     let anthropic =
         provider_discovery_for(gateway, &ProviderEndpointId::parse("anthropic").unwrap()).unwrap();
     assert_eq!(anthropic.path.as_deref(), Some("/v1/models"));
+    assert_eq!(anthropic.decoder, Some(ModelDiscoveryDecoder::Magpie));
 
     // Endpoints without their own block inherit the provider default.
     let inherited =
@@ -2917,4 +2919,193 @@ kind = "none"
             .is_none(),
         "unsetting a discovery key removes the declared block instead of leaving it invalid"
     );
+}
+
+#[test]
+fn provider_discovery_decoder_config_parses_and_pins_vocabulary() {
+    let config: HolonConfigFile = toml::from_str(
+        r#"
+[providers.magpie]
+transport = "openai_chat_completions"
+base_url = "http://magpie.internal:8080"
+
+[providers.magpie.auth]
+source = "none"
+kind = "none"
+
+[providers.magpie.discovery]
+kind = "openai_models"
+path = "/v1/models"
+decoder = "magpie"
+"#,
+    )
+    .unwrap();
+    let provider_id = ProviderId::parse("magpie").unwrap();
+    let provider = &config.providers[&provider_id];
+    validate_provider_config(&provider_id, provider).unwrap();
+    let discovery =
+        provider_discovery_for(provider, &ProviderEndpointId::default_endpoint()).unwrap();
+    assert_eq!(discovery.kind, ProviderDiscoveryKind::OpenAiModels);
+    assert_eq!(discovery.path.as_deref(), Some("/v1/models"));
+    assert_eq!(discovery.decoder, Some(ModelDiscoveryDecoder::Magpie));
+
+    // The config vocabulary mirrors CONFIG_ALLOWED and never yields Ollama.
+    assert!(
+        !ModelDiscoveryDecoder::CONFIG_ALLOWED.contains(&ModelDiscoveryDecoder::Ollama),
+        "ollama must not be a configurable decoder"
+    );
+    for decoder in ModelDiscoveryDecoder::CONFIG_ALLOWED {
+        assert_eq!(
+            ModelDiscoveryDecoder::parse(decoder.as_str()).unwrap(),
+            decoder
+        );
+    }
+    assert!(
+        ModelDiscoveryDecoder::parse("ollama").is_err(),
+        "ollama is not a configurable decoder"
+    );
+    assert!(ModelDiscoveryDecoder::parse("does_not_exist").is_err());
+}
+
+#[test]
+fn provider_discovery_decoder_config_rejects_illegal_combinations() {
+    // Unknown decoder value fails deserialization.
+    assert!(toml::from_str::<HolonConfigFile>(
+        r#"
+[providers.gateway.discovery]
+kind = "openai_models"
+path = "/v1/models"
+decoder = "does_not_exist"
+"#
+    )
+    .is_err());
+    // `ollama` is treated as an unknown decoder value and never accepted.
+    assert!(toml::from_str::<HolonConfigFile>(
+        r#"
+[providers.gateway.discovery]
+kind = "openai_models"
+path = "/v1/models"
+decoder = "ollama"
+"#
+    )
+    .is_err());
+    // `disabled` + decoder is rejected during validation.
+    let config: HolonConfigFile = toml::from_str(
+        r#"
+[providers.gateway]
+transport = "openai_chat_completions"
+base_url = "https://gateway.example/v1"
+
+[providers.gateway.auth]
+source = "none"
+kind = "none"
+
+[providers.gateway.discovery]
+kind = "disabled"
+decoder = "magpie"
+"#,
+    )
+    .unwrap();
+    let provider_id = ProviderId::parse("gateway").unwrap();
+    let error = validate_provider_config(&provider_id, &config.providers[&provider_id])
+        .expect_err("disabled + decoder must be rejected");
+    assert!(error.to_string().contains("decoder"), "{error}");
+}
+
+#[test]
+fn provider_discovery_decoder_config_keys_round_trip() {
+    let mut config: HolonConfigFile = toml::from_str(
+        r#"
+[providers.gateway]
+transport = "openai_chat_completions"
+base_url = "https://gateway.example/v1"
+
+[providers.gateway.auth]
+source = "none"
+kind = "none"
+"#,
+    )
+    .unwrap();
+    // Setting decoder before kind is an error: it needs a discovery block.
+    assert!(set_config_key(&mut config, "providers.gateway.discovery.decoder", "magpie").is_err());
+    set_config_key(
+        &mut config,
+        "providers.gateway.discovery.kind",
+        "openai_models",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.gateway.discovery.path",
+        "/v1/models",
+    )
+    .unwrap();
+    set_config_key(&mut config, "providers.gateway.discovery.decoder", "magpie").unwrap();
+    set_config_key(
+        &mut config,
+        "providers.gateway.endpoints.anthropic.discovery.kind",
+        "openai_models",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.gateway.endpoints.anthropic.discovery.path",
+        "/v1/models",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.gateway.endpoints.anthropic.discovery.decoder",
+        "hugging_face",
+    )
+    .unwrap();
+
+    assert_eq!(
+        get_config_key(&config, "providers.gateway.discovery.decoder").unwrap(),
+        json!("magpie")
+    );
+    assert_eq!(
+        get_config_key(
+            &config,
+            "providers.gateway.endpoints.anthropic.discovery.decoder"
+        )
+        .unwrap(),
+        json!("hugging_face")
+    );
+    // An illegal decoder value in `set` is rejected.
+    assert!(set_config_key(&mut config, "providers.gateway.discovery.decoder", "ollama").is_err());
+
+    // Unsetting the decoder clears only that field; kind/path stay declared.
+    unset_config_key(&mut config, "providers.gateway.discovery.decoder").unwrap();
+    assert_eq!(
+        get_config_key(&config, "providers.gateway.discovery.decoder").unwrap(),
+        Value::Null
+    );
+    let provider = &config.providers[&ProviderId::parse("gateway").unwrap()];
+    let discovery =
+        provider_discovery_for(provider, &ProviderEndpointId::default_endpoint()).unwrap();
+    assert_eq!(discovery.kind, ProviderDiscoveryKind::OpenAiModels);
+    assert_eq!(discovery.decoder, None);
+
+    // Switching either discovery block to disabled clears both fields that
+    // disabled rejects, so offline config changes cannot persist an invalid
+    // combination.
+    set_config_key(&mut config, "providers.gateway.discovery.decoder", "magpie").unwrap();
+    set_config_key(&mut config, "providers.gateway.discovery.kind", "disabled").unwrap();
+    let provider = &config.providers[&ProviderId::parse("gateway").unwrap()];
+    let discovery = provider.discovery.as_ref().unwrap();
+    assert_eq!(discovery.path, None);
+    assert_eq!(discovery.decoder, None);
+
+    set_config_key(
+        &mut config,
+        "providers.gateway.endpoints.anthropic.discovery.kind",
+        "disabled",
+    )
+    .unwrap();
+    let endpoint = &config.providers[&ProviderId::parse("gateway").unwrap()].endpoints
+        [&ProviderEndpointId::parse("anthropic").unwrap()];
+    let discovery = endpoint.discovery.as_ref().unwrap();
+    assert_eq!(discovery.path, None);
+    assert_eq!(discovery.decoder, None);
 }
