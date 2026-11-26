@@ -116,11 +116,22 @@ pub const RETIRED_SCHEDULER_TABLES: &[&str] = &[
     "scheduler_work_demands",
 ];
 
+/// Migrations read schema state before writing it. A deferred transaction can
+/// fail with `SQLITE_BUSY_SNAPSHOT` (517) when another connection writes
+/// between the read snapshot and the write-lock upgrade. `BEGIN IMMEDIATE`
+/// takes the write lock up front so contention is absorbed by busy_timeout
+/// instead of surfacing as a snapshot-promotion failure.
+fn begin_migration_transaction(connection: &mut Connection) -> Result<Transaction<'_>> {
+    connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(Into::into)
+}
+
 fn migrate_retired_scheduler_schema(
     connection: &mut Connection,
     migration: &Migration,
 ) -> Result<()> {
-    let transaction = connection.transaction()?;
+    let transaction = begin_migration_transaction(connection)?;
     let inventory = retired_scheduler_cleanup_inventory(&transaction)?;
     if !inventory.is_fixed_point() {
         let open_attempts = inventory.open_execution_attempts();
@@ -200,7 +211,7 @@ fn migrate_scheduler_lifecycle_owners(
 ) -> Result<()> {
     connection.execute_batch("PRAGMA foreign_keys = OFF;")?;
     let result = (|| -> Result<()> {
-        let transaction = connection.transaction()?;
+        let transaction = begin_migration_transaction(connection)?;
         transaction.execute_batch(
             r#"
 DROP INDEX IF EXISTS idx_scheduler_activations_ordinary_admission_fence;
@@ -805,7 +816,7 @@ fn migrate_scheduler_internal_followup_admission(
 ) -> Result<()> {
     connection.execute_batch("PRAGMA foreign_keys = OFF;")?;
     let result = (|| -> Result<()> {
-        let transaction = connection.transaction()?;
+        let transaction = begin_migration_transaction(connection)?;
         transaction.execute_batch(
             r#"
 DROP INDEX IF EXISTS idx_scheduler_activations_ordinary_admission_fence;
@@ -930,7 +941,7 @@ CREATE UNIQUE INDEX idx_scheduler_activations_recovery_admission_fence
 }
 
 fn migrate_wait_trigger_identity(connection: &mut Connection, migration: &Migration) -> Result<()> {
-    let transaction = connection.transaction()?;
+    let transaction = begin_migration_transaction(connection)?;
     apply_wait_trigger_identity_transaction(&transaction, migration)?;
     transaction.commit()?;
     Ok(())
@@ -967,7 +978,7 @@ fn migrate_wait_unresolved_owner_uniqueness(
     connection: &mut Connection,
     migration: &Migration,
 ) -> Result<()> {
-    let transaction = connection.transaction()?;
+    let transaction = begin_migration_transaction(connection)?;
     apply_wait_unresolved_owner_uniqueness_transaction(&transaction, migration)?;
     transaction.commit()?;
     Ok(())
@@ -986,7 +997,7 @@ fn apply_wait_unresolved_owner_uniqueness_transaction(
 }
 
 fn migrate_wait_protocol_cutover(connection: &mut Connection, migration: &Migration) -> Result<()> {
-    let transaction = connection.transaction()?;
+    let transaction = begin_migration_transaction(connection)?;
     apply_wait_protocol_cutover_transaction(&transaction, migration)?;
     transaction.commit()?;
     Ok(())
@@ -4719,7 +4730,7 @@ pub fn apply_release_baseline(connection: &mut Connection) -> Result<()> {
     }
 
     let final_schema = release_baseline_final_schema()?;
-    let transaction = connection.transaction()?;
+    let transaction = begin_migration_transaction(connection)?;
     for migration in MIGRATIONS.iter().filter(|migration| {
         migration.version > PUBLISHED_MIGRATION_FLOOR && migration.version <= 30
     }) {
@@ -4872,6 +4883,8 @@ fn build_release_baseline_final_schema() -> Result<Vec<String>> {
 }
 
 #[cfg(test)]
+mod migration_transaction_tests;
+#[cfg(test)]
 mod release_baseline_schema_tests;
 #[cfg(test)]
 mod turn_activation_attachments_tests;
@@ -4918,7 +4931,7 @@ fn migrate_messages_trusted_operator_anchor_index(
     connection: &mut Connection,
     migration: &Migration,
 ) -> Result<()> {
-    let transaction = connection.transaction()?;
+    let transaction = begin_migration_transaction(connection)?;
     if table_exists_tx(&transaction, "messages")? {
         transaction.execute_batch(migration.sql)?;
     }
@@ -4931,7 +4944,7 @@ fn migrate_agent_template_remote_source_retry_deadline(
     connection: &mut Connection,
     migration: &Migration,
 ) -> Result<()> {
-    let transaction = connection.transaction()?;
+    let transaction = begin_migration_transaction(connection)?;
     if table_exists_tx(&transaction, "agent_template_remote_source_syncs")? {
         let columns = transaction
             .prepare("PRAGMA table_info(agent_template_remote_source_syncs)")?
@@ -5032,7 +5045,7 @@ pub fn apply_migration(
             return migrate_agent_template_remote_source_retry_deadline(connection, migration);
         }
 
-        let transaction = connection.transaction()?;
+        let transaction = begin_migration_transaction(connection)?;
         apply_migration_transaction(&transaction, migration, runtime_backfill)?;
         transaction.commit()?;
         Ok(())

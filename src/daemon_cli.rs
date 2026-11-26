@@ -65,6 +65,7 @@ impl DaemonStatus {
 pub enum DaemonErrorKind {
     Usage,
     Domain,
+    Storage,
     DaemonUnavailable,
     Precondition,
     Internal,
@@ -215,6 +216,7 @@ impl DaemonEnvelope {
                 Some(DaemonErrorKind::DaemonUnavailable) | Some(DaemonErrorKind::Precondition) => {
                     exit_codes::BLOCKED
                 }
+                Some(DaemonErrorKind::Storage) => exit_codes::DOMAIN_FAILURE,
                 _ => exit_codes::USAGE_OR_INTERNAL,
             },
         }
@@ -603,6 +605,9 @@ const RULES: &[Rule] = &[
 ];
 
 pub fn classify_error(error: &Error) -> ClassifiedError {
+    if let Some(classified) = classify_typed_storage_error(error) {
+        return classified;
+    }
     // `Display` on `anyhow::Error` yields only the outermost message, so raw
     // context chains never reach the envelope.
     let text = error.to_string();
@@ -621,6 +626,27 @@ pub fn classify_error(error: &Error) -> ClassifiedError {
             false,
         ),
     }
+}
+
+/// Stable runtime-database classifications take precedence over the text
+/// prefix table: the daemon command wraps preparation failures with a context
+/// message, so the typed cause only survives in the error chain.
+fn classify_typed_storage_error(error: &Error) -> Option<ClassifiedError> {
+    use holon_runtime::runtime_error::{describe_runtime_error, RuntimeErrorDomain};
+
+    let descriptor = describe_runtime_error(error);
+    if descriptor.domain != RuntimeErrorDomain::Storage || descriptor.code != "runtime_db_busy" {
+        return None;
+    }
+    Some(ClassifiedError {
+        status: DaemonStatus::Failed,
+        error: DaemonError::new(
+            DaemonErrorKind::Storage,
+            descriptor.code.clone(),
+            descriptor.operator_message,
+            descriptor.retryable,
+        ),
+    })
 }
 
 /// Stable-prefix table surface used by tests that pin daemon error text.
@@ -701,6 +727,9 @@ fn next_action(error: &DaemonError) -> &'static str {
         }
         "daemon_stale_state" => "inspect `holon daemon status` before clearing stale state",
         "daemon_internal_error" => "check stderr diagnostics and `holon daemon logs`",
+        "runtime_db_busy" => {
+            "retry once the other runtime database writer finishes; the daemon did not start"
+        }
         "invalid_start_timeout"
         | "invalid_serve_options"
         | "unsupported_platform"
@@ -1128,6 +1157,30 @@ mod tests {
         // matches the outer context, not the inner cause.
         let classified = classify_error(&error);
         assert_eq!(classified.error.code, "daemon_internal_error");
+    }
+
+    #[test]
+    fn typed_runtime_db_busy_is_classified_as_retryable_storage() {
+        let error: anyhow::Error = anyhow::Error::new(
+            holon_runtime::runtime_db::RuntimeDbRetryableError::new(
+                "pre-server storage preparation",
+                std::path::Path::new("runtime.sqlite"),
+                "database is locked: Error code 517",
+            ),
+        )
+        .context(
+            "pre-server runtime preparation failed; fix the reported storage domain error and retry",
+        );
+
+        let classified = classify_error(&error);
+        assert_eq!(classified.status, DaemonStatus::Failed);
+        assert_eq!(classified.error.kind, DaemonErrorKind::Storage);
+        assert_eq!(classified.error.code, "runtime_db_busy");
+        assert!(classified.error.retryable);
+        assert_eq!(
+            DaemonEnvelope::from_anyhow("daemon.restart", &error).exit_code(),
+            exit_codes::DOMAIN_FAILURE
+        );
     }
 
     #[test]
