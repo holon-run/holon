@@ -48,6 +48,12 @@ DOCKER_CIRCUIT_BREAKER_THRESHOLD = 2
 CONTEXT_EVENT_LIMIT = 300
 CONTEXT_BRIEF_LIMIT = 10
 CONTEXT_TRANSCRIPT_LIMIT = 20
+# Bounded tolerance for scheduler-spawn-agent-supervision (issue #4577):
+# TaskStatus may fail transiently with retryable runtime_db_busy while the
+# runtime publishes a child observer during a read. Keep tolerance tight and
+# visible; exceeding either cap still fails the scenario.
+SPAWN_STORAGE_BUSY_TOLERANCE_MAX_EVENTS = 2
+SPAWN_STORAGE_BUSY_TOLERANCE_MAX_WINDOW_SECONDS = 60.0
 
 
 class DockerCircuitBreakerOpen(RuntimeError):
@@ -116,6 +122,112 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(
         json.dumps(redact_evidence(value), indent=2, ensure_ascii=False) + "\n"
     )
+
+
+class StorageBusyTolerance:
+    """Bounded tolerance for retryable runtime_db_busy tool failures.
+
+    A tolerated failure is a `tool_execution_failed` event whose payload
+    carries `error_kind` "runtime_db_busy" with `tool_error.retryable` true
+    and `tool_error.domain` "storage". The tolerated count and the span from
+    the first to the last tolerated failure are both capped; exceeding either
+    cap, or any non-qualifying failure, still fails the assertion.
+    """
+
+    def __init__(self, max_events: int, max_window_seconds: float) -> None:
+        self.max_events = max_events
+        self.max_window_seconds = max_window_seconds
+
+
+def event_ts_seconds(event: dict[str, Any]) -> float:
+    ts = event.get("ts")
+    require(
+        isinstance(ts, str) and bool(ts.strip()),
+        f"event envelope is missing ts for tolerance accounting: {event.get('id')}",
+    )
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+
+
+def is_retryable_storage_busy_failure(event: dict[str, Any]) -> bool:
+    payload = event.get("payload") or {}
+    tool_error = payload.get("tool_error") or {}
+    return (
+        payload.get("error_kind") == "runtime_db_busy"
+        and tool_error.get("retryable") is True
+        and tool_error.get("domain") == "storage"
+    )
+
+
+def partition_storage_busy_failures(
+    label: str,
+    failures: list[dict[str, Any]],
+    tolerance: StorageBusyTolerance,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split failures into intolerable events and visible tolerated records.
+
+    Raises AssertionError when no tolerated event can absorb a failure or a
+    tolerance cap is exceeded, so the caller can keep its strict `require`.
+    """
+    busy_indexes = [
+        index
+        for index, event in enumerate(failures)
+        if is_retryable_storage_busy_failure(event)
+    ]
+    if not busy_indexes:
+        return list(failures), []
+    busy = [failures[index] for index in busy_indexes]
+    if len(busy) > tolerance.max_events:
+        raise AssertionError(
+            f"{label}: retryable storage busy tool failures exceeded the "
+            f"tolerated count cap ({len(busy)} > {tolerance.max_events}): "
+            f"{failures}"
+        )
+    timestamps = [event_ts_seconds(event) for event in busy]
+    window = max(timestamps) - min(timestamps)
+    if window > tolerance.max_window_seconds:
+        raise AssertionError(
+            f"{label}: retryable storage busy tool failures exceeded the "
+            f"tolerated window cap ({window:.1f}s > "
+            f"{tolerance.max_window_seconds:.1f}s): {failures}"
+        )
+    records = [
+        {
+            "event_seq": event.get("event_seq"),
+            "ts": event.get("ts"),
+            "turn_id": event["payload"].get("turn_id"),
+            "tool_name": event["payload"].get("tool_name"),
+            "error_kind": event["payload"].get("error_kind"),
+            "message": event["payload"].get("tool_error", {}).get("message"),
+            "operation": (event["payload"].get("tool_error", {}).get("details") or {})
+            .get("operation"),
+        }
+        for event in busy
+    ]
+    busy_set = set(busy_indexes)
+    intolerable = [
+        event for index, event in enumerate(failures) if index not in busy_set
+    ]
+    return intolerable, records
+
+
+def tolerated_storage_busy_evidence(
+    tolerance: StorageBusyTolerance,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    window = 0.0
+    timestamps = [record["ts"] for record in records if record.get("ts")]
+    if len(timestamps) > 1:
+        parsed = [datetime.fromisoformat(ts.replace("Z", "+00:00")) for ts in timestamps]
+        window = (max(parsed) - min(parsed)).total_seconds()
+    return {
+        "tolerance": {
+            "max_events": tolerance.max_events,
+            "max_window_seconds": tolerance.max_window_seconds,
+        },
+        "tolerated_count": len(records),
+        "window_seconds": round(window, 3),
+        "tolerated": records,
+    }
 
 
 CALLBACK_CAPABILITY_PATTERN = re.compile(
@@ -1578,6 +1690,7 @@ class CaseHarness:
         end_turn: int | None = None,
         message_id: str | None = None,
         turn_ids: set[str] | None = None,
+        storage_busy_tolerance: StorageBusyTolerance | None = None,
     ) -> list[dict[str, Any]]:
         events = self.events(f"{label}-tool-check")
         turn_indexes = {
@@ -1637,7 +1750,31 @@ class CaseHarness:
             for event in events
             if event["type"] == "tool_execution_failed" and in_scope(event)
         ]
-        require(not failures, f"tool failures occurred in {label}: {failures}")
+        if storage_busy_tolerance is not None and failures:
+            intolerable, tolerated_records = partition_storage_busy_failures(
+                label, failures, storage_busy_tolerance
+            )
+            require(
+                not intolerable,
+                f"tool failures occurred in {label}: {intolerable}",
+            )
+            if tolerated_records:
+                evidence = tolerated_storage_busy_evidence(
+                    storage_busy_tolerance, tolerated_records
+                )
+                write_json(
+                    self.evidence / f"{label}-tolerated-storage-busy.json",
+                    evidence,
+                )
+                print(
+                    f"NOTE {label}: tolerated {evidence['tolerated_count']} "
+                    "retryable storage busy tool failures within caps "
+                    f"{evidence['tolerance']} (window "
+                    f"{evidence['window_seconds']}s); see "
+                    f"{self.evidence.name}/{label}-tolerated-storage-busy.json"
+                )
+        else:
+            require(not failures, f"tool failures occurred in {label}: {failures}")
         completed_items: dict[str, dict[str, Any]] | None = None
 
         def completed_tool(event: dict[str, Any]) -> bool:
@@ -1692,6 +1829,7 @@ class CaseHarness:
         end_turn: int | None = None,
         message_id: str | None = None,
         turn_ids: set[str] | None = None,
+        storage_busy_tolerance: StorageBusyTolerance | None = None,
     ) -> list[dict[str, Any]]:
         events = self.successful_tool_events(
             label,
@@ -1699,6 +1837,7 @@ class CaseHarness:
             end_turn=end_turn,
             message_id=message_id,
             turn_ids=turn_ids,
+            storage_busy_tolerance=storage_busy_tolerance,
         )
         actual = [event["payload"].get("tool_name") for event in events]
         missing = [name for name in expected if name not in actual]
@@ -5855,6 +5994,14 @@ def run_scheduler_spawn_agent_supervision_case(
         required,
         forbidden,
         message_id=harness.prompt_scope("scheduler-spawn-and-complete")["message_id"],
+        # Issue #4577 (path 2, operator 2026-11-26T03:07Z): tolerate bounded
+        # retryable storage busy tool failures (domain=storage, retryable=true)
+        # instead of the unconditional zero-tool-failure assertion. Anything
+        # beyond the caps, or any other tool failure, still fails this case.
+        storage_busy_tolerance=StorageBusyTolerance(
+            max_events=SPAWN_STORAGE_BUSY_TOLERANCE_MAX_EVENTS,
+            max_window_seconds=SPAWN_STORAGE_BUSY_TOLERANCE_MAX_WINDOW_SECONDS,
+        ),
     )
     work_item_id = item["id"]
     require(item["state"] == "completed", f"WorkItem not completed: {item}")
