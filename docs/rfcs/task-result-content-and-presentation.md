@@ -29,6 +29,11 @@ recoverable and paused results. An explicit waiter in another WorkItem admits th
 promised task's settlement with its exact-wait activation; unrelated owners that
 observe the same reply retain their separate obligations. Cancellation does not consume the peer delivery.
 
+Domain defines the durable settlement record and derives its result identity.
+Storage reads and writes settlement rows on the caller's SQLite connection or
+transaction. Runtime validates the original Task, Turn, reply, and queue
+evidence and owns the transaction that commits the settlement with its effects.
+
 Late WaitFor never reopens a terminal reply queue entry or retries its failed
 delivery. A reply dropped by canonical autonomous-continuation admission can
 still carry an unfulfilled result obligation. Only a validated, unconsumed

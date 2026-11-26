@@ -8,26 +8,7 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 
-pub(in crate::runtime_db) fn has_result_source_column(
-    connection: &rusqlite::Connection,
-) -> Result<bool> {
-    // Probe only metadata: SELECT * would also authorize protected body columns.
-    match connection.prepare("SELECT command_creation_id FROM main.task_result_settlements LIMIT 0")
-    {
-        Ok(_) => Ok(true),
-        Err(rusqlite::Error::SqliteFailure(error, Some(message)))
-        | Err(rusqlite::Error::SqlInputError {
-            error,
-            msg: message,
-            ..
-        }) if error.extended_code == rusqlite::ffi::SQLITE_ERROR
-            && message == "no such column: command_creation_id" =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
+pub(in crate::runtime_db) use holon_storage::task_result_settlement::has_result_source_column;
 
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct OriginalCommandTaskCreation {
@@ -278,64 +259,4 @@ pub(in crate::runtime_db) fn current_source_exists_tx(
         params![id, task_id, agent_id, generation, work_item_id],
         |r| r.get(0),
     )?)
-}
-
-#[cfg(all(test, holon_lib_test_shard = "b"))]
-mod tests {
-    use super::*;
-    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-
-    #[test]
-    fn result_source_column_probe_preserves_legacy_without_reading_bodies() -> Result<()> {
-        for (columns, expected) in [
-            ("payload_json TEXT", false),
-            ("payload_json TEXT, command_creation_id TEXT", true),
-        ] {
-            let connection = rusqlite::Connection::open_in_memory()?;
-            connection
-                .execute_batch(&format!("CREATE TABLE task_result_settlements ({columns})"))?;
-            connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
-                AuthAction::Read {
-                    table_name: "task_result_settlements",
-                    column_name: "payload_json",
-                } => Authorization::Deny,
-                _ => Authorization::Allow,
-            }));
-            assert_eq!(has_result_source_column(&connection)?, expected);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn result_source_column_probe_propagates_authorizer_errors() -> Result<()> {
-        let connection = rusqlite::Connection::open_in_memory()?;
-        connection
-            .execute_batch("CREATE TABLE task_result_settlements (command_creation_id TEXT)")?;
-        connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
-            AuthAction::Read {
-                table_name: "task_result_settlements",
-                column_name: "command_creation_id",
-            } => Authorization::Deny,
-            _ => Authorization::Allow,
-        }));
-        let error = has_result_source_column(&connection).unwrap_err();
-        assert!(
-            error.to_string().contains("prohibited"),
-            "unexpected probe error: {error:#}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn result_source_column_probe_propagates_missing_table_errors() -> Result<()> {
-        let connection = rusqlite::Connection::open_in_memory()?;
-        let error = has_result_source_column(&connection).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("no such table: main.task_result_settlements"),
-            "unexpected probe error: {error:#}"
-        );
-        Ok(())
-    }
 }

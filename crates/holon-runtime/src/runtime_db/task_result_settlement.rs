@@ -59,168 +59,15 @@ mod tests;
 #[cfg(test)]
 mod writes_tests;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum TaskResultSettlementState {
-    PersistedPending,
-    CallerAdmitted,
-    Settled,
-}
-
-impl TaskResultSettlementState {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::PersistedPending => "persisted_pending",
-            Self::CallerAdmitted => "caller_admitted",
-            Self::Settled => "settled",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum TaskResultSettlementDisposition {
-    ModelDelivered,
-    ReplyConsumedElsewhere,
-    OwnerClosed,
-    OwnerMissing,
-    InvalidOrStale,
-    InterruptedReplaySourceFinal,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct TaskResultActivationSettlement {
-    pub activation_id: String,
-    pub disposition: TaskResultSettlementDisposition,
-    pub settled_at: DateTime<Utc>,
-}
-
-impl TaskResultSettlementDisposition {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::ModelDelivered => "model_delivered",
-            Self::ReplyConsumedElsewhere => "reply_consumed_elsewhere",
-            Self::OwnerClosed => "owner_closed",
-            Self::OwnerMissing => "owner_missing",
-            Self::InvalidOrStale => "invalid_or_stale",
-            Self::InterruptedReplaySourceFinal => "interrupted_replay_source_final",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TaskResultSettlementRecord {
-    pub result_identity: String,
-    pub agent_id: String,
-    pub task_id: String,
-    pub message_id: String,
-    pub work_item_id: Option<String>,
-    pub rejoin_generation: u64,
-    #[serde(flatten)]
-    pub source: crate::domain::execution_protocol::TaskRejoinSource,
-    pub task_status: String,
-    pub state: TaskResultSettlementState,
-    pub activation_id: Option<String>,
-    pub disposition: Option<TaskResultSettlementDisposition>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub admitted_at: Option<DateTime<Utc>>,
-    pub settled_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub deferred_reason: Option<String>,
-    #[serde(default)]
-    pub deferred_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub next_recheck_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub recovery_epoch: u64,
-    #[serde(default)]
-    pub recovery_attempts: u32,
-    #[serde(default)]
-    pub last_recovery_root_attempt_id: Option<String>,
-    #[serde(default)]
-    pub last_recovery_admitted_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub recovery_paused_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub recovery_diagnostic_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub source_projection: Option<IdleInputBatchItem>,
-    #[serde(default)]
-    pub reply_projection: Option<IdleInputBatchItem>,
-}
-
-impl TaskResultSettlementRecord {
-    pub(crate) fn pending(
-        task: &TaskRecord,
-        message: &MessageEnvelope,
-        now: DateTime<Utc>,
-    ) -> Result<Option<Self>> {
-        if task.agent_id != message.agent_id
-            || task.work_item_id != message.work_item_id
-            || task
-                .parent_message_id
-                .as_deref()
-                .is_some_and(|parent_message_id| parent_message_id != message.id)
-        {
-            return Ok(None);
-        }
-        if !matches!(
-            task.status,
-            crate::types::TaskStatus::Completed
-                | crate::types::TaskStatus::Failed
-                | crate::types::TaskStatus::Cancelled
-                | crate::types::TaskStatus::Interrupted
-        ) {
-            return Ok(None);
-        }
-        let work_item_id = task.work_item_id.clone();
-        let Ok(fence) = task.rejoin_fence() else {
-            return Ok(None);
-        };
-        let mut hasher = Sha256::new();
-        hasher.update(message.agent_id.as_bytes());
-        hasher.update([0]);
-        hasher.update(task.id.as_bytes());
-        hasher.update([0]);
-        hasher.update(message.id.as_bytes());
-        hasher.update([0]);
-        hasher.update(fence.generation.to_be_bytes());
-        let digest = format!("{:x}", hasher.finalize());
-        let task_status = serde_json::to_value(&task.status)?
-            .as_str()
-            .unwrap_or("unknown")
-            .to_owned();
-        Ok(Some(Self {
-            result_identity: format!("task_result_{}", &digest[..24]),
-            agent_id: message.agent_id.clone(),
-            task_id: task.id.clone(),
-            message_id: message.id.clone(),
-            work_item_id,
-            rejoin_generation: fence.generation,
-            source: fence.source,
-            task_status,
-            state: TaskResultSettlementState::PersistedPending,
-            activation_id: None,
-            disposition: None,
-            created_at: now,
-            updated_at: now,
-            admitted_at: None,
-            settled_at: None,
-            deferred_reason: None,
-            deferred_at: None,
-            next_recheck_at: Some(now + Duration::seconds(30)),
-            recovery_epoch: 0,
-            recovery_attempts: 0,
-            last_recovery_root_attempt_id: None,
-            last_recovery_admitted_at: None,
-            recovery_paused_at: None,
-            recovery_diagnostic_at: None,
-            source_projection: None,
-            reply_projection: None,
-        }))
-    }
-}
+pub(crate) use holon_domain::task_result_settlement::{
+    TaskResultActivationSettlement, TaskResultSettlementDisposition, TaskResultSettlementRecord,
+    TaskResultSettlementState,
+};
+pub(crate) use holon_storage::task_result_settlement::context_admitted_settlements_on;
+use holon_storage::task_result_settlement::{
+    admitted_for_activation_tx, defer_update_tx, diagnostic_for_agent_message_on,
+    insert_pending_tx, latest_for_message_on as latest_for_message_tx, update_tx,
+};
 
 pub(crate) struct TaskResultSettlementRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
@@ -662,27 +509,7 @@ impl TaskResultSettlementRepository<'_> {
         activation_id: &str,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM task_result_settlements
-             WHERE agent_id = ?1 AND activation_id = ?2 AND state = 'caller_admitted'
-             ORDER BY created_at ASC, result_identity ASC",
-            )?;
-            let rows = statement.query_map(params![agent_id, activation_id], |row| {
-                row.get::<_, String>(0)
-            })?;
-            rows.map(|row| {
-                let payload = row?;
-                serde_json::from_str(&payload).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+            context_admitted_settlements_on(connection, agent_id, activation_id)
         })
     }
 
@@ -1049,17 +876,7 @@ impl TaskResultSettlementRepository<'_> {
         message_id: &str,
     ) -> Result<Option<TaskResultSettlementRecord>> {
         self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json FROM task_result_settlements
-                     WHERE agent_id = ?1 AND message_id = ?2",
-                    params![agent_id, message_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| serde_json::from_str(&payload))
-                .transpose()
-                .map_err(Into::into)
+            diagnostic_for_agent_message_on(connection, agent_id, message_id)
         })
     }
 
@@ -1069,7 +886,7 @@ impl TaskResultSettlementRepository<'_> {
         message_id: &str,
     ) -> Result<Option<TaskResultSettlementRecord>> {
         self.db
-            .with_read(|connection| latest_for_message_connection(connection, message_id))
+            .with_read(|connection| latest_for_message_tx(connection, message_id))
     }
 }
 
@@ -1103,59 +920,6 @@ fn upsert_pending_original_cleanup_tx(
 ) -> Result<bool> {
     proof.validate_pending_insert_tx(tx, record)?;
     upsert_pending_tx(tx, record)
-}
-
-fn insert_pending_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
-    let payload = serde_json::to_string(record)?;
-    let has_source = super::command_task_creation::has_result_source_column(tx)?;
-    ensure!(
-        has_source || record.source.parent_turn_id().is_some(),
-        "Command creation Results require the creation-source schema"
-    );
-    let sql = if has_source {
-        "INSERT INTO task_result_settlements (
-           result_identity, agent_id, task_id, message_id, work_item_id,
-           rejoin_generation, parent_turn_id, state, activation_id, disposition,
-           created_at, updated_at, admitted_at, settled_at, deferred_reason, deferred_at, next_recheck_at, payload_json, command_creation_id
-         ) VALUES (
-           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
-         )"
-    } else {
-        // Historical migration fixtures retain their original ParentTurn writer.
-        "INSERT INTO task_result_settlements (
-           result_identity, agent_id, task_id, message_id, work_item_id,
-           rejoin_generation, parent_turn_id, state, activation_id, disposition,
-           created_at, updated_at, admitted_at, settled_at, deferred_reason, deferred_at, next_recheck_at, payload_json
-         ) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18
-           WHERE ?19 IS NULL"
-    };
-    let inserted = tx.execute(
-        sql,
-        params![
-            record.result_identity,
-            record.agent_id,
-            record.task_id,
-            record.message_id,
-            record.work_item_id,
-            record.rejoin_generation,
-            record.source.parent_turn_id().unwrap_or(""),
-            record.state.as_str(),
-            record.activation_id,
-            record
-                .disposition
-                .map(TaskResultSettlementDisposition::as_str),
-            timestamp(record.created_at),
-            timestamp(record.updated_at),
-            record.admitted_at.map(timestamp),
-            record.settled_at.map(timestamp),
-            record.deferred_reason,
-            record.deferred_at.map(timestamp),
-            record.next_recheck_at.map(timestamp),
-            payload,
-            record.source.command_creation_id(),
-        ],
-    )?;
-    Ok(inserted == 1)
 }
 
 fn validate_projection_tx(
@@ -1219,65 +983,6 @@ fn set_admission_projections_tx(
     record.source_projection = Some(projection.clone());
     record.reply_projection = reply_projection;
     Ok(())
-}
-
-fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
-    let payload = serde_json::to_string(record)?;
-    let affected = tx.execute(
-        "UPDATE task_result_settlements
-         SET state = ?2, activation_id = ?3, disposition = ?4, updated_at = ?5,
-             admitted_at = ?6, settled_at = ?7, deferred_reason = ?8,
-           deferred_at = ?9, next_recheck_at = ?10, payload_json = ?11,
-           recovery_epoch = ?12, recovery_attempts = ?13,
-           last_recovery_root_attempt_id = ?14, last_recovery_admitted_at = ?15,
-           recovery_paused_at = ?16, recovery_diagnostic_at = ?17
-         WHERE result_identity = ?1",
-        params![
-            record.result_identity,
-            record.state.as_str(),
-            record.activation_id,
-            record
-                .disposition
-                .map(TaskResultSettlementDisposition::as_str),
-            timestamp(record.updated_at),
-            record.admitted_at.map(timestamp),
-            record.settled_at.map(timestamp),
-            record.deferred_reason,
-            record.deferred_at.map(timestamp),
-            record.next_recheck_at.map(timestamp),
-            payload,
-            record.recovery_epoch,
-            record.recovery_attempts,
-            record.last_recovery_root_attempt_id,
-            record.last_recovery_admitted_at.map(timestamp),
-            record.recovery_paused_at.map(timestamp),
-            record.recovery_diagnostic_at.map(timestamp),
-        ],
-    )?;
-    Ok(affected == 1)
-}
-
-/// Narrowed UPDATE for the deferred-recheck hot path. The recovery loop
-/// rewrites the same due rows every recheck interval; a full-column UPDATE
-/// touches `state`/`activation_id` and churns every index referencing them
-/// even though those values never change on deferral.
-fn defer_update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
-    let payload = serde_json::to_string(record)?;
-    let affected = tx.execute(
-        "UPDATE task_result_settlements
-         SET deferred_reason = ?2, deferred_at = ?3, next_recheck_at = ?4,
-             updated_at = ?5, payload_json = ?6
-         WHERE result_identity = ?1",
-        params![
-            record.result_identity,
-            record.deferred_reason,
-            record.deferred_at.map(timestamp),
-            record.next_recheck_at.map(timestamp),
-            timestamp(record.updated_at),
-            payload,
-        ],
-    )?;
-    Ok(affected == 1)
 }
 
 fn record_matches_durable_task_tx(
@@ -1810,21 +1515,6 @@ fn unsettled_for_owner_tx(
     )
 }
 
-fn admitted_for_activation_tx(
-    tx: &Transaction<'_>,
-    agent_id: &str,
-    activation_id: &str,
-) -> Result<Vec<TaskResultSettlementRecord>> {
-    records_tx(
-        tx,
-        "SELECT payload_json
-         FROM task_result_settlements
-         WHERE agent_id = ?1 AND activation_id = ?2 AND state = 'caller_admitted'
-         ORDER BY created_at ASC, result_identity ASC",
-        params![agent_id, activation_id],
-    )
-}
-
 pub(crate) fn settle_activation_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -1842,39 +1532,6 @@ pub(crate) fn settle_activation_tx(
     )?
     .execute()?
     .into_count()
-}
-
-#[cfg(any(test, feature = "recovery-acceptance"))]
-fn latest_for_message_connection(
-    connection: &rusqlite::Connection,
-    message_id: &str,
-) -> Result<Option<TaskResultSettlementRecord>> {
-    connection
-        .query_row(
-            "SELECT payload_json FROM task_result_settlements WHERE message_id = ?1",
-            params![message_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .map(|payload| serde_json::from_str(&payload))
-        .transpose()
-        .map_err(Into::into)
-}
-
-fn latest_for_message_tx(
-    tx: &Transaction<'_>,
-    message_id: &str,
-) -> Result<Option<TaskResultSettlementRecord>> {
-    let payload = tx
-        .query_row(
-            "SELECT payload_json FROM task_result_settlements WHERE message_id = ?1",
-            [message_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    payload
-        .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-        .transpose()
 }
 
 #[cfg(holon_lib_test_shard = "e")]
@@ -1975,20 +1632,6 @@ mod projection_tests {
             .latest_for_message(message_id)
             .unwrap()
             .unwrap()
-    }
-
-    #[test]
-    fn legacy_payloads_default_to_no_projections() {
-        let (_dir, db) = runtime_db();
-        let record = pending_result(&db, 0, None);
-        let mut payload = serde_json::to_value(&record).unwrap();
-        let object = payload.as_object_mut().unwrap();
-        object.remove("source_projection");
-        object.remove("reply_projection");
-        let decoded: TaskResultSettlementRecord = serde_json::from_value(payload).unwrap();
-        assert_eq!(decoded, record);
-        assert!(decoded.source_projection.is_none());
-        assert!(decoded.reply_projection.is_none());
     }
 
     #[test]
@@ -2480,34 +2123,6 @@ mod projection_tests {
         );
         assert_eq!(latest(&db, &record.message_id), admitted[0]);
     }
-}
-
-pub(crate) fn context_admitted_settlements_on(
-    connection: &rusqlite::Connection,
-    agent_id: &str,
-    activation_id: &str,
-) -> Result<Vec<TaskResultSettlementRecord>> {
-    let mut statement = connection.prepare(
-        "SELECT payload_json
-         FROM task_result_settlements
-         WHERE agent_id = ?1 AND activation_id = ?2 AND state = 'caller_admitted'
-         ORDER BY created_at ASC, result_identity ASC",
-    )?;
-    let rows = statement.query_map(params![agent_id, activation_id], |row| {
-        row.get::<_, String>(0)
-    })?;
-    rows.map(|row| {
-        let payload = row?;
-        serde_json::from_str(&payload).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })
-    })
-    .collect::<std::result::Result<Vec<_>, _>>()
-    .map_err(Into::into)
 }
 
 #[cfg(test)]
