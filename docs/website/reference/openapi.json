@@ -7522,7 +7522,7 @@
                   "type": "object"
                 },
                 {
-                  "description": "One projected model switch inside the turn activity stream. Immutable: the\n switch is a single fact and never bumps its revision.",
+                  "description": "One projected model switch inside the turn activity stream.\n\n Per-slot latest attempt, not a globally immutable fact: the slot identity\n is `model_switch:<turn_id>:<ordinal>`, an identical replay leaves it\n untouched, and a later write with a different payload for the same slot\n replaces the stored switch and bumps its revision.",
                   "properties": {
                     "from_model_ref": {
                       "type": "string"
@@ -11016,7 +11016,7 @@
                     "type": "object"
                   },
                   {
-                    "description": "One projected model switch inside the turn activity stream. Immutable: the\n switch is a single fact and never bumps its revision.",
+                    "description": "One projected model switch inside the turn activity stream.\n\n Per-slot latest attempt, not a globally immutable fact: the slot identity\n is `model_switch:<turn_id>:<ordinal>`, an identical replay leaves it\n untouched, and a later write with a different payload for the same slot\n replaces the stored switch and bumps its revision.",
                     "properties": {
                       "from_model_ref": {
                         "type": "string"
