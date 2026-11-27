@@ -527,8 +527,7 @@ test("ordinary resources without identity response headers still load; the reque
   const ui = await scenario(page, context, request, info, { omitIdentityHeaders: true });
   await expect(ui.timers).toBeVisible();
   await ui.healthy();
-  await ui.openRecent();
-  await expect(ui.recent.getByRole("button", { name: "Refresh recent tasks", exact: true })).toBeVisible();
+  await ui.openCompletedHistory();
   await ui.healthy();
 });
 

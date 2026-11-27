@@ -612,6 +612,12 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
   const showTimelineDetail = Boolean(detail && !hydratedDetail);
   const structuredDetail = showTimelineDetail || Boolean(detail) || hydratedDetail || activity.stateObjectRef?.kind === "tool_execution";
 
+  const headerTitle = activityInspectorTitle(activity);
+  const bodyHeading = activity.body && activity.body !== headerTitle ? activity.body : undefined;
+  const distinctSources = activity.sourceIds.filter(
+    (sourceId) => sourceId !== activity.messageId && sourceId !== activity.id,
+  );
+
   return (
     <div className="inspector-stack detail-surface activity-detail-surface">
       <section className="context-card inspector-card">
@@ -619,12 +625,18 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
           <span className="eyebrow">{t("inspector.timelineActivity")}</span>
           <StatusBadge className="state-chip" kind="connection" value={activity.kind} />
         </div>
-        <h2>{activity.body || activity.label}</h2>
+        {bodyHeading ? <h2>{bodyHeading}</h2> : null}
         <dl className="inspector-facts">
           <div>
             <dt>{t(activity.messageId ? "inspector.source" : "inspector.tool")}</dt>
             <dd>{activity.label}</dd>
           </div>
+          {activity.messageId ? (
+            <div>
+              <dt>{t("inspector.sources")}</dt>
+              <dd><code>{activity.messageId}</code></dd>
+            </div>
+          ) : null}
           <div>
             <dt>{t("inspector.meta")}</dt>
             <dd>{activity.meta || "—"}</dd>
@@ -633,10 +645,12 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
             <dt>{t("inspector.time")}</dt>
             <dd>{formatInspectorTime(activity.timestamp)}</dd>
           </div>
-          <div>
-            <dt>{t("inspector.sources")}</dt>
-            <dd>{activity.sourceIds.length ? activity.sourceIds.join(", ") : "—"}</dd>
-          </div>
+          {distinctSources.length > 0 ? (
+            <div>
+              <dt>{t("inspector.sources")}</dt>
+              <dd>{distinctSources.join(", ") || "—"}</dd>
+            </div>
+          ) : null}
         </dl>
       </section>
 

@@ -1705,7 +1705,6 @@ button {
 .back-button,
 .top-actions button,
 .agent-stream-controls button,
-.composer button,
 .section-head button,
 .agent-card footer button,
 .panel-header button {
@@ -3306,6 +3305,7 @@ code {
 
 .conversation-header,
 .conversation-pane>.composer-status,
+.conversation-bottom-stack>.composer-status,
 .composer {
   width: var(--conversation-frame-width);
   margin-inline: auto;
@@ -5854,10 +5854,10 @@ code {
 }
 
 .send-button {
-  min-width: 36px;
-  min-height: 36px;
-  background: var(--accent) !important;
-  color: #fff !important;
+  min-width: 32px;
+  min-height: 32px;
+  background: var(--accent);
+  color: #fff;
 }
 
 .send-button:disabled {
@@ -5866,7 +5866,7 @@ code {
 }
 
 .send-button--stop {
-  background: var(--danger) !important;
+  background: var(--danger);
 }
 
 .side-panel {

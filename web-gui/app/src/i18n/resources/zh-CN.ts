@@ -777,6 +777,19 @@ const zh: Record<string, any> = {
     advisoryAbstained: "未给出建议",
     backToLatest: "回到最新",
     turnWorking: "正在处理本轮…",
+    attachFiles: "添加附件",
+    generatingReply: "正在思考与整理回复…",
+    collapsedStepsSummary_one: "{{count}} 步",
+    collapsedStepsSummary_other: "{{count}} 步",
+    showEarlierProcessWithCount_one: "展开前 {{count}} 步过程",
+    showEarlierProcessWithCount_other: "展开前 {{count}} 步过程",
+    reasoningEffort: {
+      auto: "自动",
+      low: "低",
+      medium: "中",
+      high: "高",
+      xhigh: "超高",
+    },
   },
   settings: {
     serve: {

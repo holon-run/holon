@@ -369,7 +369,7 @@ export function RightSidePanel({
               }}
             >
               <span>{t("rightPanel.overviewTab")}</span>
-              {executionBadgeCount > 0 ? <span className="panel-tab-badge">{executionBadgeCount}</span> : null}
+              {executionBadgeCount > 0 ? <span className="panel-tab-badge" aria-hidden="true">{executionBadgeCount}</span> : null}
             </button>
             <button
               type="button"

@@ -269,12 +269,12 @@ export function AgentPage({
     let lastKey = "";
     const position = () => {
       frame = requestAnimationFrame(position);
-      const anchor = modelPickerRef.current;
+      const anchor = modelPickerRef.current?.querySelector<HTMLElement>(".model-button") ?? modelPickerRef.current;
       if (!anchor) return;
       const rect = anchor.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) return;
       const margin = 12;
-      const width = Math.min(480, Math.max(240, window.innerWidth - margin * 2));
+      const width = Math.min(420, Math.max(240, window.innerWidth - margin * 2));
       const left = Math.max(margin, Math.min(rect.right - width, window.innerWidth - width - margin));
       const spaceAbove = Math.max(0, rect.top - margin - 8);
       const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - margin - 8);
@@ -961,15 +961,17 @@ export function AgentPage({
               ) : null}
             </div>
           </div>
-          {showJumpToLatest || browsing ? (
-            <button type="button" className="conversation-jump" onClick={() => {
-              if (location || browsing) conversation?.onReturnToLatest?.();
-              browsingRef.current = false;
-              scrollToConversationBottom();
-            }}>
-              <ArrowDown size={14} />{t("agentPage.backToLatest")}
-            </button>
-          ) : null}
+          <div className="conversation-jump-anchor">
+            {showJumpToLatest || browsing ? (
+              <button type="button" className="conversation-jump" onClick={() => {
+                if (location || browsing) conversation?.onReturnToLatest?.();
+                browsingRef.current = false;
+                scrollToConversationBottom();
+              }}>
+                <ArrowDown size={14} />{t("agentPage.backToLatest")}
+              </button>
+            ) : null}
+          </div>
 
           <CurrentWorkBar key={activeAgent.id} agent={activeAgent}
             conversation={conversation?.model} onOpenWorkItem={onOpenWorkItem} onOpenTask={onOpenTask} />
@@ -1043,7 +1045,8 @@ export function AgentPage({
                   type="button"
                   size="icon"
                   variant="ghost"
-                  aria-label="Attach files"
+                  aria-label={t("agentPage.attachFiles")}
+                  title={t("agentPage.attachFiles")}
                   disabled={sendingPrompt}
                   onClick={() => fileInputRef.current?.click()}
                 >
@@ -1051,7 +1054,7 @@ export function AgentPage({
                 </Button>
                 <div className="model-picker" ref={modelPickerRef}>
                   <Button
-                    className="model-button"
+                    className={`model-button${activeAgent.modelSource === "agent_override" ? " is-override" : ""}`}
                     type="button"
                     variant="secondary"
                     aria-expanded={modelPickerOpen}
@@ -1059,6 +1062,7 @@ export function AgentPage({
                     title={activeModelTitle}
                     onClick={toggleModelPicker}
                   >
+                    {activeAgent.modelSource === "agent_override" ? <span className="model-override-dot" aria-hidden="true" /> : null}
                     <span className="model-button-label">{shortModelLabel(activeAgent.model)}</span>
                     <span aria-hidden="true">⌄</span>
                   </Button>
@@ -1085,15 +1089,15 @@ export function AgentPage({
                     <ComposerOptionPicker
                       kind="thinking"
                       title={t("agent.thinkingLevel")}
-                      label={titleCase(activeReasoningBadge ?? "auto")}
-                      triggerLabel={t("agent.thinkingAria", { level: activeReasoningBadge ?? "auto" })}
+                      label={reasoningEffortLabel(activeReasoningBadge ?? "auto", t)}
+                      triggerLabel={t("agent.thinkingAria", { level: reasoningEffortLabel(activeReasoningBadge ?? "auto", t) })}
                       icon={(
                         <svg className="composer-option-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                           <path d="M8 1.5L6 6H2.5L5.5 8.5L4 13L8 10L12 13L10.5 8.5L13.5 6H10L8 1.5Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" fill="none" />
                         </svg>
                       )}
                       value={activeReasoningBadge ?? "auto"}
-                      options={["auto", ...(activeModelOption?.reasoningEffortOptions ?? [])].map((effort) => ({ value: effort, label: titleCase(effort) }))}
+                      options={["auto", ...(activeModelOption?.reasoningEffortOptions ?? [])].map((effort) => ({ value: effort, label: reasoningEffortLabel(effort, t) }))}
                       disabled={changingModel !== null}
                       open={optionPopover === "thinking"}
                       onOpenChange={(open) => { if (open) setModelPickerOpen(false); setOptionPopover(open ? "thinking" : null); }}
@@ -1176,6 +1180,14 @@ export function AgentPage({
       </div>
     </section>
   );
+}
+
+function reasoningEffortLabel(effort: string, t: (key: string, options?: Record<string, unknown>) => string): string {
+  const normalized = effort.trim().toLowerCase();
+  if (normalized === "auto" || normalized === "low" || normalized === "medium" || normalized === "high" || normalized === "xhigh") {
+    return t(`agentPage.reasoningEffort.${normalized}`);
+  }
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 
 function shortModelLabel(model: string): string {

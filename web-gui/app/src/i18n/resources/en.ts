@@ -776,6 +776,19 @@ const en = {
     advisoryAbstained: "No recommendation",
     backToLatest: "Back to latest",
     turnWorking: "Working…",
+    attachFiles: "Attach files",
+    generatingReply: "Thinking and drafting reply…",
+    collapsedStepsSummary_one: "{{count}} step",
+    collapsedStepsSummary_other: "{{count}} steps",
+    showEarlierProcessWithCount_one: "Show {{count}} earlier step",
+    showEarlierProcessWithCount_other: "Show {{count}} earlier steps",
+    reasoningEffort: {
+      auto: "Auto",
+      low: "Low",
+      medium: "Medium",
+      high: "High",
+      xhigh: "Max",
+    },
   },
   settings: {
     serve: {

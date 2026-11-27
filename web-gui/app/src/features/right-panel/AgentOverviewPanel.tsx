@@ -1097,14 +1097,18 @@ export function ToolExecutionDetailPanel({
           ) : null}
         </div>
       ) : null}
-      <header className="detail-heading">
-        <h2 className="detail-title">{record?.tool_name ?? toolName ?? t("inspector.toolExecution")}</h2>
-        <div className="detail-meta">
-          {record?.status ? <StatusBadge className="state-chip" kind="task" value={record.status === "success" ? "completed" : record.status} showLabel /> : null}
-          {record?.duration_ms != null ? <span>{t("inspector.duration")} · {record.duration_ms < 1000 ? `${record.duration_ms}ms` : `${(record.duration_ms / 1000).toFixed(1)}s`}</span> : null}
-          {loading ? <StatusBadge className="state-chip" kind="runtime" value="loading" /> : null}
-        </div>
-      </header>
+      {(record?.tool_name && record.tool_name !== toolName) || record?.status || record?.duration_ms != null || loading ? (
+        <header className="detail-heading">
+          {record?.tool_name && record.tool_name !== toolName ? (
+            <h2 className="detail-title">{record.tool_name}</h2>
+          ) : null}
+          <div className="detail-meta">
+            {record?.status ? <StatusBadge className="state-chip" kind="task" value={record.status === "success" ? "completed" : record.status} showLabel /> : null}
+            {record?.duration_ms != null ? <span>{t("inspector.duration")} · {record.duration_ms < 1000 ? `${record.duration_ms}ms` : `${(record.duration_ms / 1000).toFixed(1)}s`}</span> : null}
+            {loading ? <StatusBadge className="state-chip" kind="runtime" value="loading" /> : null}
+          </div>
+        </header>
+      ) : null}
       <ObjectDetailRefreshFeedback state={detailState} onRefresh={onRefresh} />
       {record ? <ToolExecutionContent record={record} onBrowseFiles={onBrowseFiles} /> : null}
       <details className="inspector-raw-detail detail-technical">
