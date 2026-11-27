@@ -13184,6 +13184,67 @@ mod tests {
         (home, host)
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn acp_assistant_round_text_is_readable_by_turn() {
+        use crate::types::{TranscriptEntry, TranscriptEntryKind};
+
+        let (_home, host) = canonical_test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        let turn_id = "turn-acp-fixture";
+        let round = TranscriptEntry::new(
+            &agent_id,
+            TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            serde_json::json!({
+                "driver": "acp",
+                "session_id": "session-1",
+                "turn_id": turn_id,
+                "turn_index": 4,
+                "work_item_id": "work-fixture",
+                "round_purpose": "agent_response",
+                "visibility": "operator_visible",
+                "blocks": [{"type": "text", "text": "ACP-agy-e2e ok"}],
+            }),
+        );
+        host.runtime_db()
+            .transcript_entries()
+            .upsert(&round)
+            .unwrap();
+        // The legacy ACP round carries no turn key; it must stay invisible
+        // instead of degrading the turn-scoped text read.
+        host.runtime_db()
+            .transcript_entries()
+            .upsert(&TranscriptEntry::new(
+                &agent_id,
+                TranscriptEntryKind::AssistantRound,
+                Some(1),
+                None,
+                serde_json::json!({
+                    "driver": "acp",
+                    "session_id": "session-1",
+                    "blocks": [{"type": "text", "text": "legacy placeholder"}],
+                }),
+            ))
+            .unwrap();
+
+        assert_eq!(
+            host.assistant_text_for_turn(&agent_id, turn_id)
+                .unwrap()
+                .as_deref(),
+            Some("ACP-agy-e2e ok"),
+            "a settled ACP turn must yield its real text, not the placeholder path"
+        );
+        let entries = host
+            .runtime_db()
+            .transcript_entries()
+            .for_turn_ids(&agent_id, &[turn_id.to_string()])
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, round.id);
+    }
+
     fn seed_startup_consumed_result_attempt(
         host: &RuntimeHost,
         agent_id: &str,

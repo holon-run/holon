@@ -988,6 +988,9 @@ async fn agent_message_wait_final_requires_exact_request_turn_and_round_evidence
             json!({"turn_id": "other-turn", "round_purpose": "agent_response", "visibility": "operator_visible"}),
             json!({"turn_id": turn.turn_id, "round_purpose": "continuation", "visibility": "operator_visible"}),
             json!({"turn_id": turn.turn_id, "round_purpose": "agent_response", "visibility": "internal"}),
+            // The legacy ACP shape never carried turn keys; repairing the writer
+            // must not weaken this gate into accepting it.
+            json!({"driver": "acp", "session_id": "session-1", "blocks": []}),
         ] {
             let mut invalid = round.clone();
             invalid.data = data;

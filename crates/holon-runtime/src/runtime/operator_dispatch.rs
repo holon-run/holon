@@ -561,6 +561,20 @@ impl RuntimeHandle {
         let execution = self
             .effective_execution(crate::system::ExecutionScopeKind::AgentTurn)
             .await?;
+        // Resolve the turn binding before the harness runs. ACP evidence and
+        // the terminal record must share one turn identity; an unassigned turn
+        // id is a state bug, not something to synthesize here.
+        let state = self.agent_state().await?;
+        let turn_metadata = super::acp::AcpTurnMetadata::resolve(
+            state.current_turn_id.as_deref(),
+            state.turn_index,
+            state
+                .current_execution_binding
+                .as_ref()
+                .map(|binding| binding.work_item_id.as_deref()),
+            state.current_turn_work_item_id.as_deref(),
+            state.current_work_item_id.as_deref(),
+        )?;
         let abort = self.current_run_abort_token().await;
         let cancel = abort
             .as_ref()
@@ -572,6 +586,7 @@ impl RuntimeHandle {
                 &prompt,
                 &execution,
                 binding,
+                &turn_metadata,
                 cancel.clone(),
             )
             .await;
@@ -585,14 +600,9 @@ impl RuntimeHandle {
             text,
             transcript_entry_id,
         } = text?;
-        let state = self.agent_state().await?;
         let mut terminal = crate::types::TurnTerminalRecord {
-            turn_id: state
-                .current_turn_id
-                .clone()
-                .filter(|turn_id| !turn_id.trim().is_empty())
-                .unwrap_or_else(crate::ids::turn_id),
-            turn_index: state.turn_index,
+            turn_id: turn_metadata.turn_id.clone(),
+            turn_index: turn_metadata.turn_index,
             kind: crate::types::TurnTerminalKind::Completed,
             reason: None,
             last_assistant_message: Some(text.clone()),
