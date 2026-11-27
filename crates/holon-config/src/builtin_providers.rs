@@ -1090,6 +1090,47 @@ fn stored_provider_auth(provider_config: &ProviderConfigFile) -> Option<&Provide
         .filter(|auth| !auth.is_effectively_empty())
 }
 
+/// Built-in credential environment variables a definition declares for
+/// `(route_provider, route_endpoint)`.
+fn provider_definition_credential_envs(
+    route_provider: &ProviderId,
+    route_endpoint: &ProviderEndpointId,
+) -> Option<&'static [&'static str]> {
+    provider_definitions()
+        .iter()
+        .find(|definition| {
+            definition.route_provider == route_provider.as_str()
+                && definition.route_endpoint == route_endpoint.as_str()
+        })
+        .map(|definition| definition.credential_envs)
+}
+
+/// Whether a sub-endpoint shares the main entry credential instead of owning an
+/// independent credential scope.
+///
+/// The built-in registry keeps some sub-endpoints on their own key — the plan
+/// endpoints such as `dashscope-token-plan`, `stepfun-plan`, and
+/// `byteplus-coding` bill a different account. Inheriting the main entry
+/// credential there would silently spend the wrong account. Two definitions
+/// share a credential scope when every built-in env var of the sub-endpoint is
+/// also a main-entry env var; two empty lists (the OAuth case) count as shared.
+fn endpoint_shares_main_credential(
+    route_provider: &ProviderId,
+    route_endpoint: &ProviderEndpointId,
+) -> bool {
+    let Some(main_envs) = provider_definition_credential_envs(
+        route_provider,
+        &ProviderEndpointId::default_endpoint(),
+    ) else {
+        return false;
+    };
+    let Some(endpoint_envs) = provider_definition_credential_envs(route_provider, route_endpoint)
+    else {
+        return false;
+    };
+    endpoint_envs.iter().all(|env| main_envs.contains(env))
+}
+
 /// Resolve the credential a protocol sub-endpoint uses when the operator
 /// configured the credential for the main provider entry only.
 ///
@@ -1098,6 +1139,10 @@ fn stored_provider_auth(provider_config: &ProviderConfigFile) -> Option<&Provide
 /// `opencode-go` never reaches the `@messages` route and those calls fail
 /// authentication, or force the operator to configure the same credential
 /// twice.
+///
+/// Only sub-endpoints that share the main credential scope inherit:
+/// sub-endpoints with their own built-in key, such as `dashscope-token-plan`,
+/// keep it and never fall back to the main account.
 ///
 /// An explicit credential for the sub-endpoint always wins: either its own
 /// provider entry or `providers.<main>.endpoints.<endpoint>.auth`.
@@ -1116,6 +1161,11 @@ fn resolve_endpoint_auth_inheritance(
         {
             continue;
         }
+        // Plan sub-endpoints under the same route provider own an independent
+        // credential scope; only same-account protocol sub-endpoints inherit.
+        if !endpoint_shares_main_credential(&provider.route_provider, &provider.route_endpoint) {
+            continue;
+        }
         // An explicit credential for the sub-endpoint itself wins.
         if stored_config
             .providers
@@ -1131,6 +1181,7 @@ fn resolve_endpoint_auth_inheritance(
         if let Some(auth) = main_config
             .and_then(|config| config.endpoints.get(&provider.route_endpoint))
             .and_then(|endpoint| endpoint.auth.as_ref())
+            .filter(|auth| !auth.is_effectively_empty())
         {
             validate_provider_auth(&provider.route_provider, auth)?;
             let credential = resolve_provider_credential(auth, settings_env, credential_store)?;

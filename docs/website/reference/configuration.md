@@ -464,6 +464,7 @@ holon config set providers.opencode-go.auth.profile "opencode-go:default"
 ```
 
 - Inheritance applies to the `(provider, endpoint)` pairs of one provider, not across providers.
+- Only sub-endpoints that share the provider account inherit: plan endpoints with their own key (`dashscope-token-plan`, `stepfun-plan`, `byteplus-coding`) keep it and never fall back to the main account.
 - An explicit credential for the sub-endpoint wins: either `providers.<sub-endpoint-id>.auth` or `providers.<provider>.endpoints.<endpoint_id>.auth`.
 - Without a configured credential on the main entry the sub-endpoint keeps its built-in default and never gains a credential on its own.
 

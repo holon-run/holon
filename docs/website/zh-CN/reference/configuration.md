@@ -427,6 +427,7 @@ holon config set providers.opencode-go.auth.profile "opencode-go:default"
 ```
 
 - 继承只发生在同一提供商的 `(provider, endpoint)` 组合之间，不跨提供商复用凭据。
+- 只有共用提供商账号的子端点才会继承：自带独立密钥的 plan 端点（`dashscope-token-plan`、`stepfun-plan`、`byteplus-coding`）保留自己的密钥，不会回落到主账号。
 - 子端点显式配置的凭据优先：`providers.<子端点 id>.auth` 或 `providers.<provider>.endpoints.<endpoint_id>.auth` 均优先于继承。
 - 主入口没有配置凭据时，子端点保留内置默认值，不会凭空获得凭据。
 
