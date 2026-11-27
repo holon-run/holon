@@ -3056,8 +3056,39 @@ fn apply_scheduler_recovery_plan_with_options(
     Ok((usize::from(applied), backup_path))
 }
 
+/// Runtime-generated provider-recovery guidance.
+///
+/// These inputs are produced by the runtime itself; dropping one silently loses
+/// work the operator never saw. Operator input keeps its existing settlement.
+fn runtime_generated_recovery_input(message: &MessageEnvelope) -> bool {
+    message.kind == MessageKind::InternalFollowup
+        && message.authority_class == AuthorityClass::RuntimeInstruction
+        && matches!(
+            &message.origin,
+            MessageOrigin::System { subsystem } if subsystem == "model_lineage_recovery"
+        )
+}
+
+/// A work-command lane conflict raised while an input is being dispatched.
+///
+/// The lane names a live turn; a conflict means the runtime raced its own
+/// execution rather than receiving invalid input.
+fn is_work_command_lane_conflict(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .is_some_and(|error| {
+                matches!(
+                    error.descriptor().code.as_str(),
+                    "work_item_execution_active" | "work_item_execution_binding_stale"
+                )
+            })
+    })
+}
+
 fn runtime_error_queue_settlement(
     message_kind: &MessageKind,
+    runtime_recovery_input: bool,
     error: &anyhow::Error,
 ) -> (QueueEntryStatus, &'static str) {
     let retry_task_result = matches!(message_kind, MessageKind::TaskResult)
@@ -3081,6 +3112,11 @@ fn runtime_error_queue_settlement(
         (
             QueueEntryStatus::Interrupted,
             "task_transition_retry_exhausted",
+        )
+    } else if runtime_recovery_input && is_work_command_lane_conflict(error) {
+        (
+            QueueEntryStatus::Interrupted,
+            "runtime_generated_lane_conflict_requeued",
         )
     } else if error.is::<crate::runtime_error::IdleInputRecoveryRejection>() {
         (QueueEntryStatus::Aborted, "idle_input_recovery_rejected")
@@ -7483,8 +7519,11 @@ impl RuntimeHandle {
                     )
                 } else {
                     let descriptor = describe_runtime_error(&err);
-                    let (queue_status, settlement_reason) =
-                        runtime_error_queue_settlement(&message.kind, &err);
+                    let (queue_status, settlement_reason) = runtime_error_queue_settlement(
+                        &message.kind,
+                        runtime_generated_recovery_input(message),
+                        &err,
+                    );
                     let duration_ms =
                         u64::try_from(processing_started.elapsed().as_millis()).unwrap_or(u64::MAX);
                     let terminal = if matches!(&queue_status, QueueEntryStatus::Interrupted) {

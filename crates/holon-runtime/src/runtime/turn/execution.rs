@@ -4158,8 +4158,16 @@ impl RuntimeHandle {
                         if prepared.settlement
                             == crate::runtime::WorkItemCompletionSettlement::Detached
                         {
+                            let issuing_lane = Some(
+                                crate::runtime_db::transitions::WorkCommandLane::for_binding(
+                                    &pending.execution_binding,
+                                ),
+                            );
                             runtime
-                                .commit_prepared_detached_work_item_completion(*prepared)
+                                .commit_prepared_detached_work_item_completion(
+                                    *prepared,
+                                    issuing_lane,
+                                )
                                 .await?;
                             true
                         } else {
@@ -5079,8 +5087,14 @@ impl RuntimeHandle {
                                 if prepared.settlement
                                     == crate::runtime::WorkItemCompletionSettlement::Detached
                                 {
+                                    let issuing_lane = execution_binding.as_ref().map(
+                                        crate::runtime_db::transitions::WorkCommandLane::for_binding,
+                                    );
                                     runtime
-                                        .commit_prepared_detached_work_item_completion(*prepared)
+                                        .commit_prepared_detached_work_item_completion(
+                                            *prepared,
+                                            issuing_lane,
+                                        )
                                         .await?;
                                 } else {
                                     *prepared_work_item_completion = Some(prepared);

@@ -445,6 +445,13 @@ impl PreparedTaskBaseline {
     }
 }
 
+/// Identity of the live turn that issued a Work command.
+///
+/// The lane records *who issued* the command (the agent's live turn), not that
+/// an attempt payload authorizes it: `ExecutionAttempt.turn_id` and
+/// `source_message_id` are preallocated or replay hints. `Turn` therefore names
+/// a turn and is validated against the live execution binding, while `Idle`
+/// means the issuer had no live turn at all (control plane or idle agent).
 #[derive(Debug, Clone)]
 pub enum WorkCommandLane {
     Idle,
@@ -462,6 +469,14 @@ impl WorkCommandLane {
         }
     }
 
+    /// Lane of the turn that carries this execution binding.
+    pub(crate) fn for_binding(binding: &crate::types::WorkItemExecutionBinding) -> Self {
+        Self::Turn {
+            turn_id: binding.turn_id.clone(),
+            message_id: binding.source_message_id.clone(),
+        }
+    }
+
     fn validate(&self, tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
         let (valid, kind, message) = match self {
             Self::Idle => (
@@ -475,18 +490,32 @@ impl WorkCommandLane {
                 turn_id,
                 message_id,
             } => (
-                tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM execution_protocol_attempts
-                     WHERE agent_id = ?1 AND lifecycle_state = 'open'
-                       AND json_extract(payload_json, '$.turn_id') = ?2
-                       AND json_extract(payload_json, '$.source_message_id') = ?3)",
-                    params![agent_id, turn_id, message_id],
-                    |row| row.get(0),
-                )? && agent_state_tx(tx, agent_id)?
-                    .and_then(|state| state.current_execution_binding)
-                    .is_some_and(|binding| {
-                        binding.turn_id == *turn_id && binding.source_message_id == *message_id
-                    }),
+                {
+                    let state = agent_state_tx(tx, agent_id)?;
+                    let current_turn_matches = state
+                        .as_ref()
+                        .and_then(|state| state.current_turn_id.as_deref())
+                        == Some(turn_id.as_str());
+                    let binding_matches = state.as_ref().is_some_and(|state| {
+                        state
+                            .current_execution_binding
+                            .as_ref()
+                            .is_some_and(|binding| {
+                                binding.turn_id == *turn_id
+                                    && binding.source_message_id == *message_id
+                            })
+                    });
+                    // The attempt payload hint is diagnostic only: a live turn
+                    // owns its lane even when the attempt was admitted before the
+                    // turn identity existed or as a recovery successor. A command
+                    // issued for an ended turn stays stale because terminal
+                    // settlement replaces both the turn id and the binding.
+                    current_turn_matches
+                        && binding_matches
+                        && crate::runtime_db::work_item_source_revision_repair::agent_has_open_attempt(
+                            tx, agent_id,
+                        )?
+                },
                 "work_item_execution_binding_stale",
                 "work command no longer belongs to the agent's active turn",
             ),

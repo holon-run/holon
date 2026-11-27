@@ -3688,7 +3688,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         ) {
             return Ok(false);
         }
-        let (status, reason) = super::runtime_error_queue_settlement(&message.kind, error);
+        let (status, reason) = super::runtime_error_queue_settlement(
+            &message.kind,
+            super::runtime_generated_recovery_input(message),
+            error,
+        );
         let mut interrupted = expected.clone();
         interrupted.status = status.clone();
         interrupted.updated_at = self.runtime.now();
