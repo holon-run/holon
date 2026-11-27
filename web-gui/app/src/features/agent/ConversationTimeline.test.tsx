@@ -135,7 +135,7 @@ describe("executionProcessActivities", () => {
 
   const activity = (id: string, summary: string, kind: ConversationActivity["kind"] = "assistant"): ConversationActivity => ({
     id, summary, kind, revision: 1, key: { event_seq: 1, activity_id: id },
-  });
+  } as ConversationActivity);
 
   it("removes only the final duplicate and preserves progress, tools, errors and waits without mutating the log", () => {
     const entries = [activity("input", "Question", "operator"), activity("progress", "Done"),
@@ -643,6 +643,36 @@ describe("input event presentation", () => {
     expect(html.match(/Start work/g)).toHaveLength(1);
     expect(html).not.toContain('data-activity-id="operator:initial"');
     expect(html).toContain("Checking results");
+  });
+
+  it("renders whitelisted model rows and the observed route in the turn header", () => {
+    const html = renderTimeline([turnSummary("model-turn", 1)], {
+      details: [{
+        turn_id: "model-turn", detail_revision: 2, coverage: { kind: "complete" },
+        has_more: false, next_before_cursor: null, invalidated: false, truncated: false,
+        activities: [
+          {
+            kind: "model_request", id: "model_request:model-turn:1",
+            key: { event_seq: 1, activity_id: "model_request:model-turn:1" }, revision: 2,
+            summary: "fixture/fixture@default/primary · succeeded · 12ms",
+            provider: "fixture", model_ref: "fixture@default/primary",
+            dispatch_reason: "initial", status: "succeeded", duration_ms: 12,
+          },
+          {
+            kind: "model_switch", id: "model_switch:model-turn:1",
+            key: { event_seq: 2, activity_id: "model_switch:model-turn:1" }, revision: 1,
+            summary: "fixture@default/primary -> fixture@default/fallback · retry",
+            from_provider: "fixture", from_model_ref: "fixture@default/primary",
+            to_provider: "fixture", to_model_ref: "fixture@default/fallback",
+            reason_category: "retry",
+          },
+        ],
+      }],
+    });
+    expect(html).toContain("fixture/fixture@default/primary");
+    expect(html).toContain("Succeeded");
+    expect(html).toContain("fixture/fixture@default/primary → fixture/fixture@default/fallback");
+    expect(html.split("</header>")[0]).toContain("fixture/fixture@default/fallback");
   });
 
   it("keeps unmatched input identity for full-message hydration without assuming a human sender", () => {
