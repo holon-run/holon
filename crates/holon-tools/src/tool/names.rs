@@ -77,8 +77,18 @@ pub const CUSTOM_TEXT_RECEIPT_TOOLS: &[&str] = &[
 pub const FUNCTION_JSON_ENVELOPE_TOOLS: &[&str] = &[EXEC_COMMAND, EXEC_COMMAND_BATCH];
 
 /// Tools that are **not** exposed to the model (hidden from tool specs).
-pub const HIDDEN_FROM_MODEL_TOOLS: &[&str] =
-    &[SLEEP, TASK_LIST, USE_WORKSPACE, LIST_SUBAGENT_CLEANUP];
+pub const HIDDEN_FROM_MODEL_TOOLS: &[&str] = &[
+    CANCEL_EXTERNAL_TRIGGER,
+    CREATE_EXTERNAL_TRIGGER,
+    LIST_MODEL_PROVIDERS,
+    LIST_PROVIDER_MODELS,
+    LIST_SUBAGENT_CLEANUP,
+    LIST_WEB_FETCH_PROVIDERS,
+    LIST_WEB_SEARCH_PROVIDERS,
+    SLEEP,
+    TASK_LIST,
+    USE_WORKSPACE,
+];
 
 /// Tools considered "sleep-like" for the `only_sleep_tools` aggregation.
 pub const SLEEP_LIKE_TOOLS: &[&str] = &[SLEEP, WAIT_FOR];

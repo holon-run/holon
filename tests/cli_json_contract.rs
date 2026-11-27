@@ -492,6 +492,26 @@ fn config_schema_json_entries_keep_stable_shape() {
 }
 
 #[test]
+fn config_web_providers_json_lists_search_and_fetch_routes() {
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let value = run_json(&home, &["config", "web-providers"]);
+    assert_eq!(value["search_enabled"], json!(true));
+    assert_eq!(value["fetch_enabled"], json!(true));
+    let search_providers = value["search_providers"]
+        .as_array()
+        .expect("search_providers array");
+    assert!(search_providers
+        .iter()
+        .any(|entry| { entry["provider_id"] == "duckduckgo" && entry["source"] == "builtin" }));
+    let fetch_providers = value["fetch_providers"]
+        .as_array()
+        .expect("fetch_providers array");
+    assert!(fetch_providers
+        .iter()
+        .any(|entry| { entry["provider_id"].is_null() && entry["kind"] == "local_http" }));
+}
+
+#[test]
 fn config_provider_headers_updates_preserve_provider_fields_and_redact_values() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("config.json");

@@ -575,6 +575,11 @@ pub enum ConfigCommands {
     },
     List,
     Schema,
+    #[command(
+        name = "web-providers",
+        about = "List effective WebSearch and WebFetch providers as JSON"
+    )]
+    WebProviders,
     Doctor,
 }
 

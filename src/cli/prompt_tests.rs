@@ -96,12 +96,63 @@ fn test_embedded_docs_referenced_commands_match_public_cli() {
         "holon agent delete child-1 --yes --wait",
         "holon config providers list",
         "holon config models list",
+        "holon config web-providers",
         "holon agent model get",
+        "holon agent reset-callback",
         "holon workspace attach /tmp/repo",
         "holon memory-index rebuild",
     ] {
         crate::cli::Cli::try_parse_from(sample.split_whitespace()).unwrap_or_else(|err| {
             panic!("referenced CLI command `{sample}` failed to parse: {err}")
         });
+    }
+
+    for topic in DOCS_TOPICS {
+        for snippet in topic.content.split('`') {
+            if !snippet.starts_with("holon ") || snippet.contains('|') {
+                continue;
+            }
+            let normalized = snippet
+                .split_whitespace()
+                .filter(|token| !(token.starts_with('[') && token.ends_with(']')))
+                .map(|token| {
+                    if token.starts_with('<') && token.ends_with('>') {
+                        "placeholder"
+                    } else {
+                        token
+                    }
+                })
+                .collect::<Vec<_>>();
+            match crate::cli::Cli::try_parse_from(&normalized) {
+                Ok(_) => {}
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        clap::error::ErrorKind::MissingSubcommand
+                            | clap::error::ErrorKind::MissingRequiredArgument
+                            | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                    ) =>
+                {
+                    let mut with_help = normalized.clone();
+                    with_help.push("--help");
+                    let help_check = crate::cli::Cli::try_parse_from(&with_help);
+                    assert!(
+                        matches!(
+                            help_check,
+                            Err(ref help_err)
+                                if help_err.kind() == clap::error::ErrorKind::DisplayHelp
+                        ),
+                        "CLI command family `{snippet}` in docs topic `{}` is invalid: {err}",
+                        topic.slug
+                    );
+                }
+                Err(err) => {
+                    panic!(
+                        "CLI snippet `{snippet}` in docs topic `{}` failed to parse: {err}",
+                        topic.slug
+                    );
+                }
+            }
+        }
     }
 }

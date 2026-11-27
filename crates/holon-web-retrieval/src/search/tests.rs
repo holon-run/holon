@@ -4174,3 +4174,19 @@ async fn derived_provider_stays_out_of_default_order_and_dispatches_only_by_name
     assert_eq!(response.provider, "deepseek");
     assert_eq!(response.results[0].url, "https://example.com/derived");
 }
+
+#[tokio::test]
+async fn unknown_explicit_search_provider_reports_available_providers_in_details() {
+    let (config, _calls) = routing_fixture().await;
+    let error = search(routing_request(Some("missing-provider")), &config)
+        .await
+        .unwrap_err();
+    let tool_error = test_tool_error(&error);
+    assert_eq!(tool_error.kind, "provider_unavailable");
+    let details = tool_error.details.expect("error details");
+    assert_eq!(details["provider"], "missing-provider");
+    let available = details["available_providers"]
+        .as_array()
+        .expect("available_providers array");
+    assert!(available.iter().any(|id| id == "duckduckgo"));
+}

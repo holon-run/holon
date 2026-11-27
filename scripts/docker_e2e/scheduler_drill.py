@@ -2601,14 +2601,14 @@ def preflight(args: argparse.Namespace) -> int:
                 "tool-round",
                 DRILL_PREFIX
                 + "1. Call GetAgent.\n"
-                "2. Call ListModelProviders.\n"
-                f"3. Call ListProviderModels for provider {provider} with limit 5.\n"
+                "2. Call ListWorkItems.\n"
+                "3. Call ListTasks with limit 5.\n"
                 f"4. Answer with the literal marker {marker}.",
             )
             harness.assert_tools(
                 "tool-round",
                 baseline,
-                ["GetAgent", "ListModelProviders", "ListProviderModels"],
+                ["GetAgent", "ListWorkItems", "ListTasks"],
             )
             events = harness.events("provider")
             provider_events = [

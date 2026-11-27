@@ -730,6 +730,12 @@
     "aliases": []
   },
   {
+    "path": "config.web-providers",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
     "path": "context",
     "positionals": [],
     "flags": [],

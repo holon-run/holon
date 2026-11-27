@@ -205,6 +205,52 @@ fn list_fetch_providers_hides_malformed_tavily_base_url() {
 }
 
 #[tokio::test]
+async fn unknown_explicit_fetch_provider_reports_available_providers_in_details() {
+    let mut config = crate::WebConfig::default();
+    config.providers.insert(
+        "tavily-live".into(),
+        WebProviderConfig {
+            kind: WebProviderKind::Tavily,
+            base_url: Some("https://api.tavily.com".into()),
+            engine_id: None,
+            api_key: "fixture-key".into(),
+            model_route: None,
+            command: None,
+            output: None,
+            limits: Default::default(),
+        },
+    );
+    let error = fetch_with_provider(
+        WebFetchRequest {
+            url: "https://example.com/".into(),
+            max_chars: Some(200),
+            extract_mode: ExtractMode::Auto,
+        },
+        Some("unknown-fetch"),
+        &config,
+    )
+    .await
+    .unwrap_err();
+    let tool_error = crate::test_tool_error(&error);
+    assert_eq!(tool_error.kind, "provider_unavailable");
+    let details = tool_error.details.expect("error details");
+    assert_eq!(details["provider"], "unknown-fetch");
+    let available = details["available_providers"]
+        .as_array()
+        .expect("available_providers array");
+    assert!(available
+        .iter()
+        .any(|entry| entry["provider_id"] == "tavily-live"));
+    assert!(
+        !tool_error
+            .recovery_hint
+            .unwrap_or_default()
+            .contains("ListWebFetchProviders"),
+        "recovery_hint must not reference demoted ListWebFetchProviders"
+    );
+}
+
+#[tokio::test]
 async fn fetch_decodes_gzip_response_before_text_extraction() {
     let body = gzip_bytes("compressed fetch body");
     let router = axum::Router::new().route(

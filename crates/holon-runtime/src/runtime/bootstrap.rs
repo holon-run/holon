@@ -1562,19 +1562,40 @@ impl RuntimeHandle {
         &self,
         model: Option<&str>,
     ) -> Result<PreparedViewImageObservation> {
-        let requested = model
-            .map(|model| {
-                ModelRouteRef::parse_compatible(model.trim()).map_err(|_| {
-                    crate::tool::ToolError::new(
+        let requested = match model {
+            Some(raw_model) => match ModelRouteRef::parse_compatible(raw_model.trim()) {
+                Ok(parsed) => Some(parsed),
+                Err(_) => {
+                    let candidates = self
+                        .current_view_image_vision_route_selection()
+                        .await
+                        .map(|resolved| {
+                            resolved
+                                .selection
+                                .candidates
+                                .into_iter()
+                                .filter(|candidate| candidate.image_input && candidate.model != "*")
+                                .take(10)
+                                .map(|candidate| candidate.model_ref)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    return Err(crate::tool::ToolError::new(
                         "invalid_tool_input",
                         "ViewImage `model` must be provider@endpoint/model or provider/model",
                     )
+                    .with_details(serde_json::json!({
+                        "requested_model": raw_model,
+                        "available_routes": candidates,
+                    }))
                     .with_recovery_hint(
-                        "omit model to use the default route, or supply a valid model route",
+                        "omit model to use the default route, or supply a valid route from details.available_routes",
                     )
-                })
-            })
-            .transpose()?;
+                    .into());
+                }
+            },
+            None => None,
+        };
         let automatic = if requested.is_none() {
             Some(self.current_view_image_vision_route_selection().await?)
         } else {
@@ -1791,6 +1812,18 @@ impl RuntimeHandle {
 
         let state = self.capture_committed_state().await?;
         let fallback_model = self.inner.turn_fallback_model.read().await.clone();
+        let callable_routes = self
+            .model_availability()
+            .await
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|entry| entry.media.generate_image.call_selectable)
+                    .take(10)
+                    .map(|entry| entry.model)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let snap = self.inner.config_snapshot.load();
         let requested_route = requested_model
             .map(ModelRouteRef::parse_compatible)
@@ -1800,8 +1833,12 @@ impl RuntimeHandle {
                     "model_route_unavailable",
                     "invalid image generation model route",
                 )
+                .with_details(json!({
+                    "requested_model": requested_model,
+                    "available_routes": callable_routes.clone(),
+                }))
                 .with_recovery_hint(
-                    "use a canonical provider@endpoint/model route from ListProviderModels",
+                    "omit model to use the default route, or select a canonical provider@endpoint/model route from details.available_routes",
                 )
             })?;
         let route = snap
@@ -1812,11 +1849,19 @@ impl RuntimeHandle {
                 state.model_override.as_ref(),
                 fallback_model.as_ref(),
             )
-            .ok_or_else(|| ToolError::new(
-                "model_route_unavailable",
-                "selected image generation route is unavailable or lacks image_generation capability",
-            ).with_details(json!({"requested_model": requested_model}))
-             .with_recovery_hint("select an enabled image_output route with usable credentials; explicit choices do not fall back"))?;
+            .ok_or_else(|| {
+                ToolError::new(
+                    "model_route_unavailable",
+                    "selected image generation route is unavailable or lacks image_generation capability",
+                )
+                .with_details(json!({
+                    "requested_model": requested_model,
+                    "available_routes": callable_routes,
+                }))
+                .with_recovery_hint(
+                    "select an enabled image_output route from details.available_routes with usable credentials, or omit model for default routing; explicit choices do not fall back",
+                )
+            })?;
         let contract = resolve_image_generation_contract(
             &route.route_ref,
             route.provider_config(),

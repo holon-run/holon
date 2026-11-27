@@ -197,56 +197,6 @@ async fn live_llm_selects_media_models_and_runtime_delivers_formats() -> Result<
     let runtime = host.default_runtime().await?;
     let mut conversation = Vec::new();
 
-    let call = request_tool(
-        llm.as_ref(),
-        &mut conversation,
-        "ListModelProviders",
-        "Call ListModelProviders with operation generate_image. Omit include_unavailable.",
-    )
-    .await?;
-    ensure!(
-        call.input["operation"] == "generate_image",
-        "missing operation filter"
-    );
-    let providers = execute_tool(&runtime, &mut conversation, call).await?;
-    ensure!(
-        providers["providers"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty()),
-        "no generation provider"
-    );
-    let provider_group = if explicit_image.endpoint.as_str() == "default" {
-        explicit_image.provider.as_str().to_string()
-    } else {
-        format!(
-            "{}:{}",
-            explicit_image.provider.as_str(),
-            explicit_image.endpoint.as_str()
-        )
-    };
-    let call = request_tool(
-        llm.as_ref(), &mut conversation, "ListProviderModels",
-        &format!("Call ListProviderModels with provider {provider_group:?}, operation generate_image and limit 10."),
-    ).await?;
-    ensure!(
-        call.input["operation"] == "generate_image",
-        "missing operation filter"
-    );
-    ensure!(
-        call.input["provider"] == provider_group,
-        "unexpected provider"
-    );
-    let models = execute_tool(&runtime, &mut conversation, call).await?;
-    ensure!(
-        models["models"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|item| {
-                item["model_ref"] == explicit_image.as_string()
-                    && item["media"]["generate_image"]["call_selectable"] == true
-            })),
-        "explicit image route is not discoverable/callable"
-    );
-
     // These are the only two code paths that can execute image generation.
     let call = request_tool(
         llm.as_ref(), &mut conversation, "GenerateImage",

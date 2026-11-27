@@ -22,8 +22,9 @@ When `ExecCommand` is available, inspect or manage configured providers, models,
 - `holon config providers list` — list configured model providers.
 - `holon config providers get <provider>` — inspect non-secret configuration for one provider.
 - `holon config providers doctor <provider>` — validate provider connectivity and configuration health.
-- `holon config models list` — list configured/cached provider models and canonical route refs.
+- `holon config models list` — list configured/cached provider models, media `view_image`/`generate_image` capabilities, and canonical route refs.
 - `holon config models refresh --provider <provider>` — refresh cached model catalog entries for a provider.
+- `holon config web-providers` — list effective `WebSearch` and `WebFetch` providers and extraction modes as JSON.
 - `holon agent model get [agent_id]` — inspect the effective model and override settings for an agent.
 - `holon agent model set <model> [agent_id]` — set an agent's persistent model override (optional `--reasoning-effort`, `--service-tier`).
 - `holon agent model clear [agent_id]` — remove an agent's persistent model override.

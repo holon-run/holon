@@ -3,9 +3,9 @@ use anyhow::Result;
 use crate::{tool::tool_error_from_anyhow, web::WebConfig};
 
 pub use holon_web_retrieval::search::{
-    WebCitation, WebSearchCommandAttempt, WebSearchNativeDispatchError, WebSearchNativeDispatcher,
-    WebSearchProviderAttempt, WebSearchProviderAttemptStatus, WebSearchRequest, WebSearchResponse,
-    WebSearchResult,
+    list_search_providers, WebCitation, WebSearchCommandAttempt, WebSearchNativeDispatchError,
+    WebSearchNativeDispatcher, WebSearchProviderAttempt, WebSearchProviderAttemptStatus,
+    WebSearchRequest, WebSearchResponse, WebSearchResult,
 };
 
 pub async fn search(request: WebSearchRequest, config: &WebConfig) -> Result<WebSearchResponse> {
@@ -48,9 +48,13 @@ mod tests {
         assert_eq!(error.kind, "provider_unavailable");
         assert_eq!(
             error.recovery_hint.as_deref(),
-            Some("configure web.providers or use provider=duckduckgo")
+            Some("select a provider from details.available_providers, use provider=\"auto\", or omit provider")
         );
         let details = error.details.unwrap();
+        assert!(details["available_providers"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("duckduckgo")));
         assert_eq!(
             details["attempted_providers"],
             json!(["missing-search-provider"])

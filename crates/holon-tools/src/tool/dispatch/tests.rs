@@ -79,10 +79,19 @@ fn stable_tool_specs_expose_canonical_coding_tools() {
         "ViewImage",
         "WebFetch",
         "WebSearch",
+    ] {
+        assert!(names.iter().any(|name| name == expected));
+    }
+    for hidden_discovery in [
+        "ListModelProviders",
+        "ListProviderModels",
         "ListWebFetchProviders",
         "ListWebSearchProviders",
     ] {
-        assert!(names.iter().any(|name| name == expected));
+        assert!(
+            !names.iter().any(|name| name == hidden_discovery),
+            "{hidden_discovery} should be demoted from default model tool_specs()"
+        );
     }
     assert!(!names.iter().any(|name| name == "Sleep"));
     assert!(!names.iter().any(|name| name == "SpawnAgent"));
@@ -147,18 +156,23 @@ fn stable_tool_specs_expose_canonical_coding_tools() {
         .get("objective")
         .is_some());
 
-    let list_model_providers = specs
+    let catalog = build_tool_spec_catalog().expect("catalog should build");
+    let list_model_providers = catalog
+        .entries
         .iter()
+        .map(|entry| &entry.spec)
         .find(|spec| spec.name == "ListModelProviders")
-        .expect("ListModelProviders should be present");
+        .expect("ListModelProviders should remain in dispatch catalog");
     assert!(list_model_providers.input_schema["properties"]
         .get("include_unavailable")
         .is_some());
 
-    let list_provider_models = specs
+    let list_provider_models = catalog
+        .entries
         .iter()
+        .map(|entry| &entry.spec)
         .find(|spec| spec.name == "ListProviderModels")
-        .expect("ListProviderModels should be present");
+        .expect("ListProviderModels should remain in dispatch catalog");
     assert!(list_provider_models.input_schema["properties"]
         .get("provider")
         .is_some());
@@ -356,6 +370,15 @@ fn hidden_sleep_stays_dispatchable_but_not_model_facing() {
     assert!(names.iter().all(|name| name != "Sleep"));
     assert!(names.iter().all(|name| name != "TaskList"));
     assert!(names.iter().all(|name| name != "UseWorkspace"));
+    for demoted in [
+        "ListModelProviders",
+        "ListProviderModels",
+        "ListWebFetchProviders",
+        "ListWebSearchProviders",
+    ] {
+        assert!(names.iter().all(|name| name != demoted));
+        assert!(registry.family_for_tool(demoted).unwrap().is_some());
+    }
     assert_eq!(
         registry.family_for_tool("Sleep").unwrap(),
         Some(ToolCapabilityFamily::CoreAgent)

@@ -19,7 +19,7 @@ Use the local `holon` CLI as a machine-readable control-plane surface only when 
 
 - Control-plane inspection commands emit JSON on stdout by default (or pass `--json` / `--output json` on dual-mode commands). Keep stdout for structured results and stderr for diagnostics.
 - Exit codes: `0` for success, `1` for an operational or control failure, and `2` for CLI usage failure.
-- Use `holon task list`, `holon task status <task_id>`, and `holon work-item` subcommands only for inspection or bounded mutations when native tools do not apply.
+- Use `holon task list`, `holon task status <task_id>`, `holon work-item` subcommands, `holon config web-providers`, and `holon agent reset-callback` only for inspection or bounded control-plane mutations when native tools do not apply.
 - Never invoke recursive `holon run` or `holon prompt` from inside an agent turn as a substitute for `Enqueue`, `CreateAgent`, `InvokeAgent`, or the current WorkItem lifecycle.
 
 ## Official Documentation Search Fallback
