@@ -13,10 +13,9 @@ use super::{
 use crate::domain::conversation::{
     ActivityItem, Attention, ConversationActivity, ConversationChange,
     ConversationShadowMismatchKind, CursorBinding, CursorCodec, DetailCoverage, ExecutionState,
-    NoBriefReason, ModelRequestActivity, ModelRequestEvidence, ModelRequestStatus,
-    ModelSwitchActivity, ModelSwitchEvidence, PendingInputState, ResultState, StreamCursor,
-    TerminalOutcome, TurnKey,
-    CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
+    ModelRequestActivity, ModelRequestEvidence, ModelRequestStatus, ModelSwitchActivity,
+    ModelSwitchEvidence, NoBriefReason, PendingInputState, ResultState, StreamCursor,
+    TerminalOutcome, TurnKey, CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::RuntimeDb;
 use crate::types::{
@@ -2781,7 +2780,11 @@ fn model_request_started_and_finished_pair_into_one_revised_activity() -> Result
         .conversation()
         .activities(AGENT_ID, "turn-model-pair", 10, None, None)?
         .expect("turn");
-    assert_eq!(page.activities.len(), 1, "finished bumps in place, no new row");
+    assert_eq!(
+        page.activities.len(),
+        1,
+        "finished bumps in place, no new row"
+    );
     let done = model_request_item(&page.activities[0]);
     assert_eq!(done.status, ModelRequestStatus::Succeeded);
     assert_eq!(done.revision, 2);
@@ -2938,8 +2941,18 @@ fn model_activity_serialization_respects_whitelist_and_summary_bounds() -> Resul
     let summary = object["summary"].as_str().expect("summary");
     assert!(summary.chars().count() <= 256);
     let lower = summary.to_ascii_lowercase();
-    for forbidden in ["api_key", "authorization", "bearer", "http://", "https://", "header"] {
-        assert!(!lower.contains(forbidden), "summary leaked {forbidden}: {summary}");
+    for forbidden in [
+        "api_key",
+        "authorization",
+        "bearer",
+        "http://",
+        "https://",
+        "header",
+    ] {
+        assert!(
+            !lower.contains(forbidden),
+            "summary leaked {forbidden}: {summary}"
+        );
     }
 
     // A failure kind outside the public whitelist collapses to `unknown`.
@@ -2973,7 +2986,11 @@ fn source_kind_registry_is_unique_and_model_kinds_prove_coverage() -> Result<()>
     use crate::domain::conversation::ConversationSourceKind;
     let mut seen = std::collections::BTreeSet::new();
     for kind in ConversationSourceKind::ALL {
-        assert!(seen.insert(kind.as_str()), "duplicate source kind {}", kind.as_str());
+        assert!(
+            seen.insert(kind.as_str()),
+            "duplicate source kind {}",
+            kind.as_str()
+        );
     }
     assert_eq!(seen.len(), ConversationSourceKind::ALL.len());
 
@@ -2988,9 +3005,9 @@ fn source_kind_registry_is_unique_and_model_kinds_prove_coverage() -> Result<()>
         .activities(AGENT_ID, "turn-model-coverage", 10, None, None)?
         .expect("turn");
     assert_eq!(page.coverage, DetailCoverage::Complete);
-    assert!(page.activities.iter().any(|activity| matches!(
-        activity,
-        ConversationActivity::ModelRequest(_)
-    )));
+    assert!(page
+        .activities
+        .iter()
+        .any(|activity| matches!(activity, ConversationActivity::ModelRequest(_))));
     Ok(())
 }
