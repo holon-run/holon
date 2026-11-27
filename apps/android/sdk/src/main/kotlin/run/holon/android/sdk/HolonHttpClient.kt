@@ -615,19 +615,7 @@ public class HolonHttpClient internal constructor(
                 },
             ).objectOrNull ?: throw HolonProtocolException("Holon activity response is not an object")
         validateConversationVersions(raw)
-        val activities =
-            (raw["activities"] as? JsonArray).orEmpty().mapIndexedNotNull { index, element ->
-                val activity = element as? JsonObject
-                    ?: throw HolonProtocolException("Holon activity $index is not an object")
-                HolonConversationActivity(
-                    id = activity.string("id") ?: return@mapIndexedNotNull null,
-                    kind = activity.string("kind") ?: "unknown",
-                    summary = activity.string("summary").orEmpty().displayTextPreview(),
-                    eventSeq = (activity["key"] as? JsonObject)?.long("event_seq"),
-                    revision = activity.long("revision"),
-                    raw = activity,
-                )
-            }
+        val activities = parseConversationActivities(raw)
         val coverage = raw["coverage"] as? JsonObject
         return HolonConversationDetail(
             activities = activities,
@@ -1595,3 +1583,17 @@ public class HolonHttpClient internal constructor(
         }
     }
 }
+
+internal fun parseConversationActivities(raw: JsonObject): List<HolonConversationActivity> =
+    (raw["activities"] as? JsonArray).orEmpty().mapIndexedNotNull { index, element ->
+        val activity = element as? JsonObject
+            ?: throw HolonProtocolException("Holon activity $index is not an object")
+        HolonConversationActivity(
+            id = activity.string("id") ?: return@mapIndexedNotNull null,
+            kind = activity.string("kind") ?: "unknown",
+            summary = activity.string("summary").orEmpty().displayTextPreview(),
+            eventSeq = (activity["key"] as? JsonObject)?.long("event_seq"),
+            revision = activity.long("revision"),
+            raw = activity,
+        )
+    }

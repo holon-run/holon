@@ -98,9 +98,9 @@ the stable typed portion of the public event matrix:
 | `work_item_written` | work item | `holon.runtime_event.work_item_lifecycle` | `display_invalidation` |
 | `agent_state_changed` | agent state | `holon.runtime_event.agent_state_changed` | `display_invalidation` |
 | `scheduler_diagnostic` | scheduler | `holon.runtime_event.scheduler_diagnostic` | `none` |
-| `provider_switch` | model | `holon.runtime_event.provider_switch` | `none` |
-| `provider_request_started` | model | `holon.runtime_event.provider_request_started` | `none` |
-| `provider_request_finished` | model | `holon.runtime_event.provider_request_finished` | `none` |
+| `provider_switch` | model | `holon.runtime_event.provider_switch` | `display_invalidation` |
+| `provider_request_started` | model | `holon.runtime_event.provider_request_started` | `display_invalidation` |
+| `provider_request_finished` | model | `holon.runtime_event.provider_request_finished` | `display_invalidation` |
 
 All other kinds remain opaque `legacy` events unless and until they are added
 to this matrix through a typed producer and registry descriptor. This includes
@@ -111,12 +111,13 @@ them diagnostically but must not infer a domain schema from their names or
 payloads. `internal` describes their runtime role, not a second wire format
 or a client-side allowlist.
 
-The three provider rows are matched-pair facts, not domain transitions: the
-runtime appends `provider_request_started` before a model dispatch and the
-paired `provider_request_finished` after it keyed by `request_id`, and appends
-`provider_switch` only when it actually rerouted the model route. All three
-carry `projection_effect` `none`, so clients may render them diagnostically
-without deriving agent or brief state from them.
+The three provider rows are typed model-request lifecycle facts, not agent or
+brief transitions: the runtime appends `provider_request_started` before a
+model dispatch and the paired `provider_request_finished` after it keyed by
+`request_id`, and appends `provider_switch` only when it actually rerouted the
+model route. They carry `projection_effect` `display_invalidation` because they
+now project into the conversation activity stream (`model_request` /
+`model_switch`); clients still must not derive agent or brief state from them.
 
 The Web client therefore does not duplicate this matrix. It accepts any
 non-empty event type, uses the server-provided `projection_effect` when
