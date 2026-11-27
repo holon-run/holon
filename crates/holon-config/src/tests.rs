@@ -3441,3 +3441,19 @@ fn acp_profile_switches_default_to_suppression_and_an_explicit_gate_setting() {
     assert!(config.disable_telemetry("other"));
     assert_eq!(config.permission_bypass_override("other"), None);
 }
+
+#[test]
+fn doc_entries_mark_only_anonymous_access_providers_as_optional() {
+    let entries = built_in_provider_doc_entries().unwrap();
+    let magpie = entries
+        .iter()
+        .find(|entry| entry.legacy_provider.as_str() == "magpie")
+        .expect("magpie doc entry");
+    assert!(magpie.credential_optional);
+    assert_eq!(magpie.auth_env.as_deref(), Some("MAGPIE_API_KEY"));
+    let required = entries
+        .iter()
+        .find(|entry| entry.legacy_provider.as_str() == "opencode-go-messages")
+        .expect("opencode-go-messages doc entry");
+    assert!(!required.credential_optional);
+}

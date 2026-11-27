@@ -965,6 +965,11 @@ pub struct ProviderDocEntry {
     pub transport: ProviderTransportKind,
     pub base_url: String,
     pub auth_env: Option<String>,
+    /// Whether the provider works without the credential. The docs page must
+    /// render the built-in env var as optional for anonymous-access providers
+    /// such as `magpie`; marking it in the page by hand would desynchronize the
+    /// generated English page and its zh-CN copy.
+    pub credential_optional: bool,
 }
 
 /// Returns built-in provider metadata for documentation generation.
@@ -1202,6 +1207,9 @@ impl BuiltInProviderCatalog {
                 transport: endpoint.runtime_config.transport,
                 base_url: endpoint.runtime_config.base_url.clone(),
                 auth_env: endpoint.runtime_config.auth.env.clone(),
+                credential_optional: built_in_provider_allows_anonymous_access(
+                    endpoint.legacy_provider.as_str(),
+                ),
             })
             .collect::<Vec<_>>();
         entries.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
@@ -1732,6 +1740,10 @@ pub fn materialize_provider_config(
         settings_env,
         credential_store,
     )?;
+    let anonymous_access_provider = built_in
+        .as_ref()
+        .map(|builtin| builtin.route_provider.clone())
+        .unwrap_or_else(|| id.clone());
     let mut runtime = built_in.unwrap_or_else(|| ProviderRuntimeConfig {
         headers: Default::default(),
         id: id.clone(),
@@ -1762,7 +1774,7 @@ pub fn materialize_provider_config(
     // (magpie); entries written before the default template kept the binding
     // rely on this fallback.
     let keep_builtin_auth = effective_provider_config.auth.is_effectively_empty()
-        && built_in_provider_allows_anonymous_access(id.as_str())
+        && built_in_provider_allows_anonymous_access(anonymous_access_provider.as_str())
         && !runtime.auth.is_effectively_empty();
     runtime.id = id;
     runtime.transport = effective_provider_config.transport;

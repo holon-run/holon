@@ -97,7 +97,11 @@ used in existing `provider/model` refs and config shortcuts.
 
     for entry in &providers {
         let transport_str = transport_display(&entry.transport);
-        let env_display = entry.auth_env.as_deref().unwrap_or("—");
+        let env_display = match entry.auth_env.as_deref() {
+            Some(env) if entry.credential_optional => format!("{env} (optional)"),
+            Some(env) => env.to_string(),
+            None => "—".to_string(),
+        };
 
         println!(
             "| `{provider}` | `{endpoint}` | `{legacy_provider}` | {transport} | `{url}` | `{env}` |",

@@ -37,3 +37,10 @@ Preserved boundary:
   credential still fails, because they are not in the anonymous-access set.
 - when `MAGPIE_API_KEY` is set, the existing API Key provider path injects
   `Authorization: Bearer magpie-<app-id>` unchanged.
+- `providers.magpie.auth.source: none` does not disable the built-in optional
+  key: an effectively empty auth block falls back to the built-in binding,
+  because the config format has no separate presence marker. Operators who need
+  the anonymous path simply leave `MAGPIE_API_KEY` unset.
+- the docs reference page renders `MAGPIE_API_KEY (optional)` from
+  `ProviderDocEntry.credential_optional`, so the generated English page and its
+  zh-CN copy stay identical instead of being edited by hand.
