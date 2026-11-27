@@ -2268,7 +2268,21 @@ final class HolonUITests: XCTestCase {
         statusButton.tap()
         let offlineMessage = app.staticTexts["conversation.connectionMessage"]
         XCTAssertTrue(offlineMessage.waitForExistence(timeout: UIWaitScale.scaled(10)))
-        XCTAssertEqual(offlineMessage.label, "Cached content · offline")
+        // `ReadingPresentation.connectionStatusKey` keeps the background
+        // verification label ahead of the plain offline one (#3604), so a
+        // sustained outage legitimately alternates between both cached labels
+        // while the client retries the dropped node with backoff. Wait for the
+        // detail to settle inside that family instead of sampling one frame.
+        let cachedOutageLabels = ["Cached content · offline", "Cached content · refreshing…"]
+        let detailSettled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            cachedOutageLabels.contains(offlineMessage.label)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [detailSettled], timeout: UIWaitScale.scaled(10)), .completed,
+                       "The outage detail must report cached content, got \(offlineMessage.label)")
+        XCTAssertTrue(cachedOutageLabels.contains(offlineMessage.label),
+                      "The outage detail must stay cached, got \(offlineMessage.label)")
+        XCTAssertFalse(offlineMessage.label.contains("Live"),
+                       "A dropped connection must never present the detail as live")
         XCTAssertTrue(app.staticTexts["conversation.readOnly"].exists)
         XCTAssertTrue(app.buttons["conversation.retry"].isHittable)
         capture(app, "live-interruption-offline-details")
