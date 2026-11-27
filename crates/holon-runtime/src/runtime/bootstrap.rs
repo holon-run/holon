@@ -15,8 +15,8 @@ use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::{
     config::{
-        AppConfig, ModelRouteCapability, ModelRouteRef, ResolvedViewImageVisionSelection,
-        RuntimeModelCatalog,
+        AppConfig, ModelCatalogSource, ModelRouteCapability, ModelRouteRef,
+        ResolvedViewImageVisionSelection, RuntimeModelCatalog,
     },
     context::ContextConfig,
     host::RuntimeHostBridge,
@@ -1464,12 +1464,14 @@ impl RuntimeHandle {
             .iter()
             .filter_map(|candidate| crate::config::ProviderId::parse(&candidate.provider).ok())
             .collect::<HashSet<_>>();
+        let catalog_config = config.model_catalog_config();
         let providers = config
             .providers
             .values()
             .filter_map(|provider| {
                 let discovery = config.provider_discovery(provider);
                 (provider_discovers_model_capabilities(provider, discovery.as_ref())
+                    && catalog_config.provider_auto_discovery_allowed(provider)
                     && (candidate_providers.contains(&provider.id)
                         || crate::provider::provider_definition(provider.id.as_str()).is_some_and(
                             |definition| {
@@ -1972,17 +1974,19 @@ impl RuntimeHandle {
         let Ok(_admission) = self.execution_admission_lease() else {
             return;
         };
+        let catalog_config = config.model_catalog_config();
         let providers = config
             .providers
             .values()
             .filter_map(|provider| {
                 let discovery = config.provider_discovery(provider);
-                discovery_cache_needs_refresh(
-                    provider,
-                    discovery.as_ref(),
-                    cache,
-                    DEFAULT_DISCOVERY_CACHE_TTL,
-                )
+                (catalog_config.provider_auto_discovery_allowed(provider)
+                    && discovery_cache_needs_refresh(
+                        provider,
+                        discovery.as_ref(),
+                        cache,
+                        DEFAULT_DISCOVERY_CACHE_TTL,
+                    ))
                 .then(|| (provider.clone(), discovery))
             })
             .collect::<Vec<_>>();

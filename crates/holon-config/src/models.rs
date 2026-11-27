@@ -305,7 +305,56 @@ pub struct ModelCatalogConfig<'a> {
     pub model_discovery_cache: &'a holon_provider::model_discovery::ModelDiscoveryCacheFile,
     pub validated_model_overrides: &'a HashMap<ModelRef, ModelRuntimeOverride>,
     pub validated_unknown_model_fallback: Option<&'a ModelRuntimeOverride>,
+    /// Providers the operator explicitly refreshed in this runtime session.
+    /// An explicit refresh is an operator opt-in, so the refreshed provider
+    /// keeps serving its discovered models even when it is not declared in
+    /// `config.json`.
+    pub explicitly_refreshed_providers: Option<&'a HashSet<ProviderId>>,
     pub runtime_max_output_tokens: u32,
+}
+
+impl ModelCatalogConfig<'_> {
+    /// Whether this provider may run automatic model discovery and supply
+    /// cached models.
+    ///
+    /// Built-in providers with `CredentialKind::None` need no credential, so a
+    /// missing credential cannot tell "ready to use" from "the user actually
+    /// runs this service". Probing their default loopback address on every
+    /// gateway start records whatever unrelated service happens to listen
+    /// there into the shared discovery cache. Automatic discovery is therefore
+    /// limited to providers the operator opted into by declaring
+    /// `providers.<id>` in `config.json` or by referencing the provider from a
+    /// configured model route or model override. Providers that require a
+    /// credential keep the historical behavior; a missing credential already
+    /// prevents discovery.
+    pub fn provider_auto_discovery_allowed(&self, provider: &ProviderRuntimeConfig) -> bool {
+        if provider.auth.kind != CredentialKind::None {
+            return true;
+        }
+        self.stored_config.providers.contains_key(&provider.id)
+            || self
+                .explicitly_referenced_provider_ids()
+                .contains(&provider.id)
+            || self
+                .explicitly_refreshed_providers
+                .is_some_and(|providers| providers.contains(&provider.id))
+    }
+
+    /// Provider ids referenced by configured model routes or model overrides.
+    fn explicitly_referenced_provider_ids(&self) -> HashSet<ProviderId> {
+        std::iter::once(self.default_model)
+            .chain(self.fallback_models.iter())
+            .chain(self.vision_model)
+            .chain(self.image_generation_model)
+            .chain(self.vision_candidate_models.iter())
+            .map(|route| route.provider.clone())
+            .chain(
+                self.validated_model_overrides
+                    .keys()
+                    .map(|model| model.provider.clone()),
+            )
+            .collect()
+    }
 }
 
 pub trait ModelCatalogSource {
@@ -489,7 +538,25 @@ impl RuntimeModelCatalog {
     }
 
     pub fn from_config(config: &impl ModelCatalogSource) -> Self {
-        let config = config.model_catalog_config();
+        Self::from_catalog_config(config.model_catalog_config())
+    }
+
+    /// Build the catalog with the providers the operator explicitly refreshed
+    /// in this session treated as opted in.
+    ///
+    /// An explicit refresh is a foreground operator action, unlike the
+    /// background probing this gate protects against, so its result stays
+    /// visible for the rest of the session.
+    pub fn from_config_with_explicit_refreshes(
+        config: &impl ModelCatalogSource,
+        providers: &HashSet<ProviderId>,
+    ) -> Self {
+        let mut catalog_config = config.model_catalog_config();
+        catalog_config.explicitly_refreshed_providers = Some(providers);
+        Self::from_catalog_config(catalog_config)
+    }
+
+    fn from_catalog_config(config: ModelCatalogConfig<'_>) -> Self {
         let mut provider_endpoints = config
             .providers
             .iter()
@@ -516,8 +583,12 @@ impl RuntimeModelCatalog {
         // `discovery: disabled` stops future refreshes, and a cache written
         // while discovery was enabled must not keep supplying models either:
         // otherwise the catalog would serve metadata that the current config
-        // explicitly opted out of.
-        let discovery_disabled_endpoints = provider_endpoints
+        // explicitly opted out of. The same applies to credential-free
+        // providers that were never opted into automatic discovery: an
+        // already-polluted cache entry (for example one recorded while another
+        // service listened on the provider's default port) stays on disk but is
+        // not loaded into the catalog.
+        let discovery_blocked_endpoints = provider_endpoints
             .iter()
             .filter(|endpoint| {
                 let configured =
@@ -525,7 +596,7 @@ impl RuntimeModelCatalog {
                 !holon_provider::model_discovery::provider_supports_model_discovery(
                     &endpoint.runtime_config,
                     configured.as_ref(),
-                )
+                ) || !config.provider_auto_discovery_allowed(&endpoint.runtime_config)
             })
             .map(|endpoint| (endpoint.provider.clone(), endpoint.endpoint.clone()))
             .collect::<HashSet<_>>();
@@ -544,7 +615,7 @@ impl RuntimeModelCatalog {
                 .models()
                 .into_iter()
                 .filter(|(route, _)| {
-                    !discovery_disabled_endpoints
+                    !discovery_blocked_endpoints
                         .contains(&(route.provider.clone(), route.endpoint.clone()))
                 })
                 .collect::<HashMap<_, _>>(),

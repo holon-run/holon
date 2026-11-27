@@ -1,6 +1,7 @@
 use super::*;
 use holon_model_catalog::{ModelCapabilityOverride, ModelMetadataSource};
 use holon_provider::model_discovery::ProviderModelDiscoveryCache;
+use std::collections::HashSet;
 
 #[test]
 fn provider_chain_refs_match_independent_owned_selection_matrix() {
@@ -844,5 +845,159 @@ fn disabled_discovery_drops_cached_endpoint_models() {
             .context_window_tokens,
         Some(424_242),
         "`disabled` must hide models cached before the opt-out"
+    );
+}
+
+fn vllm_provider_id() -> ProviderId {
+    ProviderId::parse("vllm").unwrap()
+}
+
+/// A cache entry of the shape recorded when an unrelated service answers on a
+/// credential-free built-in provider's default port.
+fn fixture_with_polluted_credential_free_cache() -> CatalogFixture {
+    let mut fixture = catalog_fixture("openai@default/gpt-5.4", &[]);
+    let vllm = vllm_provider_id();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture
+        .providers
+        .insert(vllm.clone(), built_ins.get(&vllm).unwrap().clone());
+    fixture.model_discovery_cache.providers.insert(
+        holon_provider::model_discovery::ModelDiscoveryCacheKey::new(
+            vllm.clone(),
+            ProviderEndpointId::default_endpoint(),
+        ),
+        ProviderModelDiscoveryCache {
+            provider: vllm,
+            fetched_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            source_url: Some("http://127.0.0.1:8000/v1/models".into()),
+            response_hash: Some("sha256:test".into()),
+            models: vec![BuiltInModelMetadata {
+                model_ref: ModelRef::parse("vllm/edge0-model").unwrap(),
+                display_name: "Edge0".into(),
+                description: "Recorded from a non-vllm service on the same port.".into(),
+                context_window_tokens: Some(424_242),
+                effective_context_window_percent: 95,
+                auto_compact_token_limit: None,
+                default_max_output_tokens: None,
+                max_output_tokens_upper_limit: None,
+                default_verbosity: None,
+                tool_output_truncation_estimated_tokens: None,
+                capabilities: Default::default(),
+                reasoning_effort_options: Vec::new(),
+                source: ModelMetadataSource::RemoteDiscovered,
+                endpoint: None,
+            }],
+        },
+    );
+    fixture
+}
+
+#[test]
+fn credential_free_provider_cached_models_require_explicit_config() {
+    let route = route_ref("vllm@default/edge0-model");
+
+    let mut fixture = fixture_with_polluted_credential_free_cache();
+    let unconfigured_config = fixture.model_catalog_config();
+    assert!(
+        !unconfigured_config.provider_auto_discovery_allowed(
+            unconfigured_config
+                .providers
+                .get(&vllm_provider_id())
+                .unwrap()
+        ),
+        "automatic refresh must skip a credential-free built-in the user never opted into"
+    );
+    let blocked = RuntimeModelCatalog::from_config(&fixture);
+    assert!(
+        !blocked.discovered_models.contains_key(&route),
+        "an unconfigured, unreferenced credential-free built-in must not load a polluted cache entry"
+    );
+
+    fixture.stored_config.providers.insert(
+        vllm_provider_id(),
+        ProviderConfigFile {
+            transport: ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            ..Default::default()
+        },
+    );
+    let configured_config = fixture.model_catalog_config();
+    assert!(
+        configured_config.provider_auto_discovery_allowed(
+            configured_config
+                .providers
+                .get(&vllm_provider_id())
+                .unwrap()
+        ),
+        "declaring providers.vllm must opt the provider into automatic discovery"
+    );
+    let configured = RuntimeModelCatalog::from_config(&fixture);
+    assert!(
+        configured.discovered_models.contains_key(&route),
+        "declaring providers.vllm must restore cached discovery models"
+    );
+}
+
+#[test]
+fn credential_free_provider_cached_models_load_when_a_model_route_references_them() {
+    let route = route_ref("vllm@default/edge0-model");
+    let assert_loaded = |fixture: CatalogFixture| {
+        let catalog = RuntimeModelCatalog::from_config(&fixture);
+        assert!(
+            catalog.discovered_models.contains_key(&route),
+            "a configured model reference must opt the credential-free provider into discovery"
+        );
+    };
+
+    let mut default_referenced = fixture_with_polluted_credential_free_cache();
+    default_referenced.default_model = route.clone();
+    assert_loaded(default_referenced);
+
+    let mut fallback_referenced = fixture_with_polluted_credential_free_cache();
+    fallback_referenced.fallback_models = vec![route.clone()];
+    assert_loaded(fallback_referenced);
+
+    let mut vision_referenced = fixture_with_polluted_credential_free_cache();
+    vision_referenced.vision_model = Some(route.clone());
+    assert_loaded(vision_referenced);
+
+    let mut image_generation_referenced = fixture_with_polluted_credential_free_cache();
+    image_generation_referenced.image_generation_model = Some(route.clone());
+    assert_loaded(image_generation_referenced);
+
+    let mut vision_candidate_referenced = fixture_with_polluted_credential_free_cache();
+    vision_candidate_referenced.vision_candidate_models = vec![route.clone()];
+    assert_loaded(vision_candidate_referenced);
+
+    let mut model_override_referenced = fixture_with_polluted_credential_free_cache();
+    model_override_referenced.validated_model_overrides.insert(
+        ModelRef::parse("vllm/edge0-model").unwrap(),
+        ModelRuntimeOverride::default(),
+    );
+    assert_loaded(model_override_referenced);
+}
+
+#[test]
+fn explicitly_refreshed_credential_free_provider_keeps_its_discovered_models() {
+    let route = route_ref("vllm@default/edge0-model");
+    let fixture = fixture_with_polluted_credential_free_cache();
+    let vllm = vllm_provider_id();
+
+    // An explicit refresh is a foreground operator action, so the refreshed
+    // provider keeps serving what it just discovered.
+    let refreshed = RuntimeModelCatalog::from_config_with_explicit_refreshes(
+        &fixture,
+        &HashSet::from([vllm.clone()]),
+    );
+    assert!(
+        refreshed.discovered_models.contains_key(&route),
+        "an explicitly refreshed credential-free provider must serve its discovered models"
+    );
+
+    // Without that opt-in the same cache entry stays out of the catalog.
+    let blocked = RuntimeModelCatalog::from_config(&fixture);
+    assert!(
+        !blocked.discovered_models.contains_key(&route),
+        "an unconfigured, unreferenced credential-free built-in must not load a polluted cache entry"
     );
 }

@@ -32,6 +32,7 @@ impl ModelCatalogSource for CatalogFixture {
             model_discovery_cache: &self.model_discovery_cache,
             validated_model_overrides: &self.validated_model_overrides,
             validated_unknown_model_fallback: self.validated_unknown_model_fallback.as_ref(),
+            explicitly_refreshed_providers: None,
             runtime_max_output_tokens: 8192,
         }
     }

@@ -329,7 +329,14 @@ fn runtime_config_surface_reports_credential_free_providers_as_ready() {
         .expect("ollama provider should be reported");
     assert_eq!(ollama.credential_kind, "none");
     assert!(!ollama.api_key_supported);
+    // `credential_configured` only says "no credential is required" for a
+    // credential-free built-in; it must not be read as "the user configured
+    // this service".
     assert!(ollama.credential_configured);
+    assert!(
+        !ollama.configured_in_config,
+        "an untouched credential-free built-in is projected as not explicitly configured"
+    );
 }
 
 #[test]
