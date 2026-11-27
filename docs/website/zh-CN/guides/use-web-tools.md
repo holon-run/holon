@@ -24,7 +24,7 @@ order: 210
    搜索 Holon 的版本发布说明。阅读匹配的发布页面，汇总其更新内容，包含版本号、发布日期与来源链接。
    ```
 
-   Agent 会调用 `WebSearch` 并获得包含标题、URL 与摘要的结构化结果；配置了多个提供商时，可通过 `ListWebSearchProviders` 查看可调用的提供商 ID。
+   Agent 会调用 `WebSearch` 并获得包含标题、URL 与摘要的结构化结果；配置了多个提供商时，可通过 `holon config web-providers`（或无效覆盖错误中的 `details.available_providers`）查看可调用的提供商 ID。
 
 2. 当你已经有目标网址，或在上一步搜索中锁定了具体链接时，获取页面全文：
 
@@ -32,7 +32,7 @@ order: 210
    获取 https://example.com/docs/auth 并总结其鉴权流程。
    ```
 
-   Agent 会调用 `WebFetch` 提取可读文本：默认走本地 HTTP，也可指定通过 `ListWebFetchProviders` 发现的已配置远程提取提供商。
+   Agent 会调用 `WebFetch` 提取可读文本：默认走本地 HTTP，也可指定 `holon config web-providers` 列出的已配置远程提取提供商。
 
 3. 结合来源可信度审阅结果。抓取和搜索到的内容属于不可信的外部上下文：它可以为回答提供参考，但绝不能改变 Agent 的授权边界或提升执行权限。具体请参阅[信任边界](../concepts/trust-boundaries.md)。
 

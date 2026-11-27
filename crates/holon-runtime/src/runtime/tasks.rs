@@ -1130,25 +1130,32 @@ impl RuntimeHandle {
             .find(|entry| entry.policy.model_ref == model_ref || entry.model == model_ref_string)
             .cloned();
         let Some(availability) = availability else {
+            let to_model_entry = |entry: &crate::types::ResolvedModelAvailability| {
+                serde_json::json!({
+                    "provider": entry.policy.model_ref.provider.as_str(),
+                    "model": entry.policy.model_ref.model,
+                })
+            };
             let mut candidate_models = all_availability
                 .iter()
                 .filter(|entry| entry.available && entry.policy.model_ref.provider == provider)
                 .take(10)
-                .map(|entry| entry.model.clone())
+                .map(to_model_entry)
                 .collect::<Vec<_>>();
             if candidate_models.is_empty() {
                 candidate_models = all_availability
                     .iter()
                     .filter(|entry| entry.available)
                     .take(10)
-                    .map(|entry| entry.model.clone())
+                    .map(to_model_entry)
                     .collect();
             }
             let recovery_hint = self
                 .model_catalog_rejection_hint(&model_ref)
                 .await
                 .unwrap_or_else(|| {
-                    "choose one of details.available_models or omit `model` to inherit".to_string()
+                    "choose a {provider, model} entry from details.available_models or omit `model` to inherit"
+                        .to_string()
                 });
             return Err(anyhow::Error::from(
                 ToolError::new(

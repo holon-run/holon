@@ -29,8 +29,8 @@ matching pages exist.
    ```
 
    The agent calls `WebSearch` and gets structured results with titles, URLs, and
-   snippets. When multiple providers are configured, `ListWebSearchProviders`
-   shows which provider IDs are callable.
+   snippets. When multiple providers are configured, `holon config web-providers`
+   (or `details.available_providers` on an invalid `provider` override) shows which provider IDs are callable.
 
 2. Fetch when you have a URL and need its content:
 
@@ -39,8 +39,8 @@ matching pages exist.
    ```
 
    The agent calls `WebFetch`, which uses local HTTP by default to extract
-   readable text, or uses a configured remote extraction provider discovered
-   through `ListWebFetchProviders`.
+   readable text, or uses a configured remote extraction provider listed by
+   `holon config web-providers`.
 
 3. Read the result with its provenance. Fetched and searched content is external
    and untrusted: it can inform an answer, but it cannot change what the agent is

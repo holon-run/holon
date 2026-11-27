@@ -1566,20 +1566,19 @@ impl RuntimeHandle {
             Some(raw_model) => match ModelRouteRef::parse_compatible(raw_model.trim()) {
                 Ok(parsed) => Some(parsed),
                 Err(_) => {
-                    let candidates = self
-                        .current_view_image_vision_route_selection()
-                        .await
-                        .map(|resolved| {
-                            resolved
-                                .selection
-                                .candidates
-                                .into_iter()
-                                .filter(|candidate| candidate.image_input && candidate.model != "*")
-                                .take(10)
-                                .map(|candidate| candidate.model_ref)
-                                .collect::<Vec<_>>()
+                    let snap = self.inner.config_snapshot.load();
+                    let candidates = snap
+                        .model_availability
+                        .iter()
+                        .filter(|entry| entry.media.view_image.call_selectable)
+                        .take(10)
+                        .map(|entry| {
+                            format!(
+                                "{}@{}/{}",
+                                entry.provider_family, entry.endpoint, entry.policy.model_ref.model
+                            )
                         })
-                        .unwrap_or_default();
+                        .collect::<Vec<_>>();
                     return Err(crate::tool::ToolError::new(
                         "invalid_tool_input",
                         "ViewImage `model` must be provider@endpoint/model or provider/model",
@@ -1812,19 +1811,20 @@ impl RuntimeHandle {
 
         let state = self.capture_committed_state().await?;
         let fallback_model = self.inner.turn_fallback_model.read().await.clone();
-        let callable_routes = self
-            .model_availability()
-            .await
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .filter(|entry| entry.media.generate_image.call_selectable)
-                    .take(10)
-                    .map(|entry| entry.model)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
         let snap = self.inner.config_snapshot.load();
+        let callable_image_routes = || {
+            snap.model_availability
+                .iter()
+                .filter(|entry| entry.media.generate_image.call_selectable)
+                .take(10)
+                .map(|entry| {
+                    format!(
+                        "{}@{}/{}",
+                        entry.provider_family, entry.endpoint, entry.policy.model_ref.model
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
         let requested_route = requested_model
             .map(ModelRouteRef::parse_compatible)
             .transpose()
@@ -1835,7 +1835,7 @@ impl RuntimeHandle {
                 )
                 .with_details(json!({
                     "requested_model": requested_model,
-                    "available_routes": callable_routes.clone(),
+                    "available_routes": callable_image_routes(),
                 }))
                 .with_recovery_hint(
                     "omit model to use the default route, or select a canonical provider@endpoint/model route from details.available_routes",
@@ -1850,14 +1850,21 @@ impl RuntimeHandle {
                 fallback_model.as_ref(),
             )
             .ok_or_else(|| {
+                let details = if requested_model.is_some() {
+                    json!({
+                        "requested_model": requested_model,
+                        "available_routes": callable_image_routes(),
+                    })
+                } else {
+                    json!({
+                        "requested_model": requested_model,
+                    })
+                };
                 ToolError::new(
                     "model_route_unavailable",
                     "selected image generation route is unavailable or lacks image_generation capability",
                 )
-                .with_details(json!({
-                    "requested_model": requested_model,
-                    "available_routes": callable_routes,
-                }))
+                .with_details(details)
                 .with_recovery_hint(
                     "select an enabled image_output route from details.available_routes with usable credentials, or omit model for default routing; explicit choices do not fall back",
                 )
