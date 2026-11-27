@@ -176,11 +176,12 @@ pub async fn search_with_native(
         None => {
             let configured = config.search.provider.as_str();
             if is_native_provider(configured, config) {
-                return Err(search_error(
+                return Err(search_error_with_candidates(
                     "provider_unavailable",
                     format!("WebSearch default provider `{configured}` is a native search provider; native search requires an explicit provider argument"),
                     configured,
-                    "call WebSearch with provider=<native provider id> or point web.search.provider at a managed provider",
+                    list_search_providers(config),
+                    "call WebSearch with provider=<native provider id> from details.available_providers or point web.search.provider at a managed provider",
                 ));
             }
             (configured, configured, config.search.mode)
@@ -899,11 +900,12 @@ async fn search_one_provider(
                 .cloned()
                 .or_else(|| builtin_keyless_provider_config(provider_id))
                 .ok_or_else(|| {
-                    search_error(
+                    search_error_with_candidates(
                         "provider_unavailable",
                         format!("WebSearch provider `{provider_id}` is not configured"),
                         provider_id,
-                        "configure web.providers or use provider=duckduckgo",
+                        list_search_providers(config),
+                        "select a provider from details.available_providers, use provider=\"auto\", or omit provider",
                     )
                 })?;
             search_configured_provider(
@@ -3461,6 +3463,25 @@ fn search_error(
     anyhow::Error::from(
         ToolError::new(kind, message)
             .with_details(json!({ "provider": provider }))
+            .with_recovery_hint(recovery_hint)
+            .with_retryable(matches!(kind, "rate_limited" | "network_failed")),
+    )
+}
+
+fn search_error_with_candidates(
+    kind: &'static str,
+    message: impl Into<String>,
+    provider: impl Into<String>,
+    available_providers: Vec<String>,
+    recovery_hint: impl Into<String>,
+) -> anyhow::Error {
+    let provider = provider.into();
+    anyhow::Error::from(
+        ToolError::new(kind, message)
+            .with_details(json!({
+                "provider": provider,
+                "available_providers": available_providers,
+            }))
             .with_recovery_hint(recovery_hint)
             .with_retryable(matches!(kind, "rate_limited" | "network_failed")),
     )

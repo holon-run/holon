@@ -253,3 +253,77 @@ async fn generate_image_route_uses_captured_state_without_sql_or_mutable_agent_l
     assert!(!rejection.retryable);
     Ok(())
 }
+
+#[tokio::test]
+async fn explicit_media_override_failures_report_available_routes_without_sql_or_lock() -> Result<()>
+{
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    forbid_state_storage(runtime)?;
+    let _agent = runtime.inner.agent.lock().await;
+
+    let invalid_gen = runtime
+        .generate_image(
+            Some("not a valid route"),
+            ProviderGenerateImageRequest {
+                material: Default::default(),
+                prompt: "no provider call".into(),
+                size: None,
+                aspect_ratio: None,
+                resolution: None,
+                background: None,
+                output_format: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    let invalid_gen_err = invalid_gen
+        .downcast_ref::<crate::tool::ToolError>()
+        .expect("invalid route ToolError");
+    assert_eq!(invalid_gen_err.kind, "model_route_unavailable");
+    let invalid_gen_details = invalid_gen_err.details.as_ref().expect("details");
+    assert_eq!(invalid_gen_details["requested_model"], "not a valid route");
+    assert!(invalid_gen_details["available_routes"].is_array());
+
+    let missing_gen = runtime
+        .generate_image(
+            Some("openai@default/missing-image-model"),
+            ProviderGenerateImageRequest {
+                material: Default::default(),
+                prompt: "no provider call".into(),
+                size: None,
+                aspect_ratio: None,
+                resolution: None,
+                background: None,
+                output_format: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    let missing_gen_err = missing_gen
+        .downcast_ref::<crate::tool::ToolError>()
+        .expect("missing route ToolError");
+    let missing_gen_details = missing_gen_err.details.as_ref().expect("details");
+    assert_eq!(
+        missing_gen_details["requested_model"],
+        "openai@default/missing-image-model"
+    );
+    assert!(missing_gen_details["available_routes"].is_array());
+
+    let invalid_view = match runtime
+        .prepare_view_image_observation(Some("not a valid route"))
+        .await
+    {
+        Ok(_) => anyhow::bail!("expected invalid ViewImage route error"),
+        Err(error) => error,
+    };
+    let invalid_view_err = invalid_view
+        .downcast_ref::<crate::tool::ToolError>()
+        .expect("invalid ViewImage ToolError");
+    assert_eq!(invalid_view_err.kind, "invalid_tool_input");
+    let invalid_view_details = invalid_view_err.details.as_ref().expect("details");
+    assert_eq!(invalid_view_details["requested_model"], "not a valid route");
+    assert!(invalid_view_details["available_routes"].is_array());
+    Ok(())
+}

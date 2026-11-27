@@ -35,7 +35,7 @@ Tools are grouped by capability family for authority gating:
 
 | Family | Tools | Authority |
 |--------|-------|-----------|
-| `CoreAgent` | `WaitFor`, `GetAgent`, `SendAgentMessage`, `Enqueue`, `CreateTimer`, `ListTimers`, `GetTimer`, `CancelTimer`, `ListTasks`, `TaskStatus`, `TaskInput`, `TaskStop`, `ListModelProviders`, `ListProviderModels`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
+| `CoreAgent` | `WaitFor`, `GetAgent`, `SendAgentMessage`, `Enqueue`, `CreateTimer`, `ListTimers`, `GetTimer`, `CancelTimer`, `ListTasks`, `TaskStatus`, `TaskInput`, `TaskStop`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
 | `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `ViewImage`, `GenerateImage`, `GetWorkspaceState`, `SwitchWorkspace`, `CreateWorktree` | All profiles |
 | `AuthorityExpanding` | `AttachWorkspace`, `DetachWorkspace`, `RemoveWorktree` | Public named agents |
 | `Web` | `WebFetch`, `WebSearch`, `XSearch` | All profiles |
@@ -104,12 +104,9 @@ runtime result/capture services remain. See [Tasks](tasks.md).
 | `GetTimer` | Read one timer by id |
 | `CancelTimer` | Cancel an active timer |
 
-### Model plane
+### Model routing & inspection
 
-| Tool | Purpose |
-|------|---------|
-| `ListModelProviders` | List configured or discovered model providers |
-| `ListProviderModels` | List selectable models for a provider |
+Model and provider catalog discovery (`ListModelProviders`, `ListProviderModels`) and web-provider listing (`ListWebSearchProviders`, `ListWebFetchProviders`) remain dispatchable for compatibility/replay, while model-facing turns inspect configured routes via `holon config providers list`, `holon config models list`, and `holon config web-providers` (or receive bounded candidate routes directly in structured `ToolError` `details` when an explicit override fails).
 
 ### Image plane
 

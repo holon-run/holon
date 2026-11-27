@@ -168,8 +168,7 @@ const DEGRADED_ROUND_MINIMUM_CONTENT_CHARS: usize = 200;
 const OPERATOR_INTERJECTION_HEADER: &str =
     "[Operator message received while this turn was in progress]";
 pub(super) use holon_context::checkpoint_prompts::{
-    truncate_preview, CHECKPOINT_RESUME_PROMPT,
-    COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT, DELTA_CHECKPOINT_PREVIEW_LIMIT,
+    truncate_preview, CHECKPOINT_RESUME_PROMPT, COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT,
 };
 
 fn append_follow_up_user_texts(round: &mut TurnRoundRecord, texts: Vec<String>) {

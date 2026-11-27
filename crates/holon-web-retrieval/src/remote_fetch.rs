@@ -120,7 +120,7 @@ pub(super) async fn fetch(
                 kind.as_str()
             ),
             json!({ "provider": provider_id, "kind": kind.as_str() }),
-            "select a provider from ListWebFetchProviders or omit provider for local HTTP",
+            "select a supported remote fetch provider or omit provider for local HTTP",
         )),
     }
 }

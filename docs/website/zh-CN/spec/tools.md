@@ -34,7 +34,7 @@ schema/分发对齐，以及结果信封约定。
 
 | 家族 | 工具 | 权限 |
 |--------|-------|-----------|
-| `CoreAgent` | `WaitFor`、`GetAgent`、`SendAgentMessage`、`Enqueue`、`CreateTimer`、`ListTimers`、`GetTimer`、`CancelTimer`、`ListTasks`、`TaskStatus`、`TaskInput`、`TaskStop`、`ListModelProviders`、`ListProviderModels`、工作项工具、`MemorySearch`、`MemoryGet` | 所有 Agent profile |
+| `CoreAgent` | `WaitFor`、`GetAgent`、`SendAgentMessage`、`Enqueue`、`CreateTimer`、`ListTimers`、`GetTimer`、`CancelTimer`、`ListTasks`、`TaskStatus`、`TaskInput`、`TaskStop`、工作项工具、`MemorySearch`、`MemoryGet` | 所有 Agent profile |
 | `LocalEnvironment` | `ExecCommand`、`ExecCommandBatch`、`ApplyPatch`、`ViewImage`、`GenerateImage`、`GetWorkspaceState`、`SwitchWorkspace`、`CreateWorktree` | 所有 profile |
 | `AuthorityExpanding` | `AttachWorkspace`、`DetachWorkspace`、`RemoveWorktree` | 公有具名 Agent |
 | `Web` | `WebFetch`、`WebSearch`、`XSearch` | 所有 profile |
@@ -99,12 +99,9 @@ schema/分发对齐，以及结果信封约定。
 | `GetTimer` | 按 id 读取一个定时器 |
 | `CancelTimer` | 取消一个活跃定时器 |
 
-### 模型平面
+### 模型路由与查询
 
-| 工具 | 用途 |
-|------|---------|
-| `ListModelProviders` | 列出已配置或已发现的模型提供商 |
-| `ListProviderModels` | 列出某个提供商可选用的模型 |
+模型与提供商目录查询（`ListModelProviders`、`ListProviderModels`）以及网络提供商列举（`ListWebSearchProviders`、`ListWebFetchProviders`）仅保留用于兼容性分发与重放，不再默认暴露在面向模型的 `tools[]` 中；常规模型轮次在显式路由覆盖失败时直接从结构化 `ToolError` 的 `details` 获取候选路由，在具备命令行权限时也可通过 `holon config providers list`、`holon config models list` 与 `holon config web-providers` 查询。
 
 ### 图像平面
 

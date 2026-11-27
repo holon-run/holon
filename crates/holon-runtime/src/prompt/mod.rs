@@ -159,7 +159,7 @@ impl EffectivePrompt {
             return self;
         }
         let mut lines = vec![
-            "Media model overrides are optional and single-call only; omission preserves configured/default routing. Exact overrides do not silently fall back. Discover operation-specific candidates with ListModelProviders/ListProviderModels.".to_string(),
+            "Media model overrides are optional and single-call only; omission preserves configured/default routing. Exact overrides do not silently fall back; rejected overrides report callable route candidates in tool error details.".to_string(),
         ];
         // Route identifiers and live availability stay in tool results/error hints so
         // transient route-health shifts never churn the system prompt or cache key.
@@ -1260,6 +1260,9 @@ mod tests {
                 .rendered_system_prompt
                 .contains("Exact overrides do not silently fall back"));
             assert!(first
+                .rendered_system_prompt
+                .contains("rejected overrides report callable route candidates"));
+            assert!(!first
                 .rendered_system_prompt
                 .contains("ListModelProviders/ListProviderModels"));
             assert!(!first

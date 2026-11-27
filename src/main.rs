@@ -8192,11 +8192,71 @@ async fn handle_config_command(command: ConfigCommands) -> Result<()> {
         }
         ConfigCommands::List => config_list_command().await,
         ConfigCommands::Schema => config_schema_command().await,
+        ConfigCommands::WebProviders => config_web_providers_command(),
         ConfigCommands::Doctor => {
             let config = AppConfig::load_for_config_inspection()?;
             print_json(&provider_doctor(&config))
         }
     }
+}
+
+fn config_web_providers_command() -> Result<()> {
+    let config = AppConfig::load_for_config_inspection()?;
+    let mut web_config = config.web_config.clone();
+    let mut derived_ids = std::collections::BTreeSet::new();
+    for (id, provider) in holon::web::derived_native_search_providers(
+        &web_config,
+        &config.providers,
+        &config.validated_model_overrides,
+    ) {
+        if web_config.providers.contains_key(&id) {
+            continue;
+        }
+        derived_ids.insert(id.clone());
+        web_config.providers.insert(id, provider);
+    }
+    for (id, provider) in
+        holon::web::derived_standalone_search_providers(&web_config, &config.providers)
+    {
+        if web_config.providers.contains_key(&id) {
+            continue;
+        }
+        derived_ids.insert(id.clone());
+        web_config.search.derived_providers.insert(id.clone());
+        web_config.providers.insert(id, provider);
+    }
+    let search_providers = holon::web::search::list_search_providers(&web_config)
+        .into_iter()
+        .map(|provider_id| {
+            let source = if derived_ids.contains(&provider_id) {
+                "derived"
+            } else if web_config.providers.contains_key(&provider_id) {
+                "configured"
+            } else {
+                "builtin"
+            };
+            serde_json::json!({
+                "provider_id": provider_id,
+                "source": source,
+            })
+        })
+        .collect::<Vec<_>>();
+    let fetch_providers = holon::web::fetch::list_fetch_providers(&config.web_config)
+        .into_iter()
+        .map(|info| {
+            serde_json::json!({
+                "provider_id": info.provider_id,
+                "kind": info.kind,
+                "extract_modes": info.extract_modes,
+            })
+        })
+        .collect::<Vec<_>>();
+    print_json(&serde_json::json!({
+        "search_enabled": web_config.search.enabled,
+        "fetch_enabled": config.web_config.fetch.enabled,
+        "search_providers": search_providers,
+        "fetch_providers": fetch_providers,
+    }))
 }
 
 async fn config_migrate_model_routes_command(write: bool) -> Result<()> {

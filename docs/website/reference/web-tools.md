@@ -23,7 +23,7 @@ documentation, or API responses.
 | `url` | yes | HTTP or HTTPS URL to fetch |
 | `max_chars` | no | Maximum characters to return (default: no hard limit) |
 | `extract_mode` | no | How to extract content from the response |
-| `provider` | no | Configured remote fetch provider ID discovered via `ListWebFetchProviders`; omitted means local HTTP |
+| `provider` | no | Configured remote fetch provider ID; omitted means local HTTP (invalid overrides return `available_providers` in error details) |
 
 ### Extract modes
 
@@ -45,8 +45,7 @@ Each response includes provenance metadata:
 - Truncation flag and character count
 - Content hash (SHA-256)
 
-Call `ListWebFetchProviders` (takes no arguments) to inspect which routes are
-available right now: the local HTTP route (`provider_id: null`) plus each
+Run `holon config web-providers` (or inspect `details.available_providers` on an invalid `provider` override) to see which fetch routes are available right now: the local HTTP route (`provider_id: null`) plus each
 callable remote provider ID with its `kind` and supported `extract_modes`.
 Remote fetching supports `kind=deepseek` (`auto` only), `kind=tavily` (`auto`
 or `text`), `kind=exa` (`auto` only), and `kind=firecrawl` (`auto` only).
@@ -140,7 +139,7 @@ structured results with citations.
 `auto` and `aggregate` are reserved selector values. If a provider is registered
 with either name, calling it by that name fails; rename the provider or omit `provider`.
 
-Call `ListWebSearchProviders` (takes no arguments) to list the sorted, unique
+Run `holon config web-providers` (or inspect `details.available_providers` when an explicit `provider` override is rejected) to list the sorted, unique
 provider IDs you can pass to `WebSearch(provider="<ID>")` based on local
 configuration. Each entry carries a `source` marker: `configured` (explicit
 `web.providers` entry), `builtin` (built-in keyless route), or `derived`

@@ -1106,7 +1106,7 @@ impl RuntimeHandle {
                 "field": "model.provider",
                 "validation_error": error.to_string(),
             }))
-            .with_recovery_hint("provide a lowercase provider id from ListModelProviders")
+            .with_recovery_hint("provide a valid lowercase provider id, or omit `model` to inherit")
         })?;
         let requested_model = request.model.trim();
         if requested_model.is_empty() {
@@ -1119,21 +1119,42 @@ impl RuntimeHandle {
                     "field": "model.model",
                     "validation_error": "must not be empty",
                 }))
-                .with_recovery_hint("provide a model id from ListProviderModels"),
+                .with_recovery_hint("provide a non-empty model id, or omit `model` to inherit"),
             ));
         }
-        let model_ref = ModelRef::new(provider, requested_model.to_string());
+        let model_ref = ModelRef::new(provider.clone(), requested_model.to_string());
         let model_ref_string = model_ref.as_string();
-        let availability =
-            self.model_availability().await?.into_iter().find(|entry| {
-                entry.policy.model_ref == model_ref || entry.model == model_ref_string
-            });
+        let all_availability = self.model_availability().await?;
+        let availability = all_availability
+            .iter()
+            .find(|entry| entry.policy.model_ref == model_ref || entry.model == model_ref_string)
+            .cloned();
         let Some(availability) = availability else {
+            let to_model_entry = |entry: &crate::types::ResolvedModelAvailability| {
+                serde_json::json!({
+                    "provider": entry.policy.model_ref.provider.as_str(),
+                    "model": entry.policy.model_ref.model,
+                })
+            };
+            let mut candidate_models = all_availability
+                .iter()
+                .filter(|entry| entry.available && entry.policy.model_ref.provider == provider)
+                .take(10)
+                .map(to_model_entry)
+                .collect::<Vec<_>>();
+            if candidate_models.is_empty() {
+                candidate_models = all_availability
+                    .iter()
+                    .filter(|entry| entry.available)
+                    .take(10)
+                    .map(to_model_entry)
+                    .collect();
+            }
             let recovery_hint = self
                 .model_catalog_rejection_hint(&model_ref)
                 .await
                 .unwrap_or_else(|| {
-                    "call ListModelProviders and ListProviderModels before requesting a model"
+                    "choose a {provider, model} entry from details.available_models or omit `model` to inherit"
                         .to_string()
                 });
             return Err(anyhow::Error::from(
@@ -1144,6 +1165,7 @@ impl RuntimeHandle {
                 .with_details(serde_json::json!({
                     "requested_model": model_ref_string,
                     "resolution_status": "rejected",
+                    "available_models": candidate_models,
                 }))
                 .with_recovery_hint(recovery_hint),
             ));

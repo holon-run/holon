@@ -21,7 +21,7 @@ Holon Agent 内置两个网络工具，用于检索和搜索公开网络。它�
 | `url` | 是 | 要抓取的 HTTP 或 HTTPS URL |
 | `max_chars` | 否 | 返回的最大字符数（默认：无硬性上限） |
 | `extract_mode` | 否 | 如何从响应中提取内容 |
-| `provider` | 否 | 通过 `ListWebFetchProviders` 发现的已配置远程抓取提供商 ID；省略则走本地 HTTP |
+| `provider` | 否 | 已配置的远程抓取提供商 ID；省略则走本地 HTTP（无效覆盖会在错误 `details` 中返回 `available_providers`） |
 
 ### 提取模式
 
@@ -43,7 +43,7 @@ Holon Agent 内置两个网络工具，用于检索和搜索公开网络。它�
 - 截断标志和字符数
 - 内容哈希（SHA-256）
 
-调用无参的 `ListWebFetchProviders` 可查看当前可用的抓取路由：默认本地 HTTP
+运行 `holon config web-providers`（或在显式 `provider` 覆盖失败时查看错误 `details.available_providers`）可查看当前可用的抓取路由：默认本地 HTTP
 路由（`provider_id: null`）以及各个可调用的远程提供商 ID、类型 `kind` 和支持的
 `extract_modes`。远程抓取目前支持 `kind=deepseek`（仅 `auto`）、`kind=tavily`
 （`auto` 或 `text`）、`kind=exa`（仅 `auto`）与 `kind=firecrawl`（仅 `auto`）。
@@ -125,7 +125,7 @@ Search 支持 `site:`、`-site:`、`lang:`、`after:`、`before:` 等查询运�
 `auto` 和 `aggregate` 属于保留的选择器取值。若配置里注册了同名提供商，按该名称显式
 调用会失败，需改名或省略 `provider`。
 
-调用无参的 `ListWebSearchProviders` 可根据本地配置列出排序后的唯一可用搜索提供商
+运行 `holon config web-providers`（或在显式 `provider` 覆盖被拒绝时查看错误 `details.available_providers`）可根据本地配置列出排序后的唯一可用搜索提供商
 ID，直接传给 `WebSearch(provider="<ID>")`。每个条目带 `source` 来源标记：`configured`
 （显式 `web.providers` 条目）、`builtin`（内置免 key 路由）或 `derived`（由具备
 可独立派发原生搜索能力的已认证模型提供商自动派生）。路由选择器（`auto`、`aggregate`）

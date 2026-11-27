@@ -145,8 +145,11 @@ pub async fn fetch_with_provider(
         policy_error(
             "provider_unavailable",
             "WebFetch provider is not configured",
-            json!({ "provider": provider_id }),
-            "configure web.providers or omit provider for local HTTP",
+            json!({
+                "provider": provider_id,
+                "available_providers": list_fetch_providers(config),
+            }),
+            "select a remote provider from details.available_providers or omit provider for local HTTP",
         )
     })?;
     if !config.fetch.enabled {
@@ -164,8 +167,12 @@ pub async fn fetch_with_provider(
                 "WebFetch remote extraction is not available for provider kind {} (the kind may only support search)",
                 provider.kind.as_str()
             ),
-            json!({ "provider": provider_id, "kind": provider.kind.as_str() }),
-            "select a provider from ListWebFetchProviders or omit provider for local HTTP",
+            json!({
+                "provider": provider_id,
+                "kind": provider.kind.as_str(),
+                "available_providers": list_fetch_providers(config),
+            }),
+            "select a remote provider from details.available_providers or omit provider for local HTTP",
         )
     })?;
     if !modes.contains(&request.extract_mode) {

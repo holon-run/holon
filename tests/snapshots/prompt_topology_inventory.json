@@ -15,8 +15,8 @@
   },
   "embedded_docs": [
     {
-      "chars": 2496,
-      "estimated_tokens": 624,
+      "chars": 2570,
+      "estimated_tokens": 643,
       "slug": "cli",
       "title": "Holon CLI Control-Plane Contract"
     },
@@ -51,8 +51,8 @@
       "title": "AgentHome Layout & Curation"
     },
     {
-      "chars": 1814,
-      "estimated_tokens": 454,
+      "chars": 1980,
+      "estimated_tokens": 495,
       "slug": "models",
       "title": "Model Route Syntax & Inspection"
     }
@@ -326,8 +326,8 @@
         }
       ],
       "tool_count": 18,
-      "tool_description_chars": 11334,
-      "tool_description_estimated_tokens": 2840,
+      "tool_description_chars": 11361,
+      "tool_description_estimated_tokens": 2847,
       "tool_names": [
         "WaitFor",
         "CreateWorkItem",
@@ -1171,9 +1171,9 @@
           "stability": "stable"
         }
       ],
-      "tool_count": 44,
-      "tool_description_chars": 24455,
-      "tool_description_estimated_tokens": 6130,
+      "tool_count": 40,
+      "tool_description_chars": 21661,
+      "tool_description_estimated_tokens": 5431,
       "tool_names": [
         "AdvisoryDecision",
         "WaitFor",
@@ -1193,8 +1193,6 @@
         "TaskStatus",
         "TaskInput",
         "TaskStop",
-        "ListModelProviders",
-        "ListProviderModels",
         "CreateWorkItem",
         "PickWorkItem",
         "GetWorkItem",
@@ -1216,8 +1214,6 @@
         "ViewImage",
         "WebFetch",
         "WebSearch",
-        "ListWebFetchProviders",
-        "ListWebSearchProviders",
         "XSearch"
       ]
     }
