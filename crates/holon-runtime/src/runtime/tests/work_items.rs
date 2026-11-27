@@ -1222,7 +1222,7 @@ async fn idle_detached_completion_rolls_back_work_item_brief_and_tool_evidence_t
         crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
     );
     let error = runtime
-        .commit_prepared_detached_work_item_completion(prepared)
+        .commit_prepared_detached_work_item_completion(prepared, None)
         .await
         .expect_err("injected completion fault should fail the runtime loop");
     assert_injected_transition_fault(&error);
@@ -4919,6 +4919,319 @@ async fn control_work_commands_reject_cross_work_item_writes_during_an_open_atte
     assert_eq!(
         runtime.latest_work_item(&target.id).await.unwrap().unwrap(),
         target
+    );
+}
+
+/// Rewrite the open attempt's payload hints. These are preallocated or replay
+/// hints, never the authoritative live turn identity.
+fn rewrite_open_attempt_hints(
+    runtime: &RuntimeHandle,
+    turn_id: Option<&str>,
+    source_message_id: Option<&str>,
+    recovery_of_attempt_id: Option<&str>,
+) {
+    let protocol = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("the fixture left canonical execution state");
+    let mut attempt = protocol
+        .open_attempt()
+        .expect("the fixture left an open attempt")
+        .clone();
+    attempt.turn_id = turn_id.map(ToString::to_string);
+    attempt.source_message_id = source_message_id.map(ToString::to_string);
+    attempt.recovery_of_attempt_id = recovery_of_attempt_id.map(ToString::to_string);
+    let lifecycle_state = serde_json::to_value(attempt.state)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO execution_protocol_attempts (
+                   agent_id, attempt_id, lifecycle_state, source_identity_json,
+                   source_generation, recovery_of_attempt_id, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(agent_id, attempt_id) DO UPDATE SET
+                   lifecycle_state = excluded.lifecycle_state,
+                   recovery_of_attempt_id = excluded.recovery_of_attempt_id,
+                   payload_json = excluded.payload_json",
+                rusqlite::params![
+                    attempt.agent_id,
+                    attempt.attempt_id,
+                    lifecycle_state,
+                    serde_json::to_string(&attempt.source.identity).unwrap(),
+                    attempt.source.generation as i64,
+                    attempt.recovery_of_attempt_id,
+                    serde_json::to_string(&attempt).unwrap(),
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn detached_completion_from_live_turn_ignores_stale_attempt_hints() {
+    use crate::runtime_db::transitions::WorkCommandLane;
+
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let active = runtime
+        .create_work_item("active execution".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(active.id.clone()).await.unwrap();
+    let fallback_target = runtime
+        .create_work_item("fallback detached target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let explicit_target = runtime
+        .create_work_item("explicit detached target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let _scheduled = start_work_tool_execution_fixture(
+        &runtime,
+        "message-active",
+        "turn-active",
+        Some(&active.id),
+        false,
+    )
+    .await;
+    let binding = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_execution_binding
+        .expect("the live turn owns an execution binding");
+    assert_eq!(binding.turn_id, "turn-active");
+    // A recovery successor attempt carries replay hints instead of the live turn
+    // identity; completion must not degrade to the idle lane because of them.
+    rewrite_open_attempt_hints(
+        &runtime,
+        Some("turn-successor"),
+        Some("attempt-predecessor"),
+        Some("attempt-predecessor"),
+    );
+
+    let completed = runtime
+        .complete_work_item_with_report(
+            fallback_target.id.clone(),
+            WorkItemCompletionAuthority::AgentExecution {
+                binding: binding.clone(),
+                effective_work_item_id: Some(active.id.clone()),
+            },
+            "Detached completion issued from the live turn.".into(),
+            Vec::new(),
+            Some(1),
+            Some(1),
+            Some(binding.turn_id.clone()),
+            Some(binding.source_message_id.clone()),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .expect("a live turn owns its detached completion lane")
+        .into_record();
+    assert_eq!(completed.state, WorkItemState::Completed);
+
+    let WorkItemCompletionDispatch::Prepared(prepared) = runtime
+        .prepare_work_item_completion_with_report(
+            explicit_target.id.clone(),
+            WorkItemCompletionAuthority::AgentExecution {
+                binding: binding.clone(),
+                effective_work_item_id: Some(active.id.clone()),
+            },
+            "Explicit issuing lane detached completion.".into(),
+            Vec::new(),
+            Some(1),
+            Some(1),
+            Some(binding.turn_id.clone()),
+            Some(binding.source_message_id.clone()),
+            None,
+            None,
+            "live_turn_tool_execution",
+            Vec::new(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("a detached target should prepare an atomic commit");
+    };
+    assert_eq!(prepared.settlement, WorkItemCompletionSettlement::Detached);
+    let committed = runtime
+        .commit_prepared_detached_work_item_completion(
+            prepared,
+            Some(WorkCommandLane::for_binding(&binding)),
+        )
+        .await
+        .expect("the issuing turn owns its detached completion commit");
+    assert_eq!(committed.work_item.state, WorkItemState::Completed);
+    assert!(
+        runtime
+            .storage()
+            .read_recent_events(64)
+            .unwrap()
+            .iter()
+            .all(|event| event.kind != "runtime_error"),
+        "a live-turn detached completion must not record a runtime error"
+    );
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state
+            .current_execution_binding
+            .as_ref()
+            .map(|binding| binding.turn_id.as_str()),
+        Some("turn-active")
+    );
+}
+
+#[tokio::test]
+async fn work_command_turn_lane_tracks_the_live_turn() {
+    use crate::runtime_db::transitions::WorkCommandLane;
+
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let active = runtime
+        .create_work_item("active execution".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(active.id.clone()).await.unwrap();
+    let target = runtime
+        .create_work_item("turn lane target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let _scheduled = start_work_tool_execution_fixture(
+        &runtime,
+        "message-active",
+        "turn-active",
+        Some(&active.id),
+        false,
+    )
+    .await;
+    rewrite_open_attempt_hints(&runtime, None, None, None);
+
+    let stale = runtime
+        .pick_work_item_in_lane(
+            target.id.clone(),
+            None,
+            false,
+            Some(WorkCommandLane::Turn {
+                turn_id: "turn-ended".into(),
+                message_id: "message-ended".into(),
+            }),
+        )
+        .await
+        .map(|_| ());
+    assert_eq!(
+        stale
+            .expect_err("a command issued for an ended turn must stay stale")
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<crate::runtime_error::RuntimeError>())
+            .map(|error| error.descriptor().code.as_str()),
+        Some("work_item_execution_binding_stale")
+    );
+
+    let live = runtime
+        .pick_work_item_in_lane(
+            target.id.clone(),
+            None,
+            false,
+            Some(WorkCommandLane::Turn {
+                turn_id: "turn-active".into(),
+                message_id: "message-active".into(),
+            }),
+        )
+        .await
+        .expect("the live turn owns the command lane");
+    assert_eq!(live.current_work_item.id, target.id);
+}
+
+#[tokio::test]
+async fn runtime_generated_recovery_lane_conflict_requeues_instead_of_aborting() {
+    let lane_conflict = || {
+        anyhow::Error::new(
+            crate::runtime_error::RuntimeError::new(
+                crate::runtime_error::RuntimeErrorDomain::Conflict,
+                "work_item_execution_active",
+                "work command requires the agent execution lane to be idle",
+            )
+            .with_safe_context("agent_id", "default"),
+        )
+    };
+    let recovery = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "model_lineage_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "recover the failed provider lineage".into(),
+        },
+    );
+    let operator = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "operator input".into(),
+        },
+    );
+    assert!(runtime_generated_recovery_input(&recovery));
+    assert!(!runtime_generated_recovery_input(&operator));
+    assert_eq!(
+        runtime_error_queue_settlement(
+            &recovery.kind,
+            runtime_generated_recovery_input(&recovery),
+            &lane_conflict(),
+        ),
+        (
+            QueueEntryStatus::Interrupted,
+            "runtime_generated_lane_conflict_requeued"
+        )
+    );
+    // Operator input keeps its terminal settlement.
+    assert_eq!(
+        runtime_error_queue_settlement(
+            &operator.kind,
+            runtime_generated_recovery_input(&operator),
+            &lane_conflict(),
+        ),
+        (QueueEntryStatus::Aborted, "runtime_error")
     );
 }
 

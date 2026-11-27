@@ -2353,7 +2353,7 @@ mod tests {
         assert!(crate::runtime_error::describe_runtime_error(&error).retryable);
         for kind in [MessageKind::OperatorPrompt, MessageKind::TaskResult] {
             assert_eq!(
-                super::super::runtime_error_queue_settlement(&kind, &error),
+                super::super::runtime_error_queue_settlement(&kind, false, &error),
                 (
                     QueueEntryStatus::Interrupted,
                     "context_preparation_retry_exhausted"

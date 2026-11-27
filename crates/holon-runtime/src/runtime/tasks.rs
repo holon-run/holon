@@ -5245,9 +5245,12 @@ impl RuntimeHandle {
                 } else {
                     crate::runtime_db::transitions::ExecutionProtocolTransition::default()
                 };
-            let completion_command_lane = (prepared.settlement
-                == WorkItemCompletionSettlement::Detached)
-                .then(|| detached_completion_command_lane(&prepared));
+            let completion_command_lane =
+                (prepared.settlement == WorkItemCompletionSettlement::Detached).then(|| {
+                    let issuing =
+                        completion_issuing_lane(authority, &prepared.expected_agent_state);
+                    detached_completion_command_lane(&prepared, issuing.as_ref())
+                });
             let commit = {
                 let mut mutation = self.begin_mutation().await?;
                 mutation
@@ -5306,6 +5309,7 @@ impl RuntimeHandle {
     pub(crate) async fn commit_prepared_detached_work_item_completion(
         &self,
         prepared: PreparedWorkItemCompletion,
+        issuing_lane: Option<WorkCommandLane>,
     ) -> Result<CompletedWorkItem> {
         anyhow::ensure!(
             prepared.settlement == WorkItemCompletionSettlement::Detached,
@@ -5316,7 +5320,7 @@ impl RuntimeHandle {
         let execution_protocol =
             execution_protocol_detached_completion_transition_from_prepared(&prepared)?;
         let tool_execution = prepared.tool_execution.clone();
-        let command_lane = detached_completion_command_lane(&prepared);
+        let command_lane = detached_completion_command_lane(&prepared, issuing_lane.as_ref());
         let command = crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
             agent_id: record.agent_id.clone(),
             work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -5917,29 +5921,40 @@ pub(super) fn completion_target_owns_open_attempt(
 /// write must satisfy the turn lane instead of requiring an idle agent lane.
 /// The same command from an idle agent (control plane) still requires an idle
 /// lane, so a busy lane continues to reject cross-WorkItem writes.
-fn detached_completion_command_lane(prepared: &PreparedWorkItemCompletion) -> WorkCommandLane {
-    let Some(binding) = prepared
-        .expected_agent_state
-        .current_execution_binding
-        .as_ref()
-    else {
-        return WorkCommandLane::Idle;
-    };
-    let binding_turn_in_flight = prepared
-        .expected_execution_protocol_state
-        .as_ref()
-        .and_then(|protocol| protocol.open_attempt())
-        .is_some_and(|attempt| {
-            attempt.turn_id.as_deref() == Some(binding.turn_id.as_str())
-                && attempt.source_message_id.as_deref() == Some(binding.source_message_id.as_str())
-        });
-    if binding_turn_in_flight {
-        WorkCommandLane::Turn {
-            turn_id: binding.turn_id.clone(),
-            message_id: binding.source_message_id.clone(),
-        }
-    } else {
-        WorkCommandLane::Idle
+fn detached_completion_command_lane(
+    prepared: &PreparedWorkItemCompletion,
+    issuing: Option<&WorkCommandLane>,
+) -> WorkCommandLane {
+    if let Some(lane) = issuing {
+        return lane.clone();
+    }
+    // Fallback for callers that cannot name their issuing turn: derive it from
+    // the prepared State snapshot. The attempt payload hints are not
+    // authoritative, so only a live turn that still owns the binding counts.
+    live_turn_command_lane(&prepared.expected_agent_state).unwrap_or(WorkCommandLane::Idle)
+}
+
+/// The lane of the live turn that owns `state`, if that turn is still running.
+///
+/// A live turn exists while the State still points `current_turn_id` at its own
+/// execution binding. Terminal settlement replaces both, so a command issued for
+/// an ended turn keeps producing a stale lane.
+fn live_turn_command_lane(state: &crate::types::AgentState) -> Option<WorkCommandLane> {
+    let binding = state.current_execution_binding.as_ref()?;
+    (state.current_turn_id.as_deref() == Some(binding.turn_id.as_str()))
+        .then(|| WorkCommandLane::for_binding(binding))
+}
+
+/// Lane of the completion issuer: its live turn for agent execution, and a
+/// fixed `Idle` lane for authenticated control-plane completions so they never
+/// borrow a running turn.
+fn completion_issuing_lane(
+    authority: Option<&crate::runtime::WorkItemCompletionAuthority>,
+    state: &crate::types::AgentState,
+) -> Option<WorkCommandLane> {
+    match authority {
+        Some(crate::runtime::WorkItemCompletionAuthority::Control) => Some(WorkCommandLane::Idle),
+        _ => live_turn_command_lane(state),
     }
 }
 

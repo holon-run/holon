@@ -3102,14 +3102,14 @@ mod tests {
             .is_some()));
 
         assert_eq!(
-            runtime_error_queue_settlement(&MessageKind::TaskResult, &error),
+            runtime_error_queue_settlement(&MessageKind::TaskResult, false, &error),
             (
                 QueueEntryStatus::Interrupted,
                 "task_transition_retry_exhausted"
             )
         );
         assert_eq!(
-            runtime_error_queue_settlement(&MessageKind::OperatorPrompt, &error),
+            runtime_error_queue_settlement(&MessageKind::OperatorPrompt, false, &error),
             (QueueEntryStatus::Aborted, "runtime_error")
         );
         assert!(runtime.task_record("task-1").await.unwrap().is_none());
