@@ -5,31 +5,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "../../i18n";
 import type { TaskSummary, TaskTargetRef } from "../../runtime/types";
-import { AgentTasksPanel, RECENT_TASK_LIMIT } from "./AgentTasksPanel";
-import { registerSelectedAgentRefreshContext, useSelectedAgentRefreshContext } from "../../runtime/selected-agent-refresh-context";
+import { AgentTasksPanel } from "./AgentTasksPanel";
 
-const task = (id: string): TaskSummary => ({
-  id, kind: "command_task", status: "completed", summary: `Task ${id}`,
+const task = (id: string, overrides: Partial<TaskSummary> = {}): TaskSummary => ({
+  id,
+  kind: "command_task",
+  status: "running",
+  summary: `Task ${id}`,
+  ...overrides,
 });
 
 const roots: Root[] = [];
 beforeEach(() => {
-  vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  registerSelectedAgentRefreshContext({ key: "parent-1", agentId: "parent", incarnation: 1, scopeKey: "test", onAccessError: vi.fn() });
 });
 afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => root.unmount());
   document.body.innerHTML = "";
-  useSelectedAgentRefreshContext.setState({ current: null });
   vi.unstubAllGlobals();
-  vi.useRealTimers();
 });
 
 async function renderPanel(
-  loadRecentTasks: (agentId: string) => Promise<TaskSummary[]>,
   tasks: TaskSummary[] = [],
   onOpenConversation?: (target: TaskTargetRef) => void,
+  activeTaskCount = tasks.length,
 ) {
   const host = document.createElement("div");
   document.body.append(host);
@@ -37,74 +36,68 @@ async function renderPanel(
   roots.push(root);
   const onOpenTask = vi.fn();
   await act(async () => root.render(
-    <AgentTasksPanel agentId="parent" incarnation={1} tasks={tasks} activeTaskCount={tasks.length} loadRecentTasks={loadRecentTasks} onOpenTask={onOpenTask} onOpenConversation={onOpenConversation} />,
+    <AgentTasksPanel
+      agentId="parent"
+      incarnation={1}
+      tasks={tasks}
+      activeTaskCount={activeTaskCount}
+      onOpenTask={onOpenTask}
+      onOpenConversation={onOpenConversation}
+    />,
   ));
-  const recentDetails = host.querySelector(".inspector-details-list") as HTMLDetailsElement;
-  async function openRecent() {
-    await act(async () => {
-      recentDetails.open = true;
-      recentDetails.dispatchEvent(new Event("toggle"));
-    });
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-  }
-  return { host, root, openRecent, recentDetails, onOpenTask };
+  return { host, root, onOpenTask };
 }
 
 describe("AgentTasksPanel", () => {
-  it("queries only when recently completed is expanded, even with no active tasks", async () => {
-    const load = vi.fn().mockResolvedValue([task("done")]);
-    const { host, openRecent, onOpenTask } = await renderPanel(load);
-    expect(load).not.toHaveBeenCalled();
-    await openRecent();
-    expect(load).toHaveBeenCalledWith("parent", { incarnation: 1, signal: expect.any(AbortSignal) });
-    expect(host.textContent).toContain("Task done");
-    await act(async () => (host.querySelector(".task-button") as HTMLButtonElement).click());
-    expect(onOpenTask).toHaveBeenCalledWith(task("done"));
+  it("renders a quiet idle summary with an empty body and no history drawer when no tasks are active", async () => {
+    const { host } = await renderPanel([]);
+    expect(host.textContent).toContain("0 active");
+    expect(host.querySelector(".inspector-details-list")).toBeNull();
+    expect(host.querySelector(".collapsible-inspector-body")?.children).toHaveLength(0);
   });
 
-  it("bounds recent rows to 20 and leaves command/legacy rows without navigation", async () => {
-    const load = vi.fn().mockResolvedValue(Array.from({ length: 25 }, (_, index) => task(String(index))));
-    const { host, openRecent } = await renderPanel(load);
-    await openRecent();
-    expect(host.querySelectorAll(".task-button")).toHaveLength(RECENT_TASK_LIMIT);
+  it("opens task detail on click and leaves command rows without conversation links", async () => {
+    const active = task("build", { command: "cargo check --all-targets", workdir: "/Users/test/src/holon" });
+    const { host, onOpenTask } = await renderPanel([active]);
+    expect(host.textContent).toContain("Task build");
+    expect(host.textContent).toContain("cargo check --all-targets");
+    expect(host.textContent).toContain("src/holon");
     expect(host.querySelector("a")).toBeNull();
+    await act(async () => (host.querySelector(".task-button") as HTMLButtonElement).click());
+    expect(onOpenTask).toHaveBeenCalledWith(active);
   });
 
-  it("shows fetch failures and supports an explicit retry", async () => {
-    const load = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([task("retried")]);
-    const { host, openRecent } = await renderPanel(load);
-    await openRecent();
-    expect(host.querySelector("[role=alert]")?.textContent).toContain("offline");
-    await act(async () => (host.querySelector(".text-button") as HTMLButtonElement).click());
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(load).toHaveBeenCalledTimes(2);
-    expect(host.querySelector("[role=alert]")).toBeNull();
-    expect(host.textContent).toContain("Task retried");
+  it("shows bounded active truncation notice when activeTaskCount exceeds visible tasks", async () => {
+    const { host } = await renderPanel([task("one")], undefined, 5);
+    expect(host.textContent).toContain("Showing 1 of 5 active items.");
   });
 
-  it("links active and recent structured targets with their identity", async () => {
-    const active: TaskSummary = {
-      ...task("active"), kind: "child_agent", status: "running",
+  it("links active structured targets with their identity", async () => {
+    const child: TaskSummary = {
+      ...task("active"),
+      kind: "child_agent",
       target: { kind: "child_agent", agent_id: "private child", incarnation: 7 },
     };
-    const recent: TaskSummary = {
-      ...task("recent"), kind: "agent_message_wait",
+    const peerWait: TaskSummary = {
+      ...task("wait"),
+      kind: "agent_message_wait",
       target: { kind: "agent_message_wait", agent_id: "peer", incarnation: 3 },
     };
-    const { host, openRecent } = await renderPanel(vi.fn().mockResolvedValue([recent]), [active]);
-    expect(host.querySelector("a")?.getAttribute("href")).toBe("/agents/private%20child/conversation?incarnation=7&from=parent");
-    await openRecent();
-    expect(Array.from(host.querySelectorAll("a"), (link) => link.getAttribute("href")))
-      .toEqual(["/agents/private%20child/conversation?incarnation=7&from=parent", "/agents/peer/conversation?incarnation=3&from=parent"]);
+    const { host } = await renderPanel([child, peerWait]);
+    expect(Array.from(host.querySelectorAll("a"), (link) => link.getAttribute("href"))).toEqual([
+      "/agents/private%20child/conversation?incarnation=7&from=parent",
+      "/agents/peer/conversation?incarnation=3&from=parent",
+    ]);
   });
 
   it("routes plain link clicks through in-app conversation navigation", async () => {
     const active: TaskSummary = {
-      ...task("active"), kind: "child_agent", status: "running",
+      ...task("active"),
+      kind: "child_agent",
       target: { kind: "child_agent", agent_id: "private child", incarnation: 7 },
     };
     const onOpenConversation = vi.fn();
-    const { host } = await renderPanel(vi.fn().mockResolvedValue([]), [active], onOpenConversation);
+    const { host } = await renderPanel([active], onOpenConversation);
     const link = host.querySelector(".task-conversation-open") as HTMLAnchorElement;
     const event = new MouseEvent("click", { bubbles: true, cancelable: true });
     link.dispatchEvent(event);
@@ -114,11 +107,12 @@ describe("AgentTasksPanel", () => {
 
   it("leaves modified link activations to the browser default", async () => {
     const active: TaskSummary = {
-      ...task("active"), kind: "child_agent", status: "running",
+      ...task("active"),
+      kind: "child_agent",
       target: { kind: "child_agent", agent_id: "private child", incarnation: 7 },
     };
     const onOpenConversation = vi.fn();
-    const { host } = await renderPanel(vi.fn().mockResolvedValue([]), [active], onOpenConversation);
+    const { host } = await renderPanel([active], onOpenConversation);
     const link = host.querySelector(".task-conversation-open") as HTMLAnchorElement;
     const event = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
     link.dispatchEvent(event);
@@ -128,92 +122,13 @@ describe("AgentTasksPanel", () => {
 
   it("does not derive a destination from a summary or rebind a legacy identity", async () => {
     const legacy: TaskSummary = {
-      ...task("legacy"), kind: "child_agent", summary: "InvokeAgent child_guess",
+      ...task("legacy"),
+      kind: "child_agent",
+      summary: "InvokeAgent child_guess",
       target: { kind: "child_agent", agent_id: "legacy-child" },
     };
-    const { host } = await renderPanel(vi.fn().mockResolvedValue([]), [legacy, {
-      ...task("unknown"), summary: "InvokeAgent child_guess",
-    }]);
+    const { host } = await renderPanel([legacy, { ...task("unknown"), summary: "InvokeAgent child_guess" }]);
     expect(host.querySelector("a")).toBeNull();
     expect(host.textContent).toContain("legacy-child");
-  });
-
-  it("does not publish a request that completes after the section closes", async () => {
-    let resolve!: (tasks: TaskSummary[]) => void;
-    const load = vi.fn((_agentId: string, _options?: { signal?: AbortSignal }) => new Promise<TaskSummary[]>((done) => { resolve = done; }));
-    const { host, openRecent, recentDetails } = await renderPanel(load);
-    await openRecent();
-    const signal = load.mock.calls[0][1]?.signal;
-    await act(async () => {
-      recentDetails.open = false;
-      recentDetails.dispatchEvent(new Event("toggle"));
-    });
-    expect(signal?.aborted).toBe(true);
-    await act(async () => resolve([task("stale")]));
-    expect(host.textContent).not.toContain("Task stale");
-  });
-
-  it("pauses recent history while the outer Tasks section is collapsed", async () => {
-    const load = vi.fn().mockResolvedValue([task("done")]);
-    const { host, openRecent } = await renderPanel(load);
-    await openRecent();
-    const outer = host.querySelector(".collapsible-inspector-card") as HTMLDetailsElement;
-    await act(async () => {
-      outer.open = false;
-      outer.dispatchEvent(new Event("toggle"));
-    });
-    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-    expect(load).toHaveBeenCalledTimes(1);
-    await act(async () => {
-      outer.open = true;
-      outer.dispatchEvent(new Event("toggle"));
-    });
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(load).toHaveBeenCalledTimes(2);
-  });
-
-  it("resets recent history when switching agents and ignores the previous agent's response", async () => {
-    let resolve!: (tasks: TaskSummary[]) => void;
-    const load = vi.fn(() => new Promise<TaskSummary[]>((done) => { resolve = done; }));
-    const { host, root, openRecent, onOpenTask } = await renderPanel(load);
-    await openRecent();
-    await act(async () => root.render(
-      <AgentTasksPanel agentId="other" tasks={[]} activeTaskCount={0} loadRecentTasks={load} onOpenTask={onOpenTask} />,
-    ));
-    await act(async () => resolve([task("parent-only")]));
-    expect(host.textContent).not.toContain("Task parent-only");
-    expect((host.querySelector(".inspector-details-list") as HTMLDetailsElement).open).toBe(false);
-    expect(load).toHaveBeenCalledTimes(1);
-  });
-
-  it("aborts pending recent tasks when the outer section closes", async () => {
-    let resolve!: (tasks: TaskSummary[]) => void;
-    const load = vi.fn((_agentId: string, _options?: { signal?: AbortSignal }) => new Promise<TaskSummary[]>((done) => { resolve = done; }));
-    const { host, openRecent } = await renderPanel(load);
-    await openRecent();
-    const signal = load.mock.calls[0][1]?.signal;
-    const outer = host.querySelector(".collapsible-inspector-card") as HTMLDetailsElement;
-    await act(async () => {
-      outer.open = false;
-      outer.dispatchEvent(new Event("toggle"));
-    });
-    expect(signal?.aborted).toBe(true);
-    await act(async () => resolve([task("obsolete")]));
-    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-    expect(load).toHaveBeenCalledTimes(1);
-    expect(host.textContent).not.toContain("Task obsolete");
-  });
-
-  it("resets expanded recent tasks when the same agent is recreated", async () => {
-    const load = vi.fn().mockResolvedValue([task("old-incarnation")]);
-    const { host, root, openRecent, onOpenTask } = await renderPanel(load);
-    await openRecent();
-    await act(async () => {
-      registerSelectedAgentRefreshContext({ key: "parent-2", agentId: "parent", incarnation: 2, scopeKey: "test", onAccessError: vi.fn() });
-      root.render(<AgentTasksPanel agentId="parent" incarnation={2} tasks={[]} activeTaskCount={0} loadRecentTasks={load} onOpenTask={onOpenTask} />);
-    });
-    expect((host.querySelector(".inspector-details-list") as HTMLDetailsElement).open).toBe(false);
-    expect(host.textContent).not.toContain("Task old-incarnation");
-    expect(load).toHaveBeenCalledTimes(1);
   });
 });

@@ -17,9 +17,8 @@ const timer = (overrides = {}) => ({
   repeat: true, fire_count: 0, next_fire_at: "2026-10-31T04:00:00.000Z", last_fired_at: null,
   ...overrides,
 });
-const recentTask = (summary = "Externally completed task") => ({
-  id: "external-terminal-task", agent_id: agentId, kind: "command_task", status: "completed",
-  summary, created_at: createdAt, updated_at: createdAt,
+const completedWorkItem = (objective = "Externally completed work") => ({
+  ...work, id: "external-completed-work", objective, state: "completed", is_current: false, focus: "none",
 });
 const skill = (name: string) => ({
   skill_id: name, name, description: `External ${name}`, scope: "agent", path: `/test/skills/${name}`,
@@ -138,13 +137,12 @@ async function scenario(page: Page, context: BrowserContext, request: APIRequest
   await advance(5000);
   const baseline = await counts();
   const timers = panel.locator(".agent-timers-card");
-  const tasks = panel.locator("details.context-card").filter({ has: page.getByText("Tasks", { exact: true }) });
-  const recent = tasks.locator("details.inspector-details-list");
+  const currentWork = panel.locator("details.current-work");
+  const completedHistory = currentWork.locator("details.inspector-details-list");
   const skills = panel.locator("details.context-card").filter({ has: page.locator(".eyebrow", { hasText: /^Skills/ }) });
-  const openRecent = async () => {
-    await recent.locator(":scope > summary").click();
-    // Native toggle is asynchronous; commit the visible section before ticking its scheduler.
-    await expect(recent.getByRole("button", { name: "Refresh recent tasks", exact: true })).toBeVisible();
+  const openCompletedHistory = async () => {
+    await completedHistory.locator(":scope > summary").click();
+    await expect(completedHistory.getByRole("button", { name: "Refresh completed work items", exact: true })).toBeVisible();
     await advance(1);
   };
   const healthy = async () => {
@@ -155,13 +153,13 @@ async function scenario(page: Page, context: BrowserContext, request: APIRequest
     expect(latest.readMarkerPosts - baseline.readMarkerPosts).toBe(0);
     expect(latest.controlWrites - baseline.controlWrites).toBe(0);
   };
-  return { update, checkpoint, counts, advance, settle, conversation, visibility, panel, timers, tasks, recent, skills, togglePanel, healthy, openRecent };
+  return { update, checkpoint, counts, advance, settle, conversation, visibility, panel, timers, currentWork, completedHistory, skills, togglePanel, healthy, openCompletedHistory };
 }
 
 test("completed Work history is lazy, independent from active state, and stops refreshing when collapsed", async ({ page, context, request }, info) => {
   const done = { ...work, id: "completed-work", objective: "Historical completed work", state: "completed", is_current: false, focus: "none" };
   const ui = await scenario(page, context, request, info, { workItems: [done], currentWorkItemId: null });
-  const history = ui.panel.locator(".current-work .inspector-details-list");
+  const history = ui.completedHistory;
   await expect(history.locator(":scope > summary")).toContainText("Completed work items (up to 50)");
   await ui.advance(60_000);
   expect((await ui.counts()).workLists).toBe(0);
@@ -220,42 +218,41 @@ test("active Timer snapshots follow state checkpoints and fallback without any t
   await ui.healthy();
 });
 
-test("recent-task reads stop when their sections, overview or side panel are closed; timers share state", async ({ page, context, request }, info) => {
-  const ui = await scenario(page, context, request, info, { timers: [timer()], recentTasks: [recentTask()] });
-  const toggleTasks = async () => {
-    // Visibility alone does not wait for the outer section's native toggle handler.
+test("completed-work history reads stop when their sections, overview or side panel are closed; timers share state", async ({ page, context, request }, info) => {
+  const ui = await scenario(page, context, request, info, { timers: [timer()], workItems: [work, completedWorkItem()] });
+  const toggleWorkSection = async () => {
     await Promise.all([
-      ui.tasks.evaluate((element) => new Promise<void>((resolve) => {
+      ui.currentWork.evaluate((element) => new Promise<void>((resolve) => {
         element.addEventListener("toggle", () => resolve(), { once: true });
       })),
-      ui.tasks.locator(":scope > summary").click(),
+      ui.currentWork.locator(":scope > summary").click(),
     ]);
   };
-  expect((await ui.counts()).recent).toBe(0);
-  await ui.openRecent();
-  await expect(ui.recent).toContainText(recentTask().summary);
+  expect((await ui.counts()).completedWork).toBe(0);
+  await ui.openCompletedHistory();
+  await expect(ui.completedHistory).toContainText(completedWorkItem().objective);
   const opened = await ui.counts();
-  expect(opened.recent).toBe(1);
-  await ui.update({ recentTasks: [recentTask("Refreshed completed task")] });
+  expect(opened.completedWork).toBe(1);
+  await ui.update({ workItems: [work, completedWorkItem("Refreshed completed work")] });
   await ui.advance(30_000);
-  await expect(ui.recent).toContainText("Refreshed completed task");
-  expect((await ui.counts()).recent - opened.recent).toBe(1);
+  await expect(ui.completedHistory).toContainText("Refreshed completed work");
+  expect((await ui.counts()).completedWork - opened.completedWork).toBe(1);
 
   await ui.timers.locator(":scope > summary").click();
-  await toggleTasks();
+  await toggleWorkSection();
   const collapsed = await ui.counts();
   await ui.checkpoint({ timers: [timer({ summary: "Changed while collapsed" })] });
   await ui.advance(60_000);
   expect((await ui.counts()).timers).toBe(collapsed.timers);
-  expect((await ui.counts()).recent).toBe(collapsed.recent);
+  expect((await ui.counts()).completedWork).toBe(collapsed.completedWork);
   await ui.timers.locator(":scope > summary").click();
-  await toggleTasks();
-  await expect(ui.recent.getByRole("button", { name: "Refresh recent tasks", exact: true })).toBeVisible();
+  await toggleWorkSection();
+  await expect(ui.completedHistory.getByRole("button", { name: "Refresh completed work items", exact: true })).toBeVisible();
   await ui.advance(1000);
   await expect(ui.timers).toContainText("Changed while collapsed");
   const reopened = await ui.counts();
   expect(reopened.timers).toBe(0);
-  expect(reopened.recent - collapsed.recent).toBe(1);
+  expect(reopened.completedWork - collapsed.completedWork).toBe(1);
 
   await ui.panel.locator(".work-item-button").filter({ hasText: work.objective }).click();
   await expect(ui.panel.locator(".work-item-detail")).toBeVisible();
@@ -264,7 +261,7 @@ test("recent-task reads stop when their sections, overview or side panel are clo
   await ui.checkpoint({});
   await ui.advance(60_000);
   expect((await ui.counts()).timers).toBe(detail.timers);
-  expect((await ui.counts()).recent).toBe(detail.recent);
+  expect((await ui.counts()).completedWork).toBe(detail.completedWork);
   await ui.panel.locator(".panel-sections").getByRole("button", { name: "Overview", exact: true }).click();
   await ui.advance(1);
   await ui.togglePanel();
@@ -273,7 +270,7 @@ test("recent-task reads stop when their sections, overview or side panel are clo
   await ui.checkpoint({});
   await ui.advance(60_000);
   expect((await ui.counts()).timers).toBe(closed.timers);
-  expect((await ui.counts()).recent).toBe(closed.recent);
+  expect((await ui.counts()).completedWork).toBe(closed.completedWork);
   await ui.togglePanel();
   await ui.advance(1);
   expect((await ui.counts()).timers).toBe(0);
@@ -281,12 +278,12 @@ test("recent-task reads stop when their sections, overview or side panel are clo
 });
 
 test("hidden overview resources stay idle and merge checkpoint, visibility, focus and online recovery", async ({ page, context, request }, info) => {
-  const ui = await scenario(page, context, request, info, { timers: [timer()], recentTasks: [recentTask()] });
-  await ui.openRecent();
+  const ui = await scenario(page, context, request, info, { timers: [timer()], workItems: [work, completedWorkItem()] });
+  await ui.openCompletedHistory();
   await ui.visibility("hidden");
   const hidden = await ui.counts();
   // Hidden tabs suspend the conversation stream, so the hint is observed on return.
-  await ui.update({ timers: [timer({ summary: "Timer changed while hidden" })], recentTasks: [recentTask("Task changed while hidden")], notify: "checkpoint" });
+  await ui.update({ timers: [timer({ summary: "Timer changed while hidden" })], workItems: [work, completedWorkItem("Work changed while hidden")], notify: "checkpoint" });
   await ui.advance(60_000);
   expect(await ui.counts()).toEqual(hidden);
   await page.evaluate(() => {
@@ -298,56 +295,56 @@ test("hidden overview resources stay idle and merge checkpoint, visibility, focu
   });
   await ui.advance(6000);
   await expect(ui.timers).toContainText("Timer changed while hidden");
-  await expect(ui.recent).toContainText("Task changed while hidden");
+  await expect(ui.completedHistory).toContainText("Work changed while hidden");
   const restored = await ui.counts();
   expect(restored.timers).toBe(0);
-  expect(restored.recent - hidden.recent).toBe(1);
+  expect(restored.completedWork - hidden.completedWork).toBe(1);
   await ui.healthy();
 });
 
 for (const status of [429, 503]) {
-  test(`${status} stays local to recent tasks, preserves good data and permits explicit recovery`, async ({ page, context, request }, info) => {
-    const ui = await scenario(page, context, request, info, { timers: [timer()], recentTasks: [recentTask()] });
-    await ui.openRecent();
+  test(`${status} stays local to completed work history, preserves good data and permits explicit recovery`, async ({ page, context, request }, info) => {
+    const ui = await scenario(page, context, request, info, { timers: [timer()], workItems: [work, completedWorkItem()] });
+    await ui.openCompletedHistory();
     const before = await ui.counts();
-    await ui.checkpoint({ failureStatusByResource: { "recent-tasks": status } });
+    await ui.checkpoint({ failureStatusByResource: { "completed-work-items": status } });
     // Stop before any jittered automatic retry can enter the budget.
     await ui.advance(5000);
     await expect(ui.timers).toContainText(timer().summary);
-    await expect(ui.recent).toContainText(recentTask().summary);
-    await expect(ui.recent).toContainText(staleText);
-    await expect(ui.recent.getByRole("alert")).toContainText("unavailable");
+    await expect(ui.completedHistory).toContainText(completedWorkItem().objective);
+    await expect(ui.completedHistory).toContainText(staleText);
+    await expect(ui.completedHistory).toContainText("unavailable");
     const failed = await ui.counts();
     expect(failed.timers).toBe(0);
-    expect(failed.recent - before.recent).toBe(1);
+    expect(failed.completedWork - before.completedWork).toBe(1);
     await ui.healthy();
 
     await ui.update({
       failureStatusByResource: {},
-      timers: [timer({ summary: "Recovered timer" })], recentTasks: [recentTask("Recovered recent task")],
+      timers: [timer({ summary: "Recovered timer" })], workItems: [work, completedWorkItem("Recovered completed work")],
     });
     await page.getByRole("button", { name: "Refresh agent detail", exact: true }).click();
-    await ui.recent.getByRole("button", { name: "Refresh recent tasks", exact: true }).click();
+    await ui.completedHistory.getByRole("button", { name: "Refresh completed work items", exact: true }).click();
     await ui.advance(1);
     await expect(ui.timers).toContainText("Recovered timer");
-    await expect(ui.recent).toContainText("Recovered recent task");
-    await expect(ui.recent.getByText(staleText, { exact: true })).toHaveCount(0);
+    await expect(ui.completedHistory).toContainText("Recovered completed work");
+    await expect(ui.completedHistory.getByText(staleText, { exact: true })).toHaveCount(0);
     const recovered = await ui.counts();
     expect(recovered.timers).toBe(0);
-    expect(recovered.recent - failed.recent).toBe(1);
+    expect(recovered.completedWork - failed.completedWork).toBe(1);
     await ui.healthy();
   });
 }
 
 for (const { status, resource, count } of [
   { status: 401, resource: "state", count: "state" },
-  { status: 403, resource: "recent-tasks", count: "recent" },
+  { status: 403, resource: "completed-work-items", count: "completedWork" },
 ] as const) {
   test(`${status} on ${resource} stops automatic reads at the existing access boundary until explicit retry`, async ({ page, context, request }, info) => {
-    const ui = await scenario(page, context, request, info, { timers: [timer()], recentTasks: [recentTask()] });
-    if (count === "recent") {
-      await ui.openRecent();
-      await expect(ui.recent).toContainText(recentTask().summary);
+    const ui = await scenario(page, context, request, info, { timers: [timer()], workItems: [work, completedWorkItem()] });
+    if (count === "completedWork") {
+      await ui.openCompletedHistory();
+      await expect(ui.completedHistory).toContainText(completedWorkItem().objective);
     }
     const before = await ui.counts();
     await ui.checkpoint({ failureStatusByResource: { [resource]: status } });
@@ -362,11 +359,11 @@ for (const { status, resource, count } of [
     await ui.panel.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(ui.timers).toBeVisible();
     await ui.advance(1);
-    if (count === "recent") {
-      await ui.openRecent();
-      await expect(ui.recent).toContainText(recentTask().summary);
+    if (count === "completedWork") {
+      await ui.openCompletedHistory();
+      await expect(ui.completedHistory).toContainText(completedWorkItem().objective);
     }
-    if (count === "recent") expect((await ui.counts()).recent - rejected.recent).toBe(1);
+    if (count === "completedWork") expect((await ui.counts()).completedWork - rejected.completedWork).toBe(1);
     else expect((await ui.counts()).state).toBeGreaterThan(rejected.state);
     expect((await ui.counts()).timers).toBe(0);
     await expect(page.locator(".composer textarea")).toBeVisible();
@@ -374,20 +371,20 @@ for (const { status, resource, count } of [
   });
 }
 
-test("a first recent-task failure has its own retry and does not disturb Timer or conversation reads", async ({ page, context, request }, info) => {
+test("a first completed-work failure has its own retry and does not disturb Timer or conversation reads", async ({ page, context, request }, info) => {
   const ui = await scenario(page, context, request, info, {
-    timers: [timer()], recentTasks: [recentTask()], failureStatusByResource: { "recent-tasks": 503 },
+    timers: [timer()], workItems: [work, completedWorkItem()], failureStatusByResource: { "completed-work-items": 503 },
   });
   const before = await ui.counts();
-  await ui.openRecent();
-  await expect(ui.recent.getByRole("alert")).toContainText("unavailable");
-  await expect(ui.recent.locator(".task-button")).toHaveCount(0);
+  await ui.openCompletedHistory();
+  await expect(ui.completedHistory).toContainText("unavailable");
+  await expect(ui.completedHistory.locator(".work-item-button")).toHaveCount(0);
   await ui.update({ failureStatusByResource: {} });
-  await ui.recent.getByRole("button", { name: "Refresh recent tasks", exact: true }).click();
+  await ui.completedHistory.getByRole("button", { name: "Refresh completed work items", exact: true }).click();
   await ui.advance(1);
-  await expect(ui.recent).toContainText(recentTask().summary);
+  await expect(ui.completedHistory).toContainText(completedWorkItem().objective);
   const after = await ui.counts();
-  expect(after.recent - before.recent).toBe(2);
+  expect(after.completedWork - before.completedWork).toBe(2);
   expect(after.timers).toBe(before.timers);
   await ui.healthy();
 });

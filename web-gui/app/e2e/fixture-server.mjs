@@ -740,8 +740,10 @@ async function handleApi(req, res, url) {
       json(res, identityChangedEnvelope(), 409);
       return true;
     }
-    if (fixture?.failResources.includes("work-items")) {
-      json(res, { error: "right-panel work items unavailable" }, 503);
+    const resource = status === "terminal" ? "completed-work-items" : "work-items";
+    const failure = resourceFailure(fixture, resource) ?? (fixture?.failResources.includes("work-items") ? 503 : null);
+    if (failure) {
+      json(res, { error: "right-panel work items unavailable" }, failure);
     } else {
       if (fixture?.omitIdentityHeaders) {
         json(res, workItems);

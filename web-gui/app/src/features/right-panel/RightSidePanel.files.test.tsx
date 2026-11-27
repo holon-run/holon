@@ -7,7 +7,7 @@ import "../../i18n";
 import { ClipboardProvider } from "../../components/ClipboardProvider";
 import type { AgentSummary, WorkItemSummary } from "../../runtime/types";
 import { FileBrowserPanel, type FileBrowserSnapshot } from "./FileBrowserPanel";
-import { RightSidePanel } from "./RightSidePanel";
+import { RightSidePanel, resolvePrimaryAgentWorkspace } from "./RightSidePanel";
 
 vi.mock("../../runtime/useSelectedAgentRefresh", () => ({
   refreshSelectedAgentResources: vi.fn(),
@@ -153,5 +153,81 @@ describe("RightSidePanel floating file browser", () => {
     floatingProps = vi.mocked(FileBrowserPanel).mock.calls.at(-1)![0];
     expect(floatingProps.snapshot?.selectedFile?.path).toBe("notes/a.md");
     expect(floatingProps.snapshot?.selectedFile?.loading).toBe(true);
+  });
+});
+
+describe("RightSidePanel tabs and current workspace resolution", () => {
+  it("hides Details tab until a detail view is opened and resolves the current workspace directly", async () => {
+    const onBrowseFiles = vi.fn();
+    const currentWsAgent: AgentSummary = {
+      ...agent,
+      workspaceSummary: {
+        id: "proj-holon",
+        name: "holon",
+        anchor: "/Users/test/src/holon",
+      },
+      attachedWorkspaces: [
+        { workspaceId: "agent_home:web", name: "agent_home", anchor: "/Users/test/.holon/agents/web" },
+        { workspaceId: "proj-holon", name: "holon", anchor: "/Users/test/src/holon" },
+      ],
+    };
+
+    await act(async () => root.render(
+      <ClipboardProvider>
+        <RightSidePanel
+          {...base}
+          agent={currentWsAgent}
+          view={{ kind: "agent_overview", agentId: "web" }}
+          onBrowseFiles={onBrowseFiles}
+        />
+      </ClipboardProvider>,
+    ));
+
+    const tabLabels = Array.from(host.querySelectorAll(".panel-sections button"), (btn) => btn.textContent?.trim());
+    expect(tabLabels).toEqual(["Overview", "Files"]);
+    expect(host.querySelector('button[aria-label="Expand side panel"]')).toBeNull();
+    expect(resolvePrimaryAgentWorkspace(currentWsAgent)).toEqual({
+      workspaceId: "proj-holon",
+      name: "holon",
+      branch: undefined,
+      path: "/Users/test/src/holon",
+      executionRootId: undefined,
+    });
+
+    const filesTab = host.querySelector<HTMLButtonElement>('[data-panel-tab="files"]')!;
+    await act(async () => { filesTab.click(); });
+    expect(onBrowseFiles).toHaveBeenCalledWith({
+      workspaceId: "proj-holon",
+      path: "",
+      executionRootId: undefined,
+    });
+  });
+
+  it("groups project workspaces and agent_home in the FileBrowser workspace selector", async () => {
+    const multiWsAgent: AgentSummary = {
+      ...agent,
+      attachedWorkspaces: [
+        { workspaceId: "proj-holon", name: "holon", anchor: "/Users/test/src/holon" },
+        { workspaceId: "agent_home:web", name: "agent_home", anchor: "/Users/test/.holon/agents/web" },
+      ],
+    };
+
+    await act(async () => root.render(
+      <ClipboardProvider>
+        <RightSidePanel
+          {...base}
+          agent={multiWsAgent}
+          view={{ kind: "file_browser", agentId: "web", workspaceId: "proj-holon" }}
+        />
+      </ClipboardProvider>,
+    ));
+
+    const panelProps = vi.mocked(FileBrowserPanel).mock.calls.at(-1)![0];
+    const controlHost = document.createElement("div");
+    const controlRoot = createRoot(controlHost);
+    await act(async () => controlRoot.render(<>{panelProps.workspaceControl}</>));
+    const optgroups = Array.from(controlHost.querySelectorAll("optgroup"), (group) => group.label);
+    expect(optgroups).toEqual(["Project workspaces", "Agent home"]);
+    await act(async () => controlRoot.unmount());
   });
 });

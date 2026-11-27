@@ -19,8 +19,10 @@ import {
   ChevronLeft,
   Copy,
   Check,
+  Folder,
   LayoutDashboard,
   LayoutTemplate,
+  ListTodo,
   LoaderCircle,
   LogOut,
   Menu,
@@ -46,7 +48,7 @@ import { AgentAvatar } from "../components/ui/AgentAvatar";
 import { EmptyState } from "../components/ui/EmptyState";
 import { AgentStatusIndicator, StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
-import { RightSidePanel } from "../features/right-panel/RightSidePanel";
+import { RightSidePanel, resolvePrimaryAgentWorkspace } from "../features/right-panel/RightSidePanel";
 import { AgentOverviewPlaceholder } from "../features/right-panel/AgentOverviewPlaceholder";
 import { usePanelLayout } from "../features/right-panel/usePanelLayout";
 import { NAV_WIDTH, PANEL_DEFAULT, panelLayout as computePanelLayout } from "../features/right-panel/panel-layout";
@@ -385,23 +387,34 @@ export function App() {
       : selectedAgentDetail?.source === "http" && !selectedAgentDetail.error
         ? "live"
         : "preview";
+  const showDegradedStreamBadge =
+    selectedAgentLiveStatus === "reconnecting"
+    || selectedAgentLiveStatus === "recovering"
+    || selectedAgentLiveStatus === "error"
+    || selectedAgentLiveStatus === "stale";
   const agentTopControls =
     route === "agent" ? (
       <div className="agent-top-controls" aria-label={t("app.conversationControls")}>
         <div className="agent-stream-controls" aria-label={t("app.streamStatus")}>
-          <StatusBadge
-            kind="connection"
-            value={selectedAgentSourceStatus}
-            className={`source-chip ${selectedAgentSourceStatus}`}
-            data-tooltip-pos="bottom"
-          />
-          <StatusBadge
-            kind="stream"
-            value={selectedAgentLiveStatus}
-            className={`source-chip live-status ${selectedAgentLiveStatus}`}
-            title={selectedAgentLiveTitle}
-            data-tooltip-pos="bottom"
-          />
+          {selectedAgentSourceStatus === "preview" ? (
+            <StatusBadge
+              kind="connection"
+              value="preview"
+              showLabel
+              className="source-chip preview"
+              data-tooltip-pos="bottom"
+            />
+          ) : null}
+          {showDegradedStreamBadge ? (
+            <StatusBadge
+              kind="stream"
+              value={selectedAgentLiveStatus}
+              showLabel
+              className={`source-chip live-status ${selectedAgentLiveStatus}`}
+              title={selectedAgentLiveTitle}
+              data-tooltip-pos="bottom"
+            />
+          ) : null}
           <Button
             type="button"
             size="icon"
@@ -993,21 +1006,44 @@ export function App() {
                       showLabel={selectedAgentStatus.kind !== "ready"}
                       data-tooltip-pos="bottom"
                     />
-                    {activeAgent && activeAgentPendingReminders.length > 0 ? (
+                    {(() => {
+                      const primaryWs = selectedAgent ? resolvePrimaryAgentWorkspace(selectedAgent) : null;
+                      if (!primaryWs || !selectedAgent) return null;
+                      const chipLabel = primaryWs.branch ? `${primaryWs.name} · ${primaryWs.branch}` : primaryWs.name;
+                      const chipTitle = primaryWs.path ? `${chipLabel} — ${primaryWs.path}` : chipLabel;
+                      return (
+                        <button
+                          type="button"
+                          className="topbar-workspace-chip"
+                          title={chipTitle}
+                          onClick={() =>
+                            showFileBrowser(selectedAgent.id, {
+                              workspaceId: primaryWs.workspaceId,
+                              path: "",
+                              executionRootId: primaryWs.executionRootId,
+                            })
+                          }
+                        >
+                          <Folder size={12} aria-hidden="true" />
+                          <span className="topbar-workspace-name">{chipLabel}</span>
+                        </button>
+                      );
+                    })()}
+                    {activeAgent && activeAgentPendingReminders[0]?.target.work_item_id ? (
                       <span className="header-pending-reminder">
-                        {activeAgentPendingReminders[0]?.target.work_item_id ? (
-                          <button
-                            type="button"
-                            className="header-pending-open"
-                            onClick={() => {
-                              const id = activeAgentPendingReminders[0]!.target.work_item_id!;
-                              const work = useRuntimeStore.getState().sessionsByAgentId[activeAgent.id]?.workItemDetailsById[id]?.workItem;
-                              showWorkItemDetail(activeAgent.id, work ?? { id, objective: id, state: "unknown" });
-                            }}
-                          >
-                            {t("dashboard.triageOpenWorkItem")}
-                          </button>
-                        ) : null}
+                        <button
+                          type="button"
+                          className="header-pending-open"
+                          title={activeAgentPendingReminders[0]?.title ?? activeAgentPendingReminders[0]?.summary ?? undefined}
+                          onClick={() => {
+                            const id = activeAgentPendingReminders[0]!.target.work_item_id!;
+                            const work = useRuntimeStore.getState().sessionsByAgentId[activeAgent.id]?.workItemDetailsById[id]?.workItem;
+                            showWorkItemDetail(activeAgent.id, work ?? { id, objective: id, state: "unknown" });
+                          }}
+                        >
+                          <ListTodo size={12} aria-hidden="true" />
+                          <span>{t("dashboard.triageOpenWorkItem")}</span>
+                        </button>
                         <button
                           type="button"
                           className="header-pending-ignore"

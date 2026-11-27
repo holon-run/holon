@@ -29,7 +29,7 @@ import { TimerContentEditor, timerContentValues, timerDisplayName, type TimerCon
 import { AgentWorkItemsPanel } from "./AgentWorkItemsPanel";
 import { RuntimeHttpError } from "../../runtime/client";
 import { useRuntimeStore } from "../../runtime/runtime-store";
-import { useVisibleAgentResourceRefresh } from "../../runtime/useVisibleAgentResourceRefresh";
+import { isAgentHomeWorkspace } from "./RightSidePanel";
 import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, TaskTargetRef, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { components } from "../../runtime/generated/openapi";
 import { useTranslation } from "react-i18next";
@@ -289,15 +289,10 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
   const { t } = useTranslation();
   const controlAgentTimer = useRuntimeStore((state) => state.controlAgentTimer);
   const editAgentTimerContent = useRuntimeStore((state) => state.editAgentTimerContent);
-  const queryAgentTimers = useRuntimeStore((state) => state.queryAgentTimers);
   const refreshAgentState = useRuntimeStore((state) => state.refreshAgentState);
   const refreshState = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh?.state);
   const [pending, setPending] = useState<{ timerId: string; action: TimerAction | "edit" }>();
   const [error, setError] = useState<{ message: string; conflict: boolean }>();
-  const [sectionOpen, setSectionOpen] = useState(true);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const history = useVisibleAgentResourceRefresh(agent.id, "timerHistory", sectionOpen && historyOpen && stateIsCurrent,
-    (agentId, options) => queryAgentTimers(agentId, { ...options, status: "terminal" }));
   const incarnation = agent.incarnation;
   const timers = agent.timers ?? [];
   const shownActive = timers.filter((timer) => timer.status === "active").length;
@@ -311,7 +306,6 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
     setError(undefined);
     try {
       await mutate();
-      if (action === "cancel") history.refresh();
       return true;
     } catch (error) {
       setError({
@@ -326,10 +320,15 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
 
   return (
     <CollapsibleInspectorCard
-      title={activeTimerCount ? t("rightPanel.timersWithActiveCount", { count: activeTimerCount }) : t("rightPanel.timers")}
+      title={t("rightPanel.timers")}
       className="agent-timers-card"
-      onOpenChange={setSectionOpen}
-      badge={activeTimerCount ? <span className="inspector-card-count">{activeTimerCount}</span> : undefined}
+      badge={
+        activeTimerCount ? (
+          <span className="inspector-card-count">{t("rightPanel.activeCount", { count: activeTimerCount })}</span>
+        ) : !scheduled.length && !refreshState?.stale ? (
+          <span className="inspector-quiet-meta">{t("rightPanel.noTimers")}</span>
+        ) : undefined
+      }
     >
       {activeTimerCount > shownActive ? <p className="inspector-muted">{t("rightPanel.activeSnapshotTruncated", { shown: shownActive, count: activeTimerCount })}</p> : null}
       {error ? <p className="error-text" role="alert">{t(error.conflict ? "rightPanel.timerConflict" : "rightPanel.timerActionError", { error: error.message })}</p> : null}
@@ -342,7 +341,6 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
           </button>
         </>
       ) : null}
-      {!scheduled.length && !refreshState?.stale ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
       {scheduled.length ? (
         <div className="agent-timer-list">
           {scheduled.map((timer) => (
@@ -359,19 +357,6 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
           ))}
         </div>
       ) : null}
-      <details className="agent-timer-history" onToggle={(event) => {
-        if (event.target === event.currentTarget) setHistoryOpen(event.currentTarget.open);
-      }}>
-        <summary>{t("rightPanel.timerHistory")}</summary>
-        {historyOpen ? (
-          <div className="agent-timer-list">
-            <ObjectDetailRefreshFeedback state={history.state} onRefresh={stateIsCurrent ? history.refresh : undefined} />
-            {history.state?.loading ? <p className="inspector-muted" role="status">{t("rightPanel.loadingTimers")}</p> : null}
-            {history.state?.data?.length === 0 ? <p className="muted">{t("rightPanel.noTimerHistory")}</p> : null}
-            {history.state?.data?.map((timer) => <TimerRow key={timer.id} timer={timer} disabled />)}
-          </div>
-        ) : null}
-      </details>
     </CollapsibleInspectorCard>
   );
 }
@@ -380,7 +365,6 @@ export function AgentOverviewPanel({
   agent,
   deletionStatus,
   skillCatalog,
-  availableSkillCatalog,
   skillCatalogLoading,
   skillCatalogError,
   onOpenWorkItemDetail,
@@ -396,8 +380,9 @@ export function AgentOverviewPanel({
   onRenameAgent,
 }: AgentOverviewPanelProps) {
   const { t } = useTranslation();
-  const queryAgentRecentTasks = useRuntimeStore((state) => state.queryAgentRecentTasks);
-  const stateIsCurrent = useRuntimeStore((state) => !state.bootstrap.connection.error && state.discovery.freshness === "fresh");
+  const stateIsCurrent = useRuntimeStore(
+    (state) => !state.bootstrap?.connection?.error && (state.discovery?.freshness ?? "fresh") === "fresh",
+  );
   const queryAgentCompletedWorkItems = useRuntimeStore((state) => state.queryAgentCompletedWorkItems);
   const workspace = agent.workspaceSummary;
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -409,15 +394,12 @@ export function AgentOverviewPanel({
   const [renameError, setRenameError] = useState<string | undefined>(undefined);
   const [renameSaving, setRenameSaving] = useState(false);
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
-  const currentWorkItems = workItems.filter((item) => item.current);
   // Stop and Start are inverse lifecycle transitions: only show the one that
   // applies to the current state. Delete is always available.
   const normalizedLifecycle = (agent.lifecycle ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
   const normalizedPosture = (agent.posture ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
   const isStopped = normalizedLifecycle === "stopped" || normalizedLifecycle === "archived" || normalizedPosture === "stopped" || normalizedPosture === "archived";
-  const currentWorkLabel = currentWorkItems[0]?.objective ?? agent.currentWork?.objective ?? t("rightPanel.noCurrentWork");
   const workspaceName = workspace?.name ?? agent.workspace;
-  const workspaceRoot = workspace?.cwd ?? workspace?.executionRoot ?? workspace?.worktree?.path ?? workspace?.anchor;
   const modeLabel = workspace?.worktree ? t("rightPanel.managedWorktree") : workspace?.projectionKind;
   const showCwd = Boolean(workspace?.cwd && workspace.cwd !== workspace.executionRoot);
   async function handleControl(action: AgentControlAction) {
@@ -485,9 +467,8 @@ export function AgentOverviewPanel({
   return (
     <div className="inspector-stack agent-overview-stack">
       <CollapsibleInspectorCard
-        title={agent.name ?? agent.id}
+        title={t("rightPanel.identityAndRuntime")}
         className="agent-identity-card"
-        badge={<AgentStatusIndicator className="state-chip" status={deriveAgentDisplayStatus(agent, t, stateIsCurrent)} />}
       >
         {renaming ? (
           <div className="agent-rename-row">
@@ -523,7 +504,19 @@ export function AgentOverviewPanel({
             </div>
           </div>
         ) : (
-          <div className="agent-overview-title">
+          <div className="agent-identity-head">
+            <div className="agent-identity-names">
+              <strong>{agent.name ?? agent.id}</strong>
+              {agent.name ? <code className="agent-id-line">{agent.id}</code> : null}
+              {agent.incarnation != null && agent.incarnation > 1 ? (
+                <small
+                  className="agent-incarnation-line"
+                  title={t("agent.incarnationTitle", { value: agent.incarnation })}
+                >
+                  {t("agent.incarnationBadge", { value: agent.incarnation })}
+                </small>
+              ) : null}
+            </div>
             {canRename ? (
               <button
                 type="button"
@@ -537,23 +530,12 @@ export function AgentOverviewPanel({
             ) : null}
           </div>
         )}
-        {!renaming && agent.name ? <small className="agent-id-line">{agent.id}</small> : null}
-        {!renaming && agent.incarnation != null && agent.incarnation > 1 ? (
-          <small
-            className="agent-incarnation-line"
-            title={t("agent.incarnationTitle", { value: agent.incarnation })}
-          >
-            {t("agent.incarnationBadge", { value: agent.incarnation })}
-          </small>
-        ) : null}
         {renameError ? (
           <small className="agent-rename-error" role="alert">
             {renameError}
           </small>
         ) : null}
-        <p className="overview-current-work">{currentWorkLabel}</p>
-        <details className="overview-runtime"><summary>{t("rightPanel.runtimeSettings")}</summary>
-        <dl className="inspector-facts">
+        <dl className="inspector-facts inspector-facts-inline">
           <div>
             <dt>{t("agent.model")}</dt>
             <dd>{compactModelRouteDisplay(agent.model)}</dd>
@@ -563,92 +545,6 @@ export function AgentOverviewPanel({
             <dd>{compactMeta([agent.posture, agent.postureReason])}</dd>
           </div>
         </dl>
-        </details>
-        {onControlAgent || onDeleteAgent ? (
-          <details className="lifecycle-controls" open={deletionStatus?.job ? true : undefined}><summary>{t("rightPanel.manageAgent")}</summary>
-            {deletionStatus?.job ? (
-              <div className="deletion-progress" role="status">
-                <Loader2 size={14} className="animate-spin" />
-                <span>{t("agent.deletingPhase", { phase: deletionStatus.job.phase })}</span>
-                {deletionStatus.job.lastError ? (
-                  <small className="deletion-error">{deletionStatus.job.lastError}</small>
-                ) : null}
-              </div>
-            ) : (
-              <>
-                <div className="lifecycle-buttons">
-                  {onControlAgent && !isStopped ? (
-                    <button
-                      type="button"
-                      className="lifecycle-btn lifecycle-stop"
-                      disabled={pendingAction !== null}
-                      onClick={() => void handleControl("stop")}
-                    >
-                      {pendingAction === "stop" ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}
-                      {t("agent.stop")}
-                    </button>
-                  ) : null}
-                  {onControlAgent && isStopped ? (
-                    <button
-                      type="button"
-                      className="lifecycle-btn lifecycle-start"
-                      disabled={pendingAction !== null}
-                      onClick={() => void handleControl("start")}
-                    >
-                      {pendingAction === "start" ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                      {t("agent.start")}
-                    </button>
-                  ) : null}
-                  {onDeleteAgent ? (
-                    <button
-                      type="button"
-                      className="lifecycle-btn lifecycle-delete"
-                      disabled={pendingAction !== null}
-                      onClick={() => setShowDeleteConfirm(true)}
-                    >
-                      <Trash2 size={14} />
-                      {t("agent.delete")}
-                    </button>
-                  ) : null}
-                </div>
-                {showDeleteConfirm ? (
-                  <div className="delete-confirm" role="dialog" aria-label={t("agent.deleteConfirmTitle")}>
-                    <p>{t("agent.deleteConfirmPrompt", { id: agent.id })}</p>
-                    <input
-                      type="text"
-                      value={deleteConfirmText}
-                      placeholder={agent.id}
-                      onChange={(e) => setDeleteConfirmText(e.target.value)}
-                      aria-label={t("agent.deleteConfirmLabel")}
-                    />
-                    <label className="delete-cascade">
-                      <input
-                        type="checkbox"
-                        checked={cascadeChildren}
-                        onChange={(e) => setCascadeChildren(e.target.checked)}
-                      />
-                      {t("agent.cascadePrivateChildren")}
-                    </label>
-                    <div className="delete-confirm-actions">
-                      <button type="button" onClick={() => { setShowDeleteConfirm(false); setDeleteConfirmText(""); setCascadeChildren(false); }}>
-                        {t("common.cancel")}
-                      </button>
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={deleteConfirmText !== agent.id || pendingAction !== null}
-                        onClick={() => void handleDelete()}
-                      >
-                        {pendingAction === "delete" ? <Loader2 size={14} className="animate-spin" /> : null}
-                        {t("agent.delete")}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </>
-            )}
-          </details>
-        ) : null}
       </CollapsibleInspectorCard>
 
       {(() => {
@@ -658,68 +554,75 @@ export function AgentOverviewPanel({
           : workspaceName;
         const activePath = workspace?.worktree?.path ?? workspace?.executionRoot ?? workspace?.anchor;
         const originPath = workspace?.anchor;
-        // Show Worktree + Origin labels when the active path differs from the
-        // anchor (origin). When they are the same, show a single "Path" row.
         const isWorktreePath =
           activePath != null && originPath != null && activePath !== originPath;
         return (
           <CollapsibleInspectorCard
-           title={t("rightPanel.workspacesWithCount", { count: wsCount })}
+            title={t("rightPanel.workspacesWithCount", { count: wsCount })}
             defaultOpen={true}
           >
             {workspace ? (
               <div className="workspace-active-section">
-                <div className="inspector-list-head">
-                  <button type="button" className="workspace-name-link" onClick={() => { if (workspace.id) onBrowseFiles({ workspaceId: workspace.id, path: "", executionRootId: workspace.executionRootId }); }}>{activeTitle}</button>
-                </div>
-                <details className="workspace-path-details"><summary>{t("rightPanel.path")}</summary>
-                <dl className="inspector-facts">
+                <div className="workspace-flat-row is-active">
+                  <div className="workspace-flat-head">
+                    <button
+                      type="button"
+                      className="workspace-name-link"
+                      onClick={() => {
+                        if (workspace.id) {
+                          onBrowseFiles({
+                            workspaceId: workspace.id,
+                            path: "",
+                            executionRootId: workspace.executionRootId,
+                          });
+                        }
+                      }}
+                    >
+                      {activeTitle}
+                    </button>
+                    <span className="workspace-active-pill">{t("status.current")}</span>
+                  </div>
                   {activePath ? (
-                    <div>
-                      <dt>{isWorktreePath ? t("rightPanel.worktree") : t("rightPanel.path")}</dt>
-                      <dd>
-                        <a
-                          href="#"
-                          className="workspace-path-link"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            if (workspace.id) onBrowseFiles({ workspaceId: workspace.id, path: "", executionRootId: workspace.executionRootId ?? undefined });
-                          }}
-                        >
-                          {activePath}
-                        </a>
-                      </dd>
-                    </div>
+                    <a
+                      href="#"
+                      className="workspace-path-link workspace-flat-path"
+                      title={activePath}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (workspace.id) {
+                          onBrowseFiles({
+                            workspaceId: workspace.id,
+                            path: "",
+                            executionRootId: workspace.executionRootId ?? undefined,
+                          });
+                        }
+                      }}
+                    >
+                      {activePath}
+                    </a>
                   ) : null}
                   {isWorktreePath && originPath ? (
-                    <div>
-                      <dt>{t("rightPanel.origin")}</dt>
-                      <dd>
-                        <a
-                          href="#"
-                          className="workspace-path-link"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            if (workspace.id) onBrowseFiles({ workspaceId: workspace.id, path: "" });
-                          }}
-                        >
-                          {originPath}
-                        </a>
-                      </dd>
-                    </div>
+                    <small className="inspector-muted">
+                      {t("rightPanel.origin")}:{" "}
+                      <a
+                        href="#"
+                        className="workspace-path-link"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          if (workspace.id) onBrowseFiles({ workspaceId: workspace.id, path: "" });
+                        }}
+                      >
+                        {originPath}
+                      </a>
+                    </small>
                   ) : null}
-                </dl>
-                </details>
+                </div>
                 <details className="inspector-details-list workspace-technical-details">
-                  <summary>{t("panel.details")}</summary>
+                  <summary>{t("inspector.technicalDetails")}</summary>
                   <dl className="inspector-facts">
                     <div>
                       <dt>{t("rightPanel.mode")}</dt>
                       <dd>{compactMeta([modeLabel, workspace.accessMode])}</dd>
-                    </div>
-                    <div>
-                      <dt>{t("rightPanel.name")}</dt>
-                      <dd>{workspace.name}</dd>
                     </div>
                     <div>
                       <dt>{t("rightPanel.id")}</dt>
@@ -754,29 +657,46 @@ export function AgentOverviewPanel({
 
             {agent.attachedWorkspaces && agent.attachedWorkspaces.length > 0 ? (
               <div className="inspector-stack workspace-other-list">
-                {agent.attachedWorkspaces
+                {[...agent.attachedWorkspaces]
                   .filter((ws) => {
                     const isActive = ws.executionRootId
                       ? ws.executionRootId === workspace?.executionRootId
                       : ws.workspaceId === workspace?.id;
                     return !isActive;
                   })
+                  .sort((a, b) => Number(isAgentHomeWorkspace(a)) - Number(isAgentHomeWorkspace(b)))
                   .map((ws) => (
-                    <div key={ws.executionRootId ?? ws.workspaceId} className="workspace-list-item">
-                      <div className="workspace-list-item-info">
-                        <button type="button" className="workspace-name-link" onClick={() => onBrowseFiles({ workspaceId: ws.workspaceId, path: "", executionRootId: ws.executionRootId })}>{ws.name}</button>
-                        <details className="workspace-path-details"><summary>{t("rightPanel.path")}</summary>
+                    <div key={ws.executionRootId ?? ws.workspaceId} className="workspace-flat-row">
+                      <button
+                        type="button"
+                        className="workspace-name-link"
+                        onClick={() =>
+                          onBrowseFiles({
+                            workspaceId: ws.workspaceId,
+                            path: "",
+                            executionRootId: ws.executionRootId,
+                          })
+                        }
+                      >
+                        {ws.name}
+                      </button>
+                      {ws.anchor ? (
                         <a
                           href="#"
-                          className="workspace-path-link workspace-list-item-anchor"
+                          className="workspace-path-link workspace-flat-path"
+                          title={ws.anchor}
                           onClick={(e) => {
                             e.preventDefault();
-                            onBrowseFiles({ workspaceId: ws.workspaceId, path: "", executionRootId: ws.executionRootId });
+                            onBrowseFiles({
+                              workspaceId: ws.workspaceId,
+                              path: "",
+                              executionRootId: ws.executionRootId,
+                            });
                           }}
                         >
                           {ws.anchor}
-                        </a></details>
-                      </div>
+                        </a>
+                      ) : null}
                     </div>
                   ))}
               </div>
@@ -784,6 +704,24 @@ export function AgentOverviewPanel({
           </CollapsibleInspectorCard>
         );
       })()}
+
+      <AgentWorkItemsPanel
+        agentId={agent.id}
+        incarnation={agent.incarnation}
+        workItems={workItems}
+        activeWorkItemCount={agent.activeWorkItemCount}
+        loadCompletedWorkItems={queryAgentCompletedWorkItems}
+        onSelect={onOpenWorkItemDetail}
+      />
+
+      <AgentTasksPanel
+        agentId={agent.id}
+        incarnation={agent.incarnation}
+        tasks={agent.tasks ?? []}
+        activeTaskCount={agent.activeTaskCount}
+        onOpenTask={onOpenTask}
+        onOpenConversation={onOpenConversation}
+      />
 
       <AgentTimersCard key={`${agent.id}:${agent.incarnation}`} agent={agent} stateIsCurrent={stateIsCurrent} />
 
@@ -820,24 +758,94 @@ export function AgentOverviewPanel({
         </div>
       </CollapsibleInspectorCard>
 
-      <AgentTasksPanel
-        agentId={agent.id}
-        incarnation={agent.incarnation}
-        tasks={agent.tasks ?? []}
-        activeTaskCount={agent.activeTaskCount}
-        onOpenTask={onOpenTask}
-        onOpenConversation={onOpenConversation}
-        loadRecentTasks={queryAgentRecentTasks}
-      />
-
-      <AgentWorkItemsPanel
-        agentId={agent.id}
-        incarnation={agent.incarnation}
-        workItems={workItems}
-        activeWorkItemCount={agent.activeWorkItemCount}
-        loadCompletedWorkItems={queryAgentCompletedWorkItems}
-        onSelect={onOpenWorkItemDetail}
-      />
+      {onControlAgent || onDeleteAgent ? (
+        <CollapsibleInspectorCard
+          title={t("rightPanel.manageAgent")}
+          defaultOpen={Boolean(deletionStatus?.job)}
+        >
+          {deletionStatus?.job ? (
+            <div className="deletion-progress" role="status">
+              <Loader2 size={14} className="animate-spin" />
+              <span>{t("agent.deletingPhase", { phase: deletionStatus.job.phase })}</span>
+              {deletionStatus.job.lastError ? (
+                <small className="deletion-error">{deletionStatus.job.lastError}</small>
+              ) : null}
+            </div>
+          ) : (
+            <div className="lifecycle-controls" style={{ marginTop: 0 }}>
+              <div className="lifecycle-buttons">
+                {onControlAgent && !isStopped ? (
+                  <button
+                    type="button"
+                    className="lifecycle-btn lifecycle-stop"
+                    disabled={pendingAction !== null}
+                    onClick={() => void handleControl("stop")}
+                  >
+                    {pendingAction === "stop" ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}
+                    {t("agent.stop")}
+                  </button>
+                ) : null}
+                {onControlAgent && isStopped ? (
+                  <button
+                    type="button"
+                    className="lifecycle-btn lifecycle-start"
+                    disabled={pendingAction !== null}
+                    onClick={() => void handleControl("start")}
+                  >
+                    {pendingAction === "start" ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                    {t("agent.start")}
+                  </button>
+                ) : null}
+                {onDeleteAgent ? (
+                  <button
+                    type="button"
+                    className="lifecycle-btn lifecycle-delete"
+                    disabled={pendingAction !== null}
+                    onClick={() => setShowDeleteConfirm(true)}
+                  >
+                    <Trash2 size={14} />
+                    {t("agent.delete")}
+                  </button>
+                ) : null}
+              </div>
+              {showDeleteConfirm ? (
+                <div className="delete-confirm" role="dialog" aria-label={t("agent.deleteConfirmTitle")}>
+                  <p>{t("agent.deleteConfirmPrompt", { id: agent.id })}</p>
+                  <input
+                    type="text"
+                    value={deleteConfirmText}
+                    placeholder={agent.id}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    aria-label={t("agent.deleteConfirmLabel")}
+                  />
+                  <label className="delete-cascade">
+                    <input
+                      type="checkbox"
+                      checked={cascadeChildren}
+                      onChange={(e) => setCascadeChildren(e.target.checked)}
+                    />
+                    {t("agent.cascadePrivateChildren")}
+                  </label>
+                  <div className="delete-confirm-actions">
+                    <button type="button" onClick={() => { setShowDeleteConfirm(false); setDeleteConfirmText(""); setCascadeChildren(false); }}>
+                      {t("common.cancel")}
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={deleteConfirmText !== agent.id || pendingAction !== null}
+                      onClick={() => void handleDelete()}
+                    >
+                      {pendingAction === "delete" ? <Loader2 size={14} className="animate-spin" /> : null}
+                      {t("agent.delete")}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
+        </CollapsibleInspectorCard>
+      ) : null}
     </div>
   );
 }
