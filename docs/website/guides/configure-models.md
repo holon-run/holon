@@ -310,6 +310,34 @@ Rules:
 - The cache is scoped to `provider@endpoint`, so sibling endpoints of one gateway keep separate model lists. Changing an endpoint's base URL or discovery path invalidates only that endpoint's cached list.
 - Discovery is transport-independent: an `anthropic_messages` endpoint can read an OpenAI-shaped model list. Discovery stays optional and failing; it never blocks startup or a turn.
 
+#### Built-in internal protocol endpoints
+
+Some built-in accounts serve more than one protocol through sibling endpoints.
+Those entries stay routable for per-model protocol selection, but they are not
+listed as separate providers: `github-copilot-chat-completions`,
+`opencode-go-messages`, `tencent-tokenhub-messages`, and
+`tencent-tokenhub-responses`. Subscription variants with their own billing
+entry point (for example `dashscope-token-plan`, `volcengine-coding`,
+`xiaomi-token-plan`) remain first-class providers.
+
+Override an internal endpoint through its parent. The parent form inherits
+transport, base URL, credential, and headers, so only the changed fields are
+needed:
+
+```bash
+holon config set providers.tencent-tokenhub.endpoints.messages.auth.kind api_key
+```
+
+The flat `providers.<sub-id>` form keeps working for existing configuration,
+but it must declare `transport`, `base_url`, and `auth` in full; prefer the
+parent form. A configured internal endpoint appears in the advanced section of
+the provider list and reports `exposure: "advanced"`.
+
+Provider default protocols follow Anthropic Messages > OpenAI Responses >
+OpenAI Chat Completions: `tencent-tokenhub/<model>` resolves to the `messages`
+endpoint whenever the model has a Messages route, while
+`tencent-tokenhub@default/<model>` still addresses Chat explicitly.
+
 ## Troubleshooting
 
 - **Local Ollama Connection Refused**:

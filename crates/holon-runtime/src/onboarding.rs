@@ -20,6 +20,7 @@ use crate::{
         ProviderConfigFile, ProviderId, ProviderRuntimeConfig,
     },
     model_catalog::BuiltInModelCatalog,
+    provider::provider_exposure,
     web::{WebProviderAuthClass, WebProviderSupportStatus},
 };
 
@@ -201,7 +202,7 @@ pub fn onboarding_provider_choices(config: &AppConfig) -> Vec<OnboardingProvider
     config
         .providers
         .values()
-        .filter(|provider| should_show_onboarding_provider(config, &provider.id))
+        .filter(|provider| provider_exposure(config, provider).is_some())
         .map(|provider| {
             let auth = match provider.auth.kind {
                 CredentialKind::OAuth => "OAuth login/profile",
@@ -228,24 +229,6 @@ pub fn onboarding_provider_choices(config: &AppConfig) -> Vec<OnboardingProvider
             }
         })
         .collect()
-}
-
-fn should_show_onboarding_provider(config: &AppConfig, provider_id: &ProviderId) -> bool {
-    canonical_onboarding_provider_id(provider_id)
-        .map(|canonical_id| {
-            canonical_id == *provider_id || !config.providers.contains_key(&canonical_id)
-        })
-        .unwrap_or(true)
-}
-
-fn canonical_onboarding_provider_id(provider_id: &ProviderId) -> Option<ProviderId> {
-    let id = provider_id.as_str();
-    for suffix in ["-openai", "-anthropic"] {
-        if let Some(base) = id.strip_suffix(suffix) {
-            return ProviderId::parse(base).ok();
-        }
-    }
-    None
 }
 
 fn provider_title(provider_id: &ProviderId) -> String {

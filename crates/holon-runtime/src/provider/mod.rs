@@ -1,4 +1,5 @@
 mod catalog;
+mod exposure;
 #[path = "material.rs"]
 mod runtime_material;
 pub(crate) use runtime_material::{encode_image, material_matches_runtime};
@@ -23,6 +24,7 @@ pub(crate) use diagnostics::{
     provider_models_from_availability_for_runtime,
     resolved_model_providers_from_availability_for_runtime,
 };
+pub(crate) use exposure::{provider_exposure, ProviderExposure};
 pub(crate) use registry::{build_provider_for_route, provider_definition, ProviderCatalogPolicy};
 pub use transports::{
     AnthropicProvider, GeminiProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider,

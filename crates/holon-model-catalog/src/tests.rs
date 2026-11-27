@@ -3785,8 +3785,10 @@ fn built_in_catalog_registers_each_canonical_model_metadata_once() {
     );
 }
 
+/// Chat-reviewed facts apply to the reviewed Messages protocol; the Responses
+/// route stays a compatibility-mode route and keeps explicit limitations.
 #[test]
-fn tencent_chat_k3_fields_do_not_leak_into_other_protocols() {
+fn tencent_chat_k3_fields_apply_to_reviewed_protocols_only() {
     let catalog = curated_catalog();
     for model in ["kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"] {
         for endpoint in ["default", "messages", "responses"] {
@@ -3801,18 +3803,18 @@ fn tencent_chat_k3_fields_do_not_leak_into_other_protocols() {
                 8_192,
             );
             assert_eq!(policy.context_window_tokens, None);
-            if endpoint == "default" {
-                assert_eq!(policy.runtime_max_output_tokens, 131_072);
-                assert_eq!(policy.max_output_tokens_upper_limit, Some(1_048_576));
-                assert!(policy.capabilities.supports_reasoning);
-                assert!(policy.capabilities.image_input);
-                assert_eq!(policy.reasoning_effort_options, ["low", "high", "max"]);
-            } else {
+            if endpoint == "responses" {
                 assert_eq!(policy.runtime_max_output_tokens, 8_192);
                 assert_eq!(policy.max_output_tokens_upper_limit, None);
                 assert!(!policy.capabilities.supports_reasoning);
                 assert!(!policy.capabilities.image_input);
                 assert!(policy.reasoning_effort_options.is_empty());
+            } else {
+                assert_eq!(policy.runtime_max_output_tokens, 131_072);
+                assert_eq!(policy.max_output_tokens_upper_limit, Some(1_048_576));
+                assert!(policy.capabilities.supports_reasoning);
+                assert!(policy.capabilities.image_input);
+                assert_eq!(policy.reasoning_effort_options, ["low", "high", "max"]);
             }
         }
     }
@@ -3832,12 +3834,26 @@ fn tencent_tokenhub_catalog_tracks_current_language_and_image_understanding_mode
     for model in &models {
         assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
         assert!(model.reasoning_effort_options.is_empty());
+        // The promoted Messages protocol is the reviewed default wherever the
+        // model has a Messages route; Chat-only models keep the default endpoint.
+        let messages_route = ModelRouteRef::new(
+            provider.clone(),
+            ProviderEndpointId::parse("messages").expect("valid endpoint"),
+            model.model_ref.model.clone(),
+        );
+        let expected_endpoint = if catalog.get_route(&messages_route).is_some() {
+            "messages"
+        } else {
+            "default"
+        };
         assert_eq!(
             catalog
                 .preferred_route_for_model(&model.model_ref)
                 .unwrap()
                 .endpoint,
-            ProviderEndpointId::default_endpoint()
+            ProviderEndpointId::parse(expected_endpoint).expect("valid endpoint"),
+            "{}",
+            model.model_ref.as_string()
         );
     }
 
@@ -3914,4 +3930,90 @@ fn venice_catalog_tracks_stable_trait_defaults() {
         .unwrap();
     assert!(vision.capabilities.image_input);
     assert!(!vision.capabilities.supports_reasoning);
+}
+
+/// The promoted default protocols point at the highest reviewed endpoint, keep
+/// every sibling route resolvable, and ride on reviewed facts instead of the
+/// unreviewed protocol placeholder.
+#[test]
+fn promoted_default_protocols_point_at_reviewed_endpoints() {
+    let catalog = curated_catalog();
+    assert_eq!(
+        catalog.preferred_route_for_provider(&provider_id("tencent-tokenhub")),
+        Some(ModelRouteRef::parse("tencent-tokenhub@messages/hy3").unwrap())
+    );
+    assert_eq!(
+        catalog.preferred_route_for_provider(&provider_id("opencode-go")),
+        Some(ModelRouteRef::parse("opencode-go@messages/minimax-m3").unwrap())
+    );
+
+    // The original protocols stay routable as explicit sub-endpoints.
+    for route in [
+        "tencent-tokenhub@default/hy3",
+        "tencent-tokenhub@messages/hy3",
+        "tencent-tokenhub@responses/hy3",
+        "opencode-go@default/minimax-m3",
+        "opencode-go@messages/minimax-m3",
+        "opencode-go@responses/minimax-m3",
+    ] {
+        assert!(
+            catalog
+                .get_route(&ModelRouteRef::parse(route).unwrap())
+                .is_some(),
+            "{route}"
+        );
+    }
+
+    // The promoted routes keep the reviewed per-model facts; the unreviewed
+    // placeholder is the one that narrows capabilities to false.
+    for route in [
+        "tencent-tokenhub@messages/hy3",
+        "opencode-go@messages/minimax-m3",
+    ] {
+        let policy = catalog
+            .get_route(&ModelRouteRef::parse(route).unwrap())
+            .expect("promoted route");
+        assert_ne!(
+            policy.capabilities.supports_reasoning,
+            Some(false),
+            "{route}"
+        );
+        assert_ne!(policy.capabilities.image_input, Some(false), "{route}");
+    }
+
+    // The compatibility endpoints keep their explicit limitations: TokenHub's
+    // Responses route stays unreviewed, and OpenCode Go's default endpoint
+    // still serves the model through a translated protocol.
+    let tokenhub_responses = catalog
+        .get_route(&ModelRouteRef::parse("tencent-tokenhub@responses/hy3").unwrap())
+        .expect("responses route");
+    assert!(
+        tokenhub_responses.reasoning_effort_options.is_none(),
+        "the responses route stays the unreviewed compatibility placeholder"
+    );
+    let opencode_default = catalog
+        .get_route(&ModelRouteRef::parse("opencode-go@default/minimax-m3").unwrap())
+        .expect("translated default route");
+    assert_eq!(
+        opencode_default.capabilities.supports_reasoning,
+        Some(false),
+        "the translated default route keeps its narrowed capabilities"
+    );
+    let reviewed = catalog
+        .get_route(&ModelRouteRef::parse("tencent-tokenhub@messages/hy3").unwrap())
+        .expect("reviewed messages route");
+    assert!(reviewed
+        .description
+        .as_deref()
+        .unwrap_or_default()
+        .contains("reviewed per model"));
+    assert_eq!(
+        reviewed.reasoning_effort_options,
+        Some(vec![
+            "low".to_string(),
+            "high".to_string(),
+            "no_think".to_string()
+        ]),
+        "the reviewed Messages route carries the per-model effort facts"
+    );
 }

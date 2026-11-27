@@ -8004,8 +8004,24 @@ export interface components {
                         kind: string;
                         path?: string | null;
                     } | null;
+                    /**
+                     * @description Endpoint this entry routes to; `default` is the provider entry point.
+                     * @default
+                     */
+                    endpoint: string;
+                    /**
+                     * @description `primary` for first-class providers, `advanced` for explicitly
+                     *      configured internal protocol sub-endpoints.
+                     * @default
+                     */
+                    exposure: string;
                     id: string;
                     oauth_supported: boolean;
+                    /**
+                     * @description Route provider this entry belongs to.
+                     * @default
+                     */
+                    route_provider: string;
                     transport: string;
                 }[];
                 runtime_db_retention: {
@@ -8221,8 +8237,24 @@ export interface components {
                         kind: string;
                         path?: string | null;
                     } | null;
+                    /**
+                     * @description Endpoint this entry routes to; `default` is the provider entry point.
+                     * @default
+                     */
+                    endpoint: string;
+                    /**
+                     * @description `primary` for first-class providers, `advanced` for explicitly
+                     *      configured internal protocol sub-endpoints.
+                     * @default
+                     */
+                    exposure: string;
                     id: string;
                     oauth_supported: boolean;
+                    /**
+                     * @description Route provider this entry belongs to.
+                     * @default
+                     */
+                    route_provider: string;
                     transport: string;
                 }[];
                 runtime_db_retention: {

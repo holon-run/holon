@@ -178,6 +178,40 @@ fn unreviewed_protocol_policy(id: &str) -> BuiltInModelRoutePolicy {
     }
 }
 
+/// Reviewed per model on 2026-11-27 for the Anthropic Messages endpoint.
+///
+/// TokenHub serves every language model through both OpenAI Chat Completions
+/// and Anthropic Messages, and the Messages guide documents thinking
+/// (`thinking.type`) and reasoning effort (`output_config.effort`) support:
+/// <https://cloud.tencent.com/document/product/1823/130079>,
+/// <https://cloud.tencent.com/document/product/1823/135874>. Reviewed model
+/// facts therefore carry over instead of being narrowed to "unconfirmed"; the
+/// per-model limits stay those of the published model table.
+#[cfg(test)]
+fn reviewed_messages_policy(id: &str) -> BuiltInModelRoutePolicy {
+    let mut policy = reviewed_chat_policy(id);
+    policy.description = Some(format!(
+        "Tencent TokenHub Anthropic Messages route for {id}; reviewed per model on 2026-11-27."
+    ));
+    policy
+}
+
+/// Endpoints whose protocol support was reviewed per model. The Responses
+/// endpoint stays a compatibility-mode route with explicit limitations.
+#[cfg(test)]
+fn is_reviewed_protocol_endpoint(endpoint: &str) -> bool {
+    matches!(endpoint, "default" | "messages")
+}
+
+#[cfg(test)]
+fn reviewed_protocol_policy(id: &str, endpoint: &str) -> BuiltInModelRoutePolicy {
+    match endpoint {
+        "default" => reviewed_chat_policy(id),
+        "messages" => reviewed_messages_policy(id),
+        _ => unreviewed_protocol_policy(id),
+    }
+}
+
 #[cfg(test)]
 pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
     TENCENT_TOKENHUB_MODELS
@@ -204,7 +238,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             legacy_provider: provider_id("tencent-tokenhub-messages"),
             model_ref: ModelRef::new(provider_id("tencent-tokenhub"), id),
             endpoint: ProviderEndpointId::parse("messages").expect("valid endpoint"),
-            policy: unreviewed_protocol_policy(id),
+            policy: reviewed_messages_policy(id),
         })
         .chain(
             TENCENT_TOKENHUB_RESPONSES_MODEL_IDS
@@ -269,9 +303,9 @@ fn tokenhub_hy4_flash_keeps_protocol_specific_reasoning_and_unknown_limits() {
             assert_eq!(policy.max_output_tokens_upper_limit, None);
             assert_eq!(
                 policy.capabilities.supports_reasoning,
-                endpoint == "default"
+                is_reviewed_protocol_endpoint(endpoint)
             );
-            if endpoint == "default" {
+            if is_reviewed_protocol_endpoint(endpoint) {
                 assert_eq!(policy.reasoning_effort_options, ["high", "no_think"]);
             } else {
                 assert!(policy.reasoning_effort_options.is_empty());
@@ -338,7 +372,7 @@ fn tokenhub_retirements_and_v41_chat_efforts_follow_exact_endpoint_evidence() {
                 let route =
                     ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/{id}")).unwrap();
                 let policy = catalog.get_route(&route).expect("existing V4.1 route");
-                if endpoint == "default" {
+                if is_reviewed_protocol_endpoint(endpoint) {
                     assert_eq!(
                         policy
                             .reasoning_effort_options
@@ -360,11 +394,11 @@ fn tokenhub_retirements_and_v41_chat_efforts_follow_exact_endpoint_evidence() {
                 );
                 assert_eq!(
                     resolved.capabilities.supports_reasoning,
-                    endpoint == "default"
+                    is_reviewed_protocol_endpoint(endpoint)
                 );
                 assert_eq!(
                     resolved.reasoning_effort_options,
-                    if endpoint == "default" {
+                    if is_reviewed_protocol_endpoint(endpoint) {
                         vec!["low", "high", "max"]
                     } else {
                         vec![]
@@ -489,11 +523,7 @@ fn tokenhub_kimi_k3_1_routes_keep_endpoint_metadata_conservative() {
                 ProviderEndpointId::parse(endpoint).unwrap(),
                 id,
             );
-            let expected = if endpoint == "default" {
-                reviewed_chat_policy(id)
-            } else {
-                unreviewed_protocol_policy(id)
-            };
+            let expected = reviewed_protocol_policy(id, endpoint);
             assert_eq!(
                 catalog.get_route(&route),
                 Some(&expected),
@@ -539,6 +569,7 @@ fn tokenhub_chat_budgets_and_effort_do_not_leak_to_other_protocols() {
         );
         assert_eq!(chat.runtime_max_output_tokens, default, "{id}");
         assert_eq!(chat.max_output_tokens_upper_limit, ceiling, "{id}");
+        let chat_efforts = chat.reasoning_effort_options.clone();
         let metadata = catalog.get(&route.model_ref()).unwrap();
         for endpoint in ["messages", "responses"] {
             let route = ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/{id}")).unwrap();
@@ -553,18 +584,32 @@ fn tokenhub_chat_budgets_and_effort_do_not_leak_to_other_protocols() {
                 &ContextConfig::default(),
                 8_192,
             );
-            assert_eq!(
-                policy.runtime_max_output_tokens,
-                metadata.default_max_output_tokens.unwrap_or(8_192)
-            );
-            assert_eq!(
-                policy.max_output_tokens_upper_limit,
-                metadata.max_output_tokens_upper_limit
-            );
-            assert!(
-                policy.reasoning_effort_options.is_empty(),
-                "{id}@{endpoint}"
-            );
+            if is_reviewed_protocol_endpoint(endpoint) {
+                // The reviewed Messages route carries the per-model facts.
+                assert_eq!(policy.runtime_max_output_tokens, default, "{id}@{endpoint}");
+                assert_eq!(
+                    policy.max_output_tokens_upper_limit, ceiling,
+                    "{id}@{endpoint}"
+                );
+                assert_eq!(
+                    policy.reasoning_effort_options, chat_efforts,
+                    "{id}@{endpoint}"
+                );
+            } else {
+                // The Responses route remains a compatibility-mode route.
+                assert_eq!(
+                    policy.runtime_max_output_tokens,
+                    metadata.default_max_output_tokens.unwrap_or(8_192)
+                );
+                assert_eq!(
+                    policy.max_output_tokens_upper_limit,
+                    metadata.max_output_tokens_upper_limit
+                );
+                assert!(
+                    policy.reasoning_effort_options.is_empty(),
+                    "{id}@{endpoint}"
+                );
+            }
         }
     }
 }
@@ -581,7 +626,7 @@ fn tokenhub_hy4_routes_preserve_independently_reviewed_protocol_capabilities() {
         );
         assert_eq!(
             catalog.preferred_route_for_provider(&provider_id("tencent-tokenhub")),
-            Some(ModelRouteRef::parse("tencent-tokenhub@default/hy3").unwrap()),
+            Some(ModelRouteRef::parse("tencent-tokenhub@messages/hy3").unwrap()),
         );
         for endpoint in ["default", "messages", "responses"] {
             let route = ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/hy4")).unwrap();
@@ -597,7 +642,7 @@ fn tokenhub_hy4_routes_preserve_independently_reviewed_protocol_capabilities() {
             assert!(policy.capabilities.image_input, "{endpoint}");
             assert_eq!(
                 policy.capabilities.supports_reasoning,
-                endpoint == "default"
+                is_reviewed_protocol_endpoint(endpoint)
             );
             assert_eq!(policy.context_window_tokens, None);
             assert_eq!(
@@ -608,7 +653,7 @@ fn tokenhub_hy4_routes_preserve_independently_reviewed_protocol_capabilities() {
                 None
             );
             assert_eq!(policy.max_output_tokens_upper_limit, None);
-            if endpoint == "default" {
+            if is_reviewed_protocol_endpoint(endpoint) {
                 assert_eq!(policy.reasoning_effort_options, ["high", "no_think"]);
                 policy.validate_reasoning_effort("no_think").unwrap();
                 assert!(policy.validate_reasoning_effort("none").is_err());
@@ -648,7 +693,7 @@ fn tokenhub_chat_effort_updates_are_exact_model_and_protocol_scoped() {
                     &ContextConfig::default(),
                     8_192,
                 );
-                if endpoint == "default" {
+                if is_reviewed_protocol_endpoint(endpoint) {
                     assert_eq!(policy.reasoning_effort_options, expected, "{id}");
                 } else {
                     assert!(
@@ -682,12 +727,12 @@ fn tokenhub_reviewed_chat_capabilities_and_effort_preserve_unknown_fields() {
             assert_eq!(policy.context_window_tokens, None, "{id}@{endpoint}");
             assert_eq!(
                 policy.capabilities.supports_reasoning,
-                endpoint == "default" && reasoning,
+                is_reviewed_protocol_endpoint(endpoint) && reasoning,
                 "{id}@{endpoint}"
             );
             assert_eq!(
                 policy.capabilities.image_input,
-                endpoint == "default" && image,
+                is_reviewed_protocol_endpoint(endpoint) && image,
                 "{id}@{endpoint}"
             );
         }
@@ -723,7 +768,7 @@ fn tokenhub_reviewed_chat_capabilities_and_effort_preserve_unknown_fields() {
                 &ContextConfig::default(),
                 8_192,
             );
-            if endpoint == "default" {
+            if is_reviewed_protocol_endpoint(endpoint) {
                 assert_eq!(policy.reasoning_effort_options, expected, "{id}");
             } else {
                 assert!(

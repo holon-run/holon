@@ -298,6 +298,20 @@ holon config set providers.my-gateway.discovery.decoder magpie
 - 缓存按 `provider@endpoint` 隔离，同一网关的兄弟端点各自保留独立的模型列表；修改端点的 `base_url` 或 `discovery.path` 只会让该端点的缓存失效。
 - 发现与推理传输协议解耦：`anthropic_messages` 端点也能读取 OpenAI 形态的模型列表。发现始终是可选且允许失败的，绝不会阻塞启动或对话轮次。
 
+#### 内置的内部协议端点
+
+部分内置账号通过兄弟端点提供多种协议。这些条目仍可用于按模型选择协议路由，但不再作为独立服务商出现在一级列表：`github-copilot-chat-completions`、`opencode-go-messages`、`tencent-tokenhub-messages`、`tencent-tokenhub-responses`。拥有独立订阅 Key 与计费入口的变体（如 `dashscope-token-plan`、`volcengine-coding`、`xiaomi-token-plan`）仍是一级服务商。
+
+通过父级条目覆盖内部端点即可，父级形式会继承 transport、base URL、凭据与请求头，只需写需要改动的字段：
+
+```bash
+holon config set providers.tencent-tokenhub.endpoints.messages.auth.kind api_key
+```
+
+平铺的 `providers.<sub-id>` 旧形式继续兼容，但必须完整声明 `transport`、`base_url` 与 `auth`；优先使用父级形式。显式配置后的内部端点出现在服务商列表的高级区，并带有 `exposure: "advanced"`。
+
+默认协议遵循 Anthropic Messages > OpenAI Responses > OpenAI Chat Completions：只要模型有 Messages 路由，`tencent-tokenhub/<model>` 即解析到 `messages` 端点；`tencent-tokenhub@default/<model>` 仍显式指向 Chat。
+
 ## 常见排障与诊断
 
 - **本地 Ollama 连接失败（Connection Refused）**：

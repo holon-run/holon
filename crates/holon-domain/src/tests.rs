@@ -1290,3 +1290,59 @@ fn tool_execution_audit_event_references_canonical_record_without_output() {
     assert!(payload.get("exec_command_result").is_none());
     assert!(payload.get("apply_patch_result").is_none());
 }
+
+#[test]
+fn provider_surface_marks_only_internal_protocol_sub_endpoints() {
+    use crate::model_values::{provider_definitions, ProviderMaterializer, ProviderSurface};
+
+    let sub_endpoints: Vec<_> = provider_definitions()
+        .iter()
+        .filter_map(|definition| match definition.surface {
+            ProviderSurface::SubEndpoint { of } => Some((definition.legacy_provider, of)),
+            ProviderSurface::Primary => None,
+        })
+        .collect();
+    assert_eq!(
+        sub_endpoints,
+        vec![
+            ("github-copilot-chat-completions", "github-copilot"),
+            ("opencode-go-messages", "opencode-go"),
+            ("tencent-tokenhub-messages", "tencent-tokenhub"),
+            ("tencent-tokenhub-responses", "tencent-tokenhub"),
+        ]
+    );
+
+    // Hiding an entry from the primary list must never change routability: the
+    // materialized set stays exactly "not AliasOnly".
+    let alias_only: Vec<_> = provider_definitions()
+        .iter()
+        .filter(|definition| definition.materializer == ProviderMaterializer::AliasOnly)
+        .map(|definition| definition.legacy_provider)
+        .collect();
+    assert_eq!(alias_only, vec!["volcengine-image-openai"]);
+}
+
+#[test]
+fn provider_surface_keeps_billing_and_plan_variants_primary() {
+    use crate::model_values::{provider_definition, ProviderSurface};
+
+    for id in [
+        "dashscope-token-plan",
+        "dashscope-coding-plan",
+        "dashscope-coding-plan-intl",
+        "minimax-m-plan",
+        "minimax-cn-m-plan",
+        "volcengine-coding",
+        "volcengine-agent",
+        "byteplus-coding",
+        "stepfun-plan",
+        "xiaomi-token-plan",
+    ] {
+        let definition = provider_definition(id).expect("registered built-in provider");
+        assert_eq!(
+            definition.surface,
+            ProviderSurface::Primary,
+            "{id} has its own billing entry point and must stay primary"
+        );
+    }
+}

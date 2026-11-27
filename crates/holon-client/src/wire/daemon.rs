@@ -173,6 +173,16 @@ impl Default for RuntimeDecisionToolsSurface {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeProviderSummary {
     pub id: String,
+    /// Endpoint this entry routes to; `default` is the provider entry point.
+    #[serde(default)]
+    pub endpoint: String,
+    /// Route provider this entry belongs to.
+    #[serde(default)]
+    pub route_provider: String,
+    /// `primary` for first-class providers, `advanced` for explicitly
+    /// configured internal protocol sub-endpoints.
+    #[serde(default)]
+    pub exposure: String,
     pub transport: String,
     pub base_url: String,
     pub oauth_supported: bool,

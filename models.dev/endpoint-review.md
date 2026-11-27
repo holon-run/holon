@@ -9,6 +9,27 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-27 incremental review
+
+Promote the default protocol of `tencent-tokenhub` and `opencode-go` to their
+Anthropic Messages endpoints and review the TokenHub Messages policy per model.
+
+- `tencent-tokenhub`: the [Messages guide](https://cloud.tencent.com/document/product/1823/130051)
+  and the [thinking/effort reference](https://cloud.tencent.com/document/product/1823/135874)
+  document that the TokenHub language-model table is served through Anthropic
+  Messages with thinking (`thinking.type`) and reasoning effort
+  (`output_config.effort`). Reviewed model facts therefore carry the published
+  Chat limits and documented reasoning/vision support over to `@messages`;
+  capacities without affirmative evidence stay unknown, and every per-model
+  entry is recorded in `metadata-review.json`. `@responses` remains a
+  compatibility-mode route with its own limitations and unknown exact
+  capacities.
+- `opencode-go`: default turn selection moves to `@messages/minimax-m3` because
+  the public [Go endpoint table](https://opencode.ai/docs/console/go/) and
+  [Go model listing](https://opencode.ai/inference/go/v1/models) publish one
+  per-model table across protocols. No new model facts are asserted here; the
+  Chat and Responses routes stay routable with their own policies.
+
 ## 2026-11-26 incremental review
 
 Retire the eight Volcengine routes with affirmative endpoint-specific
