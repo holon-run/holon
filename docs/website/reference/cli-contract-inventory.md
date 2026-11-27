@@ -54,6 +54,7 @@ support policy behind these labels.
 |---|---|---|---|---:|---|
 | `holon --help` | none | `-h, --help`, `-V, --version` | human help to stdout | `stable` candidate | Should be covered by command-tree snapshot tests. |
 | `holon <COMMAND> --help` | command-dependent | command-dependent | human help to stdout | `stable` candidate for shape; `experimental` for prose | Regenerate `cli.md` when command shape changes. |
+| `holon docs` | optional `<TOPIC>` | `--json`; `--output <text\|json>` | topic index or manual content in Markdown or JSON | `experimental` | Reads compile-time embedded operational manuals offline (`cli`, `skills`, `apps`, `agents`, `workspace`, `agent-home`, `models`). |
 
 ### Server and daemon
 

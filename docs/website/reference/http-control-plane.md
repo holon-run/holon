@@ -127,7 +127,8 @@ providers.
 **`POST /api/models/refresh`** — Refresh available models
 
 Discovers models for providers whose discovery cache is missing or expired,
-then returns the same catalog shape as `GET /api/models`. A discovery failure for
+then returns the same catalog shape as `GET /api/models`. Refreshing also opts
+credential-free and anonymous-access built-in providers (such as `ollama`, `vllm`, and `magpie`) into serving discovered models for the current session without modifying `config.json`. A discovery failure for
 one provider does not prevent other available models from being returned.
 
 ```json
@@ -138,6 +139,31 @@ one provider does not prevent other available models from being returned.
   "model_availability": { "claude-sonnet-4-20250514": true, … }
 }
 ```
+
+**`GET /api/models/providers`** — List resolved model providers
+
+Returns the resolved provider projection (`providers`) along with the backing
+discovery cache status (`model_discovery_cache`). Mirrors
+`holon config model-providers list` and `ListModelProviders`.
+
+- `operation` (optional query): `view_image` or `generate_image`. Restricts the list to providers that have at least one call-selectable model for that operation. Ignored when `include_unavailable=true`.
+- `include_unavailable` (optional query, default `false`): Diagnostic view that skips both availability and `operation` filtering.
+
+**`GET /api/models/providers/:provider/models`** — List resolved models for a provider
+
+Returns the resolved `ProviderModelEntry` list for one provider ID returned by
+`GET /api/models/providers`, paged by `model_ref` cursor. Mirrors
+`holon config models list` and `ListProviderModels`.
+
+- `operation` (optional query): `view_image` or `generate_image` (ignored when `include_unavailable=true`).
+- `include_unavailable` (optional query, default `false`): Diagnostic view that skips availability and `operation` filtering.
+- `limit` (optional query, default `100`, range `1..=500`): Maximum models returned per page; out-of-range values are clamped.
+- `cursor` (optional query): Opaque `model_ref` cursor returned in `next_cursor` by the preceding page.
+
+Returns `{ provider, models, limit, returned, next_cursor }`. Returns `404`
+with error code `unknown_provider` when the provider ID is unknown, and `400`
+with `invalid_cursor` when the cursor does not match a model in the filtered
+sequence.
 
 ### Agents
 

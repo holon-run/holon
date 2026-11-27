@@ -266,19 +266,22 @@ runtime is local.
 
 Configure Holon from the browser:
 
-- **Model settings** — view and change the default model, override per-agent
-  models, and set reasoning effort. Drag fallback models to change their
-  priority. See [Configure models](configure-models.md) for route setup.
-- **API keys** — add or update provider credentials (API keys) through the
-  credential store without editing JSON files. The settings page
-  automatically determines the right credential method for each provider
-  (API key input for api_key providers, device login link for OAuth
-  providers like Codex).
-- **Custom providers** — add custom model providers by entering a provider ID,
-  transport, base URL, optional API key, and model discovery settings; new
-  providers appear once the configuration reload completes.
-- **Ollama discovery** — a locally running Ollama server is discovered
-  automatically with no API key; its models appear in the model selectors.
+Settings are grouped into **System & Access** (General, Access & Pairing),
+**Models & Capabilities** (Model Providers, Language Models, Image & Vision,
+Web Search, Decision), and **Advanced** (execution limits and diagnostics):
+
+- **Model Providers** — configure API keys through the credential store, run
+  browser OAuth device logins (for example Codex), add custom gateways
+  (provider ID, transport, base URL, optional API key, and discovery settings),
+  star favorite models, or click a model to set it as the global default.
+- **Language Models** — set the global default model and reorder fallback models
+  with arrows or drag-and-drop. You can also override per-agent models and
+  thinking effort directly from the agent conversation view. See
+  [Configure models](configure-models.md) for route details.
+- **Local provider discovery** — credential-free and anonymous-access local
+  servers (such as Ollama, vLLM, and Magpie) are not probed automatically at
+  startup. Opt in by declaring the provider, referencing it in a configured
+  route, or triggering a model refresh so its models appear in the selectors.
 - **Language** — switch the Web GUI display language. Supported languages are
   English (EN) and Simplified Chinese (ZH-CN). All UI text — navigation,
   buttons, labels, and status messages — updates in real time without a
