@@ -252,6 +252,11 @@ Rules for rebuild and recovery:
   silently rebind an existing session. The session must be retired and rebuilt
   against the new workspace binding, or the runtime rejects the turn with a
   binding conflict.
+- Launch decisions are part of the binding. The telemetry and permission-bypass
+  switches, like the interactive capability snapshot, are fixed at process start.
+  A hot config reload that changes any of them retires and rebuilds the resident
+  process on the next turn, instead of keeping a process whose argv and audit
+  evidence no longer match the configuration.
 
 ## 3. Handshake Capability Trimming And Prompt Layering
 
@@ -435,7 +440,7 @@ Additional rules:
 | Additional directories | Map `EffectiveExecution.attached_workspaces` to repeated `--add-dir <path>` flags; changing the attached set requires retiring and rebuilding the session (§2.4) |
 | Sandbox | Map execution policy to the profile's `--sandbox` mode; when no sandbox mode is available, the runtime must not claim confinement |
 | Telemetry | Upstream harness telemetry is suppressed by default: a profile that declares `disable_telemetry_arg` receives that flag on every launch. `acp.profiles.<name>.disable_telemetry = false` restores upstream telemetry; a profile that declares no telemetry flag is never given one |
-| Permission bypass | The profile-declared permission-bypass flag (`--dangerously-skip-permissions` for `antigravity`) is passed by default, so an unattended turn is not blocked by the harness' own per-call permission prompts. `acp.profiles.<name>.dangerously_skip_permissions = false` restores the static gate; a bypass argument that is not the profile-declared flag is always rejected; every turn that opens the gate records one `acp_permission_gate_disabled` audit event (§4.6) |
+| Permission bypass | The profile-declared permission-bypass flag (`--dangerously-skip-permissions` for `antigravity`) is passed by default for `unattended` turns, so they are not blocked by the harness' own per-call permission prompts. `interactive` approval keeps the flag closed unless `acp.profiles.<name>.dangerously_skip_permissions = true` opens it explicitly, because the same flag also auto-approves every permission request; an explicit value always wins. A bypass argument that is not the profile-declared flag is always rejected; every turn that opens the gate records one `acp_permission_gate_disabled` audit event (§4.6) |
 | Authentication | Reuse the host's existing `agy acp --login` state or explicitly configured/allowlisted environment credentials (`GEMINI_API_KEY`, `GOOGLE_API_KEY`, and for Vertex/Enterprise `agent-platform` ADC: `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `AGY_ADC_AUTH`) |
 | Credential files | Never parse, copy, or scrape private harness session files |
 | `-32000` authentication required | Structured `RuntimeError` of kind `auth_error` that names the harness, lists the auth methods the peer advertised, and carries the harness' own recovery hint (log in or provide credentials); provider credential wording never applies here; no retry loop, no fallback model |
@@ -453,14 +458,17 @@ the contract rather than an implementation detail:
   `acp.profiles.<name>.disable_telemetry = false` restores the harness' own
   telemetry. A profile that declares no telemetry flag is never given one.
 - **Permission bypass.** The profile-declared permission-bypass flag is passed
-  by default for profiles that declare it, so an unattended turn is not blocked
-  by the harness' own per-call permission prompts. The decision is explicit and
-  auditable rather than a silent bypass: an explicit
-  `acp.profiles.<name>.dangerously_skip_permissions = false` restores the
-  static gate, a bypass argument that is not the profile-declared flag is
-  rejected even when the switch is open, and every turn that opens the gate
-  records one `acp_permission_gate_disabled` audit event carrying the profile,
-  the turn, and the decision source (`profile_default` or `config`).
+  by default for `unattended` turns, so the harness' own per-call permission
+  prompts do not block them. `interactive` approval keeps the flag closed unless
+  the profile opens it explicitly, because the same flag auto-approves every
+  harness permission request and would silently bypass the operator. The
+  decision is explicit and auditable rather than a silent bypass: an explicit
+  `acp.profiles.<name>.dangerously_skip_permissions` value always wins, a
+  bypass argument that is not the profile-declared flag is rejected even when
+  the switch is open, and every turn that opens the gate records one
+  `acp_permission_gate_disabled` audit event carrying the profile, the turn,
+  the permission mode, and the decision source (`profile_default`,
+  `interactive_default`, or `config`).
 
 Opening the gate is a launch decision, not an authorization mechanism. Holon
 does not treat the harness' silent auto-approval as consent for any later

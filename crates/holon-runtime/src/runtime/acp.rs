@@ -107,6 +107,13 @@ impl AcpPermissionMode {
     fn is_interactive(self) -> bool {
         self == Self::Interactive
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unattended => "unattended",
+            Self::Interactive => "interactive",
+        }
+    }
 }
 
 /// A decision an operator can return for a pending permission request.
@@ -1476,6 +1483,9 @@ struct ResolvedProfile {
 enum AcpPermissionBypassSource {
     /// `acp.profiles.<name>.dangerously_skip_permissions` is unset.
     ProfileDefault,
+    /// The profile sets no bypass switch and `permission_mode` is
+    /// `interactive`, so the bypass stays closed to keep operator approval.
+    InteractiveDefault,
     /// The profile configuration sets the switch explicitly.
     Config,
 }
@@ -1484,6 +1494,7 @@ impl AcpPermissionBypassSource {
     fn as_str(self) -> &'static str {
         match self {
             Self::ProfileDefault => "profile_default",
+            Self::InteractiveDefault => "interactive_default",
             Self::Config => "config",
         }
     }
@@ -1539,15 +1550,21 @@ fn resolve_profile(
         ));
     }
 
-    // Telemetry is suppressed by default for profiles that declare the flag,
-    // and the permission-bypass switch is open by default. Both stay
-    // configurable per profile so an operator can restore upstream behaviour.
+    // Telemetry is suppressed by default for profiles that declare the flag.
     let disable_telemetry = config.disable_telemetry(&binding.profile);
-    let dangerously_skip_permissions = config.dangerously_skip_permissions(&binding.profile);
-    let permission_bypass_source = overrides
-        .and_then(|profile| profile.dangerously_skip_permissions)
-        .map(|_| AcpPermissionBypassSource::Config)
-        .unwrap_or(AcpPermissionBypassSource::ProfileDefault);
+    // The permission bypass is open by default for unattended turns, but the
+    // bypass flag also auto-approves every harness-side permission request.
+    // Interactive approval therefore stays closed unless the profile opens the
+    // switch explicitly, and an explicit value always wins. Both switches stay
+    // configurable per profile so an operator can restore upstream behaviour.
+    let (dangerously_skip_permissions, permission_bypass_source) =
+        match config.permission_bypass_override(&binding.profile) {
+            Some(value) => (value, AcpPermissionBypassSource::Config),
+            None if permission_mode.is_interactive() => {
+                (false, AcpPermissionBypassSource::InteractiveDefault)
+            }
+            None => (true, AcpPermissionBypassSource::ProfileDefault),
+        };
 
     Ok(ResolvedProfile {
         spec,
@@ -1722,13 +1739,17 @@ fn ensure_permission_gate_preserved(
 /// Provider credential wording never applies here.
 fn acp_client_error(harness: &str, operation: &'static str, error: AcpError) -> anyhow::Error {
     if error.is_authentication_required() {
-        return acp_authentication_error(harness, &error).into();
+        return acp_authentication_error(harness, operation, &error).into();
     }
     anyhow!(error).context(operation)
 }
 
 /// Structured `auth_error` for a harness that rejected Holon as unauthenticated.
-fn acp_authentication_error(harness: &str, error: &AcpError) -> crate::runtime_error::RuntimeError {
+fn acp_authentication_error(
+    harness: &str,
+    operation: &'static str,
+    error: &AcpError,
+) -> crate::runtime_error::RuntimeError {
     use crate::runtime_error::{RuntimeError, RuntimeErrorDomain};
 
     let (message, auth_methods) = match error {
@@ -1753,7 +1774,10 @@ fn acp_authentication_error(harness: &str, error: &AcpError) -> crate::runtime_e
     }
     let runtime_error =
         RuntimeError::new(RuntimeErrorDomain::Runtime, "auth_error", operator_message)
-            .with_safe_context("stage", "acp_authentication");
+            .with_safe_context("stage", "acp_authentication")
+            // The stage alone cannot tell `initialize` from `session/new`; keep
+            // the failing operation so the handshake step stays diagnosable.
+            .with_safe_context("operation", operation);
     match error.recovery_hint() {
         Some(hint) => runtime_error.with_recovery_hint(hint),
         None => runtime_error,
@@ -1910,6 +1934,11 @@ pub(crate) struct AcpResidentSession {
     bound_writable: bool,
     bound_process_execution_exposed: bool,
     bound_interactive: bool,
+    /// Launch switches the resident connection was opened with. Config can be
+    /// hot-reloaded while the process keeps running, so reuse must re-check
+    /// them instead of trusting a launch decision the process no longer has.
+    bound_disable_telemetry: bool,
+    bound_dangerously_skip_permissions: bool,
     pub(crate) last_used: Instant,
 }
 
@@ -2048,6 +2077,13 @@ impl super::RuntimeHandle {
         *self.inner.acp_test_harness.lock().await = Some(factory);
     }
 
+    /// Swap the ACP config the way a hot config reload would for the next turn.
+    pub(crate) fn set_acp_config_for_test(&self, acp: crate::config::AcpConfigFile) {
+        let mut snapshot = (**self.inner.config_snapshot.load()).clone();
+        snapshot.acp = acp;
+        self.inner.config_snapshot.store(Arc::new(snapshot));
+    }
+
     async fn test_acp_harness(&self, gate: Arc<AcpPermissionGate>) -> Option<SpawnedHarness> {
         let factory = self.inner.acp_test_harness.lock().await.clone()?;
         Some(factory(gate as Arc<dyn AcpClientHandler>).into())
@@ -2084,6 +2120,7 @@ impl super::RuntimeHandle {
                 "work_item_id": turn.work_item_id,
                 "flag": profile.spec.dangerously_skip_permissions_arg,
                 "decision_source": profile.permission_bypass_source.as_str(),
+                "permission_mode": profile.permission_mode.as_str(),
                 "telemetry_disabled": profile.disable_telemetry,
             }),
         )
@@ -2195,6 +2232,9 @@ impl super::RuntimeHandle {
             ) && resident.bound_writable == gate.writable
                 && resident.bound_process_execution_exposed == gate.process_execution_exposed
                 && resident.bound_interactive == gate.mode.is_interactive()
+                && resident.bound_disable_telemetry == profile.disable_telemetry
+                && resident.bound_dangerously_skip_permissions
+                    == profile.dangerously_skip_permissions
                 && acp_resident_is_alive(&resident).await
             {
                 return Ok(AcpSessionAcquire {
@@ -2443,6 +2483,8 @@ impl super::RuntimeHandle {
         let bound_writable = gate.writable;
         let bound_process_execution_exposed = gate.process_execution_exposed;
         let bound_interactive = gate.mode.is_interactive();
+        let bound_disable_telemetry = profile.disable_telemetry;
+        let bound_dangerously_skip_permissions = profile.dangerously_skip_permissions;
         Ok(AcpSessionAcquire {
             session: AcpResidentSession {
                 client,
@@ -2456,6 +2498,8 @@ impl super::RuntimeHandle {
                 bound_writable,
                 bound_process_execution_exposed,
                 bound_interactive,
+                bound_disable_telemetry,
+                bound_dangerously_skip_permissions,
                 last_used: Instant::now(),
             },
             new_session,
@@ -3493,6 +3537,20 @@ mod acp_driver_tests {
         config
     }
 
+    fn acp_config_with_mode(
+        permission_mode: &str,
+        dangerously_skip_permissions: Option<bool>,
+    ) -> crate::config::AcpConfigFile {
+        let mut overrides = crate::config::AcpHarnessProfileConfigFile::default();
+        overrides.permission_mode = Some(permission_mode.to_string());
+        overrides.dangerously_skip_permissions = dangerously_skip_permissions;
+        let mut config = crate::config::AcpConfigFile::default();
+        config
+            .profiles
+            .insert(holon_acp::antigravity::NAME.to_string(), overrides);
+        config
+    }
+
     #[test]
     fn launch_defaults_disable_telemetry_and_open_the_permission_gate() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3587,7 +3645,56 @@ mod acp_driver_tests {
         assert_eq!(data["turn_id"], "turn-acp-test");
         assert_eq!(data["flag"], "--dangerously-skip-permissions");
         assert_eq!(data["decision_source"], "profile_default");
+        assert_eq!(data["permission_mode"], "unattended");
         assert_eq!(data["telemetry_disabled"], true);
+    }
+
+    #[test]
+    fn interactive_permission_mode_keeps_the_bypass_closed_by_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exec = execution(dir.path(), true);
+        let profile = resolve_profile(
+            &acp_config_with_mode("interactive", None),
+            &antigravity_binding(),
+            &exec,
+        )
+        .expect("profile");
+
+        // Operator approval is the only gate interactive mode has, so the
+        // harness' own auto-approval stays off until a profile opens it.
+        assert!(profile.permission_mode.is_interactive());
+        assert!(!profile.dangerously_skip_permissions);
+        assert_eq!(
+            profile.permission_bypass_source,
+            AcpPermissionBypassSource::InteractiveDefault
+        );
+        assert!(profile.disable_telemetry);
+        let (request, _env) = launch_request(&profile, &exec).expect("launch request");
+        let launch = profile.spec.build_launch(&request);
+        assert!(!launch
+            .args
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"));
+        ensure_permission_gate_preserved(&launch, &profile).expect("nothing to admit");
+
+        // An explicit value still wins and is attributed to configuration.
+        let profile = resolve_profile(
+            &acp_config_with_mode("interactive", Some(true)),
+            &antigravity_binding(),
+            &exec,
+        )
+        .expect("profile");
+        assert!(profile.dangerously_skip_permissions);
+        assert_eq!(
+            profile.permission_bypass_source,
+            AcpPermissionBypassSource::Config
+        );
+        let (request, _env) = launch_request(&profile, &exec).expect("launch request");
+        let launch = profile.spec.build_launch(&request);
+        assert!(launch
+            .args
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"));
     }
 
     #[tokio::test]
@@ -3863,6 +3970,45 @@ mod acp_driver_tests {
             peer.method_count("session/new"),
             1,
             "the conversation continues instead of restarting"
+        );
+        assert_eq!(peer.method_count("session/resume"), 1);
+        assert_eq!(peer.prompts()[1].0, persisted.resume_session_id);
+    }
+
+    #[tokio::test]
+    async fn reloaded_launch_switches_rebuild_the_resident_session() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        let peer = install_test_peer(
+            &runtime,
+            TestPeerConfig {
+                supports_resume: true,
+                supports_load: false,
+                resume_missing: false,
+                prompt_error: None,
+            },
+        )
+        .await;
+        let root = tempdir().unwrap();
+        let exec = execution(root.path(), true);
+
+        turn(&runtime, &exec, "first request").await;
+        let persisted = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .acp_session_state
+            .expect("session state is persisted");
+
+        // A hot config reload closes the bypass, but the running process still
+        // carries the old flag; the resident must be rebuilt for the decision
+        // to take effect and to keep the audit evidence truthful.
+        runtime.set_acp_config_for_test(acp_config(None, Some(false)));
+        turn(&runtime, &exec, "second request").await;
+
+        assert_eq!(
+            peer.handshakes(),
+            2,
+            "a switched launch decision must not reuse the old process"
         );
         assert_eq!(peer.method_count("session/resume"), 1);
         assert_eq!(peer.prompts()[1].0, persisted.resume_session_id);

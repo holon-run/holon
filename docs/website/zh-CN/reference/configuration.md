@@ -721,7 +721,7 @@ Holon 对 HTTP 端点实施会话超时控制与可选的 CSRF 跨站请求防�
 | `acp.profiles.<name>.role` | string | 未设置 | 通过托管进程 persona 通道下发的角色文本 |
 | `acp.profiles.<name>.permission_mode` | string | `"unattended"` | `unattended` 直接按静态工作区策略裁决；`interactive` 通过 [HTTP 控制平面](/zh-CN/reference/http-control-plane.md) 处理权限审批与表单输入 |
 | `acp.profiles.<name>.disable_telemetry` | boolean | `true` | 通过传入 profile 声明的遥测开关抑制 Harness 自身的上游遥测；设为 `false` 可恢复上游遥测。未声明该开关的 profile 行为不变 |
-| `acp.profiles.<name>.dangerously_skip_permissions` | boolean | `true` | 传入 profile 声明的权限绕过开关（`antigravity` 为 `--dangerously-skip-permissions`）；设为 `false` 可恢复静态权限门禁。每次放开权限门的 turn 都会记录一条 `acp_permission_gate_disabled` 审计事件 |
+| `acp.profiles.<name>.dangerously_skip_permissions` | boolean | `unattended` 为 `true`，`interactive` 为 `false` | 传入 profile 声明的权限绕过开关（`antigravity` 为 `--dangerously-skip-permissions`）。`interactive` 默认关闭，因为该开关会让 Harness 自动批准所有权限请求、绕过人工审批；显式配置始终优先，设为 `false` 可恢复静态权限门禁。每次放开权限门的 turn 都会记录一条 `acp_permission_gate_disabled` 审计事件 |
 
 在 `interactive` 模式下，所有权限请求（包括工作区根目录内的操作）都会通过 `GET/POST /api/control/agents/:id/acp-interactions` 等待人工答复，超时自动拒绝。只有 `allow_always` 会在当前 ACP 会话和工作区信任域内保留授权，并在会话轮换时清除；`reject_always` 仅拒绝当前请求。登录、错误码与观测事件详情见 [ACP 托管代理排障](/zh-CN/guides/troubleshooting.md#acp-托管代理agy-acp)。
 

@@ -734,13 +734,14 @@ impl AcpConfigFile {
             .unwrap_or(true)
     }
 
-    /// Whether the launch may pass the profile's declared permission-bypass
-    /// flag. Defaults to `true`; an explicit `false` restores the static
-    /// permission-gate rejection.
-    pub fn dangerously_skip_permissions(&self, profile: &str) -> bool {
+    /// The explicit `acp.profiles.<name>.dangerously_skip_permissions` value.
+    ///
+    /// The effective default is resolved by the caller because it depends on
+    /// `permission_mode`: unattended turns open the gate, while interactive
+    /// approval keeps it closed unless the profile opens it explicitly.
+    pub fn permission_bypass_override(&self, profile: &str) -> Option<bool> {
         self.profile(profile)
             .and_then(|overrides| overrides.dangerously_skip_permissions)
-            .unwrap_or(true)
     }
 
     /// Effective interaction timeout. Zero is rejected by the caller.
@@ -774,8 +775,9 @@ pub struct AcpHarnessProfileConfigFile {
     /// Suppress the harness' own upstream telemetry. Unset means `true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_telemetry: Option<bool>,
-    /// Allow the profile's declared permission-bypass flag. Unset means
-    /// `true`; `false` restores the static permission-gate rejection.
+    /// Allow the profile's declared permission-bypass flag. Unset means `true`
+    /// for `unattended` and `false` for `interactive`, so interactive approval
+    /// is never silently auto-approved; an explicit value always wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dangerously_skip_permissions: Option<bool>,
 }
