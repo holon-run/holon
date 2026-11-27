@@ -86,7 +86,11 @@ fn reader_warmup_initializes_and_reuses_every_real_pool_reader() -> Result<()> {
 
     for capacity in [1, 2, 4] {
         let (_dir, mut db) = fixture()?;
-        db.configure_reader_pool_for_tests(capacity, Duration::from_millis(250))?;
+        // This case asserts warm-reader reuse and connection/fd accounting, not checkout
+        // latency, so the admission budget is only a hang guard. The finite admission
+        // timeout contract (retryable error, no overflow connection) belongs to
+        // `reader_warmup_saturation_has_no_overflow_connection` below.
+        db.configure_reader_pool_for_tests(capacity, Duration::from_secs(60))?;
         #[cfg(target_os = "linux")]
         let wal = _dir.path().join("runtime.sqlite-wal").canonicalize()?;
         #[cfg(target_os = "linux")]

@@ -482,9 +482,11 @@ async fn agent_message_wait_timeout_does_not_stop_target_or_revive_for_late_repl
 
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn agent_message_wait_recovered_outbox_beats_expired_deadline() {
+async fn agent_message_wait_recovered_outbox_settles_completed_without_resend() {
+    // Production-default reply window: acceptance never has to land inside a short wall-clock
+    // slice, so this case does not depend on real-time expiry.
     let (_home, host, parent, peer, gate, receipt) =
-        reply_gate_fixture(1000, "durable final", false).await;
+        reply_gate_fixture(30 * 60 * 1000, "durable final", false).await;
     let task = parent
         .storage()
         .latest_task_record(&receipt.task_handle.task_id)
@@ -494,7 +496,11 @@ async fn agent_message_wait_recovered_outbox_beats_expired_deadline() {
     gate.release.notify_one();
     wait_for_agent_inputs_settled(&peer).await;
     assert_eq!(reply_outcome_count(&host, &task.id), 1);
-    tokio::time::sleep(Duration::from_millis(1100)).await;
+    // The accepted reply commits its outbox/outcome during normal settlement, and once that
+    // outcome is durable `resolve_message_wait` returns it directly, so the reply window no
+    // longer changes the result. Reply-window expiry precedence is covered deterministically at
+    // the DB layer in `agent_message_delivery::replies::tests`; this case keeps the in-process
+    // supervised-recovery assertion without depending on real-time expiry.
     let (reattached, remaining) = parent
         .recover_supervised_child_tasks(vec![task.clone()])
         .await
@@ -505,7 +511,7 @@ async fn agent_message_wait_recovered_outbox_beats_expired_deadline() {
     assert_eq!(terminal.status, TaskStatus::Completed);
     assert_eq!(
         terminal.recovery, task.recovery,
-        "recovery must not extend the deadline"
+        "recovery must not rewrite the durable reply window"
     );
     let result = parent
         .storage()
@@ -518,6 +524,8 @@ async fn agent_message_wait_recovered_outbox_beats_expired_deadline() {
             text: "durable final".into()
         }
     );
+    // The committed outbox publishes exactly once and recovery does not resend.
+    assert_eq!(reply_outcome_count(&host, &task.id), 1);
     assert_eq!(reply_result_count(&host, &task.id), 1);
     host.shutdown().await.unwrap();
 }
@@ -644,7 +652,7 @@ async fn agent_message_wait_retries_outbox_read_and_terminal_commit_without_synt
 #[tokio::test]
 async fn agent_message_wait_durable_outbox_survives_a_real_host_restart_once() {
     let (_home, host, parent, peer, gate, receipt) =
-        reply_gate_fixture(1000, "answer committed before restart", false).await;
+        reply_gate_fixture(30 * 60 * 1000, "answer committed before restart", false).await;
     let task = parent
         .storage()
         .latest_task_record(&receipt.task_handle.task_id)
@@ -655,12 +663,13 @@ async fn agent_message_wait_durable_outbox_survives_a_real_host_restart_once() {
     wait_for_agent_inputs_settled(&peer).await;
     assert_eq!(reply_outcome_count(&host, &task.id), 1);
     assert_eq!(reply_result_count(&host, &task.id), 0);
+    // The reply is durable before the restart, so no reply window has to elapse: the
+    // restarted host must settle the task from the committed outbox exactly once.
     let config = host.config().as_ref().clone();
     host.shutdown().await.unwrap();
     drop(peer);
     drop(parent);
     drop(host);
-    tokio::time::sleep(Duration::from_millis(1100)).await;
 
     let restarted =
         RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("must not resend")))
@@ -672,7 +681,10 @@ async fn agent_message_wait_durable_outbox_survives_a_real_host_restart_once() {
     let parent = restarted.default_runtime().await.unwrap();
     let terminal = wait_for_terminal_task(&parent, &task.id).await;
     assert_eq!(terminal.status, TaskStatus::Completed);
-    assert_eq!(terminal.recovery, task.recovery);
+    assert_eq!(
+        terminal.recovery, task.recovery,
+        "restart recovery must not rewrite the durable reply window"
+    );
     let result = parent
         .storage()
         .read_message_by_id(&format!("message:agent-message-wait:{}", task.id))
@@ -684,7 +696,7 @@ async fn agent_message_wait_durable_outbox_survives_a_real_host_restart_once() {
             text: "answer committed before restart".into()
         }
     );
-    // A stale recovery snapshot and repeated reconciliation cannot publish twice.
+    // Repeated reconciliation with the persisted recovery spec cannot publish twice.
     parent
         .recover_supervised_child_tasks(vec![task.clone(), task.clone()])
         .await
