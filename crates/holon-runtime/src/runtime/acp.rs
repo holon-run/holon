@@ -1206,6 +1206,95 @@ impl AcpTurnProjection {
     }
 }
 
+/// Turn-dimension binding resolved before an ACP turn runs.
+///
+/// ACP assistant rounds must carry the same turn keys as a native round so
+/// turn-scoped transcript reads, turn revisions, and the agent-message reply
+/// gate can find them. The settle path resolves this once and passes it in;
+/// the evidence writer never re-reads mutable agent state on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AcpTurnMetadata {
+    pub(crate) turn_id: String,
+    pub(crate) turn_index: u64,
+    pub(crate) work_item_id: Option<String>,
+}
+
+impl AcpTurnMetadata {
+    /// Resolve the turn binding with the same precedence `build_turn_record`
+    /// uses: execution binding, then the turn's work item, then the agent's.
+    ///
+    /// `current_turn_id` must already be assigned. Synthesizing one here would
+    /// split the evidence identity from the terminal identity.
+    pub(crate) fn resolve(
+        current_turn_id: Option<&str>,
+        turn_index: u64,
+        execution_work_item_id: Option<Option<&str>>,
+        current_turn_work_item_id: Option<&str>,
+        current_work_item_id: Option<&str>,
+    ) -> Result<Self> {
+        let turn_id = current_turn_id
+            .map(str::trim)
+            .filter(|turn_id| !turn_id.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                anyhow!("ACP turn has no current_turn_id; refusing to synthesize a turn identity")
+            })?;
+        let work_item_id = match execution_work_item_id {
+            // An execution binding is authoritative even when it carries no
+            // work item, exactly like `build_turn_record`.
+            Some(work_item_id) => work_item_id.map(str::to_owned),
+            None => current_turn_work_item_id
+                .map(str::to_owned)
+                .or_else(|| current_work_item_id.map(str::to_owned)),
+        };
+        Ok(Self {
+            turn_id,
+            turn_index,
+            work_item_id,
+        })
+    }
+}
+
+/// Build the ACP assistant-round entry for one settled turn.
+///
+/// The turn keys mirror a native assistant round so every turn-scoped reader
+/// sees one shape regardless of execution driver.
+fn acp_assistant_round_entry(
+    agent_id: &str,
+    projection: &AcpTurnProjection,
+    stop_reason: &str,
+    permission_decisions: Vec<Value>,
+    session_id: &str,
+    turn: &AcpTurnMetadata,
+) -> crate::types::TranscriptEntry {
+    crate::types::TranscriptEntry {
+        stop_reason: Some(stop_reason.to_string()),
+        // `usage_update` reports session context occupancy, never a
+        // per-turn token delta, so the turn counters stay absent.
+        input_tokens: None,
+        output_tokens: None,
+        ..crate::types::TranscriptEntry::new(
+            agent_id.to_string(),
+            crate::types::TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            json!({
+                "driver": "acp",
+                "session_id": session_id,
+                "turn_id": turn.turn_id,
+                "turn_index": turn.turn_index,
+                "work_item_id": turn.work_item_id,
+                "round_purpose": "agent_response",
+                "visibility": "operator_visible",
+                "blocks": projection.blocks,
+                "usage": projection.usage,
+                "evidence": projection.evidence,
+                "permission_decisions": permission_decisions,
+            }),
+        )
+    }
+}
+
 /// Project one `session/update` stream into ledger blocks and evidence.
 fn project_updates(updates: &[SessionUpdate]) -> AcpTurnProjection {
     let mut projection = AcpTurnProjection::new();
@@ -2248,6 +2337,7 @@ impl super::RuntimeHandle {
         prompt: &str,
         execution: &EffectiveExecution,
         binding: &AcpDriverBinding,
+        turn: &AcpTurnMetadata,
         cancel: CancellationToken,
     ) -> Result<AcpTurnResult> {
         let config = self.inner.config_snapshot.load().acp.clone();
@@ -2339,6 +2429,7 @@ impl super::RuntimeHandle {
                 &stop_reason,
                 session.gate.drain(),
                 session_id.as_str(),
+                turn,
             )
             .await
         {
@@ -2442,28 +2533,16 @@ impl super::RuntimeHandle {
         stop_reason: &str,
         permission_decisions: Vec<Value>,
         session_id: &str,
+        turn: &AcpTurnMetadata,
     ) -> Result<String> {
-        let entry = crate::types::TranscriptEntry {
-            stop_reason: Some(stop_reason.to_string()),
-            // `usage_update` reports session context occupancy, never a
-            // per-turn token delta, so the turn counters stay absent.
-            input_tokens: None,
-            output_tokens: None,
-            ..crate::types::TranscriptEntry::new(
-                agent_id.to_string(),
-                crate::types::TranscriptEntryKind::AssistantRound,
-                Some(1),
-                None,
-                json!({
-                    "driver": "acp",
-                    "session_id": session_id,
-                    "blocks": projection.blocks,
-                    "usage": projection.usage,
-                    "evidence": projection.evidence,
-                    "permission_decisions": permission_decisions,
-                }),
-            )
-        };
+        let entry = acp_assistant_round_entry(
+            agent_id,
+            projection,
+            stop_reason,
+            permission_decisions,
+            session_id,
+            turn,
+        );
         let entry_id = entry.id.clone();
         self.persist_transcript_evidence(&entry).await?;
         Ok(entry_id)
@@ -3187,12 +3266,15 @@ mod acp_driver_tests {
     }
 
     async fn turn(runtime: &RuntimeHandle, execution: &EffectiveExecution, prompt: &str) -> String {
+        let turn = AcpTurnMetadata::resolve(Some("turn-acp-test"), 0, None, None, None)
+            .expect("turn metadata");
         runtime
             .run_acp_turn(
                 "default",
                 prompt,
                 execution,
                 &antigravity_binding(),
+                &turn,
                 CancellationToken::new(),
             )
             .await
@@ -3862,5 +3944,72 @@ mod acp_driver_tests {
         let usage = projection.usage.as_ref().expect("usage projection");
         assert_eq!(usage["used"], 10);
         assert_eq!(usage["size"], 100);
+    }
+
+    fn acp_turn_metadata() -> AcpTurnMetadata {
+        AcpTurnMetadata::resolve(Some("turn-acp"), 3, Some(Some("work-item-acp")), None, None)
+            .expect("turn metadata")
+    }
+
+    #[test]
+    fn acp_assistant_round_carries_native_turn_dimension_keys() {
+        let projection = project_updates(&[SessionUpdate::AgentMessageChunk {
+            content: ContentBlock::text("ACP-agy-e2e ok"),
+        }]);
+        let entry = acp_assistant_round_entry(
+            "agent-a",
+            &projection,
+            "end_turn",
+            Vec::new(),
+            "session-1",
+            &acp_turn_metadata(),
+        );
+        assert_eq!(
+            entry.kind,
+            crate::types::TranscriptEntryKind::AssistantRound
+        );
+        assert_eq!(entry.data["driver"], "acp");
+        assert_eq!(entry.data["turn_id"], "turn-acp");
+        assert_eq!(entry.data["turn_index"], 3);
+        assert_eq!(entry.data["work_item_id"], "work-item-acp");
+        assert_eq!(entry.data["round_purpose"], "agent_response");
+        assert_eq!(entry.data["visibility"], "operator_visible");
+        assert!(entry.data["blocks"]
+            .as_array()
+            .expect("blocks")
+            .iter()
+            .any(|block| block["type"] == "text" && block["text"] == "ACP-agy-e2e ok"));
+    }
+
+    #[test]
+    fn acp_turn_metadata_requires_an_assigned_turn_id() {
+        for missing in [None, Some(""), Some("   ")] {
+            let error = AcpTurnMetadata::resolve(missing, 0, None, None, None)
+                .expect_err("an unassigned ACP turn must fail fast");
+            assert!(
+                error.to_string().contains("current_turn_id"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn acp_turn_metadata_work_item_precedence_matches_turn_record() {
+        let resolve = |execution, turn, agent| {
+            AcpTurnMetadata::resolve(Some("turn-acp"), 1, execution, turn, agent)
+                .expect("turn metadata")
+                .work_item_id
+        };
+        assert_eq!(
+            resolve(Some(Some("execution")), Some("turn"), Some("agent")).as_deref(),
+            Some("execution")
+        );
+        assert_eq!(resolve(Some(None), Some("turn"), Some("agent")), None);
+        assert_eq!(
+            resolve(None, Some("turn"), Some("agent")).as_deref(),
+            Some("turn")
+        );
+        assert_eq!(resolve(None, None, Some("agent")).as_deref(), Some("agent"));
+        assert_eq!(resolve(None, None, None), None);
     }
 }

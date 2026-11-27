@@ -10906,6 +10906,82 @@ DELETE FROM schema_migrations WHERE version = 67;
     }
 
     #[test]
+    fn acp_assistant_round_turn_metadata_populates_columns_and_advances_revision() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let turn_id = "turn-acp";
+        let acp_round = TranscriptEntry::new(
+            "agent-a",
+            TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            serde_json::json!({
+                "driver": "acp",
+                "session_id": "session-1",
+                "turn_id": turn_id,
+                "turn_index": 4,
+                "work_item_id": "work-item-acp",
+                "round_purpose": "agent_response",
+                "visibility": "operator_visible",
+                "blocks": [{"type": "text", "text": "ACP-agy-e2e ok"}],
+            }),
+        );
+        db.transcript_entries().upsert(&acp_round)?;
+        // The pre-fix ACP shape carries no turn key. It must stay invisible to
+        // turn-scoped reads instead of being guessed into another turn.
+        let legacy_round = TranscriptEntry::new(
+            "agent-a",
+            TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            serde_json::json!({
+                "driver": "acp",
+                "session_id": "session-1",
+                "blocks": [],
+            }),
+        );
+        db.transcript_entries().upsert(&legacy_round)?;
+
+        let entries = db
+            .transcript_entries()
+            .for_turn_ids("agent-a", &[turn_id.to_string()])?;
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![acp_round.id.as_str()]
+        );
+
+        let (column_turn, column_work_item): (Option<String>, Option<String>) =
+            db.connection()?.query_row(
+                "SELECT turn_id, work_item_id FROM transcript_entries WHERE evidence_id = ?1",
+                [&acp_round.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+        assert_eq!(column_turn.as_deref(), Some(turn_id));
+        assert_eq!(column_work_item.as_deref(), Some("work-item-acp"));
+        let legacy_turn: Option<String> = db.connection()?.query_row(
+            "SELECT turn_id FROM transcript_entries WHERE evidence_id = ?1",
+            [&legacy_round.id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(legacy_turn, None);
+
+        let revision: i64 = db.connection()?.query_row(
+            "SELECT summary_revision FROM conversation_turn_revisions
+             WHERE agent_id = 'agent-a' AND turn_id = ?1",
+            [turn_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            revision, 1,
+            "turn-scoped writes must advance the turn revision"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn provider_quota_incident_survives_reopen_and_resolves() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
