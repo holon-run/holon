@@ -6,11 +6,13 @@ on:
       - '.github/workflows/**'
       - 'action.yml'
       - 'scripts/beta_train_ci_gate*.sh'
+      - 'scripts/gradle_flake_retry*.sh'
   push:
     paths:
       - '.github/workflows/**'
       - 'action.yml'
       - 'scripts/beta_train_ci_gate*.sh'
+      - 'scripts/gradle_flake_retry*.sh'
   workflow_dispatch:
 
 permissions:
@@ -38,3 +40,13 @@ jobs:
 
       - name: Run beta-train CI gate tests
         run: bash scripts/beta_train_ci_gate_test.sh
+
+  gradle-flake-retry:
+    name: Gradle flake retry tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Gradle flake retry tests
+        run: bash scripts/gradle_flake_retry_test.sh
