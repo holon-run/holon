@@ -1,0 +1,31 @@
+# Magpie Optional API Key
+
+Decision:
+
+- the built-in `magpie` provider declares an optional `MAGPIE_API_KEY`
+  (`credential_envs = ["MAGPIE_API_KEY"]`), so config surfaces report
+  `credential_kind = "api_key"` and `api_key_supported = true`, while
+  `ModelDiscoveryAuth` stays `Optional`.
+- `built_in_provider_allows_anonymous_access` (in
+  `crates/holon-domain/src/provider_registry.rs`) marks the providers that may
+  skip the credential requirement. Only `magpie` is listed. When the key is
+  unset, `provider_has_usable_auth` still returns true and the Anthropic
+  transport sends no `Authorization` header instead of failing.
+
+Reason:
+
+- the official Magpie docs state that a loopback gateway accepts any key
+  (metering is by the first User-Agent word); only cross-machine "Share on
+  local network" access requires the user gateway key. `MAGPIE_API_KEY` is a
+  Holon-side convention, not an official Magpie environment variable.
+- treating the credential as required would regress the zero-config loopback
+  path; treating it as absent (`CredentialKind::None`) hides the API Key input
+  and cannot express the cross-machine attribution case. Declaring it optional
+  keeps both the anonymous default and the configurable attribution path.
+
+Preserved boundary:
+
+- providers with a required credential keep the historical behavior: a missing
+  credential still fails, because they are not in the anonymous-access set.
+- when `MAGPIE_API_KEY` is set, the existing API Key provider path injects
+  `Authorization: Bearer magpie-<app-id>` unchanged.

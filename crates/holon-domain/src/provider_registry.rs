@@ -375,7 +375,7 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
     ),
     provider!(
         "magpie" => "magpie" @ "default",
-        AnthropicMessages, "http://127.0.0.1:3425", [],
+        AnthropicMessages, "http://127.0.0.1:3425", ["MAGPIE_API_KEY"],
         Generic, AnthropicCompatibleImplicitCache, None, None,
         discovery!(Optional, ModelDiscoveryRoute::OpenAiV1, Magpie),
         DiscoveryOnly
@@ -590,6 +590,21 @@ pub fn provider_definition(legacy_provider: &str) -> Option<&'static ProviderDef
     PROVIDER_DEFINITIONS
         .iter()
         .find(|definition| definition.legacy_provider == legacy_provider)
+}
+
+/// Built-in providers that serve anonymous (credential-free) requests even
+/// though they also declare an optional API key.
+///
+/// The loopback Magpie gateway meters by the first User-Agent word and accepts
+/// any key for local use; only cross-machine "Share on local network" access
+/// requires the user gateway key. Callers use this to keep the zero-config path
+/// working when the optional credential is unset, while config surfaces still
+/// report the credential as supported and optional.
+///
+/// `MAGPIE_API_KEY` is a Holon-side convention for this optional credential; it
+/// is not an official Magpie environment variable.
+pub fn built_in_provider_allows_anonymous_access(legacy_provider: &str) -> bool {
+    matches!(legacy_provider, "magpie")
 }
 
 pub fn built_in_provider_endpoint_identity(

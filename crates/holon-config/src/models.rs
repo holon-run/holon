@@ -1756,7 +1756,12 @@ pub(crate) fn authenticated_provider_ids(providers: &ProviderRegistry) -> Vec<Pr
 #[doc(hidden)]
 pub fn provider_has_usable_auth(provider: &ProviderRuntimeConfig) -> bool {
     match provider.auth.source {
-        CredentialSource::Env => provider.has_configured_credential(),
+        CredentialSource::Env => {
+            provider.has_configured_credential()
+                || holon_domain::model_values::built_in_provider_allows_anonymous_access(
+                    provider.id.as_str(),
+                )
+        }
         CredentialSource::AuthProfile => {
             provider.has_configured_credential()
                 || (provider.id.is_openai_codex()

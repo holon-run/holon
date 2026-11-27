@@ -93,8 +93,10 @@ async fn built_in_magpie_default_endpoint_sends_anthropic_messages_without_autho
         }),
     ))
     .await;
-    // The built-in `magpie` provider is zero-config: root base URL and no
-    // credential, matching the registry default before any user override.
+    // The built-in `magpie` provider binds an optional `MAGPIE_API_KEY`, but
+    // loopback Magpie accepts anonymous requests. With the key unset the
+    // transport must not reject the request: it sends no Authorization header
+    // instead of failing on the missing credential.
     let provider_config = ProviderRuntimeConfig {
         headers: Default::default(),
         id: ProviderId::parse("magpie").unwrap(),
@@ -102,7 +104,14 @@ async fn built_in_magpie_default_endpoint_sends_anthropic_messages_without_autho
         route_endpoint: ProviderEndpointId::default_endpoint(),
         transport: ProviderTransportKind::AnthropicMessages,
         base_url,
-        auth: Default::default(),
+        auth: ProviderAuthConfig {
+            source: CredentialSource::Env,
+            kind: CredentialKind::ApiKey,
+            env: Some("MAGPIE_API_KEY".into()),
+            profile: None,
+            external: None,
+            client_id: None,
+        },
         credential: None,
         credential_store_path: None,
         codex_home: None,

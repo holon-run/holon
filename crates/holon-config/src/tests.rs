@@ -1797,13 +1797,28 @@ fn built_in_magpie_provider_is_zero_config_and_usable_without_api_key() {
 
     assert_eq!(magpie.transport, ProviderTransportKind::AnthropicMessages);
     assert_eq!(magpie.base_url, "http://127.0.0.1:3425");
-    assert_eq!(magpie.auth.source, CredentialSource::None);
-    assert_eq!(magpie.auth.kind, CredentialKind::None);
-    assert!(magpie.auth.env.is_none());
+    // The built-in declares an optional Holon-side `MAGPIE_API_KEY`; without it
+    // the provider is still usable because loopback Magpie accepts anonymous
+    // requests.
+    assert_eq!(magpie.auth.source, CredentialSource::Env);
+    assert_eq!(magpie.auth.kind, CredentialKind::ApiKey);
+    assert_eq!(magpie.auth.env.as_deref(), Some("MAGPIE_API_KEY"));
     assert!(magpie.credential.is_none());
-    // D3: an empty `credential_envs` list keeps the zero-config provider usable
-    // even when `MAGPIE_API_KEY` is not set.
     assert!(provider_has_usable_auth(magpie));
+    // The credential stays optional for discovery: without a key the effective
+    // plan is not `Unauthenticated`, so discovery still runs anonymously.
+    let status = holon_provider::model_discovery::discovery_cache_status_for_provider(
+        magpie,
+        None,
+        &holon_provider::model_discovery::ModelDiscoveryCacheFile::default(),
+        std::time::Duration::from_secs(3600),
+        false,
+    );
+    assert!(status.supports_auto_refresh);
+    assert_ne!(
+        status.state,
+        holon_provider::model_discovery::ModelDiscoveryCacheState::Unauthenticated
+    );
 
     let default_config = super::built_in_provider_default_config_with_settings(
         &ProviderId::parse("magpie").unwrap(),
@@ -1816,6 +1831,8 @@ fn built_in_magpie_provider_is_zero_config_and_usable_without_api_key() {
         ProviderTransportKind::AnthropicMessages
     );
     assert_eq!(default_config.base_url, "http://127.0.0.1:3425");
+    // The wizard default config ships empty auth; the credential is only
+    // inherited from the runtime built-in registry, not this config template.
     assert_eq!(default_config.auth.source, CredentialSource::None);
 
     let doc_entries = super::built_in_provider_doc_entries().unwrap();
@@ -1827,7 +1844,7 @@ fn built_in_magpie_provider_is_zero_config_and_usable_without_api_key() {
     assert_eq!(entry.endpoint.as_str(), "default");
     assert_eq!(entry.transport, ProviderTransportKind::AnthropicMessages);
     assert_eq!(entry.base_url, "http://127.0.0.1:3425");
-    assert!(entry.auth_env.is_none());
+    assert_eq!(entry.auth_env.as_deref(), Some("MAGPIE_API_KEY"));
 }
 
 #[test]
@@ -1848,11 +1865,12 @@ fn magpie_explicit_config_overrides_built_in_defaults() {
         .expect("magpie provider");
     assert_eq!(magpie.base_url, "http://127.0.0.1:4325");
     assert_eq!(magpie.transport, ProviderTransportKind::AnthropicMessages);
+    // An explicit `providers.magpie` block carries its own (default empty)
+    // auth, so the built-in optional key is opt-in here.
     assert_eq!(magpie.auth.source, CredentialSource::None);
     assert!(provider_has_usable_auth(magpie));
 
-    // Explicit env auth is opt-in; it resolves a credential only when the
-    // named variable is set.
+    // Opting into env auth resolves a credential when the variable is set.
     set_config_key(&mut config, "providers.magpie.auth.source", "env").unwrap();
     set_config_key(&mut config, "providers.magpie.auth.kind", "api_key").unwrap();
     set_config_key(&mut config, "providers.magpie.auth.env", "MAGPIE_API_KEY").unwrap();
