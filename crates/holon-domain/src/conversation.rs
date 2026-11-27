@@ -549,8 +549,12 @@ pub struct ModelRequestActivity {
     pub failure_kind: Option<String>,
 }
 
-/// One projected model switch inside the turn activity stream. Immutable: the
-/// switch is a single fact and never bumps its revision.
+/// One projected model switch inside the turn activity stream.
+///
+/// Per-slot latest attempt, not a globally immutable fact: the slot identity
+/// is `model_switch:<turn_id>:<ordinal>`, an identical replay leaves it
+/// untouched, and a later write with a different payload for the same slot
+/// replaces the stored switch and bumps its revision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelSwitchActivity {
     pub id: String,

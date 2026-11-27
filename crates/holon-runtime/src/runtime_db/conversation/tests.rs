@@ -2863,7 +2863,7 @@ fn unpaired_started_is_in_flight_until_terminal_then_unfinished() -> Result<()> 
 }
 
 #[test]
-fn model_switch_is_immutable_and_orders_before_after_switch_request() -> Result<()> {
+fn model_switch_replay_is_idempotent_and_orders_before_after_switch_request() -> Result<()> {
     let (_temp_dir, _path, _lock, db) = runtime_db()?;
     db.turn_records().upsert(&turn("turn-model-switch", 1))?;
 
@@ -2878,7 +2878,7 @@ fn model_switch_is_immutable_and_orders_before_after_switch_request() -> Result<
         occurred_at: timestamp(2),
     };
     db.record_model_switch_evidence(AGENT_ID, &switch)?;
-    // Replay must not bump the immutable switch.
+    // An identical replay must not bump the switch slot.
     db.record_model_switch_evidence(AGENT_ID, &switch)?;
 
     let mut after = started_request("turn-model-switch", "turn-model-switch:1:1");
@@ -2897,6 +2897,45 @@ fn model_switch_is_immutable_and_orders_before_after_switch_request() -> Result<
     let second = model_request_item(&page.activities[1]);
     assert_eq!(second.dispatch_reason, "after_switch");
     assert!(first.key.event_seq < second.key.event_seq);
+    Ok(())
+}
+
+#[test]
+fn model_switch_slot_rewrite_takes_the_latest_attempt_and_bumps_revision() -> Result<()> {
+    let (_temp_dir, _path, _lock, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-model-switch-rewrite", 1))?;
+
+    let first = ModelSwitchEvidence {
+        switch_id: "model_switch:turn-model-switch-rewrite:1".into(),
+        turn_id: "turn-model-switch-rewrite".into(),
+        from_provider: "fixture".into(),
+        from_model_ref: "fixture@default/primary-model".into(),
+        to_provider: "fixture".into(),
+        to_model_ref: "fixture@default/fallback-model".into(),
+        reason_category: "rate_limited".into(),
+        occurred_at: timestamp(2),
+    };
+    db.record_model_switch_evidence(AGENT_ID, &first)?;
+
+    // A resumed execution that reuses the same switch slot writes a new
+    // payload for it; the latest attempt wins and the slot revision advances.
+    let second = ModelSwitchEvidence {
+        to_model_ref: "fixture@default/second-fallback-model".into(),
+        reason_category: "timeout".into(),
+        occurred_at: timestamp(3),
+        ..first.clone()
+    };
+    db.record_model_switch_evidence(AGENT_ID, &second)?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-switch-rewrite", 10, None, None)?
+        .expect("turn");
+    assert_eq!(page.activities.len(), 1, "one slot stays one activity");
+    let switch = model_switch_item(&page.activities[0]);
+    assert_eq!(switch.revision, 2, "a rewritten slot bumps its revision");
+    assert_eq!(switch.to_model_ref, "fixture@default/second-fallback-model");
+    assert_eq!(switch.reason_category, "timeout");
     Ok(())
 }
 

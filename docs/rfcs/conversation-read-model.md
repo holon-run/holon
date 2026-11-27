@@ -666,6 +666,15 @@ request without a `finished` counterpart is a legal terminal state; it is
 projected as `status = unfinished` only when the owning turn is terminal, read
 at request time and never backfilled into storage.
 
+Both model kinds store one slot per identity, and a slot always carries the
+latest attempt: an identical replay is a no-op, while a later write with a
+different payload for the same slot replaces the stored row and bumps that
+slot's revision. `model_switch` is therefore per-slot latest-attempt rather
+than a globally immutable fact. Its ordinal counts the switches of one
+execution of that turn, so an execution that later writes the same slot again
+makes the newest switch win and advances the revision; a turn that never
+rewrites a slot keeps every switch at `revision = 1`.
+
 These are safe typed verbose items with bounded fields and authorized detail
 references. Existing inspectors handle large output/diffs. Shared activity
 resolution should be reused rather than implementing another set of tool-state

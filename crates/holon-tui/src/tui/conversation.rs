@@ -385,18 +385,19 @@ impl ConversationModel {
                 if self.wants_details(&turn_id) {
                     self.touch_details(&turn_id);
                     let activities = self.activities.entry(turn_id.clone()).or_default();
-                    let item = activity_item(&activity);
-                    if let Some(old) = activities
-                        .iter_mut()
-                        .find(|old| activity_item(old).id == item.id)
-                    {
-                        if activity_item(old).revision < item.revision {
-                            *old = activity;
+                    let existing = activities
+                        .iter()
+                        .position(|old| activity_view(old).id == activity_view(&activity).id);
+                    if let Some(index) = existing {
+                        if activity_view(&activities[index]).revision
+                            < activity_view(&activity).revision
+                        {
+                            activities[index] = activity;
                         }
                     } else {
                         activities.push(activity);
                     }
-                    activities.sort_by(|a, b| activity_item(a).key.cmp(&activity_item(b).key));
+                    activities.sort_by(|a, b| activity_view(a).key.cmp(activity_view(b).key));
                     if activities.len() > ACTIVITY_LIMIT {
                         activities.drain(..activities.len() - ACTIVITY_LIMIT);
                         self.truncated_details.insert(turn_id);
@@ -445,7 +446,7 @@ impl ConversationModel {
                         if page.has_more {
                             self.truncated_details.insert(turn_id.clone());
                         }
-                        activities.sort_by(|a, b| activity_item(a).key.cmp(&activity_item(b).key));
+                        activities.sort_by(|a, b| activity_view(a).key.cmp(activity_view(b).key));
                         activities.truncate(ACTIVITY_LIMIT);
                         self.touch_details(&turn_id);
                         self.activities.insert(turn_id.clone(), activities);
@@ -508,7 +509,7 @@ impl ConversationModel {
                     Some((
                         turn_id.clone(),
                         tool_id(activity)?.to_owned(),
-                        activity_item(activity).clone(),
+                        activity_item(activity),
                     ))
                 })
             })
@@ -733,6 +734,46 @@ pub(super) fn activity_item(
             key: item.key.clone(),
             revision: item.revision,
             summary: item.summary.clone(),
+        },
+    }
+}
+
+/// Borrowed view over the fields every activity kind exposes.
+///
+/// The model activity kinds carry their own payload types, so no single
+/// borrowed `ActivityItem` exists for them. Borrowing the shared fields keeps
+/// the render path free of the per-activity clone that a materialized item
+/// would cost.
+pub(super) struct ActivityView<'a> {
+    pub id: &'a str,
+    pub key: &'a holon_domain::ActivityKey,
+    pub revision: u64,
+    pub summary: &'a str,
+}
+
+pub(super) fn activity_view(activity: &ConversationActivity) -> ActivityView<'_> {
+    match activity {
+        ConversationActivity::Operator(item)
+        | ConversationActivity::Assistant(item)
+        | ConversationActivity::Tool(item)
+        | ConversationActivity::Wait(item)
+        | ConversationActivity::Error(item) => ActivityView {
+            id: &item.id,
+            key: &item.key,
+            revision: item.revision,
+            summary: &item.summary,
+        },
+        ConversationActivity::ModelRequest(item) => ActivityView {
+            id: &item.id,
+            key: &item.key,
+            revision: item.revision,
+            summary: &item.summary,
+        },
+        ConversationActivity::ModelSwitch(item) => ActivityView {
+            id: &item.id,
+            key: &item.key,
+            revision: item.revision,
+            summary: &item.summary,
         },
     }
 }

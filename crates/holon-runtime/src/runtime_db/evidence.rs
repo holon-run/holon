@@ -224,7 +224,11 @@ impl super::RuntimeDb {
         self.transaction(|tx| insert_model_request_evidence_tx(tx, agent_id, None, evidence))
     }
 
-    /// Persist one immutable `model_switch` evidence row.
+    /// Persist one `model_switch` evidence row per slot.
+    ///
+    /// An identical replay is a no-op. A different payload for the same slot
+    /// replaces the stored switch and bumps its revision (latest attempt
+    /// wins), so the row is not globally immutable.
     pub fn record_model_switch_evidence(
         &self,
         agent_id: &str,
