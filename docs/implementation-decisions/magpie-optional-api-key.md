@@ -20,6 +20,14 @@ Decision:
   stored entry carries an effectively empty auth block, which covers entries
   written before that template change.
 
+- declaring an optional key must not opt magpie into automatic discovery:
+  `ModelCatalogConfig::provider_auto_discovery_allowed` exempts
+  anonymous-access built-ins from the "providers with a required credential keep
+  the historical behavior" branch, so magpie stays gated on an explicit
+  `providers.magpie` entry, a model route reference, or an explicit refresh.
+  Otherwise every gateway start would probe `127.0.0.1:3425` and cache whatever
+  unrelated service answers there.
+
 Reason:
 
 - the official Magpie docs state that a loopback gateway accepts any key
