@@ -17,6 +17,7 @@ pub fn provider_config_views(config: &AppConfig) -> Vec<ProviderConfigView> {
     config
         .providers
         .values()
+        .filter(|provider| crate::provider::provider_exposure(config, provider).is_some())
         .map(|provider| provider_config_view(config, provider))
         .collect()
 }
@@ -27,6 +28,9 @@ pub fn provider_config_view(
 ) -> ProviderConfigView {
     ProviderConfigView {
         id: provider.id.as_str().to_string(),
+        exposure: crate::provider::provider_exposure(config, provider)
+            .map(|exposure| exposure.as_str().to_string())
+            .unwrap_or_default(),
         transport: provider.transport.as_str().to_string(),
         base_url: provider.base_url.clone(),
         auth: ProviderAuthView {

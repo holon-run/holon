@@ -13057,11 +13057,9 @@
       "route_ref": "tencent-tokenhub@messages/deepseek-v4-flash-202605",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek-v4-flash-202605; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
+        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13069,21 +13067,24 @@
       "route_ref": "tencent-tokenhub@messages/deepseek-v4-pro",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek-v4-pro; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max",
+          "none"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/deepseek-v4-pro-0813",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek-v4-pro-0813; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
+        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13091,11 +13092,9 @@
       "route_ref": "tencent-tokenhub@messages/deepseek-v4-pro-202606",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek-v4-pro-202606; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
+        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13103,35 +13102,37 @@
       "route_ref": "tencent-tokenhub@messages/deepseek-v4.1-flash",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek-v4.1-flash; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/deepseek-v4.1-flash-1017",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek-v4.1-flash-1017; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-flash",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek/deepseek-flash; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
+        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13139,11 +13140,9 @@
       "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-v4-flash",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek/deepseek-v4-flash; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
+        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13151,11 +13150,9 @@
       "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-v4-flash-0731",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek/deepseek-v4-flash-0731; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
+        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13163,11 +13160,9 @@
       "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-v4-flash-vision-exp",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek/deepseek-v4-flash-vision-exp; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
+        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13175,11 +13170,9 @@
       "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-v4-pro",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek/deepseek-v4-pro; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
+        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13187,11 +13180,9 @@
       "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-v4-pro-0813",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for deepseek/deepseek-v4-pro-0813; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
+        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13199,55 +13190,67 @@
       "route_ref": "tencent-tokenhub@messages/glm-5.2",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for glm-5.2; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low",
+          "minimal",
+          "none"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/glm-5.3",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for glm-5.3; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/glm-5.3-flash",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for glm-5.3-flash; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "image_input": false,
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/glm-5.3-flashx",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for glm-5.3-flashx; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "image_input": false,
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/hunyuan-role-latest",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for hunyuan-role-latest; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -13257,7 +13260,7 @@
       "route_ref": "tencent-tokenhub@messages/hunyuan-t1-vision-20250916",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for hunyuan-t1-vision-20250916; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -13267,7 +13270,7 @@
       "route_ref": "tencent-tokenhub@messages/hy-role",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for hy-role; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -13277,7 +13280,7 @@
       "route_ref": "tencent-tokenhub@messages/hy-vision-2.0-instruct",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for hy-vision-2.0-instruct; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -13287,53 +13290,60 @@
       "route_ref": "tencent-tokenhub@messages/hy3",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for hy3; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "no_think"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/hy4",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for hy4; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "high",
+          "no_think"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/hy4-flash",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for hy4-flash; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "high",
+          "no_think"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/hy4-preview",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for hy4-preview; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "high",
+          "no_think"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/kimi-k2.6",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for kimi-k2.6; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -13343,8 +13353,9 @@
       "route_ref": "tencent-tokenhub@messages/kimi-k2.7-code",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for kimi-k2.7-code; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
+        "default_max_output_tokens": 32768,
         "capabilities": {},
         "reasoning_effort_options": null
       }
@@ -13353,8 +13364,9 @@
       "route_ref": "tencent-tokenhub@messages/kimi-k2.7-code-highspeed",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for kimi-k2.7-code-highspeed; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
+        "default_max_output_tokens": 32768,
         "capabilities": {},
         "reasoning_effort_options": null
       }
@@ -13363,59 +13375,70 @@
       "route_ref": "tencent-tokenhub@messages/kimi-k2.8-preview",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for kimi-k2.8-preview; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "image_input": false,
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "default_max_output_tokens": 32768,
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/kimi-k3",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for kimi-k3; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "image_input": false,
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 1048576,
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/kimi-k3.1-pro",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for kimi-k3.1-pro; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "image_input": false,
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 1048576,
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/kimi-k3.1-pro-highspeed",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for kimi-k3.1-pro-highspeed; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
-        "capabilities": {
-          "image_input": false,
-          "supports_reasoning": false
-        },
-        "reasoning_effort_options": null
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 1048576,
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
       "route_ref": "tencent-tokenhub@messages/mimo-v2.6-flash",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for mimo-v2.6-flash; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -13425,7 +13448,7 @@
       "route_ref": "tencent-tokenhub@messages/mimo-v2.6-pro",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for mimo-v2.6-pro; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -13435,7 +13458,7 @@
       "route_ref": "tencent-tokenhub@messages/minimax-m3",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for minimax-m3; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -13445,7 +13468,7 @@
       "route_ref": "tencent-tokenhub@messages/minimax-m3.1-flash",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for minimax-m3.1-flash; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -13455,7 +13478,7 @@
       "route_ref": "tencent-tokenhub@messages/step-5-preview",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Tencent TokenHub Anthropic Messages route for step-5-preview; reviewed per model on 2026-11-27.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -15506,7 +15529,7 @@
     },
     {
       "provider": "opencode-go",
-      "model_ref": "opencode-go/deepseek-v4-pro"
+      "model_ref": "opencode-go/minimax-m3"
     },
     {
       "provider": "openrouter",
@@ -15680,7 +15703,7 @@
     },
     {
       "provider": "opencode-go",
-      "route_ref": "opencode-go@default/deepseek-v4-pro"
+      "route_ref": "opencode-go@messages/minimax-m3"
     },
     {
       "provider": "openrouter",
@@ -15704,7 +15727,7 @@
     },
     {
       "provider": "tencent-tokenhub",
-      "route_ref": "tencent-tokenhub@default/hy3"
+      "route_ref": "tencent-tokenhub@messages/hy3"
     },
     {
       "provider": "tencent-tokenhub-messages",
@@ -16758,75 +16781,75 @@
     },
     {
       "model_ref": "tencent-tokenhub/deepseek-v4-flash-202605",
-      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-202605"
+      "route_ref": "tencent-tokenhub@messages/deepseek-v4-flash-202605"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek-v4-pro",
-      "route_ref": "tencent-tokenhub@default/deepseek-v4-pro"
+      "route_ref": "tencent-tokenhub@messages/deepseek-v4-pro"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek-v4-pro-0813",
-      "route_ref": "tencent-tokenhub@default/deepseek-v4-pro-0813"
+      "route_ref": "tencent-tokenhub@messages/deepseek-v4-pro-0813"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek-v4-pro-202606",
-      "route_ref": "tencent-tokenhub@default/deepseek-v4-pro-202606"
+      "route_ref": "tencent-tokenhub@messages/deepseek-v4-pro-202606"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek-v4.1-flash",
-      "route_ref": "tencent-tokenhub@default/deepseek-v4.1-flash"
+      "route_ref": "tencent-tokenhub@messages/deepseek-v4.1-flash"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek-v4.1-flash-1017",
-      "route_ref": "tencent-tokenhub@default/deepseek-v4.1-flash-1017"
+      "route_ref": "tencent-tokenhub@messages/deepseek-v4.1-flash-1017"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-flash",
-      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-flash"
+      "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-flash"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash",
-      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-flash"
+      "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-v4-flash"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash-0731",
-      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-flash-0731"
+      "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-v4-flash-0731"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash-vision-exp",
-      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-flash-vision-exp"
+      "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-v4-flash-vision-exp"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-pro",
-      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-pro"
+      "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-v4-pro"
     },
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-pro-0813",
-      "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-pro-0813"
+      "route_ref": "tencent-tokenhub@messages/deepseek/deepseek-v4-pro-0813"
     },
     {
       "model_ref": "tencent-tokenhub/glm-5.2",
-      "route_ref": "tencent-tokenhub@default/glm-5.2"
+      "route_ref": "tencent-tokenhub@messages/glm-5.2"
     },
     {
       "model_ref": "tencent-tokenhub/glm-5.3",
-      "route_ref": "tencent-tokenhub@default/glm-5.3"
+      "route_ref": "tencent-tokenhub@messages/glm-5.3"
     },
     {
       "model_ref": "tencent-tokenhub/glm-5.3-flash",
-      "route_ref": "tencent-tokenhub@default/glm-5.3-flash"
+      "route_ref": "tencent-tokenhub@messages/glm-5.3-flash"
     },
     {
       "model_ref": "tencent-tokenhub/glm-5.3-flashx",
-      "route_ref": "tencent-tokenhub@default/glm-5.3-flashx"
+      "route_ref": "tencent-tokenhub@messages/glm-5.3-flashx"
     },
     {
       "model_ref": "tencent-tokenhub/hunyuan-role-latest",
-      "route_ref": "tencent-tokenhub@default/hunyuan-role-latest"
+      "route_ref": "tencent-tokenhub@messages/hunyuan-role-latest"
     },
     {
       "model_ref": "tencent-tokenhub/hunyuan-t1-vision-20250916",
-      "route_ref": "tencent-tokenhub@default/hunyuan-t1-vision-20250916"
+      "route_ref": "tencent-tokenhub@messages/hunyuan-t1-vision-20250916"
     },
     {
       "model_ref": "tencent-tokenhub/hy-mt2-lite",
@@ -16842,75 +16865,75 @@
     },
     {
       "model_ref": "tencent-tokenhub/hy-role",
-      "route_ref": "tencent-tokenhub@default/hy-role"
+      "route_ref": "tencent-tokenhub@messages/hy-role"
     },
     {
       "model_ref": "tencent-tokenhub/hy-vision-2.0-instruct",
-      "route_ref": "tencent-tokenhub@default/hy-vision-2.0-instruct"
+      "route_ref": "tencent-tokenhub@messages/hy-vision-2.0-instruct"
     },
     {
       "model_ref": "tencent-tokenhub/hy3",
-      "route_ref": "tencent-tokenhub@default/hy3"
+      "route_ref": "tencent-tokenhub@messages/hy3"
     },
     {
       "model_ref": "tencent-tokenhub/hy4",
-      "route_ref": "tencent-tokenhub@default/hy4"
+      "route_ref": "tencent-tokenhub@messages/hy4"
     },
     {
       "model_ref": "tencent-tokenhub/hy4-flash",
-      "route_ref": "tencent-tokenhub@default/hy4-flash"
+      "route_ref": "tencent-tokenhub@messages/hy4-flash"
     },
     {
       "model_ref": "tencent-tokenhub/hy4-preview",
-      "route_ref": "tencent-tokenhub@default/hy4-preview"
+      "route_ref": "tencent-tokenhub@messages/hy4-preview"
     },
     {
       "model_ref": "tencent-tokenhub/kimi-k2.6",
-      "route_ref": "tencent-tokenhub@default/kimi-k2.6"
+      "route_ref": "tencent-tokenhub@messages/kimi-k2.6"
     },
     {
       "model_ref": "tencent-tokenhub/kimi-k2.7-code",
-      "route_ref": "tencent-tokenhub@default/kimi-k2.7-code"
+      "route_ref": "tencent-tokenhub@messages/kimi-k2.7-code"
     },
     {
       "model_ref": "tencent-tokenhub/kimi-k2.7-code-highspeed",
-      "route_ref": "tencent-tokenhub@default/kimi-k2.7-code-highspeed"
+      "route_ref": "tencent-tokenhub@messages/kimi-k2.7-code-highspeed"
     },
     {
       "model_ref": "tencent-tokenhub/kimi-k2.8-preview",
-      "route_ref": "tencent-tokenhub@default/kimi-k2.8-preview"
+      "route_ref": "tencent-tokenhub@messages/kimi-k2.8-preview"
     },
     {
       "model_ref": "tencent-tokenhub/kimi-k3",
-      "route_ref": "tencent-tokenhub@default/kimi-k3"
+      "route_ref": "tencent-tokenhub@messages/kimi-k3"
     },
     {
       "model_ref": "tencent-tokenhub/kimi-k3.1-pro",
-      "route_ref": "tencent-tokenhub@default/kimi-k3.1-pro"
+      "route_ref": "tencent-tokenhub@messages/kimi-k3.1-pro"
     },
     {
       "model_ref": "tencent-tokenhub/kimi-k3.1-pro-highspeed",
-      "route_ref": "tencent-tokenhub@default/kimi-k3.1-pro-highspeed"
+      "route_ref": "tencent-tokenhub@messages/kimi-k3.1-pro-highspeed"
     },
     {
       "model_ref": "tencent-tokenhub/mimo-v2.6-flash",
-      "route_ref": "tencent-tokenhub@default/mimo-v2.6-flash"
+      "route_ref": "tencent-tokenhub@messages/mimo-v2.6-flash"
     },
     {
       "model_ref": "tencent-tokenhub/mimo-v2.6-pro",
-      "route_ref": "tencent-tokenhub@default/mimo-v2.6-pro"
+      "route_ref": "tencent-tokenhub@messages/mimo-v2.6-pro"
     },
     {
       "model_ref": "tencent-tokenhub/minimax-m3",
-      "route_ref": "tencent-tokenhub@default/minimax-m3"
+      "route_ref": "tencent-tokenhub@messages/minimax-m3"
     },
     {
       "model_ref": "tencent-tokenhub/minimax-m3.1-flash",
-      "route_ref": "tencent-tokenhub@default/minimax-m3.1-flash"
+      "route_ref": "tencent-tokenhub@messages/minimax-m3.1-flash"
     },
     {
       "model_ref": "tencent-tokenhub/step-5-preview",
-      "route_ref": "tencent-tokenhub@default/step-5-preview"
+      "route_ref": "tencent-tokenhub@messages/step-5-preview"
     },
     {
       "model_ref": "together/MiniMaxAI/MiniMax-M2.7",

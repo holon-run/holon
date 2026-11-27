@@ -12,6 +12,23 @@ pub enum ProviderMaterializer {
     AliasOnly,
 }
 
+/// Declarative placement of a provider definition in the configuration and
+/// display surface.
+///
+/// `materializer` says whether a definition is materialized at all; `surface`
+/// says whether a materialized entry is a first-class provider or an internal
+/// protocol endpoint of another provider. The two are deliberately independent:
+/// `AliasOnly` keeps meaning "never materialize", so it cannot express
+/// "routable but hidden from the primary list".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderSurface {
+    /// First-class provider: visible in configuration and display surfaces.
+    Primary,
+    /// Internal protocol endpoint: routable, but only exposed when the user
+    /// configures it explicitly. `of` names the parent route provider.
+    SubEndpoint { of: &'static str },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderContextManagement {
     Default,
@@ -184,6 +201,9 @@ pub struct ProviderDefinition {
     pub default_base_url: &'static str,
     pub credential_envs: &'static [&'static str],
     pub materializer: ProviderMaterializer,
+    /// Whether the materialized entry is a first-class provider or an
+    /// internal protocol endpoint of another provider.
+    pub surface: ProviderSurface,
     pub context_management: ProviderContextManagement,
     pub web_search: ProviderWebSearch,
     pub default_reasoning_effort: Option<&'static str>,
@@ -202,12 +222,22 @@ macro_rules! discovery {
     };
 }
 
-macro_rules! provider {
+macro_rules! catalog_registration {
+    () => {
+        None
+    };
+    ($registration:ident) => {
+        Some(ProviderCatalogRegistration::$registration)
+    };
+}
+
+macro_rules! provider_definition {
     (
+        $surface:expr,
         $legacy:literal => $route_provider:literal @ $route_endpoint:literal,
         $transport:ident, $base_url:literal, [$($env:literal),* $(,)?],
         $materializer:ident, $context:ident, $web_search:ident,
-        $reasoning:expr, $discovery:expr, $catalog:ident, $registration:ident
+        $reasoning:expr, $discovery:expr, $catalog:ident $(, $registration:ident)?
     ) => {
         ProviderDefinition {
             legacy_provider: $legacy,
@@ -217,37 +247,34 @@ macro_rules! provider {
             default_base_url: $base_url,
             credential_envs: &[$($env),*],
             materializer: ProviderMaterializer::$materializer,
+            surface: $surface,
             context_management: ProviderContextManagement::$context,
             web_search: ProviderWebSearch::$web_search,
             default_reasoning_effort: $reasoning,
             discovery: $discovery,
             catalog_policy: ProviderCatalogPolicy::$catalog,
-                        catalog_registration: Some(
-                ProviderCatalogRegistration::$registration,
-            ),
+            catalog_registration: catalog_registration!($($registration)?),
         }
     };
+}
+
+macro_rules! provider {
+    ($($definition:tt)*) => {
+        provider_definition!(ProviderSurface::Primary, $($definition)*)
+    };
+}
+
+macro_rules! sub_endpoint {
     (
+        $parent:literal,
         $legacy:literal => $route_provider:literal @ $route_endpoint:literal,
-        $transport:ident, $base_url:literal, [$($env:literal),* $(,)?],
-        $materializer:ident, $context:ident, $web_search:ident,
-        $reasoning:expr, $discovery:expr, $catalog:ident
+        $($definition:tt)*
     ) => {
-        ProviderDefinition {
-            legacy_provider: $legacy,
-            route_provider: $route_provider,
-            route_endpoint: $route_endpoint,
-            transport: ProviderTransportKind::$transport,
-            default_base_url: $base_url,
-            credential_envs: &[$($env),*],
-            materializer: ProviderMaterializer::$materializer,
-            context_management: ProviderContextManagement::$context,
-            web_search: ProviderWebSearch::$web_search,
-            default_reasoning_effort: $reasoning,
-            discovery: $discovery,
-            catalog_policy: ProviderCatalogPolicy::$catalog,
-                        catalog_registration: None,
-        }
+        provider_definition!(
+            ProviderSurface::SubEndpoint { of: $parent },
+            $legacy => $route_provider @ $route_endpoint,
+            $($definition)*
+        )
     };
 }
 
@@ -286,7 +313,8 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         discovery!(Optional, ModelDiscoveryRoute::OpenAiCompatible, OpenAiCompatible),
         DiscoveryOnly
     ),
-    provider!(
+    sub_endpoint!(
+        "github-copilot",
         "github-copilot-chat-completions" => "github-copilot" @ "chat-completions",
         OpenAiChatCompletions, "https://api.githubcopilot.com", [],
         GitHubCopilot, Default, None, None, None, StaticOnly
@@ -413,7 +441,8 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         ),
         StaticAndDiscovery, OpenCodeGo
     ),
-    provider!(
+    sub_endpoint!(
+        "opencode-go",
         "opencode-go-messages" => "opencode-go" @ "messages",
         AnthropicMessages, "https://opencode.ai/inference/go/anthropic/v1", ["OPENCODE_GO_API_KEY"],
         Generic, AnthropicCompatible, None, None, None, StaticOnly
@@ -463,12 +492,14 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         ),
         StaticAndDiscovery, TencentTokenHub
     ),
-    provider!(
+    sub_endpoint!(
+        "tencent-tokenhub",
         "tencent-tokenhub-messages" => "tencent-tokenhub" @ "messages",
         AnthropicMessages, "https://tokenhub.tencentmaas.com", ["TOKENHUB_API_KEY"],
         Generic, AnthropicCompatible, None, None, None, StaticOnly
     ),
-    provider!(
+    sub_endpoint!(
+        "tencent-tokenhub",
         "tencent-tokenhub-responses" => "tencent-tokenhub" @ "responses",
         OpenAiResponses, "https://tokenhub.tencentmaas.com/v1", ["TOKENHUB_API_KEY"],
         Generic, Default, None, None, None, StaticOnly

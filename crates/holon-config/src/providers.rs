@@ -30,6 +30,10 @@ pub type ProviderRegistry = BTreeMap<ProviderId, ProviderRuntimeConfig>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderConfigView {
     pub id: String,
+    /// `primary` for first-class providers, `advanced` for explicitly
+    /// configured internal protocol sub-endpoints.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub exposure: String,
     pub transport: String,
     pub base_url: String,
     pub auth: ProviderAuthView,

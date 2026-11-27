@@ -2,8 +2,11 @@ use anyhow::Result;
 use holon_daemon::service::*;
 
 use crate::{
-    config::AppConfig, host::RuntimeHost, provider::resolved_route_availability,
-    types::AgentStatus, web::WebProviderKind,
+    config::AppConfig,
+    host::RuntimeHost,
+    provider::{provider_exposure, resolved_route_availability},
+    types::AgentStatus,
+    web::WebProviderKind,
 };
 
 pub fn activity_from_snapshots(
@@ -163,33 +166,43 @@ impl holon_client::wire::RuntimeConfigSource for AppConfig {
             providers: config
                 .providers
                 .values()
-                .map(|provider| RuntimeProviderSummary {
-                    id: provider.id.as_str().to_string(),
-                    transport: provider.transport.as_str().to_string(),
-                    base_url: provider.base_url.clone(),
-                    oauth_supported: crate::auth::provider_supports_oauth_device_login(
-                        provider.id.as_str(),
-                    ),
-                    api_key_supported: provider.auth.kind != crate::config::CredentialKind::None
-                        && provider.transport.as_str() != "openai_codex_responses",
-                    credential_source: provider.auth.source.as_str().to_string(),
-                    credential_kind: provider.auth.kind.as_str().to_string(),
-                    credential_env: provider.auth.env.clone(),
-                    credential_profile: provider.auth.profile.clone(),
-                    credential_external: provider.auth.external.clone(),
-                    credential_configured: provider.auth.kind
-                        == crate::config::CredentialKind::None
-                        || provider.has_configured_credential(),
-                    configured_in_config: config.stored_config.providers.contains_key(&provider.id),
-                    discovery: config.provider_discovery(provider).map(|discovery| {
-                        RuntimeProviderDiscoverySummary {
-                            kind: discovery.kind.as_str().to_string(),
-                            path: discovery.path.clone(),
-                            decoder: discovery
-                                .decoder
-                                .map(|decoder| decoder.as_str().to_string()),
-                        }
-                    }),
+                .filter_map(|provider| {
+                    let exposure = provider_exposure(config, provider)?;
+                    Some(RuntimeProviderSummary {
+                        id: provider.id.as_str().to_string(),
+                        endpoint: provider.route_endpoint.as_str().to_string(),
+                        route_provider: provider.route_provider.as_str().to_string(),
+                        exposure: exposure.as_str().to_string(),
+                        transport: provider.transport.as_str().to_string(),
+                        base_url: provider.base_url.clone(),
+                        oauth_supported: crate::auth::provider_supports_oauth_device_login(
+                            provider.id.as_str(),
+                        ),
+                        api_key_supported: provider.auth.kind
+                            != crate::config::CredentialKind::None
+                            && provider.transport.as_str() != "openai_codex_responses",
+                        credential_source: provider.auth.source.as_str().to_string(),
+                        credential_kind: provider.auth.kind.as_str().to_string(),
+                        credential_env: provider.auth.env.clone(),
+                        credential_profile: provider.auth.profile.clone(),
+                        credential_external: provider.auth.external.clone(),
+                        credential_configured: provider.auth.kind
+                            == crate::config::CredentialKind::None
+                            || provider.has_configured_credential(),
+                        configured_in_config: config
+                            .stored_config
+                            .providers
+                            .contains_key(&provider.id),
+                        discovery: config.provider_discovery(provider).map(|discovery| {
+                            RuntimeProviderDiscoverySummary {
+                                kind: discovery.kind.as_str().to_string(),
+                                path: discovery.path.clone(),
+                                decoder: discovery
+                                    .decoder
+                                    .map(|decoder| decoder.as_str().to_string()),
+                            }
+                        }),
+                    })
                 })
                 .collect(),
             web_search: RuntimeWebSearchSummary {

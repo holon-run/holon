@@ -16763,11 +16763,26 @@
                         "null"
                       ]
                     },
+                    "endpoint": {
+                      "default": "",
+                      "description": "Endpoint this entry routes to; `default` is the provider entry point.",
+                      "type": "string"
+                    },
+                    "exposure": {
+                      "default": "",
+                      "description": "`primary` for first-class providers, `advanced` for explicitly\n configured internal protocol sub-endpoints.",
+                      "type": "string"
+                    },
                     "id": {
                       "type": "string"
                     },
                     "oauth_supported": {
                       "type": "boolean"
+                    },
+                    "route_provider": {
+                      "default": "",
+                      "description": "Route provider this entry belongs to.",
+                      "type": "string"
                     },
                     "transport": {
                       "type": "string"
@@ -17517,11 +17532,26 @@
                         "null"
                       ]
                     },
+                    "endpoint": {
+                      "default": "",
+                      "description": "Endpoint this entry routes to; `default` is the provider entry point.",
+                      "type": "string"
+                    },
+                    "exposure": {
+                      "default": "",
+                      "description": "`primary` for first-class providers, `advanced` for explicitly\n configured internal protocol sub-endpoints.",
+                      "type": "string"
+                    },
                     "id": {
                       "type": "string"
                     },
                     "oauth_supported": {
                       "type": "boolean"
+                    },
+                    "route_provider": {
+                      "default": "",
+                      "description": "Route provider this entry belongs to.",
+                      "type": "string"
                     },
                     "transport": {
                       "type": "string"

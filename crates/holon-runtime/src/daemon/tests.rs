@@ -619,3 +619,94 @@ fn pre_server_preparation_does_not_retry_non_busy_failure() {
     let descriptor = crate::runtime_error::describe_runtime_error(&error);
     assert_ne!(descriptor.code, "runtime_db_busy");
 }
+
+#[test]
+fn runtime_config_surface_hides_unconfigured_protocol_sub_endpoints() {
+    let mut config = test_config();
+    config.providers =
+        crate::config::built_in_provider_registry_with_settings(&std::collections::HashMap::new())
+            .expect("built-in provider registry");
+    let sub_endpoint = crate::config::ProviderId::parse("github-copilot-chat-completions")
+        .expect("valid provider id");
+
+    // The built-in definitions still materialize the sub-endpoint so chat-only
+    // models keep a routable entry with credentials and transport.
+    assert!(config.providers.contains_key(&sub_endpoint));
+
+    let surface = RuntimeConfigSurface::new(&config);
+    assert!(
+        surface
+            .providers
+            .iter()
+            .all(|provider| provider.id != "github-copilot-chat-completions"),
+        "an unconfigured protocol sub-endpoint must not appear in the primary list"
+    );
+    let copilot = surface
+        .providers
+        .iter()
+        .find(|provider| provider.id == "github-copilot")
+        .expect("github-copilot provider should be reported");
+    assert_eq!(copilot.exposure, "primary");
+    assert_eq!(copilot.route_provider, "github-copilot");
+    assert_eq!(copilot.endpoint, "default");
+
+    let onboarding = crate::onboarding::onboarding_provider_choices(&config);
+    assert!(
+        onboarding.iter().all(|choice| choice.id != sub_endpoint),
+        "onboarding must share the projection instead of re-deriving visibility"
+    );
+    let surface_ids: Vec<_> = surface
+        .providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+    let onboarding_ids: Vec<_> = onboarding.iter().map(|choice| choice.id.as_str()).collect();
+    assert_eq!(
+        onboarding_ids, surface_ids,
+        "onboarding choices must match the projected exposure set"
+    );
+}
+
+#[test]
+fn runtime_config_surface_exposes_explicitly_configured_protocol_sub_endpoints() {
+    let mut config = test_config();
+    config.providers =
+        crate::config::built_in_provider_registry_with_settings(&std::collections::HashMap::new())
+            .expect("built-in provider registry");
+    let parent = crate::config::ProviderId::parse("tencent-tokenhub").expect("valid provider id");
+    let messages = crate::config::ProviderEndpointId::parse("messages").expect("valid endpoint");
+    config
+        .stored_config
+        .providers
+        .entry(parent)
+        .or_default()
+        .endpoints
+        .insert(messages, Default::default());
+
+    let surface = RuntimeConfigSurface::new(&config);
+    let exposed = surface
+        .providers
+        .iter()
+        .find(|provider| provider.id == "tencent-tokenhub-messages")
+        .expect("explicitly configured sub-endpoint must be exposed");
+    assert_eq!(exposed.exposure, "advanced");
+    assert_eq!(exposed.endpoint, "messages");
+    assert_eq!(exposed.route_provider, "tencent-tokenhub");
+
+    // The legacy flat `providers.<sub-id>` declaration stays supported.
+    let mut flat = test_config();
+    flat.providers =
+        crate::config::built_in_provider_registry_with_settings(&std::collections::HashMap::new())
+            .expect("built-in provider registry");
+    flat.stored_config.providers.insert(
+        crate::config::ProviderId::parse("tencent-tokenhub-responses").expect("valid provider id"),
+        Default::default(),
+    );
+    let surface = RuntimeConfigSurface::new(&flat);
+    let exposed = surface
+        .providers
+        .iter()
+        .find(|provider| provider.id == "tencent-tokenhub-responses")
+        .expect("legacy flat sub-endpoint declaration must stay supported");
+    assert_eq!(exposed.exposure, "advanced");
+}

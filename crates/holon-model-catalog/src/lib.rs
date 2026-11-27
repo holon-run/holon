@@ -390,13 +390,19 @@ impl BuiltInModelCatalog {
             if legacy_model_ref != canonical_model_ref {
                 aliases.insert(legacy_model_ref.clone(), canonical_model_ref.clone());
             }
-            if is_turn_default_candidate(&entry) {
-                preferred_models
-                    .entry(legacy_model_ref.provider.clone())
-                    .or_insert_with(|| canonical_model_ref.clone());
-                preferred_routes
-                    .entry(legacy_model_ref.provider)
-                    .or_insert_with(|| route_ref.clone());
+            let reviewed_endpoint = reviewed_default_endpoint(&legacy_model_ref.provider);
+            if is_turn_default_candidate(&entry)
+                && prefers_provider_route(
+                    preferred_routes.get(&legacy_model_ref.provider),
+                    &route_ref,
+                    reviewed_endpoint,
+                )
+            {
+                preferred_models.insert(
+                    legacy_model_ref.provider.clone(),
+                    canonical_model_ref.clone(),
+                );
+                preferred_routes.insert(legacy_model_ref.provider, route_ref.clone());
             }
             entry.model_ref = canonical_model_ref.clone();
             entry.endpoint = None;
@@ -408,16 +414,13 @@ impl BuiltInModelCatalog {
             route_entries
                 .entry(route_ref.clone())
                 .or_insert(route_policy);
-            preferred_routes_by_model
-                .entry(canonical_model_ref.clone())
-                .and_modify(|preferred: &mut ModelRouteRef| {
-                    if preferred.endpoint != ProviderEndpointId::default_endpoint()
-                        && route_ref.endpoint == ProviderEndpointId::default_endpoint()
-                    {
-                        *preferred = route_ref.clone();
-                    }
-                })
-                .or_insert(route_ref);
+            if prefers_model_route(
+                preferred_routes_by_model.get(&canonical_model_ref),
+                &route_ref,
+                reviewed_endpoint,
+            ) {
+                preferred_routes_by_model.insert(canonical_model_ref.clone(), route_ref.clone());
+            }
         }
         for definition in built_in_route_definitions() {
             let legacy_model_ref = ModelRef::new(
@@ -442,13 +445,37 @@ impl BuiltInModelCatalog {
             if legacy_model_ref != definition.model_ref {
                 aliases.insert(legacy_model_ref, definition.model_ref.clone());
             }
-            if is_turn_default_route_candidate(model_entry, &definition.policy) {
-                preferred_models
-                    .entry(definition.legacy_provider.clone())
-                    .or_insert_with(|| definition.model_ref.clone());
-                preferred_routes
-                    .entry(definition.legacy_provider)
-                    .or_insert_with(|| route_ref.clone());
+            let reviewed_endpoint = reviewed_default_endpoint(&definition.legacy_provider);
+            let is_candidate = is_turn_default_route_candidate(model_entry, &definition.policy);
+            if is_candidate
+                && prefers_provider_route(
+                    preferred_routes.get(&definition.legacy_provider),
+                    &route_ref,
+                    reviewed_endpoint,
+                )
+            {
+                preferred_models.insert(
+                    definition.legacy_provider.clone(),
+                    definition.model_ref.clone(),
+                );
+                preferred_routes.insert(definition.legacy_provider.clone(), route_ref.clone());
+            }
+            // The promoted protocol of an internal sub-endpoint also becomes
+            // the parent provider's default route, because the parent owns the
+            // canonical model ref.
+            if let Some(parent) = promoted_parent(&definition.legacy_provider) {
+                let parent_endpoint = reviewed_default_endpoint(&parent);
+                if is_candidate
+                    && parent_endpoint == Some(route_ref.endpoint.as_str())
+                    && prefers_provider_route(
+                        preferred_routes.get(&parent),
+                        &route_ref,
+                        parent_endpoint,
+                    )
+                {
+                    preferred_models.insert(parent.clone(), definition.model_ref.clone());
+                    preferred_routes.insert(parent, route_ref.clone());
+                }
             }
             // A model entry always registers its own route with an empty policy
             // diff, so an explicit definition may refine that placeholder route
@@ -459,9 +486,13 @@ impl BuiltInModelCatalog {
                 "duplicate built-in route {}",
                 route_ref.as_string()
             );
-            preferred_routes_by_model
-                .entry(definition.model_ref)
-                .or_insert(route_ref);
+            if prefers_definition_model_route(
+                preferred_routes_by_model.get(&definition.model_ref),
+                &route_ref,
+                reviewed_model_endpoint(&definition.legacy_provider),
+            ) {
+                preferred_routes_by_model.insert(definition.model_ref, route_ref);
+            }
         }
         Self {
             entries,
@@ -1730,6 +1761,114 @@ fn built_in_route_definitions() -> Vec<BuiltInModelRouteDefinition> {
 #[cfg(test)]
 fn is_turn_default_candidate(entry: &BuiltInModelMetadata) -> bool {
     is_turn_default_route_candidate(entry, &BuiltInModelRoutePolicy::default())
+}
+
+/// Reviewed default endpoint per legacy provider.
+///
+/// Protocol priority is Anthropic Messages > OpenAI Responses > OpenAI Chat
+/// Completions. Only providers whose protocol endpoints were reviewed for
+/// promotion appear here; every other endpoint of these providers stays
+/// routable as an explicit route.
+#[cfg(test)]
+const REVIEWED_DEFAULT_ENDPOINTS: &[(&str, &str)] = &[
+    ("tencent-tokenhub", "messages"),
+    ("opencode-go", "messages"),
+];
+
+#[cfg(test)]
+fn reviewed_default_endpoint(legacy_provider: &ProviderId) -> Option<&'static str> {
+    REVIEWED_DEFAULT_ENDPOINTS
+        .iter()
+        .find(|(provider, _)| *provider == legacy_provider.as_str())
+        .map(|(_, endpoint)| *endpoint)
+}
+
+/// Internal protocol sub-endpoints register their routes under their own legacy
+/// id, but the promoted protocol belongs to the parent provider.
+#[cfg(test)]
+const SUB_ENDPOINT_PARENTS: &[(&str, &str)] = &[("tencent-tokenhub-messages", "tencent-tokenhub")];
+
+#[cfg(test)]
+fn promoted_parent(legacy_provider: &ProviderId) -> Option<ProviderId> {
+    SUB_ENDPOINT_PARENTS
+        .iter()
+        .find(|(sub_endpoint, _)| *sub_endpoint == legacy_provider.as_str())
+        .map(|(_, parent)| provider_id(parent))
+}
+
+/// Providers whose reviewed default endpoint also becomes the preferred route
+/// of every model that supports it. OpenCode Go is excluded: its official table
+/// documents a native protocol per model, so only its provider-level default is
+/// promoted.
+#[cfg(test)]
+const MODEL_ENDPOINT_PROMOTIONS: &[&str] = &["tencent-tokenhub"];
+
+/// Reviewed endpoint for a route definition's model-level preference.
+/// Sub-endpoint definitions resolve against the parent provider because their
+/// canonical model ref belongs to it.
+#[cfg(test)]
+fn reviewed_model_endpoint(legacy_provider: &ProviderId) -> Option<&'static str> {
+    let owner = promoted_parent(legacy_provider).unwrap_or_else(|| legacy_provider.clone());
+    MODEL_ENDPOINT_PROMOTIONS
+        .contains(&owner.as_str())
+        .then(|| reviewed_default_endpoint(&owner))
+        .flatten()
+}
+
+/// Provider-level preference: keep the first candidate unless a reviewed
+/// default endpoint candidate appears.
+#[cfg(test)]
+fn prefers_provider_route(
+    current: Option<&ModelRouteRef>,
+    candidate: &ModelRouteRef,
+    reviewed_endpoint: Option<&str>,
+) -> bool {
+    match (current, reviewed_endpoint) {
+        (None, _) => true,
+        (Some(current), Some(endpoint)) => {
+            current.endpoint.as_str() != endpoint && candidate.endpoint.as_str() == endpoint
+        }
+        (Some(_), None) => false,
+    }
+}
+
+/// Model-level preference: the default endpoint wins over siblings, and a
+/// reviewed default endpoint outranks the default endpoint.
+#[cfg(test)]
+fn prefers_model_route(
+    current: Option<&ModelRouteRef>,
+    candidate: &ModelRouteRef,
+    reviewed_endpoint: Option<&str>,
+) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    if let Some(endpoint) = reviewed_endpoint {
+        let current_matches = current.endpoint.as_str() == endpoint;
+        let candidate_matches = candidate.endpoint.as_str() == endpoint;
+        if current_matches != candidate_matches {
+            return candidate_matches;
+        }
+    }
+    current.endpoint != ProviderEndpointId::default_endpoint()
+        && candidate.endpoint == ProviderEndpointId::default_endpoint()
+}
+
+/// Definition-level model preference: a route definition only adds a route for
+/// a model, unless it carries the reviewed default endpoint.
+#[cfg(test)]
+fn prefers_definition_model_route(
+    current: Option<&ModelRouteRef>,
+    candidate: &ModelRouteRef,
+    reviewed_endpoint: Option<&str>,
+) -> bool {
+    match (current, reviewed_endpoint) {
+        (None, _) => true,
+        (Some(current), Some(endpoint)) => {
+            current.endpoint.as_str() != endpoint && candidate.endpoint.as_str() == endpoint
+        }
+        (Some(_), None) => false,
+    }
 }
 
 #[cfg(test)]
