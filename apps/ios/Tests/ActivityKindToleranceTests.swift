@@ -4,7 +4,7 @@ import XCTest
 @testable import Holon
 
 final class ActivityKindToleranceTests: XCTestCase {
-    private func modelActivity(revision: Int, id: String = "model_request:turn:1:1") -> JSONValue {
+    private func modelActivity(revision: Int64, id: String = "model_request:turn:1:1") -> JSONValue {
         .object([
             "id": .string(id),
             "kind": .string("model_request"),
