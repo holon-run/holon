@@ -2315,12 +2315,17 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                          {"app-lost-response", "share-text", "share-url", "share-image", "share-file"})
         # Execute the real post-run daemon material check/export, not a test-only exporter.
         # The proxy handler also branches on `share_acceptance`; only the export
-        # block delegates to direct_share_evidence and writes direct-share.json.
+        # block gates on `mode != '--sdk-only'`, delegates to direct_share_evidence
+        # and writes direct-share.json.
         share_block = next(node for node in ast.walk(self.tree)
                            if isinstance(node, ast.If) and isinstance(node.test, ast.BoolOp)
                            and isinstance(node.test.values[0], ast.Name)
                            and node.test.values[0].id == "share_acceptance"
                            and any(isinstance(item, ast.Compare) for item in node.test.values)
+                           and any(isinstance(item, ast.Compare)
+                                   and isinstance(item.left, ast.Name)
+                                   and item.left.id == "mode"
+                                   for item in node.test.values)
                            and any(isinstance(item, ast.Call) and isinstance(item.func, ast.Name)
                                    and item.func.id == "direct_share_evidence"
                                    for item in ast.walk(node)))
