@@ -4,8 +4,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use holon_context::{
-    budget::estimate_text_tokens, fingerprint::shared_prefix_fingerprint, render_sections,
-    shared_prefix_len, system_prompt::build_system_sections, PromptSection,
+    budget::estimate_text_tokens,
+    checkpoint_prompts::{
+        build_delta_checkpoint_prompt, CHECKPOINT_RESUME_PROMPT,
+        COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT,
+    },
+    docs::DOCS_TOPICS,
+    fingerprint::shared_prefix_fingerprint,
+    render_sections, shared_prefix_len,
+    system_prompt::build_system_sections,
+    PromptSection,
 };
 use serde_json::{json, Value};
 
@@ -376,13 +384,45 @@ pub fn prompt_topology_inventory() -> Result<Value> {
         }),
     ];
 
+    let sample_delta_checkpoint =
+        build_delta_checkpoint_prompt(Some(2), Some(1), "Inspected src/lib.rs; next run check.");
+    let checkpoint_prompts = json!({
+        "compaction_full_progress": {
+            "chars": COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT.chars().count(),
+            "estimated_tokens": exact_tokens_or_zero(COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT),
+        },
+        "checkpoint_resume": {
+            "chars": CHECKPOINT_RESUME_PROMPT.chars().count(),
+            "estimated_tokens": exact_tokens_or_zero(CHECKPOINT_RESUME_PROMPT),
+        },
+        "compaction_delta_sample": {
+            "chars": sample_delta_checkpoint.chars().count(),
+            "estimated_tokens": exact_tokens_or_zero(&sample_delta_checkpoint),
+        },
+    });
+    let embedded_docs = DOCS_TOPICS
+        .iter()
+        .map(|topic| {
+            json!({
+                "slug": topic.slug,
+                "title": topic.title,
+                "chars": topic.content.chars().count(),
+                "estimated_tokens": exact_tokens_or_zero(topic.content),
+            })
+        })
+        .collect::<Vec<_>>();
+
     Ok(json!({
         "version": 1,
         "source_of_truth": {
             "system_sections": "crates/holon-context/src/system_prompt.rs build_system_sections()",
             "tool_guidance": "crates/holon-context/src/tools.rs tool_sections_with_context()",
             "tool_descriptions": "crates/holon-tools/src/tool/tools/mod.rs builtin_tool_definitions()",
+            "checkpoint_prompts": "crates/holon-context/src/checkpoint_prompts.rs",
+            "embedded_docs": "crates/holon-context/src/docs/mod.rs DOCS_TOPICS",
         },
+        "checkpoint_prompts": checkpoint_prompts,
+        "embedded_docs": embedded_docs,
         "profiles": profiles,
     }))
 }

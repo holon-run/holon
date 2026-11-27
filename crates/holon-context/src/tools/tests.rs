@@ -42,11 +42,31 @@ fn test_agent_invocation_section_gating_and_core_routing_invariants() {
         assert!(!content.contains("TaskOutput"));
     }
 
+    let send_only = &tool_sections(&[spec("SendAgentMessage")])[0].content;
+    assert!(send_only.contains("reply_context_id"));
+    assert!(send_only.contains("forward=true"));
+    assert!(!send_only.contains("new_subagent"));
+    assert!(!send_only.contains("CreateAgent"));
+    assert!(!send_only.contains("holon tail"));
+
+    let create_only = &tool_sections(&[spec("CreateAgent")])[0].content;
+    assert!(create_only.contains("CreateAgent"));
+    assert!(create_only.contains("real parallelism"));
+    assert!(!create_only.contains("new_subagent"));
+    assert!(!create_only.contains("reply_context_id"));
+
     let invoke_content = &tool_sections(&[spec("InvokeAgent")])[0].content;
     assert!(invoke_content.contains("existing_agent"));
     assert!(invoke_content.contains("new_subagent"));
     assert!(invoke_content.contains("SendAgentMessage"));
-    assert!(invoke_content.contains("reply_context_id"));
+    assert!(!invoke_content.contains("reply_context_id"));
+
+    let invoke_with_cli = &tool_sections(&[spec("InvokeAgent"), spec("ExecCommand")])
+        .into_iter()
+        .find(|s| s.name == "tool_agent_invocation")
+        .expect("agent invocation with cli")
+        .content;
+    assert!(invoke_with_cli.contains("holon docs agents"));
 
     assert!(!tool_sections(&[])
         .iter()
@@ -112,6 +132,7 @@ fn test_exec_command_and_holon_cli_invariants() {
     assert!(cli.content.contains("not authentication"));
     assert!(cli.content.contains("holon commands"));
     assert!(cli.content.contains("holon context"));
+    assert!(cli.content.contains("holon docs"));
     assert!(cli.content.contains("recursive `holon run`"));
     assert!(cli.content.contains("DeleteAgent(agent_id, incarnation)"));
     assert!(!cli.content.contains("remove only that owned child"));
@@ -149,6 +170,24 @@ fn test_work_item_sections_preserve_lifecycle_invariants() {
         .expect("work item scheduling section");
     assert!(sched.content.contains("yielded"));
     assert!(sched.content.contains("continuation frame"));
+    assert!(
+        !write.content.contains("PickWorkItem") && !sched.content.contains("PickWorkItem"),
+        "PickWorkItem guidance must be gated out when PickWorkItem is absent"
+    );
+
+    let with_pick = tool_sections(&[spec("CreateWorkItem"), spec("PickWorkItem")]);
+    assert!(with_pick
+        .iter()
+        .find(|s| s.name == "tool_work_item_write")
+        .unwrap()
+        .content
+        .contains("PickWorkItem"));
+    assert!(with_pick
+        .iter()
+        .find(|s| s.name == "tool_work_item_scheduling")
+        .unwrap()
+        .content
+        .contains("PickWorkItem"));
 
     let read_sections = tool_sections(&[spec("GetWorkItem"), spec("ListWorkItems")]);
     assert_eq!(

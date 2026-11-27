@@ -8,7 +8,55 @@ use super::{shared_section as section, PromptSection, PromptStability};
 use holon_domain::tool_names as tn;
 use holon_domain::{ApplyPatchSurface, ToolSpec};
 
-pub const AGENT_INVOCATION_GUIDANCE: &str = include_str!("tool_guidance/tool_agent_invocation.md");
+const AGENT_INVOCATION_CORE_GUIDANCE: &str = include_str!("tool_guidance/tool_agent_invocation.md");
+
+const AGENT_DELEGATION_GUIDANCE: &str = "\
+Default to completing the task yourself: delegate only for real parallelism, a specialist role/template (load missing skill guides yourself; templates grant no authority; agent review is not human approval), or significant context isolation. Record the concrete benefit, bounded deliverable/acceptance criteria, known evidence, parallel parent work, and shared-file or Cargo conflict ownership; advance independent work rather than duplicating child exploration while retaining responsibility for integration, verification, and child cleanup.";
+
+const AGENT_SUPERVISION_CLI_GUIDANCE: &str = "\
+For read-only child progress without waking or polling the target, use bounded `holon tail` (`holon docs agents` for snapshot/follow flags and safe deletion rules); use `TaskStatus` for exact task state, `TaskInput` only after `TaskStatus` confirms input acceptance, and `TaskStop` only for active control. Terminal tasks are historical evidence, not reusable channels.";
+
+const AGENT_SUPERVISION_NO_CLI_GUIDANCE: &str = "\
+Use `TaskStatus` (when available) for exact task state, `TaskInput` only after `TaskStatus` confirms input acceptance, and `TaskStop` only for active control; no in-turn blocking output wait is provided, and terminal tasks are historical evidence rather than reusable channels.";
+
+const CREATE_AGENT_GUIDANCE: &str = "\
+`CreateAgent` creates an independently managed persistent agent identity without creating a result-bearing task; duplicate creates never deliver the optional bootstrap message or continue prior work.";
+
+const INVOKE_AGENT_GUIDANCE: &str = "\
+`InvokeAgent` sends a message and returns `(agent_id, task_handle)` with exactly one target variant: `existing_agent` waits for the first later durable message from that authorized agent (not guaranteed business completion, concurrent waits may observe the same message, and explicit reply expectations require a durable `SendAgentMessage` response), while `new_subagent` spawns a private supervised child with a result-bearing task handle.";
+
+const SEND_AGENT_MESSAGE_GUIDANCE: &str = "\
+`SendAgentMessage` sends durable asynchronous communication and returns a delivery receipt, not a task handle or business result. Optional `reply_context_id` selects a runtime-provided original agent-message ID admitted in the current live turn (implicit when unique; required when multiple eligible routes exist; unknown, foreign-turn, or terminal selectors are rejected and supply no sender, correlation, or authority; pure task results create no agent-message route). Set `forward=true` only for an intentional relay of the unique or selected source; unrelated third-party sends stay direct.";
+
+fn build_agent_invocation_guidance(names: &[&str]) -> String {
+    let has_create_agent = names.contains(&tn::CREATE_AGENT);
+    let has_invoke_agent = names.contains(&tn::INVOKE_AGENT);
+    let has_send_agent_message = names.contains(&tn::SEND_AGENT_MESSAGE);
+    let has_exec_command = names.contains(&tn::EXEC_COMMAND);
+
+    let mut blocks = Vec::new();
+    if has_create_agent || has_invoke_agent {
+        blocks.push(AGENT_DELEGATION_GUIDANCE.to_string());
+    }
+    blocks.push(guidance(AGENT_INVOCATION_CORE_GUIDANCE));
+    if has_create_agent {
+        blocks.push(CREATE_AGENT_GUIDANCE.to_string());
+    }
+    if has_invoke_agent {
+        blocks.push(INVOKE_AGENT_GUIDANCE.to_string());
+    }
+    if has_send_agent_message {
+        blocks.push(SEND_AGENT_MESSAGE_GUIDANCE.to_string());
+    }
+    if has_create_agent || has_invoke_agent {
+        if has_exec_command {
+            blocks.push(AGENT_SUPERVISION_CLI_GUIDANCE.to_string());
+        } else {
+            blocks.push(AGENT_SUPERVISION_NO_CLI_GUIDANCE.to_string());
+        }
+    }
+    blocks.join("\n\n")
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ToolPromptContext {
@@ -78,7 +126,7 @@ pub fn tool_sections_with_context(
         sections.push(section(
             "tool_agent_invocation",
             PromptStability::Stable,
-            guidance(AGENT_INVOCATION_GUIDANCE),
+            build_agent_invocation_guidance(&names),
         ));
     }
     if names.contains(&tn::GET_AGENT) {
@@ -108,15 +156,37 @@ pub fn tool_sections_with_context(
         || names.contains(&tn::UPDATE_WORK_ITEM)
         || names.contains(&tn::COMPLETE_WORK_ITEM)
     {
+        let mut transition_tools = vec!["WaitFor"];
+        if names.contains(&tn::PICK_WORK_ITEM) {
+            transition_tools.push("PickWorkItem");
+        }
+        transition_tools.push("UpdateWorkItem");
+        transition_tools.push("CompleteWorkItem");
+        let transition_tools_text = format!(
+            "{}, or {}",
+            transition_tools[..transition_tools.len() - 1].join(", "),
+            transition_tools[transition_tools.len() - 1]
+        );
+        let pick_work_item_clause = if names.contains(&tn::PICK_WORK_ITEM) {
+            "`PickWorkItem` activates an open item and records any runnable caller continuation; "
+        } else {
+            ""
+        };
         sections.push(section(
             "tool_work_item_scheduling",
             PromptStability::Stable,
-            guidance(include_str!("tool_guidance/tool_work_item_scheduling.md")),
+            guidance_template(
+                include_str!("tool_guidance/tool_work_item_scheduling.md"),
+                &[("{transition_tools}", &transition_tools_text)],
+            ),
         ));
         sections.push(section(
             "tool_work_item_write",
             PromptStability::Stable,
-            guidance(include_str!("tool_guidance/tool_work_item_write.md")),
+            guidance_template(
+                include_str!("tool_guidance/tool_work_item_write.md"),
+                &[("{pick_work_item_clause}", pick_work_item_clause)],
+            ),
         ));
     }
     if names.contains(&tn::GET_WORK_ITEM) || names.contains(&tn::LIST_WORK_ITEMS) {

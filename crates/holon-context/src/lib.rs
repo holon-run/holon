@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod assembly;
 pub mod budget;
+pub mod checkpoint_prompts;
+pub mod docs;
 pub mod episodes;
 pub mod fingerprint;
 pub mod history;

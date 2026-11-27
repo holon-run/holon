@@ -1709,6 +1709,40 @@
     "aliases": []
   },
   {
+    "path": "docs",
+    "positionals": [
+      {
+        "name": "topic",
+        "value_name": "TOPIC",
+        "index": null,
+        "required": false
+      }
+    ],
+    "flags": [
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "output",
+        "short": null,
+        "default_value": "text",
+        "possible_values": [
+          "text",
+          "json"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "events",
     "positionals": [],
     "flags": [],
