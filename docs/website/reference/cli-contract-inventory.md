@@ -84,8 +84,8 @@ than requiring a running daemon.
 | `holon config list` | none | none | full persisted config JSON | `experimental` | Prefers daemon runtime config API when reachable, preserving stdout shape; exposes broad config file shape. |
 | `holon config schema` | none | none | JSON config schema/metadata | `stable` JSON | Locked by `tests/cli_json_contract.rs`; entry objects expose `key`, `kind`, `description`, `default`, and optional `allowed_values`. |
 | `holon config doctor` | none | none | JSON provider/system diagnostics | `experimental` | Diagnostic shape may evolve as providers change. |
-| `holon config models list` | none | `--provider <PROVIDER>`; `--operation <view_image\|generate_image>`; `--all` | JSON array of `ProviderModelEntry` | `experimental` | Defaults to selectable models only; `--all` is the diagnostic view (still bounded by `--provider` / `--operation`). Elements match the `ListProviderModels` tool and `GET /api/models/providers/{provider}/models`. |
-| `holon config model-providers list` | none | `--operation <view_image\|generate_image>`; `--all` | JSON array of `ModelProviderEntry` | `experimental` | Mirrors the `ListModelProviders` tool and `GET /api/models/providers`; defaults to providers whose availability is not `unavailable`, `--all` is `include_unavailable=true`. |
+| `holon config models list` | none | `--provider <PROVIDER>`; `--operation <view_image\|generate_image>`; `--all` | JSON array of `ProviderModelEntry` | `experimental` | Defaults to selectable models only; `--all` is the diagnostic view that skips the availability and `--operation` filters, while `--provider` still narrows the list. Elements match the `ListProviderModels` tool and `GET /api/models/providers/{provider}/models`. |
+| `holon config model-providers list` | none | `--operation <view_image\|generate_image>`; `--all` | JSON array of `ModelProviderEntry` | `experimental` | Mirrors the `ListModelProviders` tool and `GET /api/models/providers`; defaults to providers whose availability is not `unavailable`, `--all` is `include_unavailable=true`, which also skips the `--operation` filter. |
 
 ### Provider configuration
 

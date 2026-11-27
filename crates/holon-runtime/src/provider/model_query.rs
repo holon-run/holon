@@ -49,8 +49,8 @@ pub fn model_matches_provider(model: &ProviderModelEntry, provider: &str) -> boo
 
 /// Whether a resolved provider belongs in a filtered provider list.
 ///
-/// `include_unavailable` only relaxes availability: a requested `operation`
-/// still requires at least one selectable model for that media operation.
+/// `include_unavailable` is the diagnostic view: it skips every filter, so a
+/// requested `operation` is ignored rather than applied on top of it.
 pub fn provider_matches(
     provider: &ModelProviderEntry,
     operation: Option<MediaOperation>,
@@ -65,8 +65,8 @@ pub fn provider_matches(
 
 /// Whether a resolved model belongs in a filtered model list.
 ///
-/// `include_unavailable` and `operation` are orthogonal: the former controls
-/// availability, the latter media call selectability.
+/// `include_unavailable` is the diagnostic view: it skips every filter, so a
+/// requested `operation` is ignored rather than applied on top of it.
 pub fn model_matches(
     model: &ProviderModelEntry,
     operation: Option<MediaOperation>,
@@ -115,7 +115,7 @@ pub fn page_models(
     Ok((page, next_cursor))
 }
 
-#[cfg(test)]
+#[cfg(all(test, holon_lib_test_shard = "c"))]
 mod tests {
     use super::*;
     use crate::types::{MediaModelCapabilities, MediaProviderCapabilities};
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn operation_and_availability_predicates_are_orthogonal() {
+    fn diagnostic_view_skips_operation_and_availability_filters() {
         let mut capable = model("test/capable");
         capable.media.generate_image.call_selectable = true;
         let unavailable_capable = {

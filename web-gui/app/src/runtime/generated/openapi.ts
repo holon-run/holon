@@ -11814,7 +11814,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                /** @description Provider id taken verbatim from `GET /api/models/providers`. */
+                provider: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -15400,7 +15403,12 @@ export interface operations {
     };
     modelProviders: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Restrict to entries with a model that is call-selectable for this media operation. Ignored when `include_unavailable=true`. */
+                operation?: "view_image" | "generate_image";
+                /** @description Diagnostic view. When true, both the availability and `operation` filters are skipped so every resolved entry is returned. */
+                include_unavailable?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -15438,9 +15446,21 @@ export interface operations {
     };
     providerModels: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Restrict to entries with a model that is call-selectable for this media operation. Ignored when `include_unavailable=true`. */
+                operation?: "view_image" | "generate_image";
+                /** @description Diagnostic view. When true, both the availability and `operation` filters are skipped so every resolved entry is returned. */
+                include_unavailable?: boolean;
+                /** @description Maximum models returned in one page. Values outside the range are clamped. */
+                limit?: number;
+                /** @description Opaque `model_ref` cursor returned by the preceding page. Pages concatenate back into the full filtered sequence; an unknown cursor returns `invalid_cursor` instead of restarting. */
+                cursor?: string;
+            };
             header?: never;
-            path?: never;
+            path: {
+                /** @description Provider id taken verbatim from `GET /api/models/providers`. */
+                provider: string;
+            };
             cookie?: never;
         };
         requestBody?: never;

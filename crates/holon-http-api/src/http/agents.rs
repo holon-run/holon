@@ -15,11 +15,8 @@ use crate::{
         load_discovery_cache_at, provider_supports_model_discovery, refresh_provider_models,
         DEFAULT_DISCOVERY_CACHE_TTL,
     },
-    provider::{
-        model_query, resolved_model_availability, resolved_model_providers,
-        resolved_provider_models,
-    },
     provider::resolved_model_availability_with_explicit_refreshes,
+    provider::{model_query, resolved_model_providers, resolved_provider_models},
 };
 
 /// Upper bound on how long `/api/models` may serve a cached catalog snapshot

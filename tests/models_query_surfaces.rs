@@ -149,6 +149,11 @@ async fn model_listing_surfaces_agree() -> anyhow::Result<()> {
 
     let mut config = holon::config::AppConfig::load_for_config_inspection()?;
     config.http_addr = "127.0.0.1:0".to_string();
+    // `HttpHarness` initializes its workspace directory as a git repository, so
+    // point it at an isolated temp workspace: the process current directory is
+    // the developer's checkout.
+    let workspace = support::tempdir()?;
+    config.workspace_dir = workspace.path().to_path_buf();
 
     // The tool host resolves providers/models through these helpers and then
     // applies the shared predicates, so this is the tool-surface expectation.
@@ -229,6 +234,28 @@ async fn model_listing_surfaces_agree() -> anyhow::Result<()> {
         assert_eq!(
             http_models, expected_models,
             "HTTP model view for {provider} must equal the tool projection"
+        );
+
+        // The diagnostic view supersedes the operation filter, matching the
+        // documented contract and the Agent tool predicates.
+        let page: Value = client
+            .get(format!(
+                "{}/api/models/providers/{}/models?include_unavailable=true&operation=view_image",
+                harness.base_url,
+                encode(provider)
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(
+            collect_ids(
+                page["models"].as_array().expect("models array"),
+                "model_ref"
+            ),
+            expected_models,
+            "diagnostic view for {provider} must ignore the operation filter"
         );
 
         let mut command = cli(home.path());
