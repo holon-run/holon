@@ -337,6 +337,59 @@ final class HolonUITests: XCTestCase {
         close.tap()
     }
 
+    /// The unobscured area a control must reach before it is interacted with.
+    private func viewport(for element: XCUIElement, in app: XCUIApplication) -> CGRect {
+        let window = app.windows.firstMatch.frame
+        let navigation = app.navigationBars.firstMatch
+        let tabs = app.tabBars.firstMatch
+        let keyboard = app.keyboards.firstMatch
+        let top = navigation.exists ? max(window.minY, navigation.frame.maxY) : window.minY
+        var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
+        // Docked search bars are handled by the static reserve below:
+        // iOS 26 drops the floating bar's AX node between snapshots, and
+        // asking for its frame — directly or through a query predicate —
+        // has both aborted tests and crashed the runner outright.
+        let composer = app.otherElements["sending.composer"].firstMatch
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+        // Conversation content scrolls UNDER the floating composer, so
+        // the bottom clamp must apply to every target that is not a
+        // composer child. Membership is decided by identifier equality,
+        // never frame geometry: r9 proved a frame comparison misreads
+        // content scrolled beneath the composer (link top below composer
+        // top) as a child, skips the clamp, and taps the composer's text
+        // field instead of the link.
+        let targetID = element.exists ? element.identifier : ""
+        let insideComposer = !targetID.isEmpty && composer.exists
+            && composer.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier == %@", targetID)
+            ).count > 0
+        if !insideComposer && composer.exists && !composer.frame.isEmpty && editor.exists && editor.isHittable {
+            bottom = min(bottom, composer.frame.minY)
+        }
+        if keyboard.exists {
+            bottom = min(bottom, keyboard.frame.minY)
+            // The keyboard's AX frame excludes its input assistant overlay.
+            let assistant = app.otherElements["SystemInputAssistantView"].firstMatch
+            if assistant.exists && !assistant.frame.isEmpty {
+                bottom = min(bottom, assistant.frame.minY)
+            }
+        }
+        // A docked search bar floats over rows near the bottom, and a row
+        // behind it can still report as hittable. Plain existence is a
+        // single snapshot read that stays safe when the node transiently
+        // drops; reserve the bar's resting zone instead of probing its
+        // live frame.
+        if app.searchFields.firstMatch.exists {
+            bottom -= 96
+        }
+        return CGRect(x: window.minX, y: top, width: window.width, height: max(0, bottom - top))
+    }
+
+    private func contained(_ frame: CGRect, in viewport: CGRect, fullyVisible: Bool) -> Bool {
+        !frame.isEmpty && (fullyVisible ? viewport.contains(frame)
+            : viewport.contains(CGPoint(x: frame.midX, y: frame.midY)))
+    }
+
     /// Scroll a control into the viewport without asserting anything.
     ///
     /// Seeking and asserting are separate on purpose: content that is still
@@ -347,61 +400,11 @@ final class HolonUITests: XCTestCase {
     @discardableResult
     private func seek(_ element: XCUIElement, in app: XCUIApplication,
                       fullyVisible: Bool = false) -> Bool {
-        func viewport() -> CGRect {
-            let window = app.windows.firstMatch.frame
-            let navigation = app.navigationBars.firstMatch
-            let tabs = app.tabBars.firstMatch
-            let keyboard = app.keyboards.firstMatch
-            let top = navigation.exists ? max(window.minY, navigation.frame.maxY) : window.minY
-            var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
-            // Docked search bars are handled by the static reserve below:
-            // iOS 26 drops the floating bar's AX node between snapshots, and
-            // asking for its frame — directly or through a query predicate —
-            // has both aborted tests and crashed the runner outright.
-            let composer = app.otherElements["sending.composer"].firstMatch
-            let editor = app.descendants(matching: .any)["sending.text"].firstMatch
-            // Conversation content scrolls UNDER the floating composer, so
-            // the bottom clamp must apply to every target that is not a
-            // composer child. Membership is decided by identifier equality,
-            // never frame geometry: r9 proved a frame comparison misreads
-            // content scrolled beneath the composer (link top below composer
-            // top) as a child, skips the clamp, and taps the composer's text
-            // field instead of the link.
-            let targetID = element.exists ? element.identifier : ""
-            let insideComposer = !targetID.isEmpty && composer.exists
-                && composer.descendants(matching: .any).matching(
-                    NSPredicate(format: "identifier == %@", targetID)
-                ).count > 0
-            if !insideComposer && composer.exists && !composer.frame.isEmpty && editor.exists && editor.isHittable {
-                bottom = min(bottom, composer.frame.minY)
-            }
-            if keyboard.exists {
-                bottom = min(bottom, keyboard.frame.minY)
-                // The keyboard's AX frame excludes its input assistant overlay.
-                let assistant = app.otherElements["SystemInputAssistantView"].firstMatch
-                if assistant.exists && !assistant.frame.isEmpty {
-                    bottom = min(bottom, assistant.frame.minY)
-                }
-            }
-            // A docked search bar floats over rows near the bottom, and a row
-            // behind it can still report as hittable. Plain existence is a
-            // single snapshot read that stays safe when the node transiently
-            // drops; reserve the bar's resting zone instead of probing its
-            // live frame.
-            if app.searchFields.firstMatch.exists {
-                bottom -= 96
-            }
-            return CGRect(x: window.minX, y: top, width: window.width, height: max(0, bottom - top))
-        }
-        func contained(_ frame: CGRect, in viewport: CGRect) -> Bool {
-            !frame.isEmpty && (fullyVisible ? viewport.contains(frame)
-                : viewport.contains(CGPoint(x: frame.midX, y: frame.midY)))
-        }
         for _ in 0..<40 {
-            let viewport = viewport()
+            let viewport = viewport(for: element, in: app)
             guard viewport.height > 0 else { break }
             if element.exists && element.isHittable
-                && contained(element.frame, in: viewport) {
+                && contained(element.frame, in: viewport, fullyVisible: fullyVisible) {
                 return true
             }
             // Form rows are lazy; small drags load them without skipping the target.
@@ -430,23 +433,31 @@ final class HolonUITests: XCTestCase {
         }
         // Existence is the caller's assertion. A control that has not
         // rendered yet must not read as one that is present but offscreen.
-        return element.exists && element.isHittable && contained(element.frame, in: viewport())
+        return element.exists && element.isHittable
+            && contained(element.frame, in: viewport(for: element, in: app),
+                         fullyVisible: fullyVisible)
     }
 
     private func reveal(_ element: XCUIElement, in app: XCUIApplication,
                         fullyVisible: Bool = false,
                         file: StaticString = #filePath, line: UInt = #line) {
         if seek(element, in: app, fullyVisible: fullyVisible) { return }
-        guard element.waitForExistence(timeout: UIWaitScale.scaled(10)), element.isHittable,
-              contained(element.frame, in: viewport()) else {
+        // Content the Agent materializes after the fact may still be
+        // rendering, so keep a bounded grace window before judging geometry.
+        guard element.waitForExistence(timeout: UIWaitScale.scaled(10)) else {
             capture(app, "unreachable-control")
             XCTFail("Tap target never appeared: existence never became true while seeking it into view",
                     file: file, line: line)
             return
         }
-        capture(app, "unreachable-control")
-        XCTFail("Tap target exists but did not settle inside the unobscured viewport",
-                file: file, line: line)
+        guard element.isHittable,
+              contained(element.frame, in: viewport(for: element, in: app),
+                        fullyVisible: fullyVisible) else {
+            capture(app, "unreachable-control")
+            XCTFail("Tap target exists but did not settle inside the unobscured viewport",
+                    file: file, line: line)
+            return
+        }
     }
 
     private func required(_ key: String) throws -> String {
