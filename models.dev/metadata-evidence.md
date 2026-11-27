@@ -5,6 +5,80 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-28
+
+The November 28 Beijing cycle refreshed the live `models.dev` payload and
+drafted twelve new supplement candidates, three upstream removals, and
+reasoning-effort edits on six retained Volcengine entries. Only candidates
+with an official same-endpoint contract were admitted.
+
+Adopted as reviewed supplement entries with default routes:
+
+- `bigmodel/glm-5.3-flashx-legal` and `zai/glm-5.3-flashx-legal`: the
+  [Zhipu GLM-5.3-Flash/FlashX page](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash)
+  and the [Z.ai GLM-5.3-Flash page](https://docs.z.ai/guides/vlm/glm-5.3-flash.md)
+  list the model code `glm-5.3-flashx-legal` with a 1M context window, 128K
+  maximum output, video/image/text/file input, and a recommended
+  `reasoning_effort: max` listed alongside `temperature: 1` and `top_p: 0.95`.
+  Text parameters are stated to be consistent with GLM-5.3, so the accepted
+  effort tiers stay `low/high/max`; the only hard restriction is
+  `thinking.type` restricted to `enabled`. Reviewed facts keep
+  **1000000** context and **131072** output.
+- `dashscope/glm-5.3-prime`: the
+  [Model releases page](https://help.aliyun.com/zh/model-studio/newly-released-models)
+  entry dated 2026-09-20 documents GLM-5.3-Prime as the high-speed GLM-5.3
+  variant with a 1M context window, 128K output, and three thinking-depth
+  levels, for text generation and deep thinking only. Vision stays omitted
+  and the reviewed effort list stays `low/high/max`.
+- `dashscope/kimi-k3.1-pro-prime`: the same page (2026-11-19 domestic,
+  2026-11-16 international) describes Prime as the speed-oriented variant of
+  Kimi-K3.1-Pro with identical capability and usage limits, and the
+  [Kimi-K3.1-Pro model page](https://help.aliyun.com/zh/model-studio/kimi-k3-1-pro)
+  publishes **1048576** context and **1048576** maximum output. Because the
+  existing `dashscope@default/kimi-k3.1-pro` review keeps the exact Beijing
+  Anthropic-compatible capacity unknown, the Prime route keeps null
+  capacities plus an unknown-capacity review entry instead of extending the
+  published numbers to this protocol.
+
+Not adopted:
+
+- `dashscope/mindlab/macaron-v1.1-{coding-venti,venti,venti-pro}`: the
+  [Model releases page](https://www.alibabacloud.com/help/en/model-studio/newly-released-models)
+  lists the Macaron V1.1 series only under the international (Singapore)
+  deployment scope. `dashscope@default` targets `dashscope.aliyuncs.com`, so
+  no Beijing default-route admission is evidenced; the drafted entries and
+  their vision flags stay deferred.
+- `volcengine/kimi-k3-1-pro-261024`: the
+  [Ark model list](https://ark.volcengine.com/region:cn-beijing/docs/model-list.md)
+  does list this dated row with 1024K context, 1024K maximum answer, and
+  multimodal understanding, but the reviewed
+  [K3.1 native card](https://ark.volcengine.com/models/kimi-k3-1-pro.md)
+  establishes `kimi-k3-1-pro` as the direct invocation ID and records the dated
+  `261024` spelling as an internal response-only identifier, not a direct API
+  alias. The refresh route is not admitted; `volcengine@default/kimi-k3-1-pro`
+  remains the reviewed ID, with its output ceiling still unresolved.
+- `openai/gpt-6-astra-healthcare`, `openai/gpt-6.1-sol-healthcare`,
+  `openai/gpt-6.2-astra-healthcare`, and `openai/gpt-6.2-sol-healthcare`:
+  neither the [OpenAI model index](https://developers.openai.com/api/docs/models)
+  nor its Markdown export mentions a `healthcare` variant. A draft is not an
+  OpenAI public-API contract and none is admitted.
+- Six retained Volcengine entries received upstream `reasoning_effort_options`
+  narrowing. The deep-thinking reference states that every supported model
+  accepts all seven tiers and maps the rest, so these edits are not a
+  documented capability change; the previously reviewed lists are restored.
+- `mistral/labs-leanstral-1-5-1`, `openai/gpt-realtime-2.1`, and
+  `xiaomi/mimo-v2.5-pro-ultraspeed` are preserved, including the
+  `xiaomi@token-plan` route registration: a model vanishing from the
+  models.dev snapshot is not by itself a retirement contract.
+
+The refreshed `models.dev` snapshot, artifact, and refresh summary are sampled
+evidence for this review and are not part of the patch; only reviewed catalog
+entries and their ledgers are committed. The supplement still records the
+sampled payload revision in `upstream_revision` so the review stays traceable
+to the payload it read, while the checked-in snapshot and artifact keep the
+previously committed pin until a reviewed snapshot refresh lands together with
+them.
+
 ## Incremental review: 2026-11-27
 
 The November 27 Beijing cycle re-sampled the official Tencent TokenHub pages:

@@ -2534,6 +2534,86 @@
       "review": null
     },
     {
+      "route_ref": "bigmodel@default/glm-5.3-flashx-legal",
+      "facts": {
+        "context_window_tokens": 1000000,
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 131072,
+        "prompt_budget_estimated_tokens": 950000,
+        "runtime_max_output_tokens": 131072,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "context_window_tokens": 1000000,
+          "effective_context_window_percent": 95,
+          "auto_compact_token_limit": 950000,
+          "default_max_output_tokens": 131072,
+          "max_output_tokens_upper_limit": 131072,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
+        },
+        "route": {
+          "effective_context_window_percent": null,
+          "capabilities": {},
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "model_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "model_builtin",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "model_builtin",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "known",
+      "review": null
+    },
+    {
       "route_ref": "bigmodel@default/glm-5v-turbo",
       "facts": {
         "context_window_tokens": 204800,
@@ -6909,6 +6989,86 @@
       "review": null
     },
     {
+      "route_ref": "dashscope@default/glm-5.3-prime",
+      "facts": {
+        "context_window_tokens": 1000000,
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 131072,
+        "prompt_budget_estimated_tokens": 950000,
+        "runtime_max_output_tokens": 131072,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "context_window_tokens": 1000000,
+          "effective_context_window_percent": 95,
+          "auto_compact_token_limit": 950000,
+          "default_max_output_tokens": 131072,
+          "max_output_tokens_upper_limit": 131072,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
+        },
+        "route": {
+          "effective_context_window_percent": null,
+          "capabilities": {},
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "model_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "model_builtin",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "model_builtin",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "known",
+      "review": null
+    },
+    {
       "route_ref": "dashscope@default/kimi-k2.5",
       "facts": {
         "context_window_tokens": 262144,
@@ -7289,6 +7449,98 @@
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
+        ]
+      }
+    },
+    {
+      "route_ref": "dashscope@default/kimi-k3.1-pro-prime",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
+          "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "max"
+          ]
+        },
+        "route": {
+          "effective_context_window_percent": null,
+          "capabilities": {},
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-28",
+        "reason": "dashscope@default/kimi-k3.1-pro-prime: Missing capacity is retained as unknown. The official Alibaba Model Studio Kimi-K3.1-Pro page publishes 1048576 context and 1048576 maximum output, and the release note says Prime keeps the original model's capabilities and limits; this cycle does not extend those numbers to the exact Beijing Anthropic-compatible Prime route without a protocol-specific admission sample. Existing known fields and local output policy are preserved, not newly vendor-verified.",
+        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify admission and each missing capacity independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md",
+          "models.dev/endpoint-review.md",
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -51933,6 +52185,86 @@
         "route": {
           "capabilities": {},
           "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "model_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "model_builtin",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "model_builtin",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "known",
+      "review": null
+    },
+    {
+      "route_ref": "zai@default/glm-5.3-flashx-legal",
+      "facts": {
+        "context_window_tokens": 1000000,
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 131072,
+        "prompt_budget_estimated_tokens": 950000,
+        "runtime_max_output_tokens": 131072,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "context_window_tokens": 1000000,
+          "effective_context_window_percent": 95,
+          "auto_compact_token_limit": 950000,
+          "default_max_output_tokens": 131072,
+          "max_output_tokens_upper_limit": 131072,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
+        },
+        "route": {
+          "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
