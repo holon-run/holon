@@ -58,11 +58,20 @@ fn explicitly_configured(config: &AppConfig, provider: &ProviderRuntimeConfig) -
 #[cfg(all(test, holon_lib_test_shard = "c"))]
 mod tests {
     use super::{provider_exposure, ProviderExposure};
-    use crate::config::{AppConfig, ProviderEndpointId, ProviderId, ProviderRuntimeConfig};
+    use crate::config::{
+        persisted_config_path, save_persisted_config_at, set_config_key, AppConfig,
+        HolonConfigFile, ProviderEndpointId, ProviderId, ProviderRuntimeConfig,
+    };
     use tempfile::tempdir;
 
+    /// Loads the built-in catalog against a temp home that pins `model.default`,
+    /// so the tests do not depend on ambient credentials or `HOLON_MODEL`.
     fn built_in_config() -> AppConfig {
         let home = tempdir().expect("temp home");
+        let path = persisted_config_path(home.path());
+        let mut stored = HolonConfigFile::default();
+        set_config_key(&mut stored, "model.default", "openai/gpt-5.4").expect("model.default");
+        save_persisted_config_at(&path, &stored).expect("persist config");
         AppConfig::load_with_home(Some(home.path().to_path_buf())).expect("built-in config")
     }
 
