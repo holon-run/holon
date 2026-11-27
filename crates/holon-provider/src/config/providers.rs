@@ -1,6 +1,9 @@
 use crate::provider::ProviderNativeWebSearchKind;
 use anyhow::{anyhow, Result};
-use holon_domain::model_values::{ProviderEndpointId, ProviderId, ProviderTransportKind};
+use holon_domain::model_values::{
+    built_in_provider_allows_anonymous_access, ProviderEndpointId, ProviderId,
+    ProviderTransportKind,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use url::{Host, Url};
@@ -62,7 +65,18 @@ impl ProviderRuntimeConfig {
     }
 
     pub fn unauthenticated_cleartext_remote_warning(&self) -> Option<&'static str> {
-        if self.auth.kind != CredentialKind::None {
+        // Anonymous-access providers declare an optional key, so only a
+        // resolved credential counts as authenticated on the wire; other
+        // providers keep treating any declared credential kind as
+        // authenticated.
+        let anonymous_access =
+            built_in_provider_allows_anonymous_access(self.route_provider.as_str());
+        let authenticated = if anonymous_access {
+            self.has_configured_credential()
+        } else {
+            self.auth.kind != CredentialKind::None
+        };
+        if authenticated {
             return None;
         }
         let url = Url::parse(&self.base_url).ok()?;
@@ -266,4 +280,50 @@ pub struct ProviderBuiltinWebSearchConfig {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod cleartext_warning_tests {
+    use super::*;
+
+    fn magpie_runtime(base_url: &str, credential: Option<&str>) -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            headers: Default::default(),
+            id: ProviderId::parse("magpie").unwrap(),
+            route_provider: ProviderId::parse("magpie").unwrap(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
+            transport: ProviderTransportKind::AnthropicMessages,
+            base_url: base_url.into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("MAGPIE_API_KEY".into()),
+                profile: None,
+                external: None,
+                client_id: None,
+            },
+            credential: credential.map(|value| value.into()),
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
+
+    #[test]
+    fn magpie_remote_cleartext_warns_only_without_configured_credential() {
+        // magpie declares an optional key: without a resolved credential the
+        // remote cleartext warning must still fire; with one it must not.
+        let unconfigured = magpie_runtime("http://192.168.1.5:3425", None);
+        assert!(unconfigured
+            .unauthenticated_cleartext_remote_warning()
+            .is_some());
+
+        let configured = magpie_runtime("http://192.168.1.5:3425", Some("gateway-key"));
+        assert!(configured
+            .unauthenticated_cleartext_remote_warning()
+            .is_none());
+    }
 }

@@ -11,6 +11,14 @@ Decision:
   skip the credential requirement. Only `magpie` is listed. When the key is
   unset, `provider_has_usable_auth` still returns true and the Anthropic
   transport sends no `Authorization` header instead of failing.
+- both checks key on `route_provider`, so a plan alias whose runtime `id` is
+  `<provider>-<plan>` keeps the anonymous path.
+- a persisted `providers.magpie` entry (for example a custom `base_url`) keeps
+  the built-in optional key binding: the default config template preserves the
+  built-in auth for anonymous-access providers (mirroring the Copilot
+  exception), and materialization falls back to the built-in binding when a
+  stored entry carries an effectively empty auth block, which covers entries
+  written before that template change.
 
 Reason:
 

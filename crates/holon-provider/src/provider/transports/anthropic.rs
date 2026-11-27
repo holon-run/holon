@@ -219,7 +219,7 @@ impl AnthropicProvider {
         if auth_token.is_none()
             && provider_config.auth.kind != CredentialKind::None
             && !holon_domain::model_values::built_in_provider_allows_anonymous_access(
-                provider_config.id.as_str(),
+                provider_config.route_provider.as_str(),
             )
         {
             let credential_name = provider_config

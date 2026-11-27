@@ -1,8 +1,8 @@
 use super::*;
 pub(crate) use holon_domain::model_values::built_in_provider_endpoint_identity;
 use holon_domain::model_values::{
-    provider_definitions, ProviderContextManagement, ProviderDefinition, ProviderMaterializer,
-    ProviderWebSearch,
+    built_in_provider_allows_anonymous_access, provider_definitions, ProviderContextManagement,
+    ProviderDefinition, ProviderMaterializer, ProviderWebSearch,
 };
 
 pub fn validate_provider_config(
@@ -933,8 +933,14 @@ pub fn built_in_provider_default_config_with_settings(
         .map(|provider| ProviderConfigFile {
             transport: provider.transport,
             base_url: provider.base_url.clone(),
-            // Copilot onboarding needs its OAuth profile before a credential exists.
-            auth: if provider_id.as_str() == "github-copilot" {
+            // Copilot onboarding needs its OAuth profile before a credential
+            // exists. Anonymous-access providers keep their built-in optional
+            // credential binding so a persisted `providers.<id>` entry (for
+            // example `providers.magpie.base_url`) does not silently drop the
+            // optional key contract.
+            auth: if provider_id.as_str() == "github-copilot"
+                || built_in_provider_allows_anonymous_access(provider_id.as_str())
+            {
                 provider.auth.clone()
             } else {
                 ProviderAuthConfig::default()
@@ -1751,10 +1757,19 @@ pub fn materialize_provider_config(
         }
     }
     validate_provider_builtin_web_search(&id, &effective_provider_config)?;
+    // A persisted entry with an effectively empty auth block must not wipe the
+    // built-in optional credential binding of an anonymous-access provider
+    // (magpie); entries written before the default template kept the binding
+    // rely on this fallback.
+    let keep_builtin_auth = effective_provider_config.auth.is_effectively_empty()
+        && built_in_provider_allows_anonymous_access(id.as_str())
+        && !runtime.auth.is_effectively_empty();
     runtime.id = id;
     runtime.transport = effective_provider_config.transport;
     runtime.base_url = effective_provider_config.base_url;
-    runtime.auth = effective_provider_config.auth;
+    if !keep_builtin_auth {
+        runtime.auth = effective_provider_config.auth;
+    }
     let configured_headers =
         effective_provider_headers(&provider_config, &ProviderEndpointId::default_endpoint())?;
     // Built-in default headers (e.g. Copilot-Integration-Id) survive absent

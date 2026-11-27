@@ -1759,7 +1759,7 @@ pub fn provider_has_usable_auth(provider: &ProviderRuntimeConfig) -> bool {
         CredentialSource::Env => {
             provider.has_configured_credential()
                 || holon_domain::model_values::built_in_provider_allows_anonymous_access(
-                    provider.id.as_str(),
+                    provider.route_provider.as_str(),
                 )
         }
         CredentialSource::AuthProfile => {
