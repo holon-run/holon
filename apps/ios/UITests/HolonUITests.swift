@@ -1499,7 +1499,7 @@ final class HolonUITests: XCTestCase {
         let more = app.buttons["conversation.more"]
         if !more.waitForExistence(timeout: UIWaitScale.scaled(5)) {
             let agentRow = app.buttons["agent." + agent]
-            seek(agentRow, in: app); agentRow.tap()
+            reveal(agentRow, in: app); agentRow.tap()
         }
         XCTAssertTrue(more.waitForExistence(timeout: UIWaitScale.scaled(15)))
         let image = app.images["conversation.image.loaded"].firstMatch
