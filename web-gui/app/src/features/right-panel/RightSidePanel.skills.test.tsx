@@ -101,14 +101,14 @@ describe("RightSidePanel skill manager", () => {
     await openManager();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(refreshAvailableSkills).toHaveBeenLastCalledWith({ force: false });
-    await act(async () => host.querySelector<HTMLButtonElement>(".panel-actions button[aria-label]")!.click());
+    await act(async () => host.querySelector<HTMLButtonElement>(".panel-back-btn")!.click());
     await openManager();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(refreshAvailableSkills).toHaveBeenCalledTimes(3);
 
     vi.setSystemTime(Date.now() + 60_000);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    await act(async () => host.querySelector<HTMLButtonElement>(".panel-actions button[aria-label]")!.click());
+    await act(async () => host.querySelector<HTMLButtonElement>(".panel-back-btn")!.click());
     await openManager();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(refreshAvailableSkills).toHaveBeenLastCalledWith({ force: false });

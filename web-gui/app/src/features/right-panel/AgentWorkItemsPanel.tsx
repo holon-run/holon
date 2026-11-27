@@ -19,14 +19,15 @@ interface AgentWorkItemsPanelProps {
 
 function WorkItemCard({ workItem, onSelect }: Pick<AgentWorkItemsPanelProps, "onSelect"> & { workItem: WorkItemSummary }) {
   const { t } = useTranslation();
+  const shortId = workItem.id.replace(/^work_/, "").slice(0, 10);
+  const metaParts = [workItem.current ? t("status.current") : undefined, workItem.planStatus, shortId].filter(Boolean);
   return (
-    <button type="button" className={`inspector-list-item work-item-button${workItem.current ? " featured" : ""}`} onClick={() => onSelect(workItem)}>
+    <button type="button" className={`inspector-list-item work-item-button${workItem.current ? " featured" : ""}`} title={workItem.id} onClick={() => onSelect(workItem)}>
       <div className="inspector-list-head">
         <strong>{workItem.objective}</strong>
         <StatusBadge className="state-chip" kind="work" value={workItem.readiness ?? workItem.state} />
       </div>
-      <small>{[workItem.current ? t("status.current") : undefined, workItem.planStatus].filter(Boolean).join(" · ")}</small>
-      <code>{workItem.id}</code>
+      <small>{metaParts.join(" · ")}</small>
     </button>
   );
 }
@@ -53,13 +54,20 @@ function AgentWorkItemsPanelContent({ agentId, workItems, activeWorkItemCount, l
         <span className="collapsible-inspector-title">
           <span className="eyebrow">{t("rightPanel.workItemsWithCount", { count })}</span>
         </span>
+        {count > 0 ? (
+          <span className="inspector-card-count">{t("rightPanel.activeCount", { count })}</span>
+        ) : (
+          <span className="inspector-quiet-meta">{t("rightPanel.noCurrentWork")}</span>
+        )}
       </summary>
       <div className="collapsible-inspector-body">
         {count > active.length ? <p className="inspector-muted">{t("rightPanel.activeSnapshotTruncated", { shown: active.length, count })}</p> : null}
         {current.map((workItem) => <WorkItemCard key={workItem.id} workItem={workItem} onSelect={onSelect} />)}
-        <div className="inspector-nested-stack">
-          {other.map((workItem) => <WorkItemCard key={workItem.id} workItem={workItem} onSelect={onSelect} />)}
-        </div>
+        {other.length > 0 ? (
+          <div className="inspector-nested-stack">
+            {other.map((workItem) => <WorkItemCard key={workItem.id} workItem={workItem} onSelect={onSelect} />)}
+          </div>
+        ) : null}
         <details className="inspector-details-list" onToggle={(event) => {
           if (event.target === event.currentTarget) setCompletedOpen(event.currentTarget.open);
         }}>

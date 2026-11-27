@@ -118,11 +118,6 @@ test("compact timers fit a narrow panel and only the confirmed cancel moves them
 
   page.once("dialog", (dialog) => dialog.accept());
   await cancel.click();
-  const history = panel.locator(".agent-timer-history");
-  await expect(history.getByText("History", { exact: true })).toBeVisible();
-  await expect(row).toBeHidden();
-  await history.getByText("History", { exact: true }).click();
-  await expect(row.getByText("Cancelled", { exact: true })).toBeVisible();
-  await expect(toggle).toHaveCount(0);
+  await expect(row).toHaveCount(0);
   expect(await readStatus()).toBe("cancelled");
 });

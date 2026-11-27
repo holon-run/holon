@@ -64,7 +64,7 @@ test("provider directory searches aliases, edits one service and preserves draft
   await setup(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/settings");
-  await page.locator("#settings-tab-models").click();
+  await page.locator("#settings-tab-providers").click();
   const directory = page.locator(".provider-directory");
   await expect(directory.locator("[data-provider]")).toHaveCount(2);
   await page.screenshot({ path: "/tmp/holon-model-settings.png" });
@@ -115,15 +115,15 @@ test("model search keeps routes distinct, persists favorites and next-run select
   await expect(dialog.getByRole("button", { name: /Runtime default/ })).toBeDisabled();
 });
 
-test("model management opens Models regardless of the remembered settings tab", async ({ page }) => {
+test("model management opens Model Providers regardless of the remembered settings tab", async ({ page }) => {
   await setup(page);
   await page.addInitScript(() => localStorage.setItem("holon.webGui.settingsTab.v1", "advanced"));
   await page.goto("/agents/bootstrap-agent/conversation");
   await page.locator(".model-button").click();
   const manage = page.locator(".model-browser-more");
-  await expect(manage).toHaveAttribute("href", "/settings?tab=models");
+  await expect(manage).toHaveAttribute("href", "/settings?tab=providers");
   await manage.click();
-  await expect(page.locator("#settings-tab-models")).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#settings-tab-providers")).toHaveAttribute("aria-selected", "true");
   await expect(page.locator(".provider-directory")).toBeVisible();
 });
 
@@ -213,7 +213,7 @@ for (const kind of ["bearer_token", "api_key"] as const) {
       await route.fulfill({ json: { profile: stored ?? { profile, kind, configured: false }, reload_generation: 0 } });
     });
     await page.goto("/settings");
-    await page.locator("#settings-tab-models").click();
+    await page.locator("#settings-tab-providers").click();
     await page.getByRole("button", { name: "Connect a service", exact: true }).click();
     await page.locator(`[data-provider="${id}"]`).click();
     const editor = page.locator(".model-services-card .settings-provider-editor");
@@ -373,7 +373,7 @@ test("provider discovery kind, path and decoder persist from the settings editor
   const { updates } = await setup(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/settings");
-  await page.locator("#settings-tab-models").click();
+  await page.locator("#settings-tab-providers").click();
   await page.getByRole("button", { name: "Connect a service", exact: true }).click();
   await page.locator('[data-provider="openai"]').click();
   const editor = page.locator(".model-services-card .settings-provider-editor");
@@ -392,7 +392,7 @@ test("add provider declares a custom provider in one batch", async ({ page }) =>
   const { updates } = await setup(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/settings");
-  await page.locator("#settings-tab-models").click();
+  await page.locator("#settings-tab-providers").click();
   await page.getByRole("button", { name: "Connect a service", exact: true }).click();
   await page.getByRole("button", { name: "Add provider", exact: true }).click();
   const form = page.locator(".model-services-card .settings-provider-editor");
@@ -421,7 +421,7 @@ test("add provider blocks invalid input before writing config", async ({ page })
   const { updates } = await setup(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/settings");
-  await page.locator("#settings-tab-models").click();
+  await page.locator("#settings-tab-providers").click();
   await page.getByRole("button", { name: "Connect a service", exact: true }).click();
   await page.getByRole("button", { name: "Add provider", exact: true }).click();
   const form = page.locator(".model-services-card .settings-provider-editor");
@@ -447,7 +447,7 @@ test("add provider surfaces a rejected batch and keeps the directory unchanged",
   await setup(page, undefined, rejection);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/settings");
-  await page.locator("#settings-tab-models").click();
+  await page.locator("#settings-tab-providers").click();
   await page.getByRole("button", { name: "Connect a service", exact: true }).click();
   const directory = page.locator(".provider-directory");
   await expect(directory.locator("[data-provider]")).toHaveCount(43);

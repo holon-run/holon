@@ -37,7 +37,7 @@ test("refresh preserves overview width, header and close control until agent acc
   const before = await panel.boundingBox();
   const release = await holdAgentAccess(page, info.testId);
   await page.reload();
-  await expect(panel.locator(".panel-header strong")).toHaveText("Agent overview");
+  await expect(panel.locator('.panel-sections [data-panel-tab="overview"]')).toHaveAttribute("aria-current", "page");
   await expect(panel.getByRole("button", { name: "Close side panel", exact: true })).toBeVisible();
   await expect(panel.locator(".agent-overview-stack")).toBeVisible();
   await expect(panel.locator(".agent-overview-skeleton")).toHaveCount(0);

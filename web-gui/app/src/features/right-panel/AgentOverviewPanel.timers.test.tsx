@@ -85,7 +85,7 @@ describe("Agent overview timer controls", () => {
     expect(toggle(active).getAttribute("aria-checked")).toBe("true");
     expect(toggle(oneShot).getAttribute("aria-checked")).toBe("false");
     expect(button(active, "Edit timer content")).toBeUndefined();
-    expect(host.querySelector(".agent-timer-history")?.hasAttribute("open")).toBe(false);
+    expect(host.querySelector(".agent-timer-history")).toBeNull();
     expect(active.textContent).toContain("Next run");
     expect(interval.textContent).toContain("Paused");
     expect(interval.textContent).not.toContain("Frozen delay");

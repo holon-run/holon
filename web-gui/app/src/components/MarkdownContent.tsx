@@ -223,9 +223,11 @@ function MarkdownContentView({ text, citations, compact = false, baseFile, fragm
     const result = results.get(key);
     if (entry.kind === "error") return <span title={entry.message}>{reference?.raw}</span>;
     if (result?.status === "unresolved") {
-      // Resolve failures degrade to the raw reference text: most are persistent
-      // (ambiguous or missing roots), so an error state with a retry affordance
-      // would mislead; the detail stays available in the tooltip.
+      // Non-workspace host paths (e.g. /Applications/Docker.app) degrade quietly
+      // without exposing internal resolver reason codes in user-facing tooltips.
+      if (result.reason === "invalid_reference") {
+        return <span className="file-reference-unresolved" title={result.message || result.reason}>{reference?.raw}</span>;
+      }
       const detail = result.reason && result.reason !== result.message ? `${result.reason}: ${result.message}` : result.message;
       return <span className="file-reference-unresolved" title={detail}>{reference?.raw}</span>;
     }

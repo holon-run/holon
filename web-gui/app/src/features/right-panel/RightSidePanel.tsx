@@ -7,7 +7,7 @@ import type { AgentSummary, RightPanelView, RuntimeConnection, SkillCatalogState
 import type { AgentControlAction, AgentDeletionStatus } from "../../runtime/types";
 import { getRuntimeTraceRevision, isRuntimeTraceEnabled, subscribeRuntimeTrace } from "../../runtime/runtime-trace";
 import type { TaskSummary, TaskTargetRef } from "../../runtime/types";
-import { ArrowLeft, Maximize2, Minimize2, X } from "lucide-react";
+import { ArrowLeft, Minimize2, X } from "lucide-react";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel, AgentSkillManagerPanel, ToolExecutionDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 import { TaskDetailPanel } from "./TaskDetailPanel";
@@ -55,6 +55,43 @@ interface RightSidePanelProps {
   onDeleteAgent?: (cascadePrivateChildren: boolean) => Promise<void>;
   onRenameAgent?: (name: string) => Promise<void>;
   onClose: () => void;
+}
+
+export function isAgentHomeWorkspace(ws: { workspaceId: string; name?: string; anchor?: string }): boolean {
+  return (
+    ws.workspaceId.startsWith("agent_home:")
+    || ws.name === "agent_home"
+    || Boolean(ws.anchor?.includes("/.holon/agents/"))
+  );
+}
+
+export interface ResolvedPrimaryWorkspace {
+  workspaceId: string;
+  name: string;
+  branch?: string;
+  path?: string;
+  executionRootId?: string;
+}
+
+export function resolvePrimaryAgentWorkspace(agent: AgentSummary): ResolvedPrimaryWorkspace | null {
+  const summary = agent.workspaceSummary;
+  if (summary?.id) {
+    return {
+      workspaceId: summary.id,
+      name: summary.name ?? (agent.workspace || summary.id),
+      branch: summary.worktree?.branch,
+      path: summary.worktree?.path ?? summary.executionRoot ?? summary.anchor,
+      executionRootId: summary.executionRootId ?? undefined,
+    };
+  }
+  const firstAttached = agent.attachedWorkspaces?.[0];
+  if (!firstAttached) return null;
+  return {
+    workspaceId: firstAttached.workspaceId,
+    name: firstAttached.name,
+    path: firstAttached.anchor,
+    executionRootId: firstAttached.executionRootId,
+  };
 }
 
 export function RightSidePanel({
@@ -206,11 +243,22 @@ export function RightSidePanel({
     };
   }, [viewKey, open]);
   const workspace = agent.workspaceSummary;
-  const workspaces = agent.attachedWorkspaces?.length ? agent.attachedWorkspaces : workspace?.id ? [{ workspaceId: workspace.id, name: workspace.name ?? workspace.id, executionRootId: workspace.executionRootId ?? undefined }] : [];
+  const workspaces = agent.attachedWorkspaces?.length
+    ? agent.attachedWorkspaces
+    : workspace?.id
+      ? [{ workspaceId: workspace.id, name: workspace.name ?? workspace.id, anchor: workspace.anchor, executionRootId: workspace.executionRootId ?? undefined }]
+      : [];
+  const projectWorkspaces = workspaces.filter((ws) => !isAgentHomeWorkspace(ws));
+  const homeWorkspaces = workspaces.filter((ws) => isAgentHomeWorkspace(ws));
   const openFiles = () => {
-    if (lastFile.current) onSelectView(lastFile.current);
-    else if (workspace?.id) onBrowseFiles({ workspaceId: workspace.id, path: "", executionRootId: workspace.executionRootId });
-    else if (workspaces[0]) onBrowseFiles({ workspaceId: workspaces[0].workspaceId, path: "", executionRootId: workspaces[0].executionRootId });
+    if (lastFile.current) {
+      onSelectView(lastFile.current);
+      return;
+    }
+    const primaryWs = resolvePrimaryAgentWorkspace(agent);
+    if (primaryWs) {
+      onBrowseFiles({ workspaceId: primaryWs.workspaceId, path: "", executionRootId: primaryWs.executionRootId });
+    }
   };
   const openFloatingFileBrowser = () => {
     if (activeView.kind !== "file_browser") return;
@@ -233,6 +281,12 @@ export function RightSidePanel({
   };
   const skillManagerActive = activeView.kind === "agent_overview" && showSkillManager;
   const runtimeTraceActive = activeView.kind === "agent_overview" && showRuntimeTrace && runtimeTraceEnabled;
+  const isDetailView = activeView.kind !== "agent_overview" && activeView.kind !== "file_browser";
+  const isOverviewRoot = activeView.kind === "agent_overview" && !skillManagerActive && !runtimeTraceActive;
+  const activeWorkCount =
+    agent.activeWorkItemCount
+    ?? (agent.workItems ?? (agent.currentWork ? [agent.currentWork] : [])).filter((item) => item.state !== "completed").length;
+  const executionBadgeCount = activeWorkCount + (agent.activeTaskCount ?? 0);
   const title =
     runtimeTraceActive
       ? t("runtimeTrace.title")
@@ -248,7 +302,7 @@ export function RightSidePanel({
             ? (toolExecutionDetailsById[activeView.toolExecutionId]?.toolExecution?.tool_name ?? activeView.toolName ?? t("inspector.toolExecution"))
           : activeView.kind === "file_browser"
             ? ((fileTitle?.viewKey === viewKey ? fileTitle.path : activeView.initialFilePath)?.split("/").pop() ?? t("rightPanel.fileBrowser"))
-          : t("panel.agentOverview");
+          : t("rightPanel.agentOverview");
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
   const listReadId = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh?.state?.dataRequestId);
   const listedWorkItem = activeView.kind === "work_item_detail"
@@ -301,16 +355,84 @@ export function RightSidePanel({
           onKeyDown={(e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); onResize(Math.max(PANEL_MIN, Math.min(window.innerWidth - 72 - CONVERSATION_MIN, width + (e.key === "ArrowLeft" ? 32 : -32))), true); } }}
           data-dragging={dragging} onMouseDown={startResize} onDoubleClick={onToggleMode} />
       ) : null}
-      <div className="panel-header">
-        <div>
-          <strong>{title}</strong>
-        </div>
-        <div className="panel-actions">
-          {full ? <button type="button" onClick={onClose}>{t("rightPanel.backToConversation")}</button> : null}
-          {activeView.kind !== "agent_overview" || skillManagerActive ? (
+      <header className="panel-header">
+        <div className="panel-topbar">
+          <nav className="panel-sections" aria-label={t("rightPanel.contextPanel")}>
             <button
               type="button"
+              data-panel-tab="overview"
+              aria-current={isOverviewRoot ? "page" : undefined}
+              onClick={() => {
+                setShowSkillManager(false);
+                setShowRuntimeTrace(false);
+                onShowAgentOverview();
+              }}
+            >
+              <span>{t("rightPanel.overviewTab")}</span>
+              {executionBadgeCount > 0 ? <span className="panel-tab-badge" aria-hidden="true">{executionBadgeCount}</span> : null}
+            </button>
+            <button
+              type="button"
+              data-panel-tab="files"
+              aria-current={activeView.kind === "file_browser" ? "page" : undefined}
+              disabled={!lastFile.current && !workspaces.length}
+              onClick={() => {
+                setShowSkillManager(false);
+                setShowRuntimeTrace(false);
+                openFiles();
+              }}
+            >
+              <span>{t("fileBrowser.files")}</span>
+            </button>
+            {isDetailView || Boolean(lastDetail.current) ? (
+              <button
+                type="button"
+                data-panel-tab="details"
+                aria-current={isDetailView ? "page" : undefined}
+                onClick={() => {
+                  if (lastDetail.current) onSelectView(lastDetail.current);
+                }}
+              >
+                <span>{t("rightPanel.detailTab")}</span>
+              </button>
+            ) : null}
+          </nav>
+          <div className="panel-actions">
+            {full ? <button type="button" onClick={onClose}>{t("rightPanel.backToConversation")}</button> : null}
+            {activeView.kind === "agent_overview" && runtimeTraceEnabled ? (
+              <button
+                type="button"
+                aria-label={t("runtimeTrace.open")}
+                onClick={() => {
+                  setShowSkillManager(false);
+                  setShowRuntimeTrace((current) => !current);
+                }}
+              >
+                {runtimeTraceActive ? t("rightPanel.agentOverview") : t("runtimeTrace.shortTitle")}
+              </button>
+            ) : null}
+            {mode === "expanded" ? (
+              <button
+                type="button"
+                aria-label={t("rightPanel.restorePanel")}
+                title={t("rightPanel.restorePanel")}
+                onClick={onToggleMode}
+              >
+                <Minimize2 size={14} aria-hidden="true" />
+              </button>
+            ) : null}
+            <button type="button" aria-label={t("panel.closePanel")} onClick={onClose}>
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+        {!isOverviewRoot ? (
+          <div className="panel-subhead">
+            <button
+              type="button"
+              className="panel-back-btn"
               aria-label={t("rightPanel.backToSource")}
+              title={t("rightPanel.backToSource")}
               onClick={() => {
                 setShowSkillManager(false);
                 setShowRuntimeTrace(false);
@@ -318,39 +440,12 @@ export function RightSidePanel({
                 else onNavigateBack();
               }}
             >
-              <ArrowLeft size={14} />
+              <ArrowLeft size={15} />
             </button>
-          ) : null}
-        {activeView.kind === "agent_overview" && runtimeTraceEnabled ? (
-            <button
-              type="button"
-              aria-label={t("runtimeTrace.open")}
-              onClick={() => {
-                setShowSkillManager(false);
-                setShowRuntimeTrace((current) => !current);
-              }}
-            >
-              {runtimeTraceActive ? t("rightPanel.agentOverview") : t("runtimeTrace.shortTitle")}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            aria-label={mode === "expanded" ? t("rightPanel.restorePanel") : t("rightPanel.expandPanel")}
-            title={mode === "expanded" ? t("rightPanel.restorePanel") : t("rightPanel.expandPanel")}
-            onClick={onToggleMode}
-          >
-            {mode === "expanded" ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
-          </button>
-          <button type="button" aria-label={t("panel.closePanel")} onClick={onClose}>
-            <X size={16} aria-hidden="true" />
-          </button>
-        </div>
-      </div>
-      <nav className="panel-sections" aria-label={t("rightPanel.contextPanel")}>
-        <button type="button" aria-current={activeView.kind === "agent_overview" ? "page" : undefined} onClick={onShowAgentOverview}>{t("rightPanel.overviewTab")}</button>
-        <button type="button" aria-current={activeView.kind === "file_browser" ? "page" : undefined} disabled={!lastFile.current && !workspaces.length} onClick={openFiles}>{t("fileBrowser.files")}</button>
-        <button type="button" aria-current={activeView.kind !== "file_browser" && activeView.kind !== "agent_overview" ? "page" : undefined} disabled={!lastDetail.current && (activeView.kind === "file_browser" || activeView.kind === "agent_overview")} onClick={() => { if (lastDetail.current) onSelectView(lastDetail.current); }}>{t("rightPanel.detailTab")}</button>
-      </nav>
+            <strong>{title}</strong>
+          </div>
+        ) : null}
+      </header>
       {open && (["state", "workItems"] as const).map((resource) => {
         const status = resourceRefresh?.[resource];
         return status?.stale ? (
@@ -393,19 +488,97 @@ export function RightSidePanel({
             <ToolExecutionDetailPanel toolExecutionId={activeView.toolExecutionId} toolName={activeView.toolName} detailState={toolExecutionDetailState} relatedStateObjectRef={activeView.relatedStateObjectRef} onOpenWorkItem={onOpenWorkItemDetail} onOpenTask={onOpenTask} onBrowseFiles={onBrowseFiles} onRefresh={refreshDetail} />
           </div>
         ) : activeView.kind === "file_browser" ? (
-          <FileBrowserPanel backActionRef={fileBackAction} workspaceControl={activeView.kind === "file_browser" && workspaces.length > 1 ? <select className="panel-workspace-select" aria-label={t("rightPanel.workspaces")} value={JSON.stringify([activeView.workspaceId, activeView.executionRootId ?? null])}
-        onChange={(event) => { const selected = workspaces.find((ws) => JSON.stringify([ws.workspaceId, ws.executionRootId ?? null]) === event.target.value); if (selected) onBrowseFiles({ workspaceId: selected.workspaceId, path: "", executionRootId: selected.executionRootId }); }}>
-        {workspaces.map((ws) => <option key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])} value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}>{ws.name}{workspaces.filter((other) => other.workspaceId === ws.workspaceId).length > 1 ? ` · ${ws.executionRootId ?? "root"}` : ""}</option>)}
-      </select> : null} key={viewKey} agentId={agent.id} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} initialFragment={activeView.fragment} workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack}
+          <FileBrowserPanel
+            backActionRef={fileBackAction}
+            workspaceControl={
+              activeView.kind === "file_browser" && workspaces.length > 1 ? (
+                <select
+                  className="panel-workspace-select"
+                  aria-label={t("rightPanel.workspaces")}
+                  value={JSON.stringify([activeView.workspaceId, activeView.executionRootId ?? null])}
+                  onChange={(event) => {
+                    const selected = workspaces.find(
+                      (ws) => JSON.stringify([ws.workspaceId, ws.executionRootId ?? null]) === event.target.value,
+                    );
+                    if (selected) {
+                      onBrowseFiles({
+                        workspaceId: selected.workspaceId,
+                        path: "",
+                        executionRootId: selected.executionRootId,
+                      });
+                    }
+                  }}
+                >
+                  {projectWorkspaces.length > 0 && homeWorkspaces.length > 0 ? (
+                    <>
+                      <optgroup label={t("rightPanel.projectWorkspaces")}>
+                        {projectWorkspaces.map((ws) => (
+                          <option
+                            key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}
+                            value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}
+                          >
+                            {ws.name}
+                            {workspaces.filter((other) => other.workspaceId === ws.workspaceId).length > 1
+                              ? ` · ${ws.executionRootId ?? "root"}`
+                              : ""}
+                          </option>
+                        ))}
+                      </optgroup>
+                      <optgroup label={t("rightPanel.agentHomeWorkspaces")}>
+                        {homeWorkspaces.map((ws) => (
+                          <option
+                            key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}
+                            value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}
+                          >
+                            {ws.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    </>
+                  ) : (
+                    workspaces.map((ws) => (
+                      <option
+                        key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}
+                        value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}
+                      >
+                        {ws.name}
+                        {workspaces.filter((other) => other.workspaceId === ws.workspaceId).length > 1
+                          ? ` · ${ws.executionRootId ?? "root"}`
+                          : ""}
+                      </option>
+                    ))
+                  )}
+                </select>
+              ) : null
+            }
+            key={viewKey}
+            agentId={agent.id}
+            workspaceId={activeView.workspaceId}
+            executionRootId={activeView.executionRootId}
+            initialPath={activeView.initialPath}
+            initialFilePath={activeView.initialFilePath}
+            initialFragment={activeView.fragment}
+            workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name}
+            onClose={onNavigateBack}
             onOpenFloating={openFloatingFileBrowser}
-            snapshot={fileSnapshots.current.get(viewKey)} onSnapshot={(snapshot) => {
+            snapshot={fileSnapshots.current.get(viewKey)}
+            onSnapshot={(snapshot) => {
               if (snapshot.selectedFile?.loading || !snapshot.listing) return;
-              rememberPanelFileLocation({ ...activeView, initialPath: snapshot.currentPath, initialFilePath: snapshot.selectedFile?.path, fragment: snapshot.fragment });
-              if (fileTitle?.viewKey !== viewKey || fileTitle.path !== snapshot.selectedFile?.path) setFileTitle({ viewKey, path: snapshot.selectedFile?.path });
+              rememberPanelFileLocation({
+                ...activeView,
+                initialPath: snapshot.currentPath,
+                initialFilePath: snapshot.selectedFile?.path,
+                fragment: snapshot.fragment,
+              });
+              if (fileTitle?.viewKey !== viewKey || fileTitle.path !== snapshot.selectedFile?.path) {
+                setFileTitle({ viewKey, path: snapshot.selectedFile?.path });
+              }
               fileSnapshots.current.delete(viewKey);
               fileSnapshots.current.set(viewKey, snapshot);
               while (fileSnapshots.current.size > 6) fileSnapshots.current.delete(fileSnapshots.current.keys().next().value!);
-            }} fileRevisions={planFileRevisions} />
+            }}
+            fileRevisions={planFileRevisions}
+          />
         ) : (
           <AgentOverviewPanel
             agent={agent}

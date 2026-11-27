@@ -102,7 +102,7 @@ test("late runtime discovery adopts the open file without remounting its browser
   const discovery = page.waitForResponse("**/api/agents/snapshot");
   discoveryGates.get(info.testId)!();
   await discovery;
-  await panel.getByRole("button", { name: "Expand side panel", exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+.");
   await expect(panel.locator(".file-browser")).toHaveAttribute("data-split", "true");
   await expect(panel.locator(".panel-header strong")).toHaveText("README.md");
 });
@@ -138,7 +138,7 @@ test("inspector never partially covers the conversation across viewport widths",
   await panel.getByRole("separator").focus();
   await page.keyboard.press("ArrowLeft");
   await expect.poll(async () => (await panel.boundingBox())!.width).toBe(412);
-  await panel.getByRole("button", { name: "Expand side panel", exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+.");
   await page.keyboard.press("Escape");
   await expect.poll(async () => (await panel.boundingBox())!.width).toBe(412);
   await page.setViewportSize({ width: 1024, height: 1000 });
@@ -164,7 +164,7 @@ test("files keep selection, preview mode and scroll through overview, maximize a
   await panel.locator(".panel-sections").getByRole("button", { name: "Overview", exact: true }).click();
   await files.click();
   await expect.poll(() => content.evaluate((node) => node.scrollTop)).toBe(600);
-  await panel.getByRole("button", { name: "Expand side panel", exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+.");
   await expect(panel.locator(".file-browser")).toHaveAttribute("data-split", "true");
   await expect(panel.getByRole("button", { name: "notes.md", exact: false })).toBeVisible();
   await panel.getByRole("button", { name: "Source", exact: true }).click();
@@ -217,7 +217,7 @@ test("reading a maximized file keeps the live turn updating and returns to its t
   await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
   await panel.getByRole("button", { name: "README.md", exact: false }).click();
   await expect(panel.locator(".file-browser-markdown")).toBeVisible();
-  await panel.getByRole("button", { name: "Expand side panel", exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+.");
   await request.post(control("/__e2e__/conversation"), { data: { agentId: "bootstrap-agent", turns: [{ ...turn, revision: 2, execution: { kind: "terminal", outcome: "completed" }, result: { kind: "available" }, brief_ids: ["panel-result"], settled: true }], activitiesByTurnId: { "live-panel": activities } } });
   await expect(page.locator(".conversation-brief")).toContainText("Finished while you read.");
   await expect(panel.locator(".panel-header strong")).toHaveText("README.md");
@@ -270,7 +270,7 @@ test("work item details prioritize results and keep technical fields and plan na
   await expect(detail.locator(".detail-technical")).not.toHaveAttribute("open", "");
   await detail.getByText("Technical details", { exact: true }).click();
   await expect(detail.getByText(work.id, { exact: true })).toBeVisible();
-  await panel.getByRole("button", { name: "Expand side panel", exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+.");
   await expect(detail.getByText(work.id, { exact: true })).toBeVisible();
   expect((await detail.boundingBox())!.width).toBeLessThanOrEqual(1040);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -284,7 +284,7 @@ test("panel open mode and selected file survive reload while closed stays closed
   await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
   await panel.getByRole("button", { name: "README.md", exact: false }).click();
   await expect(panel.locator(".panel-header strong")).toHaveText("README.md");
-  await panel.getByRole("button", { name: "Expand side panel", exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+.");
   await page.reload();
   await expect(panel).toBeVisible();
   await expect(panel).toHaveAttribute("data-mode", "expanded");

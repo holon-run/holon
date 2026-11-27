@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Maximize2, Minimize2, X } from "lucide-react";
+import { Minimize2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
@@ -46,9 +46,11 @@ export function AgentOverviewPlaceholder({
         <div><strong>{t("rightPanel.agentOverview")}</strong></div>
         <div className="panel-actions">
           {full ? <button type="button" onClick={onClose}>{t("rightPanel.backToConversation")}</button> : null}
-          <button type="button" aria-label={t(mode === "expanded" ? "rightPanel.restorePanel" : "rightPanel.expandPanel")} onClick={onToggleMode}>
-            {mode === "expanded" ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
-          </button>
+          {mode === "expanded" ? (
+            <button type="button" aria-label={t("rightPanel.restorePanel")} onClick={onToggleMode}>
+              <Minimize2 size={14} aria-hidden="true" />
+            </button>
+          ) : null}
           <button type="button" aria-label={t("panel.closePanel")} onClick={onClose}>
             <X size={16} aria-hidden="true" />
           </button>

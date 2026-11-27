@@ -1,36 +1,19 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, ArrowRight } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  Compass,
+  Cpu,
+  Globe,
+  Image as ImageIcon,
+  KeyRound,
+  QrCode,
+  SlidersHorizontal,
+  type LucideIcon,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { ModelSelect } from "../../components/models/ModelSelect";
-import { SetupStatusCard, setupIsReady } from "../onboarding/SetupStatusCard";
-import { ModelList } from "../../components/models/ModelList";
-import { providerPresentation, providerIsConnected, modelSourceLabel } from "../../lib/model-presentation";
 import { rememberModel } from "../../lib/model-preferences";
-import { PageHeading } from "../../components/ui/PageHeading";
-import { Button } from "../../components/ui/Button";
-import { useI18nSettings } from "../../i18n";
-import { LANGUAGE_MODE_OPTIONS } from "../../i18n/types";
-import { Card } from "../../components/ui/Card";
-import { EmptyState } from "../../components/ui/EmptyState";
-import { StatusChip } from "../../components/ui/StatusChip";
-import { useServeStatus } from "./useServeStatus";
-import { PairingCard } from "./PairingCard";
-import { readSettingsTab, rememberSettingsTab, type SettingsTabKey } from "./settings-preferences";
-import { TailscaleServeCard } from "./TailscaleServeCard";
-import { SystemNotificationSettingsCard } from "../notifications/NotificationCenter";
-import {
-  clearRuntimeTraceRecords,
-  getRuntimeTraceRecords,
-  getRuntimeTraceRevision,
-  isRuntimeTraceEnabled,
-  setRuntimeTraceEnabled,
-  subscribeRuntimeTrace,
-} from "../../runtime/runtime-trace";
-import {
-  observerSyncDiagnostics,
-  useRuntimeStore,
-} from "../../runtime/runtime-store";
+import { providerIsConnected } from "../../lib/model-presentation";
 import type {
   CodexDeviceLoginState,
   CredentialMutationResult,
@@ -39,11 +22,44 @@ import type {
   RuntimeConnection,
   RuntimeLocalOnnxPresetStatus,
   RuntimeModelCatalog,
-  RuntimeModelOption,
-  RuntimeProviderSummary,
-  RuntimeWebSearchProviderKindSummary,
-  RuntimeWebSearchProviderSummary,
 } from "../../runtime/types";
+import { SetupStatusCard, setupIsReady } from "../onboarding/SetupStatusCard";
+import {
+  buildAdvisoryToolConfigUpdates,
+  buildDecisionConfigUpdates,
+  buildImageGenerationConfigUpdates,
+  buildProviderDiscoveryConfigUpdates,
+  buildSearchProviderConfigUpdates,
+  buildStandardSearchProviderDefinitions,
+  buildVisionConfigUpdates,
+  defaultSearchProviderDraft,
+  groupModelsByProvider,
+  isAbsoluteHttpUrl,
+  isDecisionCatalogRoute,
+  isImageGenerationSelectableModel,
+  isProviderKeyCredential,
+  isVisionSelectableModel,
+  numberFromInput,
+  shouldHydrateSettingsDrafts,
+  sortProvidersForSettings,
+  sortSearchProvidersForSettings,
+  splitCsv,
+  type CustomProviderDraft,
+  type ProviderDraft,
+  type SearchProviderDraft,
+} from "./settings-helpers";
+import { readSettingsTab, rememberSettingsTab, type SettingsTabKey } from "./settings-preferences";
+import { AccessSettingsSection } from "./sections/AccessSettingsSection";
+import { AdvancedSettingsSection } from "./sections/AdvancedSettingsSection";
+import { DecisionSettingsSection } from "./sections/DecisionSettingsSection";
+import { GeneralSettingsSection } from "./sections/GeneralSettingsSection";
+import { LanguageModelSettingsSection } from "./sections/LanguageModelSettingsSection";
+import { ModelProvidersSection } from "./sections/ModelProvidersSection";
+import { SearchSettingsSection } from "./sections/SearchSettingsSection";
+import { VisionSettingsSection } from "./sections/VisionSettingsSection";
+import { useServeStatus } from "./useServeStatus";
+
+export * from "./settings-helpers";
 
 interface SettingsPageProps {
   connection: RuntimeConnection;
@@ -69,341 +85,33 @@ interface SettingsPageProps {
   codexDeviceLogin: CodexDeviceLoginState;
   onStartCodexDeviceLogin: (providerId?: string) => Promise<void>;
   onClearCodexDeviceLogin: () => void;
+  onActiveTabChange?: (tab: SettingsTabKey) => void;
 }
 
-function splitCsv(value: string): string[] {
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
+interface SettingsNavItem {
+  key: SettingsTabKey;
+  labelKey: string;
+  descriptionKey: string;
+  icon: LucideIcon;
+  group: "system" | "capabilities" | "advanced";
 }
 
-export function runtimeReloadMessage(runtimeConfig: RuntimeConfigState): string | undefined {
-  const reload = runtimeConfig.reload;
-  if (!reload || reload.requestedGeneration === 0) return undefined;
-  if (reload.state === "failed") {
-    return `Configuration was saved, but reload generation ${reload.requestedGeneration} failed${reload.lastError ? `: ${reload.lastError}` : "."}`;
-  }
-  if (reload.completedGeneration < reload.requestedGeneration) {
-    return `Configuration saved; applying reload generation ${reload.requestedGeneration}…`;
-  }
-  return `Configuration reload generation ${reload.completedGeneration} completed.`;
-}
-
-export function shouldHydrateSettingsDrafts(runtimeConfig: RuntimeConfigState): boolean {
-  const results = runtimeConfig.results ?? [];
-  return !results.some((result) => result.effect === "rejected")
-    && runtimeConfig.reload?.state !== "failed";
-}
-
-function numberFromInput(value: string): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-}
-
-export function buildVisionConfigUpdates(visionDefault: string): Array<{ key: string; value?: unknown; unset?: boolean }> {
-  const trimmed = visionDefault.trim();
-  return [trimmed ? { key: "vision.default", value: trimmed } : { key: "vision.default", unset: true }];
-}
-
-export function buildImageGenerationConfigUpdates(imageGenDefault: string): Array<{ key: string; value?: unknown; unset?: boolean }> {
-  const trimmed = imageGenDefault.trim();
-  return [trimmed ? { key: "image_generation.default", value: trimmed } : { key: "image_generation.default", unset: true }];
-}
-
-/**
- * Vision default candidates must be selectable for the ViewImage operation,
- * not merely catalogued as image-capable: the runtime media projection
- * (`media.view_image.call_selectable`) folds capability, transport, provider
- * and credential readiness into one flag. Fall back to availability plus the
- * raw capability bit when the runtime did not send media data.
- */
-export function isVisionSelectableModel(model: RuntimeModelOption): boolean {
-  return model.viewImageSelectable ?? (model.available && model.supportsImageInput);
-}
-
-/**
- * Image generation default candidates follow the same rule through
- * `media.generate_image.call_selectable`.
- */
-export function isImageGenerationSelectableModel(model: RuntimeModelOption): boolean {
-  return model.generateImageSelectable ?? (model.available && model.supportsImageGeneration);
-}
-
-export function buildDecisionConfigUpdates(
-  enabled: boolean,
-  model: string,
-  modelDir: string,
-  variant: string,
-  numThreads: string,
-  checksum: string,
-  preset = "jev-selector-q4f16",
-  modelUpdate: "set" | "preserve" = "set",
-): Array<{ key: string; value?: unknown; unset?: boolean }> {
-  const trimmedModel = model.trim();
-  const trimmedModelDir = modelDir.trim();
-  const trimmedVariant = variant.trim();
-  const parsedNumThreads = Number.parseInt(numThreads.trim(), 10);
-  const trimmedChecksum = checksum.trim();
-  return [
-    enabled ? { key: "decision.enabled", value: true } : { key: "decision.enabled", unset: true },
-    ...(modelUpdate === "preserve"
-      ? []
-      : [
-          trimmedModel
-            ? { key: "decision.model", value: trimmedModel }
-            : { key: "decision.model", unset: true },
-        ]),
-    preset.trim()
-      ? { key: "decision.local_onnx.preset", value: preset.trim() }
-      : { key: "decision.local_onnx.preset", unset: true },
-    trimmedModelDir
-      ? { key: "decision.local_onnx.model_dir", value: trimmedModelDir }
-      : { key: "decision.local_onnx.model_dir", unset: true },
-    trimmedVariant
-      ? { key: "decision.local_onnx.variant", value: trimmedVariant }
-      : { key: "decision.local_onnx.variant", unset: true },
-    Number.isFinite(parsedNumThreads) && parsedNumThreads > 0
-      ? { key: "decision.local_onnx.num_threads", value: parsedNumThreads }
-      : { key: "decision.local_onnx.num_threads", unset: true },
-    trimmedChecksum
-      ? { key: "decision.local_onnx.checksum", value: trimmedChecksum }
-      : { key: "decision.local_onnx.checksum", unset: true },
-  ];
-}
-
-export function buildAdvisoryToolConfigUpdates(
-  enabled: boolean,
-  maxCallsPerTurn: string,
-  timeoutMs: string,
-  minConfidencePercent: string,
-): Array<{ key: string; value?: unknown; unset?: boolean }> {
-  const maxCalls = numberFromInput(maxCallsPerTurn);
-  const timeout = numberFromInput(timeoutMs);
-  const confidence = Math.min(100, numberFromInput(minConfidencePercent));
-  return [
-    { key: "decision.tools.enabled", value: enabled },
-    { key: "decision.tools.max_calls_per_turn", value: Math.max(1, maxCalls) },
-    { key: "decision.tools.timeout_ms", value: Math.max(1, timeout) },
-    { key: "decision.tools.min_confidence", value: confidence / 100 },
-  ];
-}
-
-export function reorderModelFallbacks(
-  models: string[],
-  fromIndex: number,
-  toIndex: number,
-): string[] {
-  if (
-    fromIndex === toIndex
-    || fromIndex < 0
-    || toIndex < 0
-    || fromIndex >= models.length
-    || toIndex >= models.length
-  ) {
-    return models;
-  }
-  const next = [...models];
-  const [moved] = next.splice(fromIndex, 1);
-  if (moved === undefined) return models;
-  next.splice(toIndex, 0, moved);
-  return next;
-}
-
-export function filterFallbackSuggestions(
-  availableModels: readonly RuntimeModelOption[],
-  input: string,
-  selectedModels: readonly string[],
-): RuntimeModelOption[] {
-  const query = input.trim().toLowerCase();
-  if (!query) return [];
-  const selected = new Set(selectedModels);
-  return availableModels
-    .filter((model) =>
-      !selected.has(model.routeRef)
-      && (
-        model.model.toLowerCase().includes(query)
-        || model.routeRef.toLowerCase().includes(query)
-        || model.displayName.toLowerCase().includes(query)
-      ))
-    .slice(0, 10);
-}
-
-export function isDecisionCatalogRoute(
-  model: string,
-  decisionModels: readonly RuntimeModelOption[],
-): boolean {
-  const trimmed = model.trim();
-  return !trimmed || decisionModels.some((option) => option.routeRef === trimmed);
-}
-
-function isProviderKeyCredential(kind: string): boolean {
-  return kind === "api_key" || kind === "bearer_token";
-}
-
-/**
- * Transports the Settings page may declare for a custom provider. The backend
- * vocabulary stays authoritative; this is the agent-turn subset, so
- * `openai_codex_responses` (ChatGPT accounts) and `ai_evaluation_model`
- * (Decision line) are intentionally absent.
- */
-const CUSTOM_PROVIDER_TRANSPORTS = [
-  "openai_chat_completions",
-  "openai_responses",
-  "anthropic_messages",
-  "gemini_generate_content",
-] as const;
-
-const CUSTOM_PROVIDER_DISCOVERY_KINDS = ["openai_models", "disabled"] as const;
-
-type CustomProviderDraft = {
-  id: string;
-  transport: (typeof CUSTOM_PROVIDER_TRANSPORTS)[number];
-  baseUrl: string;
-  apiKey: string;
-  discoveryKind: (typeof CUSTOM_PROVIDER_DISCOVERY_KINDS)[number];
-  discoveryPath: string;
-};
-
-const EMPTY_CUSTOM_PROVIDER_DRAFT: CustomProviderDraft = {
-  id: "",
-  transport: "openai_chat_completions",
-  baseUrl: "",
-  apiKey: "",
-  discoveryKind: "openai_models",
-  discoveryPath: "",
-};
-
-function isAbsoluteHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-type ProviderDraft = Pick<
-  RuntimeProviderSummary,
-  "transport" | "baseUrl" | "oauthSupported" | "apiKeySupported" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
-> & {
-  // Empty string means "not configured"; openai_models uses path and an
-  // optional decoder, disabled clears both.
-  discoveryKind: string;
-  discoveryPath: string;
-  discoveryDecoder: string;
-};
-
-type SearchProviderDraft = Pick<RuntimeWebSearchProviderSummary, "kind" | "baseUrl" | "engineId" | "credentialProfile">;
-
-type StandardSearchProviderDefinition = {
-  id: string;
-  kind: string;
-  category: "api" | "selfHosted";
-  requiresApiKey: boolean;
-  supportsApiKey: boolean;
-  requiresBaseUrl: boolean;
-  defaultCredentialProfile?: string;
-  capabilities: RuntimeWebSearchProviderKindSummary["capabilities"];
-};
-
-export function buildStandardSearchProviderDefinitions(
-  kinds: RuntimeWebSearchProviderKindSummary[],
-): StandardSearchProviderDefinition[] {
-  return kinds
-    .filter(({ capabilities }) =>
-      capabilities.status !== "unsupported"
-      && (capabilities.auth === "api_key" || capabilities.auth === "api_key_optional" || capabilities.auth === "self_hosted")
-    )
-    .map(({ kind, capabilities }) => {
-      const requiresApiKey = capabilities.auth === "api_key";
-      const supportsApiKey = requiresApiKey || capabilities.auth === "api_key_optional";
-      return {
-        id: kind.replaceAll("_", "-"),
-        kind,
-        category: capabilities.auth === "self_hosted" ? "selfHosted" as const : "api" as const,
-        requiresApiKey,
-        supportsApiKey,
-        requiresBaseUrl: capabilities.auth === "self_hosted",
-        defaultCredentialProfile: supportsApiKey ? `${kind}:default` : undefined,
-        capabilities,
-      };
-    })
-    .sort((left, right) => right.capabilities.defaultPriority - left.capabilities.defaultPriority);
-}
-
-const settingsTabs: Array<{ key: SettingsTabKey; labelKey: string; descriptionKey: string }> = [
-  { key: "general", labelKey: "settings.tabGeneral", descriptionKey: "settings.tabGeneralDesc" },
-  { key: "models", labelKey: "settings.tabModels", descriptionKey: "settings.tabModelsDesc" },
-  { key: "vision", labelKey: "settings.tabVision", descriptionKey: "settings.tabVisionDesc" },
-  { key: "decision", labelKey: "settings.tabDecision", descriptionKey: "settings.tabDecisionDesc" },
-  { key: "search", labelKey: "settings.tabSearch", descriptionKey: "settings.tabSearchDesc" },
-  { key: "advanced", labelKey: "settings.tabAdvanced", descriptionKey: "settings.tabAdvancedDesc" },
+const settingsNavItems: SettingsNavItem[] = [
+  { key: "general", labelKey: "settings.tabGeneral", descriptionKey: "settings.tabGeneralDesc", icon: SlidersHorizontal, group: "system" },
+  { key: "access", labelKey: "settings.tabAccess", descriptionKey: "settings.tabAccessDesc", icon: QrCode, group: "system" },
+  { key: "providers", labelKey: "settings.tabProviders", descriptionKey: "settings.tabProvidersDesc", icon: KeyRound, group: "capabilities" },
+  { key: "models", labelKey: "settings.tabModels", descriptionKey: "settings.tabModelsDesc", icon: Cpu, group: "capabilities" },
+  { key: "vision", labelKey: "settings.tabVision", descriptionKey: "settings.tabVisionDesc", icon: ImageIcon, group: "capabilities" },
+  { key: "search", labelKey: "settings.tabSearch", descriptionKey: "settings.tabSearchDesc", icon: Globe, group: "capabilities" },
+  { key: "decision", labelKey: "settings.tabDecision", descriptionKey: "settings.tabDecisionDesc", icon: Compass, group: "capabilities" },
+  { key: "advanced", labelKey: "settings.tabAdvanced", descriptionKey: "settings.tabAdvancedDesc", icon: Activity, group: "advanced" },
 ];
 
-function defaultSearchProviderDraft(providerId: string, definition?: StandardSearchProviderDefinition): SearchProviderDraft {
-  return {
-    kind: definition?.kind ?? "brave",
-    baseUrl: "",
-    credentialProfile: definition?.requiresApiKey ? definition.defaultCredentialProfile ?? `${providerId}:default` : "",
-  };
-}
-
-export function buildSearchProviderConfigUpdates(
-  providerId: string,
-  draft: SearchProviderDraft,
-  capabilities?: RuntimeWebSearchProviderKindSummary["capabilities"],
-): Array<{ key: string; value?: unknown; unset?: boolean }> {
-  const shouldSendBaseUrl = capabilities?.auth !== "native_provider";
-  const updates: Array<{ key: string; value?: unknown; unset?: boolean }> = [
-    { key: `web.providers.${providerId}.kind`, value: draft.kind },
-    { key: `web.providers.${providerId}.credential_profile`, value: draft.credentialProfile?.trim() ?? "" },
-  ];
-  if (shouldSendBaseUrl) {
-    updates.splice(1, 0, { key: `web.providers.${providerId}.base_url`, value: draft.baseUrl?.trim() ?? "" });
-  }
-  if (draft.kind === "google") {
-    updates.push({ key: `web.providers.${providerId}.engine_id`, value: draft.engineId?.trim() ?? "" });
-  }
-  return updates;
-}
-
-/**
- * Assemble `providers.<id>.discovery.*` updates from a provider draft.
- *
- * Order matters: `kind` must be set before `path`/`decoder` so the config
- * layer never sees a decoder without a discovery block. Switching to
- * `disabled` (or clearing the block) unsets `path` and `decoder`.
- */
-export function buildProviderDiscoveryConfigUpdates(
-  providerId: string,
-  draft: Pick<ProviderDraft, "discoveryKind" | "discoveryPath" | "discoveryDecoder">,
-): Array<{ key: string; value?: unknown; unset?: boolean }> {
-  const base = `providers.${providerId}.discovery`;
-  const kind = draft.discoveryKind.trim();
-  if (kind === "") {
-    // Clear the whole block; provider-level unset removes the declared entry.
-    return [
-      { key: `${base}.path`, unset: true },
-      { key: `${base}.decoder`, unset: true },
-      { key: `${base}.kind`, unset: true },
-    ];
-  }
-  const updates: Array<{ key: string; value?: unknown; unset?: boolean }> = [
-    { key: `${base}.kind`, value: kind },
-  ];
-  if (kind === "disabled") {
-    updates.push({ key: `${base}.path`, unset: true });
-    updates.push({ key: `${base}.decoder`, unset: true });
-    return updates;
-  }
-  // openai_models: path is required; decoder is optional (empty = default).
-  const path = draft.discoveryPath.trim();
-  updates.push(path ? { key: `${base}.path`, value: path } : { key: `${base}.path`, unset: true });
-  const decoder = draft.discoveryDecoder.trim();
-  updates.push(decoder ? { key: `${base}.decoder`, value: decoder } : { key: `${base}.decoder`, unset: true });
-  return updates;
-}
+const settingsNavGroups: Array<{ key: SettingsNavItem["group"]; labelKey: string }> = [
+  { key: "system", labelKey: "settings.navGroupSystem" },
+  { key: "capabilities", labelKey: "settings.navGroupCapabilities" },
+  { key: "advanced", labelKey: "settings.navGroupAdvanced" },
+];
 
 export function SettingsPage({
   connection,
@@ -429,26 +137,19 @@ export function SettingsPage({
   codexDeviceLogin,
   onStartCodexDeviceLogin,
   onClearCodexDeviceLogin,
+  onActiveTabChange,
 }: SettingsPageProps) {
+  const { t } = useTranslation();
   const serve = useServeStatus(connection);
-  const groupedModels = groupModelsByProvider(modelCatalog.options);
+  const groupedModels = useMemo(() => groupModelsByProvider(modelCatalog.options), [modelCatalog.options]);
   const decisionModels = useMemo(
     () => modelCatalog.options.filter((model) => model.decisionCapable),
     [modelCatalog.options],
   );
-  const availableCount = modelCatalog.options.filter((model) => model.available).length;
-  const unavailableCount = modelCatalog.options.length - availableCount;
-  const { t } = useTranslation();
-  const { languageMode, resolvedLanguageLabel, setLanguageMode } = useI18nSettings();
-  useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
-  const runtimeTraceEnabled = isRuntimeTraceEnabled();
-  const runtimeTraceRecordCount = getRuntimeTraceRecords().length;
   const surface = runtimeConfig.surface;
+
   const [modelDefault, setModelDefault] = useState("");
   const [modelFallbacks, setModelFallbacks] = useState<string[]>([]);
-  const [fallbackInput, setFallbackInput] = useState("");
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
-  const draggedIndexRef = useRef<number | null>(null);
   const [visionDefault, setVisionDefault] = useState("");
   const [imageGenDefault, setImageGenDefault] = useState("");
   const [decisionEnabled, setDecisionEnabled] = useState(false);
@@ -458,8 +159,6 @@ export function SettingsPage({
   const [decisionNumThreads, setDecisionNumThreads] = useState("1");
   const [decisionChecksum, setDecisionChecksum] = useState("");
   const [decisionPreset, setDecisionPreset] = useState("jev-selector-q4f16");
-  const [localOnnxDownload, setLocalOnnxDownload] = useState<RuntimeLocalOnnxPresetStatus | undefined>();
-  const [localOnnxDownloading, setLocalOnnxDownloading] = useState(false);
   const [advisoryToolEnabled, setAdvisoryToolEnabled] = useState(false);
   const [advisoryToolMaxCalls, setAdvisoryToolMaxCalls] = useState("4");
   const [advisoryToolTimeout, setAdvisoryToolTimeout] = useState("1500");
@@ -482,19 +181,27 @@ export function SettingsPage({
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [customProviderDraft, setCustomProviderDraft] = useState<CustomProviderDraft | null>(null);
   const [customProviderMessage, setCustomProviderMessage] = useState<string | undefined>(undefined);
-  const providerDirectoryRef = useRef<HTMLDivElement>(null);
-  const providerBackRef = useRef<HTMLButtonElement>(null);
-  const lastProviderRef = useRef<string | null>(null);
-  const [addingFallback, setAddingFallback] = useState(false);
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({});
   const [saveMessage, setSaveMessage] = useState<string | undefined>();
+  const [limitsSaveMessage, setLimitsSaveMessage] = useState<string | undefined>();
   const [searchSaveMessage, setSearchSaveMessage] = useState<string | undefined>();
   const [searchProviderSaveMessage, setSearchProviderSaveMessage] = useState<string | undefined>();
   const [visionSaveMessage, setVisionSaveMessage] = useState<string | undefined>();
   const [imageGenSaveMessage, setImageGenSaveMessage] = useState<string | undefined>();
   const [decisionSaveMessage, setDecisionSaveMessage] = useState<string | undefined>();
   const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
+  const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
+  const [searchApiKeyDrafts, setSearchApiKeyDrafts] = useState<Record<string, string>>({});
+  const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
+  const [searchCredentialMessages, setSearchCredentialMessages] = useState<Record<string, string>>({});
+  const [deviceLoginProviderId, setDeviceLoginProviderId] = useState<string | null>(null);
+
   const [activeTab, updateActiveTab] = useState<SettingsTabKey>(() => readSettingsTab(window.location.search));
+
+  useEffect(() => {
+    onActiveTabChange?.(activeTab);
+  }, [activeTab, onActiveTabChange]);
+
   function setActiveTab(tab: SettingsTabKey) {
     updateActiveTab(tab);
     rememberSettingsTab(tab);
@@ -504,35 +211,38 @@ export function SettingsPage({
       window.history.replaceState(window.history.state, "", url);
     }
   }
-  function repairSetup(action: string, provider: string | null) {
-    setActiveTab("models");
-    setEditingProvider(action === "configure_model_credential" ? provider : null);
+
+  function openProviderEditor(providerId?: string | null) {
+    setActiveTab("providers");
+    setEditingProvider(providerId ?? null);
     setProviderFilter("all");
     setProviderSearch("");
     requestAnimationFrame(() => {
-      const target = document.getElementById(
-        action === "configure_model_credential" && provider ? "setup-provider-editor" : "setup-default-model",
-      );
+      const target = document.getElementById("setup-provider-editor");
       target?.scrollIntoView({ block: "center" });
       target?.querySelector<HTMLElement>("input, button, select")?.focus();
     });
   }
+
+  function repairSetup(action: string, provider: string | null) {
+    if (action === "configure_model_credential") {
+      openProviderEditor(provider);
+      return;
+    }
+    setActiveTab("models");
+    requestAnimationFrame(() => {
+      const target = document.getElementById("setup-default-model");
+      target?.scrollIntoView({ block: "center" });
+      target?.querySelector<HTMLElement>("input, button, select")?.focus();
+    });
+  }
+
   useEffect(() => {
     if (setupTarget) repairSetup(setupTarget.action, setupTarget.provider);
   }, [setupTarget]);
-  const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
-  const [searchApiKeyDrafts, setSearchApiKeyDrafts] = useState<Record<string, string>>({});
-  const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
-  const [searchCredentialMessages, setSearchCredentialMessages] = useState<Record<string, string>>({});
-  const [deviceLoginProviderId, setDeviceLoginProviderId] = useState<string | null>(null);
-  const decisionModelIsCatalogRoute = isDecisionCatalogRoute(decisionModel, decisionModels);
-  const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
+
   const visionModels = useMemo(() => modelCatalog.options.filter(isVisionSelectableModel), [modelCatalog.options]);
   const imageGenModels = useMemo(() => modelCatalog.options.filter(isImageGenerationSelectableModel), [modelCatalog.options]);
-  const fallbackSuggestions = useMemo(
-    () => filterFallbackSuggestions(availableModels, fallbackInput, modelFallbacks),
-    [availableModels, fallbackInput, modelFallbacks],
-  );
   const providersWithModels = useMemo(
     () => new Set(modelCatalog.options.map((model) => model.routeProvider)),
     [modelCatalog.options],
@@ -545,18 +255,6 @@ export function SettingsPage({
     const selected = new Set([surface?.modelDefault, surface?.visionDefault, surface?.imageGenerationDefault, ...(surface?.modelFallbacks ?? [])]);
     return new Set(modelCatalog.options.filter((model) => selected.has(model.routeRef)).map((model) => model.routeProvider));
   }, [surface, modelCatalog.options]);
-  const visibleProviders = sortedProviders.filter((provider) =>
-    (providerFilter === "all" || providerIsConnected(provider, usedProviders))
-    && providerSearch.toLowerCase().trim().split(/\s+/).every((word) => providerPresentation(provider.id).search.includes(word)))
-    .sort((a, b) => providerPresentation(a.id).label.localeCompare(providerPresentation(b.id).label));
-  useEffect(() => {
-    if (editingProvider) providerBackRef.current?.focus();
-    else if (lastProviderRef.current) {
-      const row = Array.from(providerDirectoryRef.current?.querySelectorAll<HTMLButtonElement>("button[data-provider]") ?? [])
-        .find((button) => button.dataset.provider === lastProviderRef.current);
-      row?.focus();
-    }
-  }, [editingProvider]);
 
   const sortedSearchProviders = useMemo(
     () => sortSearchProvidersForSettings(surface?.webSearchProviders ?? []),
@@ -585,6 +283,19 @@ export function SettingsPage({
     ].filter((group) => group.providers.length > 0),
     [standardSearchProviders],
   );
+  const customSearchProviderIds = useMemo(() => {
+    if (!surface) return [];
+    return sortedSearchProviders
+      .filter((provider) => !standardSearchProviderIds.has(provider.id))
+      .map((provider) => provider.id)
+      .concat(
+        Object.keys(searchProviderDrafts).filter(
+          (providerId) =>
+            !surface.webSearchProviders.some((provider) => provider.id === providerId)
+            && !standardSearchProviderIds.has(providerId),
+        ),
+      );
+  }, [searchProviderDrafts, sortedSearchProviders, standardSearchProviderIds, surface]);
 
   useEffect(() => {
     if (!surface || !shouldHydrateSettingsDrafts(runtimeConfig)) return;
@@ -650,17 +361,17 @@ export function SettingsPage({
       ),
     );
     setSaveMessage(undefined);
+    setLimitsSaveMessage(undefined);
     setSearchSaveMessage(undefined);
     setSearchProviderSaveMessage(undefined);
     setVisionSaveMessage(undefined);
-    // Reload hydration must not erase the provider operation's save feedback.
+    setImageGenSaveMessage(undefined);
   }, [runtimeConfig, surface]);
 
   useEffect(() => {
     void onRefreshCredentialStore();
   }, [onRefreshCredentialStore]);
 
-  // Auto-save auth config when OAuth device login completes
   useEffect(() => {
     if (codexDeviceLogin.status === "completed" && deviceLoginProviderId) {
       const providerId = deviceLoginProviderId;
@@ -691,9 +402,9 @@ export function SettingsPage({
   }
 
   const rejectedResults = runtimeConfig.results?.filter((result) => result.effect === "rejected") ?? [];
-  const configuredProviderCount = surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0;
-  const searchProviderCount = surface?.webSearchProviders.length ?? 0;
-  const configuredSearchProviderCount = surface?.webSearchProviders.filter((provider) => provider.credentialConfigured).length ?? 0;
+  const configuredProviderCount =
+    surface?.providers.filter((provider) => providerIsConnected(provider, usedProviders)).length ?? 0;
+
   const visionRouteProvider = modelCatalog.options.find((model) => model.routeRef === visionDefault)?.routeProvider
     ?? visionDefault.split("/")[0];
   const visionProviderReady = visionDefault
@@ -705,25 +416,55 @@ export function SettingsPage({
     ? surface?.providers.find((provider) => provider.id === imageGenRouteProvider)?.credentialConfigured
     : undefined;
 
-  async function saveRuntimeConfig() {
+  async function saveLanguageModelsConfig() {
     setSaveMessage(undefined);
-    const updates = [
+    const result = await onUpdateRuntimeConfig([
       { key: "model.default", value: modelDefault.trim() },
       { key: "model.fallbacks", value: modelFallbacks },
-      { key: "runtime.default_tool_output_tokens", value: numberFromInput(defaultToolOutputTokens) },
-      { key: "runtime.max_tool_output_tokens", value: numberFromInput(maxToolOutputTokens) },
-      { key: "runtime.disable_provider_fallback", value: disableProviderFallback },
-    ];
-    const result = await onUpdateRuntimeConfig(updates);
+    ]);
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
     if (!rejected.length) [modelDefault, ...modelFallbacks].filter(Boolean).forEach(rememberModel);
     setSaveMessage(
       rejected.length
-        ? `${rejected.length} setting${rejected.length === 1 ? "" : "s"} rejected.`
+        ? t("settings.rejectedSettingsCount", { count: rejected.length })
         : result.changed
-          ? setupIsReady(result) ? t("setup.ready") : t("setup.savedIncomplete")
-          : "No runtime config changes were persisted.",
+          ? setupIsReady(result)
+            ? t("setup.ready")
+            : t("setup.savedIncomplete")
+          : t("settings.noConfigChanges"),
+    );
+  }
+
+  async function selectProviderModelAsDefault(routeRef: string) {
+    setModelDefault(routeRef);
+    setProviderSaveMessage(undefined);
+    const result = await onUpdateRuntimeConfig([{ key: "model.default", value: routeRef }]);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    if (!rejected.length) rememberModel(routeRef);
+    setProviderSaveMessage(
+      rejected.length
+        ? t("settings.rejectedSettingsCount", { count: rejected.length })
+        : t("settings.defaultModelSaved", { model: routeRef }),
+    );
+  }
+
+  async function saveRuntimeLimitsConfig() {
+    setLimitsSaveMessage(undefined);
+    const result = await onUpdateRuntimeConfig([
+      { key: "runtime.default_tool_output_tokens", value: numberFromInput(defaultToolOutputTokens) },
+      { key: "runtime.max_tool_output_tokens", value: numberFromInput(maxToolOutputTokens) },
+      { key: "runtime.disable_provider_fallback", value: disableProviderFallback },
+    ]);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setLimitsSaveMessage(
+      rejected.length
+        ? t("settings.rejectedSettingsCount", { count: rejected.length })
+        : result.changed
+          ? t("settings.savedConfig")
+          : t("settings.noConfigChanges"),
     );
   }
 
@@ -742,10 +483,10 @@ export function SettingsPage({
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
     setSearchSaveMessage(
       rejected.length
-        ? `${rejected.length} search setting${rejected.length === 1 ? "" : "s"} rejected.`
+        ? t("settings.rejectedSettingsCount", { count: rejected.length })
         : result.changed
-          ? "Saved search settings to config.json. Configuration reload scheduled."
-          : "No search config changes were persisted.",
+          ? t("settings.savedSearchConfig")
+          : t("settings.noSearchConfigChanges"),
     );
   }
 
@@ -760,15 +501,16 @@ export function SettingsPage({
     }));
   }
 
-  function addSearchProviderDraft() {
+  function addSearchProviderDraft(): string | undefined {
     const providerId = newSearchProviderId.trim();
-    if (!providerId) return;
+    if (!providerId) return undefined;
     updateSearchProviderDraft(providerId, {
       kind: newSearchProviderKind,
       credentialProfile: `${providerId}:default`,
     });
     setNewSearchProviderId("");
-    setSearchProviderSaveMessage(`Prepared ${providerId}. Review and save the provider config below.`);
+    setSearchProviderSaveMessage(t("settings.preparedCustomSearchProvider", { provider: providerId }));
+    return providerId;
   }
 
   async function saveSearchProviderConfig(providerId: string) {
@@ -780,26 +522,23 @@ export function SettingsPage({
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
     setSearchProviderSaveMessage(
       rejected.length
-        ? `${rejected.length} search provider setting${rejected.length === 1 ? "" : "s"} rejected.`
+        ? t("settings.rejectedSettingsCount", { count: rejected.length })
         : result.changed
-          ? `Saved ${providerId} search provider settings to config.json. Configuration reload scheduled.`
-          : "No search provider config changes were persisted.",
+          ? t("settings.savedSearchConfig")
+          : t("settings.noSearchProviderConfigChanges"),
     );
   }
 
   async function removeSearchProviderConfig(providerId: string) {
-    const confirmed = window.confirm(
-      t("settings.confirmRemoveSearchProvider", { provider: providerId }),
-    );
+    const confirmed = window.confirm(t("settings.confirmRemoveSearchProvider", { provider: providerId }));
     if (!confirmed) return;
-
     setSearchProviderSaveMessage(undefined);
     const result = await onUpdateRuntimeConfig([{ key: `web.providers.${providerId}`, unset: true }]);
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
     setSearchProviderSaveMessage(
       rejected.length
-        ? `${rejected.length} search provider removal${rejected.length === 1 ? "" : "s"} rejected.`
+        ? t("settings.rejectedSettingsCount", { count: rejected.length })
         : result.changed
           ? t("settings.removedSearchProviderConfig", { provider: providerId })
           : t("settings.noSearchProviderConfigRemoved", { provider: providerId }),
@@ -838,10 +577,10 @@ export function SettingsPage({
     if (!rejected.length) [visionDefault].filter(Boolean).forEach(rememberModel);
     setVisionSaveMessage(
       rejected.length
-        ? `${rejected.length} vision setting${rejected.length === 1 ? "" : "s"} rejected.`
+        ? t("settings.rejectedSettingsCount", { count: rejected.length })
         : result.changed
-          ? "Saved Vision default to config.json. Configuration reload scheduled."
-          : "No Vision config changes were persisted.",
+          ? t("settings.savedVisionConfig")
+          : t("settings.noVisionConfigChanges"),
     );
   }
 
@@ -853,15 +592,16 @@ export function SettingsPage({
     if (!rejected.length && imageGenDefault) rememberModel(imageGenDefault);
     setImageGenSaveMessage(
       rejected.length
-        ? `${rejected.length} image generation setting${rejected.length === 1 ? "" : "s"} rejected.`
+        ? t("settings.rejectedSettingsCount", { count: rejected.length })
         : result.changed
-          ? "Saved image generation default to config.json. Configuration reload scheduled."
-          : "No image generation config changes were persisted.",
+          ? t("settings.savedImageGenConfig")
+          : t("settings.noImageGenConfigChanges"),
     );
   }
 
   async function saveDecisionConfig() {
     setDecisionSaveMessage(undefined);
+    const decisionModelIsCatalogRoute = isDecisionCatalogRoute(decisionModel, decisionModels);
     const result = await onUpdateRuntimeConfig(
       buildDecisionConfigUpdates(
         decisionEnabled,
@@ -922,8 +662,6 @@ export function SettingsPage({
 
     const keyCredential = isProviderKeyCredential(draft.credentialKind);
     const key = keyCredential ? apiKeyDrafts[providerId]?.trim() : undefined;
-    // Switch to a stored profile only when entering a key or already using one.
-    // Saving an unrelated setting must preserve existing environment credentials.
     const useProfile = keyCredential && (Boolean(key) || draft.credentialSource === "credential_profile");
     const effectiveProfile = useProfile
       ? (draft.credentialProfile?.trim() || `${providerId}:default`)
@@ -931,23 +669,18 @@ export function SettingsPage({
     const effectiveSource = useProfile ? "credential_profile" : draft.credentialSource;
     const effectiveEnv = useProfile ? "" : (draft.credentialEnv?.trim() ?? "");
 
-    // Store the secret before referencing it, preserving the provider's credential kind.
-    if (keyCredential) {
-      if (key) {
-        setCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
-        const credResult = await onSetCredential(effectiveProfile, draft.credentialKind, key);
-        if (credResult) {
-          setCredentialMessages((prev) => ({
-            ...prev,
-            [providerId]: credResult.reloadGeneration > 0
-              ? "Saved; applying configuration…"
-              : t("settings.apiKeySaved"),
-          }));
-          setApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
-        } else {
-          setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedSaveKey") }));
-          return;
-        }
+    if (keyCredential && key) {
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.savingKey") }));
+      const credResult = await onSetCredential(effectiveProfile, draft.credentialKind, key);
+      if (credResult) {
+        setCredentialMessages((prev) => ({
+          ...prev,
+          [providerId]: credResult.reloadGeneration > 0 ? t("setup.applying") : t("settings.apiKeySaved"),
+        }));
+        setApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
+      } else {
+        setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedSaveKey") }));
+        return;
       }
     }
 
@@ -964,10 +697,12 @@ export function SettingsPage({
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
     setProviderSaveMessage(
       rejected.length
-        ? `${rejected.length} provider setting${rejected.length === 1 ? "" : "s"} rejected.`
+        ? t("settings.rejectedSettingsCount", { count: rejected.length })
         : result.changed
-          ? setupIsReady(result) ? t("setup.ready") : t("setup.savedIncomplete")
-          : "No provider config changes were persisted.",
+          ? setupIsReady(result)
+            ? t("setup.ready")
+            : t("setup.savedIncomplete")
+          : t("settings.noProviderConfigChanges"),
     );
   }
 
@@ -990,12 +725,6 @@ export function SettingsPage({
     return undefined;
   }
 
-  /**
-   * `providers.<id>.transport` declares the provider, so the batch must carry
-   * the transport and a valid base_url together. Auth is explicit `none/none`
-   * when no key was entered; an entered key is stored first and referenced as a
-   * credential profile in the same batch.
-   */
   async function createCustomProvider() {
     if (!customProviderDraft) return;
     const draft = customProviderDraft;
@@ -1046,1619 +775,331 @@ export function SettingsPage({
   }
 
   async function removeProviderConfig(providerId: string) {
-    const confirmed = window.confirm(
-      t("settings.confirmRemoveProvider", { provider: providerId }),
-    );
+    const confirmed = window.confirm(t("settings.confirmRemoveProvider", { provider: providerId }));
     if (!confirmed) return;
-
     setProviderSaveMessage(undefined);
     const result = await onUpdateRuntimeConfig([{ key: `providers.${providerId}`, unset: true }]);
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
     setProviderSaveMessage(
       rejected.length
-        ? `${rejected.length} provider config removal${rejected.length === 1 ? "" : "s"} rejected.`
+        ? t("settings.rejectedSettingsCount", { count: rejected.length })
         : result.changed
           ? t("settings.removedProviderConfig", { provider: providerId })
           : t("settings.noProviderConfigRemoved", { provider: providerId }),
     );
   }
 
+  function renderNavBadge(key: SettingsTabKey) {
+    if (key === "providers" && surface) {
+      return <span className="settings-nav-badge">{configuredProviderCount}</span>;
+    }
+    if (key === "access" && serve.status?.serving) {
+      return <span className="settings-nav-badge is-active">{t("settings.serve.states.serving")}</span>;
+    }
+    if (key === "search" && surface?.webSearch) {
+      return (
+        <span className={`settings-nav-badge${surface.webSearch.enabled ? "" : " is-muted"}`}>
+          {surface.webSearch.enabled ? t("settings.enabled") : t("settings.disabled")}
+        </span>
+      );
+    }
+    return null;
+  }
+
+  const isQuietSetupReady = !runtimeConfigLoading && !runtimeConfigSaving && setupIsReady(runtimeConfig) && !onStartOnboarding;
+
   return (
     <section className="page settings-page workspace-page" aria-label={t("settings.settingsAria")}>
       <div className="page-inner settings-inner workspace-page-content">
-        <PageHeading title={t("settings.title")} description={t("settings.runtimeConfig")} />
-        <SetupStatusCard config={{ ...runtimeConfig, error: runtimeConfigError ?? runtimeConfig.error }}
-          loading={runtimeConfigLoading} saving={runtimeConfigSaving}
-          onRepair={repairSetup} onRetry={() => void onRefreshRuntimeConfig()}
-          onStart={onStartOnboarding} />
-        <section className="settings-overview">
-          <div className="settings-quickstart" aria-label={t("settings.settingsOverviewAria")}>
-            <div>
-              <span>{t("settings.connection")}</span>
-              <strong>{connection.source === "http" ? t("settings.liveRuntime") : t("settings.previewData")}</strong>
-              <small>{connection.baseUrl ?? t("settings.noApiBase")}</small>
-            </div>
-            <div>
-              <span>{t("settings.modelProviders")}</span>
-              <strong>
-                {t("modelUi.configuredCount", { count: configuredProviderCount })}
-              </strong>
-              <small>{t("settings.credentialHotReload")}</small>
-            </div>
-            <div>
-              <span>{t("settings.webSearch")}</span>
-              <strong>{surface?.webSearch?.enabled ? t("settings.enabled") : "Disabled"}</strong>
-              <small>
-                {searchProviderCount
-                  ? `${configuredSearchProviderCount}/${searchProviderCount} search provider${searchProviderCount === 1 ? "" : "s"} ready`
-                  : "Using builtin provider defaults"}
-              </small>
-            </div>
-            <div>
-              <span>{t("settings.tabVision")}</span>
-              <strong>{surface?.visionDefault ? t("settings.pinnedModel") : "Auto-discovery"}</strong>
-              <small>{surface?.visionDefault ?? `${visionModels.length} image-capable model${visionModels.length === 1 ? "" : "s"} ready`}</small>
-            </div>
-          </div>
-        </section>
-
-        <div className="settings-tabs" role="tablist" aria-label={t("settings.settingsSectionsAria")}>
-          {settingsTabs.map((tab) => (
-            <button
-              id={`settings-tab-${tab.key}`}
-              aria-controls="settings-panel"
-              aria-selected={activeTab === tab.key}
-              tabIndex={activeTab === tab.key ? 0 : -1}
-              title={t(tab.descriptionKey)}
-              onKeyDown={(event) => {
-                const index = settingsTabs.findIndex((item) => item.key === tab.key);
-                const next = event.key === "ArrowRight" ? (index + 1) % settingsTabs.length
-                  : event.key === "ArrowLeft" ? (index + settingsTabs.length - 1) % settingsTabs.length
-                  : event.key === "Home" ? 0 : event.key === "End" ? settingsTabs.length - 1 : undefined;
-                if (next === undefined) return;
-                event.preventDefault();
-                setActiveTab(settingsTabs[next].key);
-                document.getElementById(`settings-tab-${settingsTabs[next].key}`)?.focus();
-              }}
-              className={`settings-tab ${activeTab === tab.key ? "active" : ""}`}
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              role="tab"
-              type="button"
-            >
-              <span>{t(tab.labelKey)}</span>
-            </button>
-          ))}
+        <div className={isQuietSetupReady ? "setup-status-quiet" : undefined}>
+          <SetupStatusCard
+            config={{ ...runtimeConfig, error: runtimeConfigError ?? runtimeConfig.error }}
+            loading={runtimeConfigLoading}
+            saving={runtimeConfigSaving}
+            onRepair={repairSetup}
+            onRetry={() => void onRefreshRuntimeConfig()}
+            onStart={onStartOnboarding}
+          />
         </div>
 
-        <div className="settings-content" id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${activeTab}`} tabIndex={0}>
-        {activeTab === "general" ? (
-          <div className="settings-grid">
-            <Card className="settings-card settings-primary-card">
-              <div className="settings-card-head">
-                <div>
-                  <span className="eyebrow">{t("settings.tabGeneral")}</span>
-                  <h2>{t("settings.runtimeOverview")}</h2>
-                </div>
-                <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
-                  {runtimeConfigLoading ? t("settings.refreshing") : t("common.refresh")}
-                </Button>
-              </div>
-              {runtimeConfigError ? <div className="settings-error-banner">{runtimeConfigError}</div> : null}
-              {runtimeReloadMessage(runtimeConfig) ? (
-                <div className={runtimeConfig.reload?.state === "failed" ? "settings-error-banner" : "settings-callout"}>
-                  {runtimeReloadMessage(runtimeConfig)}
-                </div>
-              ) : null}
-              <dl className="settings-list compact">
-                <div>
-                  <dt>{t("settings.connection")}</dt>
-                  <dd>{connection.source === "http" ? t("settings.liveRuntime") : t("settings.previewData")}</dd>
-                </div>
-                <div>
-                  <dt>{t("settings.apiBase")}</dt>
-                  <dd>{connection.baseUrl ?? t("settings.notConfigured")}</dd>
-                </div>
-                <div>
-                  <dt>{t("settings.configFile")}</dt>
-                  <dd>{runtimeConfig.configFilePath ?? t("settings.notReported")}</dd>
-                </div>
-                <div>
-                  <dt>{t("settings.providerFallback")}</dt>
-                  <dd>{surface?.disableProviderFallback ? t("settings.disabled") : t("settings.enabled")}</dd>
-                </div>
-                <div>
-                  <dt>{t("settings.modelProviders")}</dt>
-                  <dd>
-                    {configuredProviderCount}/{surface?.providers.length ?? 0}{t("settings.credentialReady")}
-                  </dd>
-                </div>
-                <div>
-                  <dt>{t("settings.tabSearch")}</dt>
-                  <dd>{surface?.webSearch?.enabled ? t("settings.enabled") : t("settings.disabled")}</dd>
-                </div>
-                <div>
-                  <dt>{t("settings.tabVision")}</dt>
-                  <dd>{surface?.visionDefault ? surface.visionDefault : t("settings.autoDiscovery")}</dd>
-                </div>
-              </dl>
-            </Card>
-
-            <PairingCard connection={connection} serve={serve} />
-            <TailscaleServeCard connection={connection} serve={serve} />
-
-            {/* ── Language ── */}
-            <Card className="settings-card settings-primary-card">
-              <div className="settings-card-head">
-                <div>
-                  <span className="eyebrow">{t("settings.language.label")}</span>
-                  <h2>{t("settings.language.label")}</h2>
-                </div>
-              </div>
-              <p className="settings-muted">{t("settings.language.description")}</p>
-              <div className="settings-form-row">
-                <label>
-                  <span>{t("settings.language.label")}</span>
-                  <select
-                    value={languageMode}
-                    onChange={(event) => setLanguageMode(event.target.value as typeof languageMode)}
-                  >
-                    {LANGUAGE_MODE_OPTIONS.map((mode) => (
-                      <option key={mode} value={mode}>
-                        {mode === "system"
-                          ? t("settings.language.system")
-                          : mode === "en"
-                            ? t("settings.language.english")
-                            : t("settings.language.chineseSimplified")}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              {languageMode === "system" ? (
-                <p className="settings-muted">
-                  {t("settings.language.systemResolved", { language: resolvedLanguageLabel })}
-                </p>
-              ) : null}
-            </Card>
-
-            {/* ── System notifications ── */}
-            <SystemNotificationSettingsCard />
-          </div>
-        ) : null}
-
-        <div className={`settings-grid ${activeTab === "models" ? "settings-model-defaults" : ""}`}>
-          {/* ── Model defaults ── */}
-          <Card className="settings-card settings-primary-card" hidden={activeTab !== "models"}>
-            <div className="settings-card-head">
-              <div>
-                <span className="eyebrow">{t("settings.runtimeDefaults")}</span>
-                <h2>{t("settings.modelHeading")}</h2>
-              </div>
-              <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
-                {runtimeConfigLoading ? t("settings.refreshing") : t("common.refresh")}
-              </Button>
-            </div>
-            {runtimeConfigError ? <div className="settings-error-banner">{runtimeConfigError}</div> : null}
-            {!surface ? (
-              <div className="settings-callout">
-                <strong>{t("settings.runtimeConfigUnavailable")}</strong>
-                <span>{t("settings.connectLiveRuntime")}</span>
-              </div>
-            ) : (
-              <form
-                className="settings-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveRuntimeConfig();
-                }}
-              >
-                <div id="setup-default-model">
-                  <ModelSelect label={t("settings.defaultModel")} options={modelCatalog.options} value={modelDefault} onChange={setModelDefault} />
-                </div>
-                <p className="settings-hint">{t("modelUi.defaultScope")}</p>
-                <details className="settings-advanced">
-                  <summary>{t("settings.tabAdvanced")}</summary>
-                  <div className="settings-form-field">
-                    <label htmlFor="settings-fallback-model-input">{t("settings.fallbackModels")}</label>
-                    <button type="button" className="model-browser-more" aria-expanded={addingFallback} onClick={() => setAddingFallback(!addingFallback)}>{t("modelUi.addFallback")}</button>
-                    {addingFallback ? <ModelList options={modelCatalog.options.filter((model) => !modelFallbacks.includes(model.routeRef))}
-                      onSelect={(model) => { setModelFallbacks((current) => [...current, model.routeRef]); setAddingFallback(false); }} /> : null}
-
-                   <div className="settings-chip-input">
-                     {modelFallbacks.map((model, index) => (
-                       <span
-                         key={model}
-                         className={`settings-chip${draggedIndex === index ? " dragging" : ""}`}
-                         draggable
-                         onDragStart={() => {
-                           draggedIndexRef.current = index;
-                           setDraggedIndex(index);
-                         }}
-                         onDragOver={(e) => {
-                           e.preventDefault();
-                           const fromIndex = draggedIndexRef.current;
-                           if (fromIndex === null || fromIndex === index) return;
-                           draggedIndexRef.current = index;
-                           setDraggedIndex(index);
-                           setModelFallbacks((current) => reorderModelFallbacks(current, fromIndex, index));
-                         }}
-                         onDragEnd={() => {
-                           draggedIndexRef.current = null;
-                           setDraggedIndex(null);
-                         }}
-                       >
-                         <span className="settings-chip-grip" aria-hidden="true">⠿</span>
-                         {modelCatalog.options.find((option) => option.routeRef === model)?.displayName ?? model}
-                         <small>{modelCatalog.options.find((option) => option.routeRef === model) ? modelSourceLabel(modelCatalog.options.find((option) => option.routeRef === model)!) : ""}</small>
-                         <button
-                           type="button"
-                           className="settings-chip-remove"
-                           onClick={() => setModelFallbacks(modelFallbacks.filter((m) => m !== model))}
-                         >
-                           ×
-                         </button>
-                       </span>
-                     ))}
-                     <input
-                       id="settings-fallback-model-input"
-                       value={fallbackInput}
-                       onChange={(e) => setFallbackInput(e.target.value)}
-                       onKeyDown={(e) => {
-                         if (e.key === "Enter") {
-                           e.preventDefault();
-                           const trimmed = fallbackInput.trim();
-                           if (trimmed && !modelFallbacks.includes(trimmed)) {
-                             setModelFallbacks([...modelFallbacks, trimmed]);
-                           }
-                           setFallbackInput("");
-                         } else if (e.key === "Backspace" && !fallbackInput && modelFallbacks.length > 0) {
-                           setModelFallbacks(modelFallbacks.slice(0, -1));
-                         }
-                       }}
-                         placeholder={modelFallbacks.length === 0 ? "provider@endpoint/model" : ""}
-                     />
-                     {fallbackSuggestions.length > 0 && (
-                         <div className="settings-chip-suggestions">
-                           {fallbackSuggestions.map((model) => (
-                               <button
-                                 key={model.routeRef}
-                                 type="button"
-                                 className="settings-chip-suggestion"
-                                 onClick={() => {
-                                   if (!modelFallbacks.includes(model.routeRef)) {
-                                     setModelFallbacks([...modelFallbacks, model.routeRef]);
-                                   }
-                                   setFallbackInput("");
-                                 }}
-                               >
-                                 <span className="settings-chip-suggestion-name">{model.displayName}</span>
-                                 <span className="settings-chip-suggestion-model">{model.model}</span>
-                               </button>
-                             ))}
-                         </div>
-                     )}
-                   </div>
-                  </div>
-                  <div className="settings-form-row">
-                    <label>
-                      <span>{t("settings.defaultToolOutputTokens")}</span>
-                      <input inputMode="numeric" value={defaultToolOutputTokens} onChange={(event) => setDefaultToolOutputTokens(event.target.value)} />
-                    </label>
-                    <label>
-                      <span>{t("settings.maxToolOutputTokens")}</span>
-                      <input inputMode="numeric" value={maxToolOutputTokens} onChange={(event) => setMaxToolOutputTokens(event.target.value)} />
-                    </label>
-                  </div>
-                  <label className="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={disableProviderFallback}
-                      onChange={(event) => setDisableProviderFallback(event.target.checked)}
-                    />
-                    <span>{t("settings.disableProviderFallback")}</span>
-                  </label>
-                </details>
-                <div className="settings-actions">
-                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? t("settings.saving") : "Save"}
-                  </Button>
-                  {saveMessage ? <span>{saveMessage}</span> : null}
-                </div>
-                {rejectedResults.length ? (
-                  <div className="settings-error-banner">
-                    {rejectedResults.map((result) => (
-                      <div key={result.key}>
-                        <strong>{result.key}</strong>: {result.reason}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </form>
-            )}
-
-          </Card>
-
-          {/* ── Vision defaults ── */}
-          <Card className="settings-card settings-primary-card" hidden={activeTab !== "vision"}>
-            <div className="settings-card-head">
-              <div>
-                <span className="eyebrow">{t("settings.tabVision")}</span>
-                <h2>{t("settings.imageObservation")}</h2>
-              </div>
-            </div>
-            {!surface ? (
-              <div className="settings-callout">
-                <strong>{t("settings.visionConfigUnavailable")}</strong>
-                <span>{t("settings.connectLiveVision")}</span>
-              </div>
-            ) : (
-              <form
-                className="settings-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveVisionConfig();
-                }}
-              >
-                <ModelSelect label={t("settings.visionDefaultModel")} options={visionModels} value={visionDefault} onChange={setVisionDefault} allowEmpty />
-                <p className="settings-hint">
-                  {t("settings.visionAutoDiscoverHint")}
-                </p>
-                <div className="settings-actions">
-                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? t("settings.saving") : t("settings.saveVision")}
-                  </Button>
-                  {visionDefault ? (
-                    <StatusChip className={`settings-status ${visionProviderReady ? "available" : "unavailable"}`} tone={visionProviderReady ? "success" : "error"} iconOnly title={visionProviderReady ? t("settings.providerReady") : t("settings.providerCredentialMissing")} />
-                  ) : (
-                    <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.autoDiscovery")} />
-                  )}
-                  {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
-                </div>
-              </form>
-            )}
-          </Card>
-
-          {/* ── Image generation defaults ── */}
-          <Card className="settings-card settings-primary-card" hidden={activeTab !== "vision"}>
-            <div className="settings-card-head">
-              <div>
-                <span className="eyebrow">{t("settings.tabVision")}</span>
-                <h2>{t("settings.imageGeneration")}</h2>
-              </div>
-            </div>
-            {!surface ? (
-              <div className="settings-callout">
-                <strong>{t("settings.imageGenConfigUnavailable")}</strong>
-                <span>{t("settings.connectLiveVision")}</span>
-              </div>
-            ) : (
-              <form
-                className="settings-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveImageGenConfig();
-                }}
-              >
-                <ModelSelect label={t("settings.imageGenDefaultModel")} options={imageGenModels} value={imageGenDefault} onChange={setImageGenDefault} allowEmpty />
-                <p className="settings-hint">
-                  {t("settings.imageGenAutoDiscoverHint")}
-                </p>
-                <div className="settings-actions">
-                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? t("settings.saving") : t("settings.saveImageGen")}
-                  </Button>
-                  {imageGenDefault ? (
-                    <StatusChip className={`settings-status ${imageGenProviderReady ? "available" : "unavailable"}`} tone={imageGenProviderReady ? "success" : "error"} iconOnly title={imageGenProviderReady ? t("settings.providerReady") : t("settings.providerCredentialMissing")} />
-                  ) : (
-                    <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.autoDiscovery")} />
-                  )}
-                  {imageGenSaveMessage ? <span>{imageGenSaveMessage}</span> : null}
-                </div>
-              </form>
-            )}
-          </Card>
-
-          {/* ── Decision provider ── */}
-          <Card className="settings-card settings-primary-card" hidden={activeTab !== "decision"}>
-            <div className="settings-card-head">
-              <div>
-                <span className="eyebrow">{t("settings.runtimeDefaults")}</span>
-                <h2>{t("settings.decisionProvider")}</h2>
-              </div>
-            </div>
-            {!surface ? (
-              <div className="settings-callout">
-                <strong>{t("settings.decisionConfigUnavailable")}</strong>
-                <span>{t("settings.refreshRuntimeHint")}</span>
-              </div>
-            ) : (
-              <form
-                className="settings-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveDecisionConfig();
-                }}
-              >
-                <label className="settings-checkbox">
-                  <input type="checkbox" checked={decisionEnabled} onChange={(event) => setDecisionEnabled(event.target.checked)} />
-                  <span>{t("settings.enableDecisionProvider")}</span>
-                </label>
-                <p className="settings-hint">{t("settings.decisionEnableHint")}</p>
-                <label>
-                  <span>{t("settings.decisionModel")}</span>
-                  <select
-                    value={decisionModelIsCatalogRoute ? decisionModel : ""}
-                    onChange={(event) => setDecisionModel(event.target.value)}
-                    disabled={decisionModels.length === 0}
-                  >
-                    <option value="">{t("settings.decisionModelNone")}</option>
-                    {decisionModels.map((model) => (
-                      <option key={model.routeRef} value={model.routeRef} disabled={!model.available}>
-                        {model.displayName} · {model.provider} · {model.decisionProtocol ?? "unknown"}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p className="settings-hint">
-                  {decisionModelIsCatalogRoute
-                    ? t("settings.decisionModelHint")
-                    : t("settings.decisionModelNotInCatalog", { model: decisionModel })}
-                </p>
-                <details>
-                  <summary>{t("settings.decisionLocalOnnx")}</summary>
-                  <label className="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={surface.decision?.localOnnx.enabled ?? false}
-                      onChange={(event) => {
-                        void onUpdateRuntimeConfig([{
-                          key: "decision.local_onnx.enabled",
-                          value: event.target.checked,
-                        }]);
-                      }}
-                    />
-                    <span>{t("settings.enableDecisionLocalOnnx")}</span>
-                  </label>
-                  <label>
-                    <span>{t("settings.decisionPreset")}</span>
-                    <input
-                      value={decisionPreset}
-                      onChange={(event) => setDecisionPreset(event.target.value)}
-                      placeholder="jev-selector-q4f16"
-                    />
-                  </label>
-                  <div className="settings-inline-actions">
-                    <Button
-                      type="button"
-                      disabled={localOnnxDownloading || !decisionPreset.trim()}
-                      onClick={async () => {
-                        setLocalOnnxDownloading(true);
-                        try {
-                          setLocalOnnxDownload(await onDownloadLocalOnnxPreset(decisionPreset.trim()));
-                        } finally {
-                          setLocalOnnxDownloading(false);
-                        }
-                      }}
-                    >
-                      {localOnnxDownloading ? t("settings.downloadingDecisionPreset") : t("settings.downloadDecisionPreset")}
-                    </Button>
-                    {localOnnxDownload?.cancellable ? (
-                      <Button
-                        type="button"
-                        disabled={localOnnxDownloading}
-                        onClick={async () => {
-                          setLocalOnnxDownload(await onCancelLocalOnnxPreset(decisionPreset.trim()));
-                        }}
-                      >
-                        Cancel
-                      </Button>
-                    ) : null}
-                    {localOnnxDownload ? (
-                      <span className="settings-hint">
-                        {localOnnxDownload.complete
-                          ? t("settings.decisionPresetReady")
-                          : `${t("settings.decisionPresetIncomplete")} (${localOnnxDownload.phase}, ${localOnnxDownload.downloadedBytes} bytes)`}
-                      </span>
-                    ) : null}
-                  </div>
-                  <label>
-                    <span>{t("settings.decisionModelDir")}</span>
-                    <input
-                      value={decisionModelDir}
-                      onChange={(event) => setDecisionModelDir(event.target.value)}
-                      placeholder="/var/lib/holon/models/decision"
-                    />
-                  </label>
-                  <p className="settings-hint">{t("settings.decisionModelDirHint")}</p>
-                  <label>
-                    <span>{t("settings.decisionVariant")}</span>
-                    <select value={decisionVariant} onChange={(event) => setDecisionVariant(event.target.value)}>
-                      <option value="fp32">fp32</option>
-                      <option value="fp16">fp16</option>
-                      <option value="q4">q4</option>
-                      <option value="q4f16">q4f16</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>{t("settings.decisionNumThreads")}</span>
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={decisionNumThreads}
-                      onChange={(event) => setDecisionNumThreads(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>{t("settings.decisionChecksum")}</span>
-                    <input
-                      value={decisionChecksum}
-                      onChange={(event) => setDecisionChecksum(event.target.value)}
-                      placeholder="sha256:..."
-                    />
-                  </label>
-                  <p className="settings-hint">{t("settings.decisionChecksumHint")}</p>
-                </details>
-                <label className="settings-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={advisoryToolEnabled}
-                    onChange={(event) => setAdvisoryToolEnabled(event.target.checked)}
-                  />
-                  <span>{t("settings.enableAdvisoryDecisionTool")}</span>
-                </label>
-                <p className="settings-hint">{t("settings.advisoryDecisionToolHint")}</p>
-                <div className="settings-grid">
-                  <label>
-                    <span>{t("settings.advisoryDecisionMaxCalls")}</span>
-                    <input
-                      inputMode="numeric"
-                      value={advisoryToolMaxCalls}
-                      onChange={(event) => setAdvisoryToolMaxCalls(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>{t("settings.advisoryDecisionTimeout")}</span>
-                    <input
-                      inputMode="numeric"
-                      value={advisoryToolTimeout}
-                      onChange={(event) => setAdvisoryToolTimeout(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>{t("settings.advisoryDecisionMinConfidence")}</span>
-                    <input
-                      inputMode="numeric"
-                      value={advisoryToolMinConfidence}
-                      onChange={(event) => setAdvisoryToolMinConfidence(event.target.value)}
-                    />
-                  </label>
-                </div>
-                <div className="settings-actions">
-                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? t("settings.saving") : t("settings.saveDecision")}
-                  </Button>
-                  <StatusChip
-                    className={`settings-status ${decisionEnabled ? "available" : "unavailable"}`}
-                    tone={decisionEnabled ? "success" : "warning"}
-                    iconOnly
-                    title={decisionEnabled ? t("settings.decisionEnabledChip") : t("settings.decisionDisabledChip")}
-                  />
-                  {decisionSaveMessage ? <span>{decisionSaveMessage}</span> : null}
-                </div>
-              </form>
-            )}
-          </Card>
-
-          {/* ── Web search ── */}
-          <Card className="settings-card settings-primary-card" hidden={activeTab !== "search"}>
-            <div className="settings-card-head">
-              <div>
-                <span className="eyebrow">{t("settings.runtimeDefaults")}</span>
-                <h2>{t("settings.webSearch")}</h2>
-              </div>
-            </div>
-            {!surface?.webSearch ? (
-              <div className="settings-callout">
-                <strong>{t("settings.searchConfigUnavailable")}</strong>
-                <span>{t("settings.refreshRuntimeHint")}</span>
-              </div>
-            ) : (
-              <form
-                className="settings-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveSearchConfig();
-                }}
-              >
-                <label className="settings-checkbox">
-                  <input type="checkbox" checked={searchEnabled} onChange={(event) => setSearchEnabled(event.target.checked)} />
-                  <span>{t("settings.enableWebSearch")}</span>
-                </label>
-                <label>
-                  <span>{t("settings.routing")}</span>
-                  <select value={searchProvider || "auto"} onChange={(event) => setSearchProvider(event.target.value)}>
-                    <option value="auto">{t("settings.autoRoutingOption")}</option>
-                    <option value="duckduckgo">DuckDuckGo {t("settings.builtinNoKey")}</option>
-                    {standardSearchProviders.map((provider) => {
-                      const configured = surface.webSearchProviders.find((entry) => entry.id === provider.id);
-                      const ready = provider.requiresApiKey ? configured?.credentialConfigured : Boolean(configured);
-                      const label = t(`settings.searchProviderKinds.${provider.kind}.label`, { defaultValue: provider.kind });
+        <div className="settings-workspace-layout">
+          <aside className="settings-sidebar-nav">
+            <div
+              className="settings-tabs settings-vertical-tabs"
+              role="tablist"
+              aria-orientation="vertical"
+              aria-label={t("settings.settingsSectionsAria")}
+            >
+              {settingsNavGroups.map((group) => {
+                const items = settingsNavItems.filter((item) => item.group === group.key);
+                return (
+                  <div className="settings-nav-group" role="presentation" key={group.key}>
+                    <div className="settings-nav-group-title" role="presentation">
+                      {t(group.labelKey)}
+                    </div>
+                    {items.map((tab) => {
+                      const Icon = tab.icon;
                       return (
-                        <option key={provider.id} value={provider.id}>
-                          {label}{ready ? ` — ${t("settings.readyLabel")}` : provider.requiresApiKey ? ` — ${t("settings.apiKeyNeededLabel")}` : ""}
-                        </option>
+                        <button
+                          id={`settings-tab-${tab.key}`}
+                          aria-controls="settings-panel"
+                          aria-selected={activeTab === tab.key}
+                          tabIndex={activeTab === tab.key ? 0 : -1}
+                          title={t(tab.descriptionKey)}
+                          onKeyDown={(event) => {
+                            const index = settingsNavItems.findIndex((item) => item.key === tab.key);
+                            const next =
+                              event.key === "ArrowRight" || event.key === "ArrowDown"
+                                ? (index + 1) % settingsNavItems.length
+                                : event.key === "ArrowLeft" || event.key === "ArrowUp"
+                                  ? (index + settingsNavItems.length - 1) % settingsNavItems.length
+                                  : event.key === "Home"
+                                    ? 0
+                                    : event.key === "End"
+                                      ? settingsNavItems.length - 1
+                                      : undefined;
+                            if (next === undefined) return;
+                            event.preventDefault();
+                            setActiveTab(settingsNavItems[next].key);
+                            document.getElementById(`settings-tab-${settingsNavItems[next].key}`)?.focus();
+                          }}
+                          className={`settings-tab ${activeTab === tab.key ? "active" : ""}`}
+                          key={tab.key}
+                          onClick={() => setActiveTab(tab.key)}
+                          role="tab"
+                          type="button"
+                        >
+                          <Icon size={15} aria-hidden="true" className="settings-tab-icon" />
+                          <span>{t(tab.labelKey)}</span>
+                          {renderNavBadge(tab.key)}
+                        </button>
                       );
                     })}
-                  </select>
-                </label>
-                <label className="settings-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={searchBuiltinProviderEnabled}
-                    onChange={(event) => setSearchBuiltinProviderEnabled(event.target.checked)}
-                  />
-                  <span>{t("settings.allowModelNativeSearch")}</span>
-                </label>
-                <p className="settings-hint">
-                  {t("settings.searchCredentialHint")}
-                </p>
-                <details className="settings-advanced">
-                  <summary>{t("settings.tabAdvanced")}</summary>
-                  <div className="settings-form-row">
-                    <label>
-                      <span>{t("settings.mode")}</span>
-                      <select value={searchMode} onChange={(event) => setSearchMode(event.target.value as "single" | "fallback" | "aggregate")}>
-                        <option value="single">single</option>
-                        <option value="fallback">fallback</option>
-                        <option value="aggregate">aggregate</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>{t("settings.providerOrder")}</span>
-                      <input value={searchProviders} onChange={(event) => setSearchProviders(event.target.value)} placeholder="duckduckgo, brave" />
-                    </label>
-                    <label>
-                      <span>{t("settings.maxResults")}</span>
-                      <input inputMode="numeric" value={searchMaxResults} onChange={(event) => setSearchMaxResults(event.target.value)} />
-                    </label>
                   </div>
-                  <div className="settings-form-row">
-                    <label>
-                      <span>{t("settings.maxProviderAttempts")}</span>
-                      <input inputMode="numeric" value={searchMaxProviderAttempts} onChange={(event) => setSearchMaxProviderAttempts(event.target.value)} />
-                    </label>
-                    <label>
-                      <span>{t("settings.configuredProviders")}</span>
-                      <input readOnly value={surface.webSearchProviders.map((provider) => provider.id).join(", ") || "duckduckgo builtin"} />
-                    </label>
-                  </div>
-                </details>
-                <div className="settings-actions">
-                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? t("settings.saving") : "Save"}
-                  </Button>
-                  {searchSaveMessage ? <span>{searchSaveMessage}</span> : null}
-                </div>
-              </form>
-            )}
-          </Card>
-        </div>
-
-        {/* ── Web search providers ── */}
-        <Card className="settings-card" hidden={activeTab !== "search"}>
-          <div className="settings-card-head">
-            <div>
-              <h2>{t("settings.webSearchProviders")}</h2>
-            </div>
-          </div>
-          {!surface ? (
-            <div className="settings-callout">
-              <strong>{t("settings.searchProviderConfigUnavailable")}</strong>
-              <span>{t("settings.connectLiveSearchCreds")}</span>
-            </div>
-          ) : (
-            <div className="settings-provider-list">
-              <p className="settings-muted">
-                {t("settings.searchProviderMetadataHint")}
-              </p>
-              <div className="settings-builtins">
-                <div>
-                  <strong>{t("settings.nativeSearch")}</strong>
-                  <span>{t("settings.nativeSearchDesc")}</span>
-                </div>
-                <StatusChip className={`settings-status ${searchBuiltinProviderEnabled ? "available" : "unavailable"}`} tone={searchBuiltinProviderEnabled ? "success" : "error"} iconOnly title={searchBuiltinProviderEnabled ? t("settings.allowedLabel") : t("settings.disabled")} />
-                <div>
-                  <strong>DuckDuckGo</strong>
-                  <span>{t("settings.duckDuckGoDesc")}</span>
-                </div>
-                <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.readyLabel")} />
-              </div>
-              {groupedSearchProviders.map((group) => (
-                <section className="settings-provider-group" key={group.category}>
-                  <div className="settings-provider-group-head">
-                    <strong>{t(`settings.searchProviderGroups.${group.category}.label`)}</strong>
-                    <span>{t(`settings.searchProviderGroups.${group.category}.description`)}</span>
-                  </div>
-                  {group.providers.map((definition) => {
-                const provider = surface.webSearchProviders.find((entry) => entry.id === definition.id);
-                const draft = searchProviderDrafts[definition.id] ?? defaultSearchProviderDraft(definition.id, definition);
-                const credentialProfile = draft.credentialProfile?.trim() ?? definition.defaultCredentialProfile ?? "";
-                const credentialReady = credentialProfile ? isCredentialProfileConfigured(credentialProfile) : false;
-                const providerReady = definition.requiresApiKey ? credentialReady : Boolean(provider);
-                const label = t(`settings.searchProviderKinds.${definition.kind}.label`, { defaultValue: definition.kind });
-                const description = t(`settings.searchProviderKinds.${definition.kind}.description`, {
-                  defaultValue: t("settings.searchProviderDefaultDescription"),
-                });
-                return (
-                  <form
-                    className="settings-provider-editor"
-                    key={definition.id}
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void saveSearchProviderConfig(definition.id);
-                    }}
-                  >
-                    <header>
-                      <div>
-                        <strong>{label}</strong>
-                        <small>
-                          {description}
-                        </small>
-                      </div>
-                      <StatusChip className={`settings-status ${providerReady ? "available" : "unavailable"}`} tone={providerReady ? "success" : "error"} iconOnly title={providerReady ? t("settings.readyLabel") : definition.requiresApiKey ? t("settings.keyNeededLabel") : t("settings.notConfigured")} />
-                    </header>
-                    {definition.requiresBaseUrl ? (
-                      <div className="settings-form-row">
-                        <label>
-                          <span>{t("settings.baseUrl")} *</span>
-                          <input
-                            value={draft.baseUrl ?? ""}
-                            onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })}
-                            placeholder={t("settings.selfHostedBaseUrlPlaceholder")}
-                          />
-                        </label>
-                      </div>
-                    ) : null}
-                    {draft.kind === "google" ? (
-                      <label>
-                        <span>{t("settings.engineId")} *</span>
-                        <input
-                          value={draft.engineId ?? ""}
-                          onChange={(event) => updateSearchProviderDraft(definition.id, { engineId: event.target.value })}
-                          placeholder="017576662512468239146:omuauf_lfve"
-                        />
-                      </label>
-                    ) : null}
-                    {definition.supportsApiKey ? (
-                      <label>
-                        <span>{t("settings.credentialProfile")}</span>
-                        <input
-                          value={credentialProfile}
-                          onChange={(event) => updateSearchProviderDraft(definition.id, { credentialProfile: event.target.value })}
-                          placeholder={definition.defaultCredentialProfile}
-                        />
-                      </label>
-                    ) : null}
-                    {definition.supportsApiKey && credentialProfile ? (
-                      <div className="settings-api-key-section">
-                        <div className="settings-api-key-header">
-                          <span>{t("settings.apiKeyFor", { profile: credentialProfile })}</span>
-                          <StatusChip
-                            className={`settings-status ${credentialReady ? "available" : "unavailable"}`}
-                            tone={credentialReady ? "success" : "error"}
-                            iconOnly
-                            title={credentialReady ? t("settings.keySet") : t("settings.noKey")}
-                          />
-                        </div>
-                        <div className="settings-form-row">
-                          <label>
-                            <span>API Key{credentialStoreLoading ? " (loading…)" : ""}</span>
-                            <input
-                              type="password"
-                              placeholder={t("settings.pasteApiKeySearch")}
-                              value={searchApiKeyDrafts[definition.id] ?? ""}
-                              onChange={(event) => setSearchApiKeyDrafts((prev) => ({ ...prev, [definition.id]: event.target.value }))}
-                            />
-                          </label>
-                        </div>
-                        <div className="settings-actions">
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            disabled={!searchApiKeyDrafts[definition.id]?.trim()}
-                            onClick={() => void saveSearchApiKey(definition.id, credentialProfile)}
-                          >
-                            {t("settings.saveApiKey")}
-                          </Button>
-                          {credentialReady ? (
-                            <Button type="button" variant="secondary" onClick={() => void removeSearchApiKey(definition.id, credentialProfile)}>
-                              {t("settings.removeKey")}
-                            </Button>
-                          ) : null}
-                          {searchCredentialMessages[definition.id] ? (
-                            <span className="settings-save-message">{searchCredentialMessages[definition.id]}</span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ) : null}
-                    <details className="settings-advanced">
-                      <summary>{t("settings.tabAdvanced")}</summary>
-                      <div className="settings-form-row">
-                        <label>
-                          <span>{t("settings.providerId")}</span>
-                          <input value={definition.id} readOnly disabled />
-                        </label>
-                        <label>
-                          <span>{t("settings.kindLabel")}</span>
-                          <input value={definition.kind} readOnly disabled />
-                        </label>
-                        {definition.supportsApiKey ? (
-                          <label>
-                            <span>{t("settings.baseUrl")}</span>
-                            <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })} placeholder={t("settings.optionalProviderDefault")} />
-                          </label>
-                        ) : null}
-                      </div>
-                    </details>
-                    <div className="settings-actions">
-                      <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                        {runtimeConfigSaving ? t("settings.saving") : provider ? t("settings.saveProvider", { name: label }) : t("settings.enableProvider", { name: label })}
-                      </Button>
-                      {provider ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={runtimeConfigSaving || runtimeConfigLoading}
-                          onClick={() => void removeSearchProviderConfig(definition.id)}
-                        >
-                          {t("settings.removeConfig")}
-                        </Button>
-                      ) : null}
-                    </div>
-                  </form>
-                );
-                  })}
-                </section>
-              ))}
-              {sortedSearchProviders
-                .filter((provider) => !standardSearchProviderIds.has(provider.id))
-                .map((provider) => provider.id)
-                .concat(Object.keys(searchProviderDrafts).filter((providerId) => !surface.webSearchProviders.some((provider) => provider.id === providerId) && !standardSearchProviderIds.has(providerId)))
-                .map((providerId) => {
-                  const draft = searchProviderDrafts[providerId];
-                  if (!draft) return null;
-                  return (
-                    <form
-                      className="settings-provider-editor"
-                      key={providerId}
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void saveSearchProviderConfig(providerId);
-                      }}
-                    >
-                      <header>
-                        <div>
-                          <strong>{providerId}</strong>
-                          <small>{t("settings.unsavedSearchProvider")}</small>
-                        </div>
-                        <StatusChip className="settings-status unavailable" tone="error" iconOnly title={t("settings.notSaved")} />
-                      </header>
-                      <div className="settings-form-row">
-                        <label>
-                          <span>{t("settings.kindLabel")}</span>
-                          <select value={draft.kind} onChange={(event) => updateSearchProviderDraft(providerId, { kind: event.target.value })}>
-                            {webSearchProviderKinds.map((kind) => (
-                              <option key={kind} value={kind}>
-                                {kind}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          <span>{t("settings.baseUrl")}</span>
-                          <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { baseUrl: event.target.value })} />
-                        </label>
-                        <label>
-                          <span>{t("settings.credentialProfile")}</span>
-                          <input value={draft.credentialProfile ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { credentialProfile: event.target.value })} />
-                        </label>
-                        {draft.kind === "google" ? (
-                          <label>
-                            <span>{t("settings.engineId")} *</span>
-                            <input value={draft.engineId ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { engineId: event.target.value })} />
-                          </label>
-                        ) : null}
-                      </div>
-                      <div className="settings-actions">
-                        <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                         {runtimeConfigSaving ? t("settings.saving") : t("settings.saveProvider", { name: providerId })}
-                        </Button>
-                      </div>
-                    </form>
-                  );
-                })}
-              <details className="settings-advanced">
-                <summary>{t("settings.advancedCustomProvider")}</summary>
-                <div className="settings-provider-editor">
-                  <header>
-                    <div>
-                      <strong>{t("settings.addCustomSearchProvider")}</strong>
-                      <small>{t("settings.customSearchProviderHint")}</small>
-                    </div>
-                  </header>
-                  <div className="settings-form-row">
-                    <label>
-                      <span>{t("settings.providerId")}</span>
-                      <input value={newSearchProviderId} onChange={(event) => setNewSearchProviderId(event.target.value)} placeholder="custom_search" />
-                    </label>
-                    <label>
-                      <span>{t("settings.kindLabel")}</span>
-                      <select value={newSearchProviderKind} onChange={(event) => setNewSearchProviderKind(event.target.value)}>
-                        {webSearchProviderKinds.map((kind) => (
-                          <option key={kind} value={kind}>
-                            {kind}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                  <div className="settings-actions">
-                    <Button type="button" variant="secondary" disabled={!newSearchProviderId.trim()} onClick={addSearchProviderDraft}>
-                      Add custom draft
-                    </Button>
-                  </div>
-                </div>
-              </details>
-              {searchProviderSaveMessage ? <span className="settings-save-message">{searchProviderSaveMessage}</span> : null}
-            </div>
-          )}
-        </Card>
-
-        {/* ── Model providers ── */}
-        <Card className="settings-card model-services-card" hidden={activeTab !== "models"}>
-          <div className="settings-card-head">
-            <div>
-              <h2>{t("settings.modelProviders")}</h2>
-            </div>
-            <Button type="button" variant="secondary" onClick={() => { setEditingProvider(null); setProviderFilter("all"); setProviderSearch(""); }}>{t("modelUi.connectService")}</Button>
-          </div>
-          {!surface ? (
-            <div className="settings-callout">
-              <strong>{t("settings.providerConfigUnavailable")}</strong>
-              <span>{t("settings.connectLiveModelCreds")}</span>
-            </div>
-          ) : (
-            <div className="settings-provider-list">
-              {editingProvider === null ? <div ref={providerDirectoryRef} className="provider-directory">
-                <div className="provider-directory-toolbar">
-                  <input aria-label={t("modelUi.searchProviders")} placeholder={t("modelUi.searchProviders")} value={providerSearch} onChange={(event) => setProviderSearch(event.target.value)} />
-                  <div className="provider-directory-filters" role="group" aria-label={t("modelUi.services")}>
-                    {(["connected", "all"] as const).map((filter) => <button key={filter} type="button" aria-pressed={providerFilter === filter} onClick={() => setProviderFilter(filter)}>{t(`modelUi.${filter}`)}</button>)}
-                  </div>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => {
-                      setCustomProviderMessage(undefined);
-                      setCustomProviderDraft((prev) => (prev ? null : { ...EMPTY_CUSTOM_PROVIDER_DRAFT }));
-                    }}
-                  >
-                    {t("settings.addProvider")}
-                  </Button>
-                </div>
-                {customProviderDraft ? (
-                  <form
-                    className="settings-provider-editor"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void createCustomProvider();
-                    }}
-                  >
-                    <header>
-                      <div>
-                        <strong>{t("settings.addProvider")}</strong>
-                        <small>{t("settings.addProviderHint")}</small>
-                      </div>
-                    </header>
-                    <div className="settings-form-row">
-                      <label>
-                        <span>{t("settings.providerId")}</span>
-                        <input
-                          value={customProviderDraft.id}
-                          placeholder="my-gateway"
-                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, id: event.target.value })}
-                        />
-                      </label>
-                      <label>
-                        <span>{t("settings.transportLabel")}</span>
-                        <select
-                          value={customProviderDraft.transport}
-                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, transport: event.target.value as CustomProviderDraft["transport"] })}
-                        >
-                          {CUSTOM_PROVIDER_TRANSPORTS.map((transport) => (
-                            <option key={transport} value={transport}>{transport}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                    <div className="settings-form-row">
-                      <label>
-                        <span>{t("settings.baseUrl")}</span>
-                        <input
-                          value={customProviderDraft.baseUrl}
-                          placeholder="https://gateway.example/v1"
-                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, baseUrl: event.target.value })}
-                        />
-                      </label>
-                      <label>
-                        <span>{t("settings.apiKeyLabel")}</span>
-                        <input
-                          type="password"
-                          value={customProviderDraft.apiKey}
-                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, apiKey: event.target.value })}
-                        />
-                      </label>
-                    </div>
-                    <div className="settings-form-row">
-                      <label>
-                        <span>{t("settings.discoveryKind")}</span>
-                        <select
-                          value={customProviderDraft.discoveryKind}
-                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, discoveryKind: event.target.value as CustomProviderDraft["discoveryKind"] })}
-                        >
-                          <option value="openai_models">{t("settings.discoveryKindOpenAiModels")}</option>
-                          <option value="disabled">{t("settings.discoveryKindDisabled")}</option>
-                        </select>
-                      </label>
-                      <label>
-                        <span>{t("settings.discoveryPath")}</span>
-                        <input
-                          value={customProviderDraft.discoveryPath}
-                          placeholder="/v1/models"
-                          disabled={customProviderDraft.discoveryKind === "disabled"}
-                          onChange={(event) => setCustomProviderDraft({ ...customProviderDraft, discoveryPath: event.target.value })}
-                        />
-                      </label>
-                    </div>
-                    <div className="settings-actions">
-                      <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                        {t("settings.createProvider")}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() => {
-                          setCustomProviderDraft(null);
-                          setCustomProviderMessage(undefined);
-                        }}
-                      >
-                        {t("common.cancel")}
-                      </Button>
-                    </div>
-                  </form>
-                ) : null}
-                {visibleProviders.map((provider) => {
-                  const name = providerPresentation(provider.id);
-                  const count = modelCatalog.options.filter((model) => model.routeProvider === provider.id && model.available).length;
-                  return <button key={provider.id} type="button" className="provider-directory-row" data-provider={provider.id}
-                    onClick={() => { lastProviderRef.current = provider.id; setEditingProvider(provider.id); }}>
-                    <span><strong>{name.name}</strong><small>{name.plan || provider.id}</small></span>
-                    <span className="provider-directory-status">
-                      <span>{t(provider.credentialKind === "none" ? "modelUi.noAuth" : provider.credentialConfigured ? "modelUi.credentialsPresent" : "modelUi.credentialsMissing")}</span>
-                      <small>{t("modelUi.modelCount", { count })}</small>
-                    </span><ArrowRight size={16} />
-                  </button>;
-                })}
-                {!visibleProviders.length ? <div className="settings-callout"><span>{t("modelUi.noProviders")}</span><button type="button" className="model-browser-more" onClick={() => { setProviderFilter("all"); setProviderSearch(""); }}>{t("modelUi.allServices")}</button></div> : null}
-                <p className="settings-hint">{t("modelUi.credentialHint")}</p>
-              </div> : <button ref={providerBackRef} type="button" className="model-browser-more provider-back" onClick={() => setEditingProvider(null)}><ArrowLeft size={15} />{t("modelUi.backServices")}</button>}
-              {/* Kept outside the directory/editor switch: a created provider opens
-                  its editor immediately, so the result message must outlive the list. */}
-              {customProviderMessage ? <span className="settings-save-message">{customProviderMessage}</span> : null}
-              {sortedProviders.filter((provider) => provider.id === editingProvider).map((provider) => {
-                const draft = providerDrafts[provider.id];
-                if (!draft) return null;
-                const effectiveProfile = draft.credentialProfile?.trim() || `${provider.id}:default`;
-                const authMode = draft.credentialKind === "oauth" ? "oauth" : "api_key";
-                const credentialReady = providerCredentialReady(provider);
-                return (
-                  <form
-                    id="setup-provider-editor"
-                    className="settings-provider-editor"
-                    key={provider.id}
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void saveProviderConfig(provider.id);
-                    }}
-                  >
-                    <header>
-                      <div>
-                        <strong>{providerPresentation(provider.id).label}</strong>
-                        <small>
-                          {provider.id}
-                        </small>
-                      </div>
-                      <StatusChip className={`settings-status ${credentialReady ? "available" : "unavailable"}`} tone={credentialReady ? "success" : "error"} iconOnly title={draft.credentialKind === "none" ? t("settings.credNotRequired") : credentialReady ? t("settings.credReady") : t("settings.credMissing")} />
-                    </header>
-                    {credentialReady && !providersWithModels.has(provider.id) ? (
-                      <p className="settings-provider-hint">
-                        {t("settings.noModelsForProvider")}
-                      </p>
-                    ) : null}
-                    {/* Auth mode: dropdown only when both modes available */}
-                    {draft.credentialKind === "none" ? (
-                      <p className="settings-hint">{t("settings.noCredentialsRequired")}</p>
-                    ) : draft.apiKeySupported && draft.oauthSupported ? (
-                      <div className="settings-form-row">
-                        <label>
-                          <span>{t("settings.authMode")}</span>
-                          <select
-                            value={authMode}
-                            onChange={(event) => {
-                              const nextMode = event.target.value;
-                              if (nextMode === "oauth") {
-                                updateProviderDraft(provider.id, {
-                                  credentialKind: "oauth",
-                                  credentialSource: "credential_profile",
-                                  credentialProfile: draft.credentialProfile?.trim() || provider.id,
-                                  credentialEnv: "",
-                                  credentialExternal: "",
-                                });
-                                return;
-                              }
-                              updateProviderDraft(provider.id, {
-                                credentialKind: "api_key",
-                                credentialSource: "credential_profile",
-                                credentialProfile: draft.credentialProfile?.trim() || `${provider.id}:default`,
-                                credentialEnv: "",
-                                credentialExternal: "",
-                              });
-                            }}
-                          >
-                            <option value="api_key">{t("settings.authModeApiKey")}</option>
-                            <option value="oauth">{t("settings.authModeOAuth")}</option>
-                          </select>
-                        </label>
-                      </div>
-                    ) : (
-                      <div className="settings-form-row">
-                        <label>
-                          <span>{t("settings.authMode")}</span>
-                          <input
-                            value={draft.oauthSupported ? t("settings.authModeOAuth") : t("settings.authModeApiKey")}
-                            readOnly
-                            disabled
-                          />
-                        </label>
-                      </div>
-                    )}
-                    {/* Primary: API Key management */}
-                    {isProviderKeyCredential(draft.credentialKind) ? (
-                      <div className="settings-api-key-section">
-                        <div className="settings-api-key-header">
-                          <span>{t("settings.apiKeyFor", { profile: effectiveProfile })}</span>
-                          <StatusChip
-                            className={`settings-status ${isCredentialProfileConfigured(effectiveProfile) ? "available" : "unavailable"}`}
-                            tone={isCredentialProfileConfigured(effectiveProfile) ? "success" : "error"}
-                            iconOnly
-                            title={isCredentialProfileConfigured(effectiveProfile) ? t("settings.keySet") : t("settings.noKey")}
-                          />
-                        </div>
-                        <div className="settings-form-row">
-                          <label>
-                            <span>API Key{credentialStoreLoading ? " (loading…)" : ""}</span>
-                            <input
-                              type="password"
-                              placeholder={t("settings.pasteApiKeyProfile")}
-                              value={apiKeyDrafts[provider.id] ?? ""}
-                              onChange={(event) => setApiKeyDrafts((prev) => ({ ...prev, [provider.id]: event.target.value }))}
-                            />
-                          </label>
-                        </div>
-                        <div className="settings-actions">
-                          {isCredentialProfileConfigured(effectiveProfile) ? (
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              onClick={() => void removeApiKey(provider.id, effectiveProfile)}
-                            >
-                             {t("settings.removeKey")}
-                            </Button>
-                          ) : null}
-                          {credentialMessages[provider.id] ? (
-                            <span className="settings-save-message">{credentialMessages[provider.id]}</span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ) : null}
-                    {/* OAuth device login */}
-                    {draft.credentialKind === "oauth" ? (
-                      <div className="settings-device-login-section">
-                        {provider.credentialConfigured ? (
-                          <div className="settings-device-login-header">
-                            <span>{t("settings.connectedViaOAuth")}</span>
-                            <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.credReady")} />
-                          </div>
-                        ) : null}
-                        {codexDeviceLogin.status === "idle" || codexDeviceLogin.status === "failed" ? (
-                          <>
-                          <div className="settings-actions">
-                            <Button type="button" variant="secondary" disabled={credentialStoreLoading}
-                              onClick={() => { setDeviceLoginProviderId(provider.id); void onStartCodexDeviceLogin(provider.id); }}>
-                              {provider.credentialConfigured ? "Re-login" : "Login with Device Flow"}
-                            </Button>
-                          </div>
-                          {codexDeviceLogin.status === "failed" ? (
-                            <div className="settings-device-login-error">{codexDeviceLogin.error}</div>
-                          ) : null}
-                          </>
-                        ) : null}
-                        {codexDeviceLogin.status === "starting" ? (
-                          <p className="settings-hint">Starting device login…</p>
-                        ) : null}
-                        {codexDeviceLogin.status === "waiting" ? (
-                          <div className="settings-device-login-panel">
-                            <Button type="button" variant="secondary"
-                              onClick={() => window.open(codexDeviceLogin.verificationUrl, "_blank", "noopener,noreferrer")}>
-                              Open Device Login Page <ArrowRight size={14} />
-                            </Button>
-                            <p className="settings-hint">Enter this code on the page:</p>
-                            <div className="settings-device-login-code">{codexDeviceLogin.userCode}</div>
-                            <p className="settings-muted">Waiting for authorization…</p>
-                            <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>{t("common.cancel")}</Button>
-                          </div>
-                        ) : null}
-                        {codexDeviceLogin.status === "completed" ? (
-                          <div className="settings-device-login-panel">
-                            <div className="settings-device-login-header" role="status">
-                              <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.loginSuccessful")} />
-                              <span>{t("settings.loginSuccessful")}</span>
-                            </div>
-                            <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>{t("common.dismiss")}</Button>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {draft.credentialKind !== "none" && !isProviderKeyCredential(draft.credentialKind) && draft.credentialKind !== "oauth" ? (
-                      <p className="settings-hint">
-                        This provider uses <code>{draft.credentialKind}</code>{t("settings.authVia")}<code>{draft.credentialSource}</code>{t("settings.configureIn")}<code>{runtimeConfig.configFilePath ?? "config.json"}</code>.
-                      </p>
-                    ) : null}
-                    {/* Advanced: full provider config */}
-                    <details className="settings-advanced">
-                      <summary>{t("settings.tabAdvanced")}</summary>
-                      <div className="settings-form-row">
-                        <label>
-                          <span>{t("settings.transportLabel")} <small className="settings-muted">{t("settings.readOnlySuffix")}</small></span>
-                          <input value={provider.transport} readOnly disabled />
-                        </label>
-                        <label>
-                          <span>{t("settings.baseUrl")}</span>
-                          <input value={draft.baseUrl} onChange={(event) => updateProviderDraft(provider.id, { baseUrl: event.target.value })} />
-                        </label>
-                      </div>
-                      <div className="settings-form-row">
-                        <label>
-                          <span>{t("settings.discoveryKind")}</span>
-                          <select
-                            value={draft.discoveryKind}
-                            onChange={(event) => {
-                              const nextKind = event.target.value;
-                              updateProviderDraft(
-                                provider.id,
-                                nextKind === "openai_models"
-                                  ? { discoveryKind: nextKind }
-                                  : { discoveryKind: nextKind, discoveryPath: "", discoveryDecoder: "" },
-                              );
-                            }}
-                          >
-                            <option value="">{t("settings.discoveryKindDefault")}</option>
-                            <option value="openai_models">{t("settings.discoveryKindOpenAiModels")}</option>
-                            <option value="disabled">{t("settings.discoveryKindDisabled")}</option>
-                          </select>
-                        </label>
-                        {draft.discoveryKind === "openai_models" ? (
-                          <>
-                            <label>
-                              <span>{t("settings.discoveryPath")}</span>
-                              <input value={draft.discoveryPath} placeholder="/v1/models" onChange={(event) => updateProviderDraft(provider.id, { discoveryPath: event.target.value })} />
-                            </label>
-                            <label>
-                              <span>{t("settings.discoveryDecoder")}</span>
-                              <select value={draft.discoveryDecoder} onChange={(event) => updateProviderDraft(provider.id, { discoveryDecoder: event.target.value })}>
-                                <option value="">{t("settings.discoveryDecoderDefault")}</option>
-                                <option value="openai_compatible">openai_compatible</option>
-                                <option value="magpie">magpie</option>
-                                <option value="hugging_face">hugging_face</option>
-                                <option value="kilo">kilo</option>
-                                <option value="arcee">arcee</option>
-                                <option value="near_ai">near_ai</option>
-                                <option value="open_code_go">open_code_go</option>
-                                <option value="open_router">open_router</option>
-                                <option value="synthetic">synthetic</option>
-                                <option value="tencent_token_hub">tencent_token_hub</option>
-                                <option value="venice">venice</option>
-                                <option value="vercel_ai_gateway">vercel_ai_gateway</option>
-                              </select>
-                            </label>
-                          </>
-                        ) : null}
-                      </div>
-                    </details>
-                    <div className="settings-actions">
-                      <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                       {runtimeConfigSaving ? t("settings.saving") : t("settings.saveProvider", { name: provider.id })}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={runtimeConfigSaving || runtimeConfigLoading || !provider.configuredInConfig}
-                        title={
-                          provider.configuredInConfig
-                           ? t("settings.removeConfigHint")
-                           : t("settings.removeConfigDisabled")
-                        }
-                        onClick={() => void removeProviderConfig(provider.id)}
-                      >
-                       {t("settings.removeConfig")}
-                      </Button>
-                    </div>
-                    <details className="settings-advanced provider-models">
-                      <summary>{t("modelUi.providerModels")}</summary>
-                      <p className="settings-hint">{t("modelUi.providerModelsHint")}</p>
-                      <ModelList options={modelCatalog.options.filter((model) => model.routeProvider === provider.id)} value={modelCatalog.options.some((model) => model.routeProvider === provider.id && model.routeRef === modelDefault) ? modelDefault : undefined}
-                        onSelect={(model) => { setModelDefault(model.routeRef); setProviderSaveMessage(t("modelUi.defaultDraftUpdated")); }} />
-                    </details>
-                  </form>
                 );
               })}
-              {providerSaveMessage ? <span className="settings-save-message">{providerSaveMessage}</span> : null}
             </div>
-          )}
-        </Card>
+          </aside>
 
-        <Card className="settings-card" hidden={activeTab !== "advanced"}>
-          <div className="settings-card-head">
-            <div>
-              <span className="eyebrow">{t("developerDiagnostics.eyebrow")}</span>
-              <h2>{t("developerDiagnostics.title")}</h2>
-            </div>
-            <StatusChip
-              className={`settings-status ${runtimeTraceEnabled ? "available" : "unavailable"}`}
-              tone={runtimeTraceEnabled ? "success" : "error"}
-              title={t(runtimeTraceEnabled ? "developerDiagnostics.enabled" : "developerDiagnostics.disabled")}
-            />
-          </div>
-          <p className="settings-muted">{t("developerDiagnostics.description")}</p>
-          <label className="settings-checkbox runtime-trace-setting">
-            <input
-              checked={runtimeTraceEnabled}
-              type="checkbox"
-              onChange={(event) => setRuntimeTraceEnabled(event.target.checked)}
-            />
-            <span>{t("developerDiagnostics.enable")}</span>
-          </label>
-          <div className="settings-callout">
-            <strong>{t("runtimeTrace.privacyTitle")}</strong>
-            <span>{t("runtimeTrace.privacyDescription")}</span>
-          </div>
-          <div className="settings-actions">
-            <span className="settings-muted">
-              {t("runtimeTrace.totalRecordCount", { count: runtimeTraceRecordCount })}
-            </span>
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={runtimeTraceRecordCount === 0}
-              onClick={clearRuntimeTraceRecords}
-            >
-              {t("runtimeTrace.clear")}
-            </Button>
-          </div>
-        </Card>
+          <div
+            className="settings-content"
+            id="settings-panel"
+            role="tabpanel"
+            aria-labelledby={`settings-tab-${activeTab}`}
+            tabIndex={0}
+          >
+            {activeTab === "general" ? (
+              <GeneralSettingsSection
+                connection={connection}
+                runtimeConfig={runtimeConfig}
+                runtimeConfigLoading={runtimeConfigLoading}
+                runtimeConfigError={runtimeConfigError}
+                onRefreshRuntimeConfig={onRefreshRuntimeConfig}
+              />
+            ) : null}
 
-        {activeTab === "advanced" ? <ObserverSyncDiagnosticsCard /> : null}
+            {activeTab === "access" ? (
+              <AccessSettingsSection connection={connection} serve={serve} />
+            ) : null}
 
-        <Card className="settings-card" hidden={activeTab !== "advanced"}>
-          <div className="settings-card-head">
-            <div>
-              <span className="eyebrow">{t("settings.tabAdvanced")}</span>
-              <h2>{t("settings.rawConfig")}</h2>
-            </div>
-            <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
-              {runtimeConfigLoading ? t("settings.refreshing") : t("common.refresh")}
-            </Button>
+            {activeTab === "providers" ? (
+              <ModelProvidersSection
+                surface={surface}
+                configFilePath={runtimeConfig.configFilePath}
+                modelCatalog={modelCatalog}
+                modelCatalogLoading={modelCatalogLoading}
+                onRefreshModels={onRefreshModels}
+                modelDefault={modelDefault}
+                sortedProviders={sortedProviders}
+                usedProviders={usedProviders}
+                providersWithModels={providersWithModels}
+                providerSearch={providerSearch}
+                setProviderSearch={setProviderSearch}
+                providerFilter={providerFilter}
+                setProviderFilter={setProviderFilter}
+                editingProvider={editingProvider}
+                setEditingProvider={setEditingProvider}
+                customProviderDraft={customProviderDraft}
+                setCustomProviderDraft={setCustomProviderDraft}
+                customProviderMessage={customProviderMessage}
+                setCustomProviderMessage={setCustomProviderMessage}
+                providerDrafts={providerDrafts}
+                apiKeyDrafts={apiKeyDrafts}
+                setApiKeyDrafts={setApiKeyDrafts}
+                credentialMessages={credentialMessages}
+                providerSaveMessage={providerSaveMessage}
+                runtimeConfigLoading={runtimeConfigLoading}
+                runtimeConfigSaving={runtimeConfigSaving}
+                credentialStoreLoading={credentialStoreLoading}
+                codexDeviceLogin={codexDeviceLogin}
+                onSetDeviceLoginProviderId={setDeviceLoginProviderId}
+                onStartCodexDeviceLogin={onStartCodexDeviceLogin}
+                onClearCodexDeviceLogin={onClearCodexDeviceLogin}
+                isCredentialProfileConfigured={isCredentialProfileConfigured}
+                onUpdateProviderDraft={updateProviderDraft}
+                onSaveProviderConfig={saveProviderConfig}
+                onRemoveProviderConfig={removeProviderConfig}
+                onRemoveApiKey={removeApiKey}
+                onCreateCustomProvider={createCustomProvider}
+                onSelectAsDefaultModel={selectProviderModelAsDefault}
+              />
+            ) : null}
+
+            {activeTab === "models" ? (
+              <LanguageModelSettingsSection
+                surface={surface}
+                modelCatalog={modelCatalog}
+                runtimeConfigLoading={runtimeConfigLoading}
+                runtimeConfigSaving={runtimeConfigSaving}
+                runtimeConfigError={runtimeConfigError}
+                modelDefault={modelDefault}
+                setModelDefault={setModelDefault}
+                modelFallbacks={modelFallbacks}
+                setModelFallbacks={setModelFallbacks}
+                saveMessage={saveMessage}
+                rejectedResults={rejectedResults}
+                onRefreshRuntimeConfig={onRefreshRuntimeConfig}
+                onSave={saveLanguageModelsConfig}
+                onReset={() => {
+                  if (!surface) return;
+                  setModelDefault(surface.modelDefault);
+                  setModelFallbacks(surface.modelFallbacks ?? []);
+                  setSaveMessage(undefined);
+                }}
+                onOpenProviders={() => setActiveTab("providers")}
+              />
+            ) : null}
+
+            {activeTab === "vision" ? (
+              <VisionSettingsSection
+                surface={surface}
+                visionModels={visionModels}
+                imageGenModels={imageGenModels}
+                visionDefault={visionDefault}
+                setVisionDefault={setVisionDefault}
+                imageGenDefault={imageGenDefault}
+                setImageGenDefault={setImageGenDefault}
+                visionProviderId={visionRouteProvider}
+                visionProviderReady={visionProviderReady}
+                imageGenProviderId={imageGenRouteProvider}
+                imageGenProviderReady={imageGenProviderReady}
+                visionSaveMessage={visionSaveMessage}
+                imageGenSaveMessage={imageGenSaveMessage}
+                runtimeConfigLoading={runtimeConfigLoading}
+                runtimeConfigSaving={runtimeConfigSaving}
+                onSaveVision={saveVisionConfig}
+                onSaveImageGen={saveImageGenConfig}
+                onOpenProvider={(providerId) => openProviderEditor(providerId)}
+              />
+            ) : null}
+
+            {activeTab === "search" ? (
+              <SearchSettingsSection
+                surface={surface}
+                runtimeConfigLoading={runtimeConfigLoading}
+                runtimeConfigSaving={runtimeConfigSaving}
+                credentialStoreLoading={credentialStoreLoading}
+                searchEnabled={searchEnabled}
+                setSearchEnabled={setSearchEnabled}
+                searchBuiltinProviderEnabled={searchBuiltinProviderEnabled}
+                setSearchBuiltinProviderEnabled={setSearchBuiltinProviderEnabled}
+                searchProvider={searchProvider}
+                setSearchProvider={setSearchProvider}
+                searchMode={searchMode}
+                setSearchMode={setSearchMode}
+                searchProviders={searchProviders}
+                setSearchProviders={setSearchProviders}
+                searchMaxResults={searchMaxResults}
+                setSearchMaxResults={setSearchMaxResults}
+                searchMaxProviderAttempts={searchMaxProviderAttempts}
+                setSearchMaxProviderAttempts={setSearchMaxProviderAttempts}
+                searchSaveMessage={searchSaveMessage}
+                searchProviderSaveMessage={searchProviderSaveMessage}
+                standardSearchProviders={standardSearchProviders}
+                groupedSearchProviders={groupedSearchProviders}
+                customSearchProviderIds={customSearchProviderIds}
+                webSearchProviderKinds={webSearchProviderKinds}
+                searchProviderDrafts={searchProviderDrafts}
+                searchApiKeyDrafts={searchApiKeyDrafts}
+                setSearchApiKeyDrafts={setSearchApiKeyDrafts}
+                searchCredentialMessages={searchCredentialMessages}
+                newSearchProviderId={newSearchProviderId}
+                setNewSearchProviderId={setNewSearchProviderId}
+                newSearchProviderKind={newSearchProviderKind}
+                setNewSearchProviderKind={setNewSearchProviderKind}
+                isCredentialProfileConfigured={isCredentialProfileConfigured}
+                onSaveSearchConfig={saveSearchConfig}
+                onUpdateSearchProviderDraft={updateSearchProviderDraft}
+                onAddSearchProviderDraft={addSearchProviderDraft}
+                onSaveSearchProviderConfig={saveSearchProviderConfig}
+                onRemoveSearchProviderConfig={removeSearchProviderConfig}
+                onSaveSearchApiKey={saveSearchApiKey}
+                onRemoveSearchApiKey={removeSearchApiKey}
+              />
+            ) : null}
+
+            {activeTab === "decision" ? (
+              <DecisionSettingsSection
+                surface={surface}
+                decisionModels={decisionModels}
+                decisionEnabled={decisionEnabled}
+                setDecisionEnabled={setDecisionEnabled}
+                decisionModel={decisionModel}
+                setDecisionModel={setDecisionModel}
+                decisionPreset={decisionPreset}
+                setDecisionPreset={setDecisionPreset}
+                decisionModelDir={decisionModelDir}
+                setDecisionModelDir={setDecisionModelDir}
+                decisionVariant={decisionVariant}
+                setDecisionVariant={setDecisionVariant}
+                decisionNumThreads={decisionNumThreads}
+                setDecisionNumThreads={setDecisionNumThreads}
+                decisionChecksum={decisionChecksum}
+                setDecisionChecksum={setDecisionChecksum}
+                advisoryToolEnabled={advisoryToolEnabled}
+                setAdvisoryToolEnabled={setAdvisoryToolEnabled}
+                advisoryToolMaxCalls={advisoryToolMaxCalls}
+                setAdvisoryToolMaxCalls={setAdvisoryToolMaxCalls}
+                advisoryToolTimeout={advisoryToolTimeout}
+                setAdvisoryToolTimeout={setAdvisoryToolTimeout}
+                advisoryToolMinConfidence={advisoryToolMinConfidence}
+                setAdvisoryToolMinConfidence={setAdvisoryToolMinConfidence}
+                decisionSaveMessage={decisionSaveMessage}
+                runtimeConfigLoading={runtimeConfigLoading}
+                runtimeConfigSaving={runtimeConfigSaving}
+                onSaveDecision={saveDecisionConfig}
+                onUpdateRuntimeConfig={onUpdateRuntimeConfig}
+                onDownloadLocalOnnxPreset={onDownloadLocalOnnxPreset}
+                onCancelLocalOnnxPreset={onCancelLocalOnnxPreset}
+              />
+            ) : null}
+
+            {activeTab === "advanced" ? (
+              <AdvancedSettingsSection
+                surface={surface}
+                runtimeConfig={runtimeConfig}
+                runtimeConfigLoading={runtimeConfigLoading}
+                runtimeConfigSaving={runtimeConfigSaving}
+                modelCatalog={modelCatalog}
+                modelCatalogLoading={modelCatalogLoading}
+                modelCatalogError={modelCatalogError}
+                groupedModels={groupedModels}
+                defaultToolOutputTokens={defaultToolOutputTokens}
+                setDefaultToolOutputTokens={setDefaultToolOutputTokens}
+                maxToolOutputTokens={maxToolOutputTokens}
+                setMaxToolOutputTokens={setMaxToolOutputTokens}
+                disableProviderFallback={disableProviderFallback}
+                setDisableProviderFallback={setDisableProviderFallback}
+                limitsSaveMessage={limitsSaveMessage}
+                onSaveLimits={saveRuntimeLimitsConfig}
+                onRefreshRuntimeConfig={onRefreshRuntimeConfig}
+                onRefreshModels={onRefreshModels}
+              />
+            ) : null}
           </div>
-          <div className="settings-callout">
-            <strong>{t("settings.rawConfigNotExposed")}</strong>
-            <span>{t("settings.rawConfigHint")}</span>
-          </div>
-          <dl className="settings-list compact">
-            <div>
-              <dt>{t("settings.configFile")}</dt>
-              <dd>{runtimeConfig.configFilePath ?? t("settings.notReported")}</dd>
-            </div>
-            <div>
-              <dt>{t("settings.modelCatalogLabel")}</dt>
-              <dd>
-                {t("settings.modelCatalogSummary", { models: modelCatalog.options.length, providers: groupedModels.length })}
-              </dd>
-            </div>
-            <div>
-              <dt>{t("settings.searchProvidersLabel")}</dt>
-              <dd>{surface?.webSearchProviders.map((provider) => provider.id).join(", ") || t("settings.builtinDefaultsValue")}</dd>
-            </div>
-          </dl>
-        </Card>
-
-        {/* ── Model catalog diagnostics ── */}
-        <Card className="settings-card settings-models" hidden={activeTab !== "advanced"}>
-          <div className="settings-card-head">
-            <div>
-              <span className="eyebrow">{t("settings.modelsProvidersLabel")}</span>
-              <h2>{t("settings.modelCatalogDiagnostics")}</h2>
-            </div>
-            <Button type="button" variant="secondary" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
-              {modelCatalogLoading ? t("settings.refreshing") : t("common.refresh")}
-            </Button>
-          </div>
-
-          {modelCatalogError ? <div className="settings-error-banner">{modelCatalogError}</div> : null}
-          {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
-            <EmptyState className="settings-empty" title={t("settings.noModelsReturned")} description={t("settings.noModelsReturnedDesc")} />
-          ) : null}
-
-          <p className="settings-muted">{t("settings.modelCatalogDesc")}</p>
-          <details className="settings-diagnostics">
-            <summary>
-              Show {t("settings.modelCatalogSummary", { models: modelCatalog.options.length, providers: groupedModels.length })}
-            </summary>
-            <div className="provider-list">
-              {groupedModels.map(([provider, models]) => (
-                <Card className="provider-card" key={provider}>
-                  <header>
-                    <div>
-                      <h3>{provider}</h3>
-                      <span>
-                        {models.filter((model) => model.available).length}/{models.length} available
-                      </span>
-                    </div>
-                  </header>
-                  <div className="model-table" role="table" aria-label={`${provider} models`}>
-                    {models.map((model) => (
-                      <div className="model-table-row" role="row" key={model.routeRef}>
-                        <div role="cell">
-                          <strong>{model.displayName}</strong>
-                          <span>{model.model}</span>
-                        </div>
-                        <div role="cell">
-                          <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"} iconOnly title={model.available ? t("settings.availableLabel") : t("settings.unavailableLabel")} />
-                        </div>
-                        <div role="cell">
-                          {model.endpoint !== "default" ? <span className="settings-pill">{model.endpoint}</span> : null}
-                          {model.supportsImageInput ? <span className="settings-pill">image input</span> : null}
-                          {model.supportsImageGeneration ? <span className="settings-pill">image generation</span> : null}
-                          {model.supportsReasoningEffort ? <span className="settings-pill">reasoning</span> : null}
-                          {model.unavailableReason ? <small>{model.unavailableReason}</small> : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              ))}
-            </div>
-          </details>
-        </Card>
         </div>
       </div>
     </section>
   );
-}
-
-function ObserverSyncDiagnosticsCard() {
-  useRuntimeStore((state) => state.briefReadStateByAgentId);
-  const diagnostics = observerSyncDiagnostics();
-  const { t } = useTranslation();
-
-  return (
-    <Card className="settings-card">
-      <div className="settings-card-head">
-        <div>
-          <span className="eyebrow">{t("settings.observerSync")}</span>
-          <h2>{t("settings.observerSyncDiagnostics")}</h2>
-        </div>
-        <StatusChip
-          tone={diagnostics.discovery.freshness === "fresh" ? "success" : "warning"}
-          title={diagnostics.discovery.freshness}
-        />
-      </div>
-      <p className="settings-muted">{t("settings.observerSyncDiagnosticsDesc")}</p>
-      <dl className="settings-list compact">
-        <div>
-          <dt>{t("settings.discovery")}</dt>
-          <dd>
-            {diagnostics.discovery.mode} · {diagnostics.discovery.freshness}
-          </dd>
-        </div>
-        <div>
-          <dt>{t("settings.runtimeScopeEpoch")}</dt>
-          <dd>
-            {[
-              diagnostics.discovery.runtimeId,
-              diagnostics.discovery.visibilityScopeId,
-              diagnostics.discovery.eventLogEpoch,
-            ].filter(Boolean).join(" · ") || t("settings.notReported")}
-          </dd>
-        </div>
-      </dl>
-      <div className="provider-list">
-        {diagnostics.agents.map((agent) => (
-          <Card className="provider-card" key={agent.agentId}>
-            <header>
-              <div>
-                <h3>{agent.agentId}</h3>
-                <span>{agent.durability} · {agent.state} · {agent.readCertainty}</span>
-              </div>
-            </header>
-            <dl className="settings-list compact">
-              <div>
-                <dt>{t("settings.syncCursors")}</dt>
-                <dd>
-                  {agent.ingestedThroughSeq ?? "—"} / {agent.projectionReadyThroughSeq ?? "—"} / {agent.observedEventHeadSeq ?? "—"}
-                </dd>
-              </div>
-              <div>
-                <dt>{t("settings.hydrationJobs")}</dt>
-                <dd>{agent.pendingHydrationJobs} pending · {agent.failedHydrationJobs} failed</dd>
-              </div>
-              <div>
-                <dt>{t("settings.resetReason")}</dt>
-                <dd>{agent.resetReason ?? "—"}</dd>
-              </div>
-            </dl>
-          </Card>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-function groupModelsByProvider(options: RuntimeModelOption[]): Array<[string, RuntimeModelOption[]]> {
-  const grouped = new Map<string, RuntimeModelOption[]>();
-  for (const option of options) {
-    const provider = option.endpoint === "default"
-      ? option.providerFamily
-      : `${option.providerFamily} / ${option.endpoint}`;
-    const models = grouped.get(provider) ?? [];
-    models.push(option);
-    grouped.set(provider, models);
-  }
-  return Array.from(grouped.entries()).sort(([left], [right]) => left.localeCompare(right));
-}
-
-export function sortProvidersForSettings(providers: RuntimeProviderSummary[]): RuntimeProviderSummary[] {
-  return providers
-    .map((provider, index) => ({ provider, index }))
-    .sort((a, b) => {
-      const credentialRank = Number(b.provider.credentialConfigured) - Number(a.provider.credentialConfigured);
-      return credentialRank || a.index - b.index;
-    })
-    .map(({ provider }) => provider);
-}
-
-export function providerCredentialReady(provider: RuntimeProviderSummary): boolean {
-  return provider.credentialKind === "none" || provider.credentialConfigured;
-}
-
-export function sortSearchProvidersForSettings(providers: RuntimeWebSearchProviderSummary[]): RuntimeWebSearchProviderSummary[] {
-  return providers
-    .map((provider, index) => ({ provider, index }))
-    .sort((a, b) => {
-      const credentialRank = Number(b.provider.credentialConfigured) - Number(a.provider.credentialConfigured);
-      return credentialRank || a.index - b.index;
-    })
-    .map(({ provider }) => provider);
 }

@@ -96,8 +96,6 @@ test("truly unconfigured runtime persists first-run setup without invoking a mod
         ? "Configure model credentials" : "Choose a default model",
       exact: true,
     }).click();
-    const defaultModel = page.locator("#setup-default-model .model-select");
-    await expect(defaultModel.getByRole("button", { name: /^Default model/ })).toBeVisible();
 
     // The setup action opens the matching provider editor directly;
     // all traffic stays loopback and no credentials are inherited from the host.
@@ -123,6 +121,9 @@ test("truly unconfigured runtime persists first-run setup without invoking a mod
 
     // The Settings card opens the Agent wizard only after configuration is ready.
     // Select and persist the first model through the real Settings form first.
+    await page.locator("#settings-tab-models").click();
+    const defaultModel = page.locator("#setup-default-model .model-select");
+    await expect(defaultModel.getByRole("button", { name: /^Default model/ })).toBeVisible();
     await defaultModel.getByRole("button", { name: /^Default model/ }).click();
     const initialChoice = defaultModel.locator(
       'button[data-model-choice][title^="openai/"], button[data-model-choice][title^="openai@"]',

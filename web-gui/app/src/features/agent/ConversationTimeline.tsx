@@ -369,8 +369,10 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     : execution === "waitingResult" && hasReadableBrief ? "completed"
     : execution !== "running" && turn.briefIds.length > 0 && !briefReady && turn.execution.kind === "terminal" && turn.execution.outcome === "completed"
       ? "loadingResult" : execution;
-  // Transport freshness must not collapse a still-active execution.
+  // Keep live process visible until a readable result arrives, then snap closed
+  // with .is-instant (transition: none) so the brief never shifts upward mid-read.
   const autoExpanded = execution === "running" || (wasActive.current && awaitingResult);
+  const justCompletedLive = wasActive.current && !autoExpanded && manualExpanded === null;
   const initialInputs = turn.inputs.filter((input) => !input.interjected);
   const interjections = turn.inputs.filter((input) => input.interjected);
   const taskInputs = initialInputs.filter((input) => input.task_result);
@@ -453,6 +455,22 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     };
   }, []);
 
+  const processStepCount = useMemo(() => {
+    if (!turn.detail) return 0;
+    const readableBriefs = turn.briefIds.flatMap((id) => {
+      const record = actions.briefRecord(id);
+      return record ? [record.text] : [];
+    });
+    return deduplicateWaitActivities(
+      executionProcessActivities(
+        turn.detail.activities,
+        readableBriefs,
+        turn.execution.kind === "terminal",
+        turn.inputs,
+      ),
+    ).length + taskInputs.length;
+  }, [turn.detail, turn.briefIds, turn.execution.kind, turn.inputs, taskInputs.length, actions]);
+
   return (
     <section className={`conversation-turn is-${execution}${compact ? " is-compact" : ""}`} data-turn-id={turn.turnId}
       data-conversation-anchor={`turn:${turn.turnId}`}
@@ -464,6 +482,11 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
           aria-label={t(expanded ? "agentPage.hideExecutionProcess" : "agentPage.executionDetails")}
           title={t(expanded ? "agentPage.hideExecutionProcess" : "agentPage.executionProcess")}
           onClick={() => setManualExpanded(!expanded)}>
+          {!compact && !expanded && processStepCount > 0 ? (
+            <span className="conversation-step-count" aria-hidden="true">
+              {t("agentPage.collapsedStepsSummary", { count: processStepCount })}
+            </span>
+          ) : null}
           <ChevronRight size={16} className="conversation-disclosure-chevron" aria-hidden="true" />
         </button>
       </TurnBoundaryHeader>
@@ -492,7 +515,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
               inputs={[...eventInputs, ...interjections]} taskInputs={taskInputs} />
           </div>
         ) : (
-          <div id={detailId} ref={detailRef} className={`conversation-detail-collapse ${expanded ? "is-expanded" : ""}`}
+          <div id={detailId} ref={detailRef} className={`conversation-detail-collapse ${expanded ? "is-expanded" : ""}${justCompletedLive ? " is-instant" : ""}`}
             aria-hidden={!expanded} inert={!expanded}>
             <div className="conversation-detail-clip">
               {mounted || expanded ? (
@@ -517,6 +540,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
             briefId={entry.primaryId}
             anchorId={entry.anchorId}
             mergedBrief={entry.mergedBrief}
+            turnStartedAt={deduplicatedBriefs.length === 1 ? turn.startedAt : undefined}
             actions={actions}
           />
         ))}
@@ -725,15 +749,31 @@ export function deduplicateTurnResponseBriefs(
   return entries;
 }
 
+function isSameMinuteTimestamp(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  const da = new Date(a);
+  const db = new Date(b);
+  if (Number.isNaN(da.getTime()) || Number.isNaN(db.getTime())) return false;
+  return (
+    da.getFullYear() === db.getFullYear()
+    && da.getMonth() === db.getMonth()
+    && da.getDate() === db.getDate()
+    && da.getHours() === db.getHours()
+    && da.getMinutes() === db.getMinutes()
+  );
+}
+
 const ConversationBriefCard = memo(function ConversationBriefCard({
   briefId,
   anchorId,
   mergedBrief,
+  turnStartedAt,
   actions,
 }: {
   briefId: string;
   anchorId?: string;
   mergedBrief?: BriefRecord | null;
+  turnStartedAt?: string | null;
   actions: ConversationTimelineActions;
 }) {
   const { t } = useTranslation();
@@ -766,10 +806,27 @@ const ConversationBriefCard = memo(function ConversationBriefCard({
       </div>
     );
   }
-  return <BriefCardBody brief={brief} anchorId={anchorId} onOpenWorkItemId={actions.onOpenWorkItemId} />;
+  return (
+    <BriefCardBody
+      brief={brief}
+      anchorId={anchorId}
+      hideTimestamp={isSameMinuteTimestamp(turnStartedAt, brief.created_at)}
+      onOpenWorkItemId={actions.onOpenWorkItemId}
+    />
+  );
 });
 
-function BriefCardBody({ brief, anchorId, onOpenWorkItemId }: { brief: BriefRecord; anchorId?: string; onOpenWorkItemId?: (id: string) => void }) {
+function BriefCardBody({
+  brief,
+  anchorId,
+  hideTimestamp = false,
+  onOpenWorkItemId,
+}: {
+  brief: BriefRecord;
+  anchorId?: string;
+  hideTimestamp?: boolean;
+  onOpenWorkItemId?: (id: string) => void;
+}) {
   const { t } = useTranslation();
   const copyText = useCopyText();
   const [copied, setCopied] = useState(false);
@@ -797,7 +854,7 @@ function BriefCardBody({ brief, anchorId, onOpenWorkItemId }: { brief: BriefReco
           }}>
           {copied ? <Check size={14} /> : <Copy size={14} />}
         </button>
-        {created !== null && !Number.isNaN(created.getTime()) ? (
+        {!hideTimestamp && created !== null && !Number.isNaN(created.getTime()) ? (
           <time dateTime={brief.created_at} title={created.toLocaleString()}>
             {formatMessageTimestamp(created)}
           </time>
@@ -863,7 +920,7 @@ function ConversationDetailPanel({
       <ol className="conversation-activities">{taskRows}{visibleInputs.map(inputRow)}</ol>
     </div>;
   }
-  const activities = executionProcessActivities(
+  const rawActivities = executionProcessActivities(
     detail.activities,
     turn.briefIds.flatMap((id) => {
       const brief = actions.briefRecord(id);
@@ -872,6 +929,10 @@ function ConversationDetailPanel({
     turn.execution.kind === "terminal",
     turn.inputs,
   );
+  const activities = deduplicateWaitActivities(rawActivities);
+  const visibleWindow = 8;
+  const hiddenEarlierCount = Math.max(0, activities.length - visibleWindow);
+  const isLiveActive = turn.execution.kind === "active" && !actions.historyOnly;
   const onlyResult = activities.length === 0 && detail.activities.some((activity) =>
     activity.kind === "assistant" && summarizeActivity(activity).display.trim().length > 0)
     && !detail.has_more && !detail.truncated;
@@ -899,30 +960,52 @@ function ConversationDetailPanel({
           <span>{t("agentPage.loadOlderActivities")}</span>
         </button>
       ) : null}
-      {expanded && !showEarlier && activities.length > 8 ? (
+      {expanded && !showEarlier && hiddenEarlierCount > 0 ? (
         <button type="button" className="conversation-detail-older" onClick={() => setShowEarlier(true)}>
           <ChevronDown size={13} />{t("agentPage.showEarlierProcess")}
         </button>
       ) : null}
       {expanded && activities.length === 0 && taskInputs.length === 0 ? (
-        <div className="conversation-detail-notice">{t(actions.historyOnly && turn.execution.kind === "active"
-          ? "agentPage.turnTimingStatus.unconfirmed" : turn.execution.kind === "active"
-            ? "agentPage.awaitingActivity" : onlyResult ? "agentPage.resultOnlyProcess" : "agentPage.detailEmpty")}</div>
+        <div className={`conversation-detail-notice${isLiveActive ? " is-live" : ""}`} role={isLiveActive ? "status" : undefined}>
+          {isLiveActive ? <LoaderCircle size={13} className="is-spinning" aria-hidden="true" /> : null}
+          <span>{t(actions.historyOnly && turn.execution.kind === "active"
+            ? "agentPage.turnTimingStatus.unconfirmed" : turn.execution.kind === "active"
+              ? "agentPage.awaitingActivity" : onlyResult ? "agentPage.resultOnlyProcess" : "agentPage.detailEmpty")}</span>
+        </div>
       ) : null}
       <ol className="conversation-activities">
         {taskRows}
         {conversationTimelineEntries(visibleInputs, expanded ? activities.filter((activity, index) =>
           showEarlier || actions.revealTarget?.anchor === `activity:${activity.id}`
-            || index >= activities.length - 8 || activity.kind === "error" || activity.kind === "wait"
+            || index >= activities.length - visibleWindow || activity.kind === "error" || activity.kind === "wait"
         ) : []).map((entry) => entry.kind === "input" ? inputRow(entry.input) : (
           <ConversationActivityRow activity={entry.activity} key={entry.id}
             onInspectActivity={actions.onInspectActivity} onLoadToolDetail={actions.onLoadToolDetail}
             toolDetail={actions.toolDetails?.[entry.id.slice(5)]} selected={actions.selectedActivityId === entry.id} />
         ))}
       </ol>
-
+      {expanded && isLiveActive && (activities.length > 0 || taskInputs.length > 0) ? (
+        <div className="conversation-live-thinking" role="status">
+          <span className="conversation-live-dot" aria-hidden="true" />
+          <span>{t("agentPage.generatingReply")}</span>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function deduplicateWaitActivities(activities: readonly ConversationActivity[]): readonly ConversationActivity[] {
+  if (activities.length < 2) return activities;
+  return activities.filter((activity, index) => {
+    if (activity.kind !== "wait") return true;
+    const waitText = activity.summary.trim();
+    if (!waitText) return true;
+    const next = activities[index + 1];
+    if (next && (next.kind === "tool" || next.kind === "wait") && next.summary.includes(waitText)) {
+      return false;
+    }
+    return true;
+  });
 }
 
 /** Hide assistant rounds without display text and final responses already delivered as Briefs. */

@@ -40,7 +40,10 @@ export function deriveCurrentWorkStatus(agent: AgentSummary) {
   else if (tasks.length > 0 || agent.activeTaskCount > 0) state = "background";
   const waitingTask = state === "waitingTask" && activeWait?.task_ids.length === 1
     ? tasks.find((task) => task.id === activeWait.task_ids[0]) : undefined;
-  return { work, tasks, taskCount: Math.max(tasks.length, agent.activeTaskCount || 0), waits, state, waitingTask };
+  const explicitAttention =
+    state === "blocked"
+    || activeWait?.kind === "operator";
+  return { work, tasks, taskCount: Math.max(tasks.length, agent.activeTaskCount || 0), waits, state, waitingTask, explicitAttention };
 }
 
 function Duration({ since, label }: { since: string; label: string }) {
@@ -101,18 +104,25 @@ export function CurrentWorkBar({ agent, onOpenWorkItem, onOpenTask }: {
   const Icon = snapshot.stale ? Clock : state === "completed" ? CircleCheck
     : state === "running" || state === "background" ? LoaderCircle : Clock;
   return (
-    <section className="current-work-bar" aria-label={t("currentWork.title")} data-state={snapshot.stale ? "stale" : state}>
-      {work ? <button className="current-work-title" type="button" onClick={() => onOpenWorkItem(work)} title={work.objective}>
-        <ListTodo size={15} /><strong>{work.objective}</strong><ChevronRight size={14} />
-      </button> : <div className="current-work-title"><ListTodo size={15} /><strong>{t("currentWork.backgroundTitle")}</strong></div>}
-      <div className="current-work-status">
-        <Icon size={13} className={!snapshot.stale && ["running", "background"].includes(state) ? "spin" : undefined} />
-        <span className="current-work-status-text" role="status" title={statusText}>{statusText}</span>
-        {view.taskCount > 0 ? <span className="current-work-count">{t("currentWork.taskCount", { count: view.taskCount })}</span> : null}
-        <button className="current-work-toggle" type="button" aria-expanded={expanded}
-          aria-controls={`current-work-details-${agent.id}`} onClick={() => setExpanded(!expanded)}>
-          {t(expanded ? "currentWork.collapse" : "currentWork.expand")}<ChevronDown size={12} />
-        </button>
+    <section
+      className="current-work-bar"
+      aria-label={t("currentWork.title")}
+      data-state={snapshot.stale ? "stale" : state}
+      data-attention={snapshot.stale || view.explicitAttention ? "true" : undefined}
+    >
+      <div className="current-work-row">
+        {work ? <button className="current-work-title" type="button" onClick={() => onOpenWorkItem(work)} title={work.objective}>
+          <ListTodo size={14} /><strong>{work.objective}</strong>
+        </button> : <div className="current-work-title"><ListTodo size={14} /><strong>{t("currentWork.backgroundTitle")}</strong></div>}
+        <div className="current-work-status">
+          <Icon size={13} className={!snapshot.stale && ["running", "background"].includes(state) ? "spin" : undefined} />
+          <span className="current-work-status-text" role="status" title={statusText}>{statusText}</span>
+          {view.taskCount > 0 ? <span className="current-work-count">{t("currentWork.taskCount", { count: view.taskCount })}</span> : null}
+          <button className="current-work-toggle" type="button" aria-expanded={expanded}
+            aria-controls={`current-work-details-${agent.id}`} onClick={() => setExpanded(!expanded)}>
+            {t(expanded ? "currentWork.collapse" : "currentWork.expand")}<ChevronDown size={12} />
+          </button>
+        </div>
       </div>
       {expanded ? <div className="current-work-details" id={`current-work-details-${agent.id}`}>
         {work ? <button className="current-work-objective" type="button" onClick={() => onOpenWorkItem(work)}>{work.objective}<ChevronRight size={14} /></button> : null}

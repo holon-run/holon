@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Star, ChevronDown } from "lucide-react";
+import { Star, ChevronDown, Search } from "lucide-react";
 import type { RuntimeModelOption } from "../../runtime/types";
 import { modelMatches, modelSourceLabel, providerPresentation } from "../../lib/model-presentation";
 import { toggleFavorite, useModelPreferences } from "../../lib/model-preferences";
@@ -71,12 +71,17 @@ export function ModelList({ options, value, disabled, autoFocus, onSelect }: Pro
     buttons[next].focus();
   }}>
     <div className="model-browser-search">
-      <input autoFocus={autoFocus} aria-label={t("modelUi.searchModels")} placeholder={t("modelUi.searchModels")}
-        value={query} onChange={(event) => { setQuery(event.target.value); setLimit(60); }} />
-      <select aria-label={t("modelUi.filterProvider")} value={provider} onChange={(event) => { setProvider(event.target.value); setLimit(60); }}>
-        <option value="">{t("modelUi.allServices")}</option>
-        {providers.map((key) => <option key={key} value={key}>{providerPresentation(key).label}</option>)}
-      </select>
+      <div className="model-browser-search-field">
+        <Search size={14} aria-hidden="true" className="model-browser-search-icon" />
+        <input autoFocus={autoFocus} aria-label={t("modelUi.searchModels")} placeholder={t("modelUi.searchModels")}
+          value={query} onChange={(event) => { setQuery(event.target.value); setLimit(60); }} />
+      </div>
+      {providers.length > 1 ? (
+        <select aria-label={t("modelUi.filterProvider")} value={provider} onChange={(event) => { setProvider(event.target.value); setLimit(60); }}>
+          <option value="">{t("modelUi.allServices")}</option>
+          {providers.map((key) => <option key={key} value={key}>{providerPresentation(key).label}</option>)}
+        </select>
+      ) : null}
     </div>
     {storageError ? <p role="status" className="settings-hint">{t("modelUi.storageError")}</p> : null}
     <div className="model-browser-results" aria-label={t("modelUi.models")}>
