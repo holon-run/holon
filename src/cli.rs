@@ -217,6 +217,17 @@ pub enum Commands {
     Context,
     #[command(about = "Show machine-readable CLI command metadata")]
     Commands,
+    #[command(about = "Read versioned embedded Holon operational manuals offline")]
+    Docs {
+        /// Topic slug (cli, skills, apps, agents, workspace, agent-home, models). Omit to list topics.
+        topic: Option<String>,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+        /// Output format (`text` or `json`)
+        #[arg(long, value_enum, default_value_t = DocsOutputFormat::Text)]
+        output: DocsOutputFormat,
+    },
     #[command(about = "Interactively set up Holon or print secret-safe onboarding diagnostics")]
     Onboard {
         #[arg(long)]
@@ -411,6 +422,12 @@ pub enum Commands {
 // ---------------------------------------------------------------------------
 // Shared enums / args structs
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DocsOutputFormat {
+    Text,
+    Json,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, ValueEnum)]
 pub enum ControlCommandAction {

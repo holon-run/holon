@@ -5,8 +5,8 @@ use crate::tool::names as tn;
 use crate::provider::ConversationMessage;
 use crate::tool::spec::{ToolResultEnvelope, ToolResultStatus};
 
-use super::truncate_preview;
-use super::{TurnRoundRecord, DELTA_CHECKPOINT_PREVIEW_LIMIT};
+use super::TurnRoundRecord;
+pub(super) use holon_context::checkpoint_prompts::build_delta_checkpoint_prompt;
 
 pub(super) fn tool_result_invalidates_checkpoint_anchor(envelope: &ToolResultEnvelope) -> bool {
     envelope.status == ToolResultStatus::Success
@@ -40,40 +40,6 @@ pub(super) fn build_turn_budget_warning(max_turns: u64, turns_elapsed: u64) -> S
     ]
     .join("
 ")
-}
-
-pub(super) fn build_delta_checkpoint_prompt(
-    previous_round: Option<usize>,
-    source_turn_index: Option<u64>,
-    previous_checkpoint: &str,
-) -> String {
-    let previous = truncate_preview(previous_checkpoint, DELTA_CHECKPOINT_PREVIEW_LIMIT);
-    let base_source = match (previous_round, source_turn_index) {
-        (Some(round), _) => format!("Base checkpoint round: {round}"),
-        (None, Some(turn_index)) => format!("Base checkpoint source: previous turn {turn_index}"),
-        (None, None) => "Base checkpoint source: previous turn".to_string(),
-    };
-    format!(
-        "\
-[Runtime-generated delta progress checkpoint request]
-You are crossing another context compaction boundary. A previous checkpoint is still the active base.
-This delta is runtime-private continuity state, not operator-facing prose. Do not later repeat its headings or metadata to the operator unless explicitly asked.
-Best effort: write the delta in the current target response language inferred from the trusted prompt and context. Language mismatch must not prevent checkpoint creation or continuation.
-
-{base_source}
-Base checkpoint preview:
-{previous}
-
-Do not restate the full checkpoint. Provide only a concise delta since that base checkpoint.
-
-Include:
-- new confirmed facts since the base checkpoint, if any
-- new blockers or missing facts since the base checkpoint, if any
-- whether the next bounded action changed
-
-If no material facts changed, say exactly that and continue from the base checkpoint's next action.
-Keep this delta brief; it exists to preserve continuity after tool output compression, not to re-summarize the full task."
-    )
 }
 
 /// Time snapshots are immutable request input, not regeneratable reminders.

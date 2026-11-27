@@ -873,3 +873,79 @@ fn invalid_provider_configuration_exits_nonzero_without_machine_stdout() {
         "stderr should explain the invalid provider setup:\n{stderr}"
     );
 }
+
+#[test]
+fn docs_command_serves_embedded_manuals_offline_and_rejects_malformed_context() {
+    let (mut index_cmd, _home) = isolated_holon_command();
+    let index_out = index_cmd
+        .env("HOLON_HTTP_ADDR", "127.0.0.1:9")
+        .args(["docs", "--json"])
+        .output()
+        .expect("run holon docs --json");
+    let (stdout, stderr) = output_text(&index_out);
+    assert_eq!(index_out.status.code(), Some(0), "stderr:\n{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let payload: serde_json::Value = serde_json::from_str(&stdout).expect("docs json");
+    let slugs = payload["topics"]
+        .as_array()
+        .expect("topics array")
+        .iter()
+        .map(|entry| entry["topic"].as_str().expect("topic slug"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        slugs,
+        vec![
+            "cli",
+            "skills",
+            "apps",
+            "agents",
+            "workspace",
+            "agent-home",
+            "models",
+        ]
+    );
+
+    let (mut topic_cmd, _home) = isolated_holon_command();
+    let topic_out = topic_cmd
+        .env("HOLON_HTTP_ADDR", "127.0.0.1:9")
+        .args(["docs", "agents", "--output", "json"])
+        .output()
+        .expect("run holon docs agents --output json");
+    let (stdout, stderr) = output_text(&topic_out);
+    assert_eq!(topic_out.status.code(), Some(0), "stderr:\n{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let topic_json: serde_json::Value = serde_json::from_str(&stdout).expect("topic json");
+    assert_eq!(topic_json["topic"], "agents");
+    assert!(topic_json["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("holon tail --agent <agent_id>"));
+
+    let (mut unknown_cmd, _home) = isolated_holon_command();
+    let unknown_out = unknown_cmd
+        .args(["docs", "missing-topic"])
+        .output()
+        .expect("run holon docs missing-topic");
+    let (stdout, stderr) = output_text(&unknown_out);
+    assert_eq!(unknown_out.status.code(), Some(1), "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(
+        stderr.contains("unknown docs topic `missing-topic`")
+            && stderr.contains("available topics:"),
+        "{stderr}"
+    );
+
+    let (mut malformed_cmd, _home) = isolated_holon_command();
+    let malformed_out = malformed_cmd
+        .env("HOLON_CALLER_SOURCE_TASK_ID", "task-only")
+        .args(["docs"])
+        .output()
+        .expect("run malformed-context holon docs");
+    let (stdout, stderr) = output_text(&malformed_out);
+    assert_eq!(malformed_out.status.code(), Some(1), "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(
+        stderr.contains("HOLON_CALLER_AGENT_ID is required"),
+        "{stderr}"
+    );
+}

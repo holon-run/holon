@@ -172,6 +172,14 @@ fn render_daemon_usage_error(
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Commands::Docs {
+            topic,
+            json,
+            output,
+        } => handle_docs_command(
+            topic.as_deref(),
+            json || output == holon::cli::DocsOutputFormat::Json,
+        ),
         Commands::Config { command } => handle_config_command(command).await,
         Commands::Run {
             text,
@@ -404,6 +412,59 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::ModelsDev { command } => handle_models_dev_command(command).await,
         Commands::Onboard { .. } => unreachable!("onboard command is handled before runtime load"),
         Commands::Config { .. } => unreachable!("config commands are handled separately"),
+        Commands::Docs { .. } => unreachable!("docs command is handled before runtime load"),
+    }
+}
+
+fn handle_docs_command(topic: Option<&str>, json_mode: bool) -> Result<()> {
+    let _ = AgentInvocationContext::from_env().map_err(|error| anyhow!(error))?;
+    match topic {
+        None => {
+            if json_mode {
+                let topics = holon_context::docs::DOCS_TOPICS
+                    .iter()
+                    .map(|entry| {
+                        serde_json::json!({
+                            "topic": entry.slug,
+                            "title": entry.title,
+                            "summary": entry.summary,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                print_json(&serde_json::json!({ "topics": topics }))
+            } else {
+                println!("{}", holon_context::docs::render_docs_index_markdown());
+                Ok(())
+            }
+        }
+        Some(raw_slug) => match holon_context::docs::get_doc_topic(raw_slug) {
+            Some(entry) => {
+                if json_mode {
+                    print_json(&serde_json::json!({
+                        "topic": entry.slug,
+                        "title": entry.title,
+                        "summary": entry.summary,
+                        "content": entry.content,
+                    }))
+                } else {
+                    print!("{}", entry.content);
+                    if !entry.content.ends_with('\n') {
+                        println!();
+                    }
+                    Ok(())
+                }
+            }
+            None => {
+                let available = holon_context::docs::DOCS_TOPICS
+                    .iter()
+                    .map(|entry| entry.slug)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(anyhow!(
+                    "unknown docs topic `{raw_slug}`; available topics: {available}"
+                ))
+            }
+        },
     }
 }
 

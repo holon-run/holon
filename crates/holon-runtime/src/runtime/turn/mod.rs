@@ -167,38 +167,10 @@ const DEGRADED_ROUND_PROVENANCE_MARKER: &str = "[runtime: last turn content trim
 const DEGRADED_ROUND_MINIMUM_CONTENT_CHARS: usize = 200;
 const OPERATOR_INTERJECTION_HEADER: &str =
     "[Operator message received while this turn was in progress]";
-const COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT: &str = "\
-[Runtime-generated full progress checkpoint request]
-You are crossing a context compaction boundary. Produce a concise runtime-private progress checkpoint for continuation in your next assistant message.
-This checkpoint is internal continuity state and has not been delivered to the operator. Do not treat it as a status update or later repeat its headings or metadata to the operator unless explicitly asked.
-Best effort: write the checkpoint in the current target response language inferred from the trusted prompt and context. Language mismatch must not prevent checkpoint creation or continuation.
-
-Include:
-- current user goal
-- current work item objective, plan_status, plan, and todo_list state
-- files, commands, or sources already inspected
-- key findings and ruled-out paths
-- what remains unknown
-- the next goal-aligned action
-
-If continuing exploration, name the specific missing information and the next bounded command/query. If enough evidence already exists to act, make the next action the concrete mutation, verification, or delivery step instead of another read.
-If the current todo item became complete through material progress, update the work item after that progress is recorded.
-This is not a request to finish the task; after the checkpoint, continue with the next goal-aligned action when useful.
-Do not assume the task requires code changes unless the user goal does.";
-
-const DELTA_CHECKPOINT_PREVIEW_LIMIT: usize = 1_200;
-const CHECKPOINT_RESUME_PROMPT: &str = "\
-[Runtime-generated checkpoint continuation]
-Continue from the checkpoint's next goal-aligned action now. The preceding checkpoint is runtime-private continuity state and has not been delivered to the operator. Do not restate its headings, metadata, or internal process unless the operator explicitly asks about it. If it contains conclusions that answer the operator's request and those conclusions have not appeared in an operator-visible response in this turn, synthesize them into the next formal operator-facing answer. Do not claim that checkpoint content was already delivered. If the checkpoint says enough evidence exists to act, call the concrete mutation, verification, or delivery tool next; otherwise run only the named bounded command/query.";
-
-fn truncate_preview(text: &str, limit: usize) -> String {
-    let trimmed = text.trim();
-    let mut preview = trimmed.chars().take(limit).collect::<String>();
-    if trimmed.chars().count() > limit {
-        preview.push_str("...");
-    }
-    preview
-}
+pub(super) use holon_context::checkpoint_prompts::{
+    truncate_preview, CHECKPOINT_RESUME_PROMPT,
+    COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT, DELTA_CHECKPOINT_PREVIEW_LIMIT,
+};
 
 fn append_follow_up_user_texts(round: &mut TurnRoundRecord, texts: Vec<String>) {
     if texts.is_empty() {

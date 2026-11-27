@@ -1,4 +1,62 @@
 {
+  "checkpoint_prompts": {
+    "checkpoint_resume": {
+      "chars": 754,
+      "estimated_tokens": 189
+    },
+    "compaction_delta_sample": {
+      "chars": 1083,
+      "estimated_tokens": 271
+    },
+    "compaction_full_progress": {
+      "chars": 1396,
+      "estimated_tokens": 349
+    }
+  },
+  "embedded_docs": [
+    {
+      "chars": 2496,
+      "estimated_tokens": 624,
+      "slug": "cli",
+      "title": "Holon CLI Control-Plane Contract"
+    },
+    {
+      "chars": 2526,
+      "estimated_tokens": 632,
+      "slug": "skills",
+      "title": "Managed Skills Workflow"
+    },
+    {
+      "chars": 1311,
+      "estimated_tokens": 328,
+      "slug": "apps",
+      "title": "Holon Local Apps & SDK Boundary"
+    },
+    {
+      "chars": 4023,
+      "estimated_tokens": 1006,
+      "slug": "agents",
+      "title": "Multi-Agent Delegation, Observation, and Cleanup"
+    },
+    {
+      "chars": 1993,
+      "estimated_tokens": 499,
+      "slug": "workspace",
+      "title": "Workspace & Worktree Lifecycle"
+    },
+    {
+      "chars": 1557,
+      "estimated_tokens": 390,
+      "slug": "agent-home",
+      "title": "AgentHome Layout & Curation"
+    },
+    {
+      "chars": 1814,
+      "estimated_tokens": 454,
+      "slug": "models",
+      "title": "Model Route Syntax & Inspection"
+    }
+  ],
   "profiles": [
     {
       "apply_patch_surface": null,
@@ -99,11 +157,11 @@
     {
       "apply_patch_surface": null,
       "profile": "no-shell-steward",
-      "rendered_system_chars": 28762,
-      "rendered_system_estimated_tokens": 7191,
-      "shared_prefix_chars": 24955,
-      "shared_prefix_estimated_tokens": 6239,
-      "shared_prefix_fingerprint": "0c98a1404270cd114cb1daf4069e7d4ea76cc116013ada098075edd56cc08c41",
+      "rendered_system_chars": 22607,
+      "rendered_system_estimated_tokens": 5652,
+      "shared_prefix_chars": 18800,
+      "shared_prefix_estimated_tokens": 4700,
+      "shared_prefix_fingerprint": "7e5fba0d694456796d28949770781bd03257d639d5ab5af47bf2d9368f90e67c",
       "shared_prefix_sections": 14,
       "system_sections": [
         {
@@ -179,8 +237,8 @@
           "stability": "stable"
         },
         {
-          "chars": 7835,
-          "estimated_tokens": 1959,
+          "chars": 1680,
+          "estimated_tokens": 420,
           "id": "tool_agent_invocation",
           "layout": "shared_prefix",
           "name": "tool_agent_invocation",
@@ -294,11 +352,11 @@
     {
       "apply_patch_surface": "unified_diff_json",
       "profile": "coding-shell-patch-json",
-      "rendered_system_chars": 29064,
-      "rendered_system_estimated_tokens": 7266,
-      "shared_prefix_chars": 25595,
-      "shared_prefix_estimated_tokens": 6399,
-      "shared_prefix_fingerprint": "be9ce41dc6836ce0cb6e614a7ecbc06861e06c2850be95aca30ef4aa27f6d2f0",
+      "rendered_system_chars": 25583,
+      "rendered_system_estimated_tokens": 6396,
+      "shared_prefix_chars": 22114,
+      "shared_prefix_estimated_tokens": 5529,
+      "shared_prefix_fingerprint": "dd4dd9a1c05e1159290b43b041b472320490da5f97444b6c2c3238f1719f83dc",
       "shared_prefix_sections": 17,
       "system_sections": [
         {
@@ -366,16 +424,16 @@
           "stability": "stable"
         },
         {
-          "chars": 456,
-          "estimated_tokens": 114,
+          "chars": 442,
+          "estimated_tokens": 111,
           "id": "tool_work_item_scheduling",
           "layout": "shared_prefix",
           "name": "tool_work_item_scheduling",
           "stability": "stable"
         },
         {
-          "chars": 1474,
-          "estimated_tokens": 369,
+          "chars": 1390,
+          "estimated_tokens": 348,
           "id": "tool_work_item_write",
           "layout": "shared_prefix",
           "name": "tool_work_item_write",
@@ -406,8 +464,8 @@
           "stability": "stable"
         },
         {
-          "chars": 4952,
-          "estimated_tokens": 1238,
+          "chars": 1569,
+          "estimated_tokens": 393,
           "id": "holon_cli_contract",
           "layout": "shared_prefix",
           "name": "holon_cli_contract",
@@ -501,11 +559,11 @@
     {
       "apply_patch_surface": "codex_dsl_freeform",
       "profile": "coding-shell-patch-dsl",
-      "rendered_system_chars": 28903,
-      "rendered_system_estimated_tokens": 7226,
-      "shared_prefix_chars": 25434,
-      "shared_prefix_estimated_tokens": 6359,
-      "shared_prefix_fingerprint": "62a7e4c859988bbaba065a9d8c325096ba5c9de4e933267e00bea3f95eb76641",
+      "rendered_system_chars": 25422,
+      "rendered_system_estimated_tokens": 6356,
+      "shared_prefix_chars": 21953,
+      "shared_prefix_estimated_tokens": 5489,
+      "shared_prefix_fingerprint": "15a033ab89de0fed7a673c40a5d8a568cd4e4e609505f8a7f0d3407e6bfab613",
       "shared_prefix_sections": 17,
       "system_sections": [
         {
@@ -573,16 +631,16 @@
           "stability": "stable"
         },
         {
-          "chars": 456,
-          "estimated_tokens": 114,
+          "chars": 442,
+          "estimated_tokens": 111,
           "id": "tool_work_item_scheduling",
           "layout": "shared_prefix",
           "name": "tool_work_item_scheduling",
           "stability": "stable"
         },
         {
-          "chars": 1474,
-          "estimated_tokens": 369,
+          "chars": 1390,
+          "estimated_tokens": 348,
           "id": "tool_work_item_write",
           "layout": "shared_prefix",
           "name": "tool_work_item_write",
@@ -613,8 +671,8 @@
           "stability": "stable"
         },
         {
-          "chars": 4952,
-          "estimated_tokens": 1238,
+          "chars": 1569,
+          "estimated_tokens": 393,
           "id": "holon_cli_contract",
           "layout": "shared_prefix",
           "name": "holon_cli_contract",
@@ -708,11 +766,11 @@
     {
       "apply_patch_surface": "unified_diff_json",
       "profile": "delegated-child",
-      "rendered_system_chars": 31697,
-      "rendered_system_estimated_tokens": 7925,
-      "shared_prefix_chars": 28006,
-      "shared_prefix_estimated_tokens": 7002,
-      "shared_prefix_fingerprint": "db9224cdbf68a1407b3446fe89e5a0379352c1f60cb1dff94b0f1162e7fb55d0",
+      "rendered_system_chars": 22159,
+      "rendered_system_estimated_tokens": 5540,
+      "shared_prefix_chars": 18468,
+      "shared_prefix_estimated_tokens": 4617,
+      "shared_prefix_fingerprint": "fec7c6cd7949411881debddef9991073856c72b0a28573626632f33d10f72678",
       "shared_prefix_sections": 12,
       "system_sections": [
         {
@@ -780,8 +838,8 @@
           "stability": "stable"
         },
         {
-          "chars": 7835,
-          "estimated_tokens": 1959,
+          "chars": 1680,
+          "estimated_tokens": 420,
           "id": "tool_agent_invocation",
           "layout": "shared_prefix",
           "name": "tool_agent_invocation",
@@ -796,8 +854,8 @@
           "stability": "stable"
         },
         {
-          "chars": 4952,
-          "estimated_tokens": 1238,
+          "chars": 1569,
+          "estimated_tokens": 393,
           "id": "holon_cli_contract",
           "layout": "shared_prefix",
           "name": "holon_cli_contract",
@@ -857,11 +915,11 @@
     {
       "apply_patch_surface": "unified_diff_json",
       "profile": "full-surface",
-      "rendered_system_chars": 40486,
-      "rendered_system_estimated_tokens": 10122,
-      "shared_prefix_chars": 35508,
-      "shared_prefix_estimated_tokens": 8877,
-      "shared_prefix_fingerprint": "eddc2171acc46303f94c73a30b4f32789ac17928ad3850e8bd78c025ec4b61e0",
+      "rendered_system_chars": 32506,
+      "rendered_system_estimated_tokens": 8127,
+      "shared_prefix_chars": 27528,
+      "shared_prefix_estimated_tokens": 6882,
+      "shared_prefix_fingerprint": "28a1eac9f45a2a9337a76ccd9aa64304769d6104d4e1e7a22f2ee656be27838f",
       "shared_prefix_sections": 21,
       "system_sections": [
         {
@@ -937,8 +995,8 @@
           "stability": "stable"
         },
         {
-          "chars": 7835,
-          "estimated_tokens": 1959,
+          "chars": 3238,
+          "estimated_tokens": 810,
           "id": "tool_agent_invocation",
           "layout": "shared_prefix",
           "name": "tool_agent_invocation",
@@ -1001,8 +1059,8 @@
           "stability": "stable"
         },
         {
-          "chars": 4952,
-          "estimated_tokens": 1238,
+          "chars": 1569,
+          "estimated_tokens": 393,
           "id": "holon_cli_contract",
           "layout": "shared_prefix",
           "name": "holon_cli_contract",
@@ -1165,6 +1223,8 @@
     }
   ],
   "source_of_truth": {
+    "checkpoint_prompts": "crates/holon-context/src/checkpoint_prompts.rs",
+    "embedded_docs": "crates/holon-context/src/docs/mod.rs DOCS_TOPICS",
     "system_sections": "crates/holon-context/src/system_prompt.rs build_system_sections()",
     "tool_descriptions": "crates/holon-tools/src/tool/tools/mod.rs builtin_tool_definitions()",
     "tool_guidance": "crates/holon-context/src/tools.rs tool_sections_with_context()"
