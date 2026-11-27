@@ -452,6 +452,22 @@ named endpoint. Canonical selections persist that route explicitly, for example
 `volcengine@image-openai/model-id`. Existing built-in aliases and older
 `provider/model` references continue to work as compatible inputs.
 
+Protocol sub-endpoints of the same provider share the provider account, so they
+inherit the credential configured for the main entry. Configuring a credential
+profile for `opencode-go` also serves its `@messages` route, and configuring
+one for `tencent-tokenhub` also serves its `@messages` and `@responses` routes:
+
+```bash
+holon config set providers.opencode-go.auth.source credential_profile
+holon config set providers.opencode-go.auth.kind api_key
+holon config set providers.opencode-go.auth.profile "opencode-go:default"
+```
+
+- Inheritance applies to the `(provider, endpoint)` pairs of one provider, not across providers.
+- Only sub-endpoints that share the provider account inherit: plan endpoints with their own key (`dashscope-token-plan`, `stepfun-plan`, `byteplus-coding`) keep it and never fall back to the main account.
+- An explicit credential for the sub-endpoint wins: either `providers.<sub-endpoint-id>.auth` or `providers.<provider>.endpoints.<endpoint_id>.auth`.
+- Without a configured credential on the main entry the sub-endpoint keeps its built-in default and never gains a credential on its own.
+
 ### Provider Discovery
 
 Model discovery is configured separately from the inference `transport`, so a

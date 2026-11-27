@@ -3457,3 +3457,231 @@ fn doc_entries_mark_only_anonymous_access_providers_as_optional() {
         .expect("opencode-go-messages doc entry");
     assert!(!required.credential_optional);
 }
+
+fn credential_profile_store(profile: &str, material: &str) -> CredentialStoreFile {
+    let mut credential_store = CredentialStoreFile::default();
+    credential_store.profiles.insert(
+        profile.to_string(),
+        super::CredentialProfileFile {
+            kind: CredentialKind::ApiKey,
+            material: material.to_string(),
+        },
+    );
+    credential_store
+}
+
+fn configure_main_provider_credential_profile(
+    config: &mut HolonConfigFile,
+    provider: &str,
+    profile: &str,
+) {
+    set_config_key(
+        &mut *config,
+        &format!("providers.{provider}.auth.source"),
+        "credential_profile",
+    )
+    .unwrap();
+    set_config_key(
+        &mut *config,
+        &format!("providers.{provider}.auth.kind"),
+        "api_key",
+    )
+    .unwrap();
+    set_config_key(
+        &mut *config,
+        &format!("providers.{provider}.auth.profile"),
+        profile,
+    )
+    .unwrap();
+}
+
+#[test]
+fn protocol_sub_endpoint_inherits_main_provider_credential() {
+    let mut config = HolonConfigFile::default();
+    configure_main_provider_credential_profile(&mut config, "opencode-go", "opencode-go:default");
+    let credential_store = credential_profile_store("opencode-go:default", "shared-key");
+
+    let registry = resolve_provider_registry(&config, &HashMap::new(), &credential_store).unwrap();
+    let main = registry
+        .get(&ProviderId::parse("opencode-go").unwrap())
+        .expect("main provider");
+    assert_eq!(main.credential.as_deref(), Some("shared-key"));
+
+    // The `@messages` route of the same provider resolves the same credential
+    // without a second configuration.
+    let messages = registry
+        .get(&ProviderId::parse("opencode-go-messages").unwrap())
+        .expect("protocol sub-endpoint");
+    assert_eq!(messages.auth.source, CredentialSource::AuthProfile);
+    assert_eq!(
+        messages.auth.profile.as_deref(),
+        Some("opencode-go:default")
+    );
+    assert_eq!(messages.credential.as_deref(), Some("shared-key"));
+    assert!(provider_has_usable_auth(messages));
+}
+
+#[test]
+fn protocol_sub_endpoint_explicit_auth_overrides_inherited_credential() {
+    let mut config = HolonConfigFile::default();
+    configure_main_provider_credential_profile(&mut config, "opencode-go", "opencode-go:default");
+    set_config_key(
+        &mut config,
+        "providers.opencode-go-messages.auth.source",
+        "env",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.opencode-go-messages.auth.kind",
+        "api_key",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.opencode-go-messages.auth.env",
+        "OPENCODE_GO_API_KEY",
+    )
+    .unwrap();
+    let credential_store = credential_profile_store("opencode-go:default", "shared-key");
+    let settings_env = HashMap::from([(
+        "OPENCODE_GO_API_KEY".to_string(),
+        "endpoint-key".to_string(),
+    )]);
+
+    let registry = resolve_provider_registry(&config, &settings_env, &credential_store).unwrap();
+    let messages = registry
+        .get(&ProviderId::parse("opencode-go-messages").unwrap())
+        .expect("protocol sub-endpoint");
+    assert_eq!(messages.auth.source, CredentialSource::Env);
+    assert_eq!(messages.auth.env.as_deref(), Some("OPENCODE_GO_API_KEY"));
+    assert_eq!(messages.credential.as_deref(), Some("endpoint-key"));
+}
+
+#[test]
+fn protocol_sub_endpoint_endpoint_level_auth_overrides_inherited_credential() {
+    let mut config = HolonConfigFile::default();
+    configure_main_provider_credential_profile(&mut config, "opencode-go", "opencode-go:default");
+    set_config_key(
+        &mut config,
+        "providers.opencode-go.endpoints.messages.auth.source",
+        "env",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.opencode-go.endpoints.messages.auth.kind",
+        "api_key",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "providers.opencode-go.endpoints.messages.auth.env",
+        "OPENCODE_GO_API_KEY",
+    )
+    .unwrap();
+    let credential_store = credential_profile_store("opencode-go:default", "shared-key");
+    let settings_env = HashMap::from([(
+        "OPENCODE_GO_API_KEY".to_string(),
+        "endpoint-key".to_string(),
+    )]);
+
+    let registry = resolve_provider_registry(&config, &settings_env, &credential_store).unwrap();
+    let messages = registry
+        .get(&ProviderId::parse("opencode-go-messages").unwrap())
+        .expect("protocol sub-endpoint");
+    assert_eq!(messages.auth.source, CredentialSource::Env);
+    assert_eq!(messages.credential.as_deref(), Some("endpoint-key"));
+}
+
+#[test]
+fn protocol_sub_endpoint_without_main_credential_stays_unconfigured() {
+    let config = HolonConfigFile::default();
+    let registry =
+        resolve_provider_registry(&config, &HashMap::new(), &CredentialStoreFile::default())
+            .unwrap();
+
+    let messages = registry
+        .get(&ProviderId::parse("opencode-go-messages").unwrap())
+        .expect("protocol sub-endpoint");
+    assert!(messages.credential.is_none());
+    assert!(!provider_has_usable_auth(messages));
+    // The built-in default stays in place; nothing was fabricated.
+    assert_eq!(messages.auth.source, CredentialSource::Env);
+    assert_eq!(messages.auth.env.as_deref(), Some("OPENCODE_GO_API_KEY"));
+}
+
+#[test]
+fn plan_sub_endpoint_keeps_its_own_credential_scope() {
+    let mut config = HolonConfigFile::default();
+    configure_main_provider_credential_profile(&mut config, "dashscope", "dashscope:default");
+    let credential_store = credential_profile_store("dashscope:default", "main-account-key");
+    let settings_env = HashMap::from([(
+        "DASHSCOPE_TOKEN_PLAN_API_KEY".to_string(),
+        "token-plan-key".to_string(),
+    )]);
+
+    let registry = resolve_provider_registry(&config, &settings_env, &credential_store).unwrap();
+    let token_plan = registry
+        .get(&ProviderId::parse("dashscope-token-plan").unwrap())
+        .expect("plan sub-endpoint");
+    // The plan endpoint bills its own account, so it must keep its own key
+    // instead of borrowing the main provider credential.
+    assert_eq!(token_plan.auth.source, CredentialSource::Env);
+    assert_eq!(
+        token_plan.auth.env.as_deref(),
+        Some("DASHSCOPE_TOKEN_PLAN_API_KEY")
+    );
+    assert_eq!(token_plan.credential.as_deref(), Some("token-plan-key"));
+}
+
+#[test]
+fn tencent_tokenhub_responses_inherits_main_credential() {
+    let mut config = HolonConfigFile::default();
+    configure_main_provider_credential_profile(&mut config, "tencent-tokenhub", "tokenhub:default");
+    let credential_store = credential_profile_store("tokenhub:default", "shared-key");
+
+    let registry = resolve_provider_registry(&config, &HashMap::new(), &credential_store).unwrap();
+    let responses = registry
+        .get(&ProviderId::parse("tencent-tokenhub-responses").unwrap())
+        .expect("responses sub-endpoint");
+    assert_eq!(responses.auth.source, CredentialSource::AuthProfile);
+    assert_eq!(responses.auth.profile.as_deref(), Some("tokenhub:default"));
+    assert_eq!(responses.credential.as_deref(), Some("shared-key"));
+}
+
+#[test]
+fn oauth_sub_endpoint_without_builtin_envs_inherits_main_credential() {
+    let mut config = HolonConfigFile::default();
+    configure_main_provider_credential_profile(&mut config, "github-copilot", "copilot:default");
+    let credential_store = credential_profile_store("copilot:default", "copilot-token");
+
+    let registry = resolve_provider_registry(&config, &HashMap::new(), &credential_store).unwrap();
+    let chat = registry
+        .get(&ProviderId::parse("github-copilot-chat-completions").unwrap())
+        .expect("chat-completions sub-endpoint");
+    // Both definitions declare no credential env var (OAuth): the sub-endpoint
+    // still shares the main entry credential.
+    assert_eq!(chat.credential.as_deref(), Some("copilot-token"));
+}
+
+#[test]
+fn empty_endpoint_auth_does_not_clear_sub_endpoint_credential() {
+    let mut config = HolonConfigFile::default();
+    configure_main_provider_credential_profile(&mut config, "opencode-go", "opencode-go:default");
+    set_config_key(
+        &mut config,
+        "providers.opencode-go.endpoints.messages.auth.source",
+        "none",
+    )
+    .unwrap();
+    let credential_store = credential_profile_store("opencode-go:default", "shared-key");
+
+    let registry = resolve_provider_registry(&config, &HashMap::new(), &credential_store).unwrap();
+    let messages = registry
+        .get(&ProviderId::parse("opencode-go-messages").unwrap())
+        .expect("protocol sub-endpoint");
+    // An explicitly written empty endpoint auth carries no credential, so it
+    // neither clears the built-in default nor blocks the inherited credential.
+    assert_eq!(messages.credential.as_deref(), Some("shared-key"));
+}

@@ -742,6 +742,57 @@ fn config_inspection_loads_provider_state_without_resolved_model() {
 }
 
 #[test]
+fn runtime_config_surface_reports_inherited_protocol_endpoint_credential() {
+    let home = tempdir().unwrap();
+    let _env_guard = EnvVarGuard::set_and_unset(
+        &[("HOME", home.path().as_os_str())],
+        &[
+            "OPENCODE_GO_API_KEY",
+            "HOLON_MODEL",
+            "HOLON_MODEL_FALLBACKS",
+        ],
+    );
+    let mut stored = HolonConfigFile::default();
+    set_config_key(
+        &mut stored,
+        "providers.opencode-go.auth.source",
+        "credential_profile",
+    )
+    .unwrap();
+    set_config_key(&mut stored, "providers.opencode-go.auth.kind", "api_key").unwrap();
+    set_config_key(
+        &mut stored,
+        "providers.opencode-go.auth.profile",
+        "opencode-go:default",
+    )
+    .unwrap();
+    save_persisted_config_at(&persisted_config_path(home.path()), &stored).unwrap();
+    set_credential_profile_at(
+        &credential_store_path(home.path()),
+        "opencode-go:default",
+        CredentialKind::ApiKey,
+        "shared-key".to_string(),
+    )
+    .unwrap();
+
+    let config =
+        AppConfig::load_with_home_for_config_inspection(Some(home.path().to_path_buf())).unwrap();
+    let provider = config
+        .providers
+        .get(&ProviderId::parse("opencode-go-messages").unwrap())
+        .expect("protocol sub-endpoint");
+    let view = super::provider_config_view(&config, provider);
+
+    // The credential saved for the main provider reaches the `@messages`
+    // route and stays traceable to the main entry.
+    assert_eq!(view.id, "opencode-go-messages");
+    assert_eq!(view.auth.source, "credential_profile");
+    assert_eq!(view.auth.profile.as_deref(), Some("opencode-go:default"));
+    assert!(view.credential_configured);
+    assert!(!view.configured_in_config);
+}
+
+#[test]
 fn provider_chain_preserves_effective_order_and_deduplicates() {
     let fixture = test_app_config(
         "openai/gpt-5.4",

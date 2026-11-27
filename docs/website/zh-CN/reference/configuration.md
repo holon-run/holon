@@ -416,6 +416,21 @@ plan 把稳定的提供商别名（例如 `volcengine-image-openai`）映射到�
 显式持久化该路由，例如 `volcengine@image-openai/model-id`。已有的内置别名和更旧的
 `provider/model` 引用继续作为兼容输入可用。
 
+同一提供商的协议子端点共用同一个提供商账号，因此会继承主入口配置的凭据。为
+`opencode-go` 配置 credential profile 后，其 `@messages` 路由同样可用；为
+`tencent-tokenhub` 配置后，其 `@messages` 与 `@responses` 路由同样可用：
+
+```bash
+holon config set providers.opencode-go.auth.source credential_profile
+holon config set providers.opencode-go.auth.kind api_key
+holon config set providers.opencode-go.auth.profile "opencode-go:default"
+```
+
+- 继承只发生在同一提供商的 `(provider, endpoint)` 组合之间，不跨提供商复用凭据。
+- 只有共用提供商账号的子端点才会继承：自带独立密钥的 plan 端点（`dashscope-token-plan`、`stepfun-plan`、`byteplus-coding`）保留自己的密钥，不会回落到主账号。
+- 子端点显式配置的凭据优先：`providers.<子端点 id>.auth` 或 `providers.<provider>.endpoints.<endpoint_id>.auth` 均优先于继承。
+- 主入口没有配置凭据时，子端点保留内置默认值，不会凭空获得凭据。
+
 ### 提供商模型发现（Provider Discovery）
 
 模型发现与推理 `transport` 分开配置，因此支持多种协议的网关可以共用同一份模型列表：
