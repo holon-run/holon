@@ -322,6 +322,19 @@ class CiEventMatrixTests(unittest.TestCase):
                 (root / "scripts" / name).write_text(
                     f"with open({str(log)!r}, 'a') as f: f.write('[\"tooling\", []]\\n')\n"
                 )
+            # Stub wrapper for scripts/gradle_flake_retry.sh: forwards the
+            # gradlew invocation so the stub records it, and mirrors the real
+            # wrapper's unknown-failure contract (no retry, propagated exit
+            # code) that the assertions below depend on.
+            (root / "scripts" / "gradle_flake_retry.sh").write_text(
+                "#!/usr/bin/env bash\n"
+                '"$@"\n'
+                "status=$?\n"
+                "if [[ $status -ne 0 ]]; then\n"
+                '  echo "::error::Gradle build failed without a known flake signature; not retrying"\n'
+                "fi\n"
+                "exit $status\n"
+            )
             for event in EVENTS:
                 log.unlink(missing_ok=True)
                 run_tests = condition(field(step, "RUN_TESTS", 10), event)
