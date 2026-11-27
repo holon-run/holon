@@ -122,6 +122,8 @@ test -n "${DEEPSEEK_API_KEY:-}" && echo "set" || echo "unset"
 
 新终端里导出的环境变量不会自动注入已经运行中的守护进程；请使用受管的凭据存储或按文档要求重启守护进程。
 
+若免凭据或匿名访问的本地服务商（`ollama`、`vllm`、`magpie`）未显示模型，请在 `config.json` 中声明 `providers.<id>`、在模型路由中引用它，或运行 `holon config models refresh --provider <id>`。
+
 ### 配置修改未生效
 
 ```bash

@@ -44,6 +44,7 @@ holon tail --agent child --include-progress --follow --cursor '<checkpoint>'
 holon (v0.61.0)
 ├── context      显示本次 CLI 调用的声明式调用方上下文
 ├── commands     显示机器可读的 CLI 命令元数据
+├── docs         离线阅读随二进制嵌入的版本化 Holon 操作手册
 ├── serve        启动 HTTP 控制平面服务
 ├── onboard      交互式配置向导或对密钥安全的诊断
 ├── daemon       后台 daemon 生命周期
@@ -396,6 +397,14 @@ holon config credentials list    # 已存储的凭据配置
 `holon config providers remove` 和 `holon config credentials set/list/remove`。
 其他配置查看命令也会输出 JSON，但在其提供商/运行时 DTO 归属完全稳定之前仍属
 实验性。人类可读的帮助和文本输出与这些 JSON 契约相互独立。
+
+### 离线内置手册
+
+```bash
+holon docs                       # 列出嵌入的操作手册主题
+holon docs models                # 离线阅读指定主题（cli、skills、apps、agents、workspace、agent-home、models）
+holon docs models --json         # 输出结构化 JSON（亦可使用 --output json）
+```
 
 ### 凭据设置
 

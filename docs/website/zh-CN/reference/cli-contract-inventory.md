@@ -49,6 +49,7 @@ order: 11
 |---|---|---|---|---:|---|
 | `holon --help` | none | `-h, --help`, `-V, --version` | 向 stdout 输出人类帮助 | `stable` 候选 | 应由命令树快照测试覆盖。 |
 | `holon <COMMAND> --help` | 取决于命令 | 取决于命令 | 向 stdout 输出人类帮助 | 形态为 `stable` 候选；措辞为 `experimental` | 命令形态变化时重新生成 `cli.md`。 |
+| `holon docs` | 可选 `<TOPIC>` | `--json`；`--output <text\|json>` | Markdown 或 JSON 格式的主题目录或手册正文 | `experimental` | 离线读取编译时嵌入的操作手册（`cli`、`skills`、`apps`、`agents`、`workspace`、`agent-home`、`models`）。 |
 
 ### 服务器与守护进程
 

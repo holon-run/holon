@@ -128,6 +128,8 @@ test -n "${DEEPSEEK_API_KEY:-}" && echo "set" || echo "unset"
 
 Environment variables exported in a new shell do not affect an already-running daemon; restart the daemon or store credentials in the managed credential store.
 
+If a local credential-free or anonymous-access provider (`ollama`, `vllm`, `magpie`) shows no models, opt it in by declaring `providers.<id>` in `config.json`, referencing it in a configured model route, or running `holon config models refresh --provider <id>`.
+
 ### Config changes not taking effect
 
 ```bash

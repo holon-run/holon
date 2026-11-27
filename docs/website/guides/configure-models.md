@@ -30,10 +30,11 @@ To run agents entirely free and offline, local Ollama is the cleanest starting p
    ollama pull qwen2.5-coder:latest
    ```
 2. **Set as the global default**:
-   Holon automatically scans running local Ollama endpoints without requiring API keys:
+   Setting `model.default` to an Ollama route opts local Ollama into model discovery without requiring an API key:
    ```bash
    holon config set model.default "ollama@default/qwen2.5-coder:latest"
    ```
+   To browse local Ollama models before choosing a default route, run `holon config models refresh --provider ollama` or declare `providers.ollama` in `config.json`.
 3. **Verify connectivity**:
    Run the diagnostics command to confirm endpoint health:
    ```bash
@@ -186,7 +187,7 @@ These settings do not affect your chat model. For details, see [Inspect Images](
 
 ### Scenario 6: Magpie (Built-In) and Self-Hosted OpenAI-Compatible Gateways
 
-**Magpie is built in.** When Magpie runs on its default port it needs no provider configuration: the built-in `magpie` entry points at `http://127.0.0.1:3425` with the Anthropic Messages transport (`POST /v1/messages`), discovers models from `GET /v1/models` with the Magpie decoder, and works without an API key.
+**Magpie is built in.** The built-in `magpie` entry points at `http://127.0.0.1:3425` with the Anthropic Messages transport (`POST /v1/messages`), discovers models from `GET /v1/models` with the Magpie decoder, and works without an API key. Because it permits anonymous local access, Holon does not probe its port automatically at startup—opt in by running `holon config models refresh --provider magpie`, referencing a `magpie@default/<model>` route, or declaring `providers.magpie` in `config.json`.
 
 ```bash
 # Only needed when Magpie listens on a non-default port.

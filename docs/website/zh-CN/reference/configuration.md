@@ -373,8 +373,11 @@ transport 连接本地 Ollama 服务器 `http://127.0.0.1:11434`。
 holon config set model.default "ollama/qwen3.8:latest"
 ```
 
-Web GUI 无需任何凭据配置即可发现本地运行的 Ollama 模型，`ViewImage` 也会自动发现 Ollama
-视觉模型用于图像分析。
+Holon 启动时不会自动探测未配置的免凭据提供商。只有在你主动启用后，系统才会发现并加载本地
+Ollama（或 `vllm`）模型——例如在模型路由中引用该提供商（`model.default`、
+`model.fallbacks`、`vision.default`、`vision.candidates`、`image_generation.default`
+或 `models.catalog`），在 `config.json` 中声明 `providers.ollama`，或手动执行一次模型
+刷新。
 
 ### 添加自定义提供商
 
