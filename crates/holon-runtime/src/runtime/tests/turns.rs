@@ -6362,6 +6362,9 @@ async fn in_turn_fallback_publishes_one_switch_and_paired_request_events() {
             event.contract_version,
             crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION
         );
+        // The provider request/switch families are projected into the
+        // conversation activity stream, so they invalidate canonical
+        // display state instead of staying projection neutral.
         assert_eq!(
             crate::runtime_event::projection_effect_of(
                 &event.kind,
@@ -6369,7 +6372,7 @@ async fn in_turn_fallback_publishes_one_switch_and_paired_request_events() {
                 &event.payload_schema,
                 event.payload_schema_version,
             ),
-            crate::runtime_event::ProjectionEffect::None
+            crate::runtime_event::ProjectionEffect::DisplayInvalidation
         );
     }
 }

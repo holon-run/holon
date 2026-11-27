@@ -2903,7 +2903,8 @@ fn model_switch_replay_is_idempotent_and_orders_before_after_switch_request() ->
 #[test]
 fn model_switch_slot_rewrite_takes_the_latest_attempt_and_bumps_revision() -> Result<()> {
     let (_temp_dir, _path, _lock, db) = runtime_db()?;
-    db.turn_records().upsert(&turn("turn-model-switch-rewrite", 1))?;
+    db.turn_records()
+        .upsert(&turn("turn-model-switch-rewrite", 1))?;
 
     let first = ModelSwitchEvidence {
         switch_id: "model_switch:turn-model-switch-rewrite:1".into(),

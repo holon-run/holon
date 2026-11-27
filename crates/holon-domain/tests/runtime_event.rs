@@ -309,17 +309,16 @@ fn projection_classification_distinguishes_exact_legacy_and_unsupported() {
 }
 
 #[test]
-fn scheduler_diagnostics_are_projection_neutral() {
+fn scheduler_diagnostics_are_projection_neutral_and_model_events_are_not() {
     // Self-contained diagnostics and decision telemetry are outside
     // AgentCanonicalProjection v1; every other family references
-    // canonical display state.
+    // canonical display state. The provider request/switch families are
+    // projected into the conversation activity stream, so they invalidate
+    // canonical display state rather than staying projection neutral.
     let neutral_kinds = [
         RuntimeEventKind::SchedulerDiagnostic,
         RuntimeEventKind::DecisionAdvisoryCompleted,
         RuntimeEventKind::DecisionOutcomeRecorded,
-        RuntimeEventKind::ProviderSwitch,
-        RuntimeEventKind::ProviderRequestStarted,
-        RuntimeEventKind::ProviderRequestFinished,
     ];
     for entry in runtime_event_registry() {
         if neutral_kinds.contains(&entry.kind) {
