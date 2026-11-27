@@ -2,6 +2,7 @@
 """Run build/archive and UI command contract regressions without starting Xcode."""
 import ast
 import base64
+import builtins
 from contextlib import nullcontext, redirect_stdout
 import hashlib
 import http.client
@@ -18,6 +19,7 @@ import socket
 import subprocess
 import sqlite3
 import struct
+import symtable
 import sys
 import tempfile
 import threading
@@ -918,8 +920,8 @@ class UIFixtureSetupContracts(unittest.TestCase):
             with self.subTest(label=label), self.assertRaises(RuntimeError):
                 self.run_loss_scenarios(transform)
 
-    def run_setup(self, initialize, install, share=True, report=False, commands=None):
-        # Execute the fixture's real setup block without starting its daemon/XCTest.
+    def ui_setup_module(self):
+        # Extract the fixture's real setup block without starting its daemon/XCTest.
         source = ROOT / "scripts/ios_ui_fixture.py"
         tree = ast.parse(source.read_text(), filename=str(source))
         for node in ast.walk(tree):
@@ -935,23 +937,53 @@ class UIFixtureSetupContracts(unittest.TestCase):
                 # the try block that wraps it.
                 stop = next(index for index in range(start, len(body))
                             if isinstance(body[index], (ast.For, ast.Try)))
-                setup = ast.Module(body=body[start:stop], type_ignores=[])
-                break
-        else:
-            self.fail("UI fixture setup block not found")
+                return ast.Module(body=body[start:stop], type_ignores=[])
+        self.fail("UI fixture setup block not found")
+
+    def setup_namespace(self, directory, initialize, install, share=True, report=False, commands=None):
+        # Mirror the fixture's module-level switches and mutable collaborators so
+        # the real setup block can execute against them without a daemon.
+        # `long_image_history_probe` follows the same env-derived default as the
+        # fixture; callers run under a cleared environment so it stays disabled.
+        return dict(os=os, pathlib=pathlib, simulator=UUID, repo=str(ROOT),
+                    root=Path(directory), bundle=Path(directory) / "UI.xcresult",
+                    MAXIMUM_TEXT_SIZE=MAXIMUM_TEXT_SIZE, rich_acceptance=report,
+                    report_acceptance=report,
+                    lost_response_acceptance=False, history_acceptance=False,
+                    task_result_acceptance=False,
+                    share_acceptance=share, initialize_simulator_text_size=initialize,
+                    long_image_history_probe=os.environ.get("IOS_LONG_IMAGE_HISTORY_PROBE") == "1",
+                    subprocess=commands if commands is not None else Mock(),
+                    time=Mock())
+
+    def run_setup(self, initialize, install, share=True, report=False, commands=None):
+        # Execute the fixture's real setup block without starting its daemon/XCTest.
+        setup = self.ui_setup_module()
+        source = ROOT / "scripts/ios_ui_fixture.py"
         with tempfile.TemporaryDirectory(prefix="holon-ios-ui-setup-") as directory:
-            namespace = dict(os=os, pathlib=pathlib, simulator=UUID, repo=str(ROOT),
-                             root=Path(directory), bundle=Path(directory) / "UI.xcresult",
-                             MAXIMUM_TEXT_SIZE=MAXIMUM_TEXT_SIZE, rich_acceptance=report,
-                             report_acceptance=report,
-                             lost_response_acceptance=False, history_acceptance=False,
-                             task_result_acceptance=False,
-                             share_acceptance=share, initialize_simulator_text_size=initialize,
-                             subprocess=commands if commands is not None else Mock(),
-                             time=Mock())
             with patch.dict(os.environ, {}, clear=True), patch("ios_share_probe.install", install):
+                namespace = self.setup_namespace(directory, initialize, install,
+                                                 share=share, report=report, commands=commands)
                 exec(compile(setup, str(source), "exec"), namespace)
             return namespace["cases"]
+
+    def test_setup_namespace_covers_module_level_switches(self):
+        # A fixture switch referenced before the sweep must be injected explicitly,
+        # otherwise it silently fails every case with NameError.
+        setup = self.ui_setup_module()
+        with tempfile.TemporaryDirectory(prefix="holon-ios-ui-setup-") as directory, \
+                patch.dict(os.environ, {}, clear=True):
+            namespace = self.setup_namespace(directory, Mock(), Mock())
+        table = symtable.symtable(ast.unparse(setup), "<ui-setup>", "exec")
+        required = {symbol.get_name() for symbol in table.get_symbols()
+                    if symbol.is_referenced() and not symbol.is_assigned()
+                    and not symbol.is_imported()}
+        required -= set(dir(builtins))
+        # `install` is imported inside the block; whitelisting keeps an
+        # import-based collaborator change from masking a missing switch.
+        uncovered = required - set(namespace) - {"install"}
+        self.assertEqual(uncovered, set(),
+                         f"run_setup namespace misses fixture module-level names: {sorted(uncovered)}")
 
     def test_report_acceptance_selects_real_report_cases(self):
         initialize, install = Mock(), Mock()
