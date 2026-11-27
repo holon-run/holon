@@ -12,9 +12,10 @@ use super::{
 };
 use crate::domain::conversation::{
     ActivityItem, Attention, ConversationActivity, ConversationChange,
-    ConversationShadowMismatchKind, CursorBinding, CursorCodec, ExecutionState, NoBriefReason,
-    PendingInputState, ResultState, StreamCursor, TerminalOutcome, TurnKey,
-    CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
+    ConversationShadowMismatchKind, CursorBinding, CursorCodec, DetailCoverage, ExecutionState,
+    ModelRequestActivity, ModelRequestEvidence, ModelRequestStatus, ModelSwitchActivity,
+    ModelSwitchEvidence, NoBriefReason, PendingInputState, ResultState, StreamCursor,
+    TerminalOutcome, TurnKey, CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::RuntimeDb;
 use crate::types::{
@@ -218,6 +219,9 @@ fn activity_item(activity: &ConversationActivity) -> &ActivityItem {
         | ConversationActivity::Tool(item)
         | ConversationActivity::Wait(item)
         | ConversationActivity::Error(item) => item,
+        ConversationActivity::ModelRequest(_) | ConversationActivity::ModelSwitch(_) => {
+            unreachable!("model activities are not exercised by this helper")
+        }
     }
 }
 
@@ -2713,5 +2717,337 @@ fn task_result_runtime_provenance_survives_legacy_null_task_brief_links() -> Res
             Some(runtime_only)
         );
     }
+    Ok(())
+}
+
+fn model_request_item(activity: &ConversationActivity) -> &ModelRequestActivity {
+    match activity {
+        ConversationActivity::ModelRequest(item) => item,
+        other => panic!("expected model_request activity, got {other:?}"),
+    }
+}
+
+fn model_switch_item(activity: &ConversationActivity) -> &ModelSwitchActivity {
+    match activity {
+        ConversationActivity::ModelSwitch(item) => item,
+        other => panic!("expected model_switch activity, got {other:?}"),
+    }
+}
+
+fn started_request(turn_id: &str, request_id: &str) -> ModelRequestEvidence {
+    ModelRequestEvidence {
+        request_id: request_id.into(),
+        turn_id: turn_id.into(),
+        provider: "fixture".into(),
+        model_ref: "fixture@default/primary-model".into(),
+        dispatch_reason: "initial".into(),
+        status: ModelRequestStatus::InFlight,
+        started_at: timestamp(1),
+        duration_ms: None,
+        failure_kind: None,
+    }
+}
+
+#[test]
+fn model_request_started_and_finished_pair_into_one_revised_activity() -> Result<()> {
+    let (_temp_dir, _path, _lock, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-model-pair", 1))?;
+
+    let started = started_request("turn-model-pair", "turn-model-pair:1:1");
+    db.record_model_request_evidence(AGENT_ID, &started)?;
+    // Identical replay must not create a second activity or bump revision.
+    db.record_model_request_evidence(AGENT_ID, &started)?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-pair", 10, None, None)?
+        .expect("turn");
+    assert_eq!(page.activities.len(), 1);
+    let in_flight = model_request_item(&page.activities[0]);
+    assert_eq!(in_flight.status, ModelRequestStatus::InFlight);
+    assert_eq!(in_flight.revision, 1);
+    let seq = in_flight.key.event_seq;
+    let id = in_flight.id.clone();
+
+    let finished = ModelRequestEvidence {
+        status: ModelRequestStatus::Succeeded,
+        duration_ms: Some(42),
+        ..started.clone()
+    };
+    db.record_model_request_evidence(AGENT_ID, &finished)?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-pair", 10, None, None)?
+        .expect("turn");
+    assert_eq!(
+        page.activities.len(),
+        1,
+        "finished bumps in place, no new row"
+    );
+    let done = model_request_item(&page.activities[0]);
+    assert_eq!(done.status, ModelRequestStatus::Succeeded);
+    assert_eq!(done.revision, 2);
+    assert_eq!(done.key.event_seq, seq);
+    assert_eq!(done.id, id);
+    assert_eq!(done.duration_ms, Some(42));
+    Ok(())
+}
+
+#[test]
+fn consecutive_dispatches_stay_distinct_and_ordered() -> Result<()> {
+    let (_temp_dir, _path, _lock, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-model-multi", 1))?;
+
+    for ordinal in 1..=3 {
+        let started = started_request("turn-model-multi", &format!("turn-model-multi:1:{ordinal}"));
+        db.record_model_request_evidence(AGENT_ID, &started)?;
+        let finished = ModelRequestEvidence {
+            status: ModelRequestStatus::Succeeded,
+            duration_ms: Some(ordinal),
+            ..started
+        };
+        db.record_model_request_evidence(AGENT_ID, &finished)?;
+    }
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-multi", 10, None, None)?
+        .expect("turn");
+    let requests = page
+        .activities
+        .iter()
+        .map(model_request_item)
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 3);
+    for pair in requests.windows(2) {
+        assert!(
+            pair[0].key.event_seq < pair[1].key.event_seq,
+            "activity_seq must strictly increase across dispatches"
+        );
+        assert_ne!(pair[0].id, pair[1].id);
+    }
+    Ok(())
+}
+
+#[test]
+fn unpaired_started_is_in_flight_until_terminal_then_unfinished() -> Result<()> {
+    let (_temp_dir, _path, _lock, db) = runtime_db()?;
+    let record = turn("turn-model-unfinished", 1);
+    db.turn_records().upsert(&record)?;
+    db.record_model_request_evidence(
+        AGENT_ID,
+        &started_request("turn-model-unfinished", "turn-model-unfinished:1:1"),
+    )?;
+
+    let active = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-unfinished", 10, None, None)?
+        .expect("turn");
+    assert_eq!(
+        model_request_item(&active.activities[0]).status,
+        ModelRequestStatus::InFlight
+    );
+
+    let terminal_record = terminal(record, TurnTerminalKind::Completed, None);
+    db.turn_records().upsert(&terminal_record)?;
+
+    let done = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-unfinished", 10, None, None)?
+        .expect("turn");
+    let projected = model_request_item(&done.activities[0]);
+    assert_eq!(projected.status, ModelRequestStatus::Unfinished);
+    assert_eq!(projected.revision, 1, "read-time convergence never writes");
+    Ok(())
+}
+
+#[test]
+fn model_switch_replay_is_idempotent_and_orders_before_after_switch_request() -> Result<()> {
+    let (_temp_dir, _path, _lock, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-model-switch", 1))?;
+
+    let switch = ModelSwitchEvidence {
+        switch_id: "model_switch:turn-model-switch:1".into(),
+        turn_id: "turn-model-switch".into(),
+        from_provider: "fixture".into(),
+        from_model_ref: "fixture@default/primary-model".into(),
+        to_provider: "fixture".into(),
+        to_model_ref: "fixture@default/fallback-model".into(),
+        reason_category: "rate_limited".into(),
+        occurred_at: timestamp(2),
+    };
+    db.record_model_switch_evidence(AGENT_ID, &switch)?;
+    // An identical replay must not bump the switch slot.
+    db.record_model_switch_evidence(AGENT_ID, &switch)?;
+
+    let mut after = started_request("turn-model-switch", "turn-model-switch:1:1");
+    after.dispatch_reason = "after_switch".into();
+    after.started_at = timestamp(3);
+    db.record_model_request_evidence(AGENT_ID, &after)?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-switch", 10, None, None)?
+        .expect("turn");
+    assert_eq!(page.activities.len(), 2);
+    let first = model_switch_item(&page.activities[0]);
+    assert_eq!(first.revision, 1);
+    assert_eq!(first.reason_category, "rate_limited");
+    let second = model_request_item(&page.activities[1]);
+    assert_eq!(second.dispatch_reason, "after_switch");
+    assert!(first.key.event_seq < second.key.event_seq);
+    Ok(())
+}
+
+#[test]
+fn model_switch_slot_rewrite_takes_the_latest_attempt_and_bumps_revision() -> Result<()> {
+    let (_temp_dir, _path, _lock, db) = runtime_db()?;
+    db.turn_records()
+        .upsert(&turn("turn-model-switch-rewrite", 1))?;
+
+    let first = ModelSwitchEvidence {
+        switch_id: "model_switch:turn-model-switch-rewrite:1".into(),
+        turn_id: "turn-model-switch-rewrite".into(),
+        from_provider: "fixture".into(),
+        from_model_ref: "fixture@default/primary-model".into(),
+        to_provider: "fixture".into(),
+        to_model_ref: "fixture@default/fallback-model".into(),
+        reason_category: "rate_limited".into(),
+        occurred_at: timestamp(2),
+    };
+    db.record_model_switch_evidence(AGENT_ID, &first)?;
+
+    // A resumed execution that reuses the same switch slot writes a new
+    // payload for it; the latest attempt wins and the slot revision advances.
+    let second = ModelSwitchEvidence {
+        to_model_ref: "fixture@default/second-fallback-model".into(),
+        reason_category: "timeout".into(),
+        occurred_at: timestamp(3),
+        ..first.clone()
+    };
+    db.record_model_switch_evidence(AGENT_ID, &second)?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-switch-rewrite", 10, None, None)?
+        .expect("turn");
+    assert_eq!(page.activities.len(), 1, "one slot stays one activity");
+    let switch = model_switch_item(&page.activities[0]);
+    assert_eq!(switch.revision, 2, "a rewritten slot bumps its revision");
+    assert_eq!(switch.to_model_ref, "fixture@default/second-fallback-model");
+    assert_eq!(switch.reason_category, "timeout");
+    Ok(())
+}
+
+#[test]
+fn model_activity_serialization_respects_whitelist_and_summary_bounds() -> Result<()> {
+    let (_temp_dir, _path, _lock, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-model-whitelist", 1))?;
+
+    let mut started = started_request("turn-model-whitelist", "turn-model-whitelist:1:1");
+    started.failure_kind = None;
+    db.record_model_request_evidence(AGENT_ID, &started)?;
+    let finished = ModelRequestEvidence {
+        status: ModelRequestStatus::Failed,
+        duration_ms: Some(7),
+        failure_kind: Some("rate_limited".into()),
+        ..started
+    };
+    db.record_model_request_evidence(AGENT_ID, &finished)?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-whitelist", 10, None, None)?
+        .expect("turn");
+    let value = serde_json::to_value(&page.activities[0])?;
+    let object = value.as_object().expect("object");
+    let allowed = [
+        "kind",
+        "id",
+        "key",
+        "revision",
+        "summary",
+        "provider",
+        "model_ref",
+        "dispatch_reason",
+        "status",
+        "duration_ms",
+        "failure_kind",
+    ];
+    for key in object.keys() {
+        assert!(allowed.contains(&key.as_str()), "unexpected field {key}");
+    }
+    let summary = object["summary"].as_str().expect("summary");
+    assert!(summary.chars().count() <= 256);
+    let lower = summary.to_ascii_lowercase();
+    for forbidden in [
+        "api_key",
+        "authorization",
+        "bearer",
+        "http://",
+        "https://",
+        "header",
+    ] {
+        assert!(
+            !lower.contains(forbidden),
+            "summary leaked {forbidden}: {summary}"
+        );
+    }
+
+    // A failure kind outside the public whitelist collapses to `unknown`.
+    let mut odd = started_request("turn-model-whitelist", "turn-model-whitelist:1:2");
+    odd.failure_kind = Some("raw-provider-error".into());
+    odd.started_at = timestamp(4);
+    db.record_model_request_evidence(AGENT_ID, &odd)?;
+    let odd_finished = ModelRequestEvidence {
+        status: ModelRequestStatus::Failed,
+        duration_ms: Some(9),
+        failure_kind: Some("raw-provider-error".into()),
+        ..odd
+    };
+    db.record_model_request_evidence(AGENT_ID, &odd_finished)?;
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-whitelist", 10, None, None)?
+        .expect("turn");
+    let odd_activity = page
+        .activities
+        .iter()
+        .map(model_request_item)
+        .find(|item| item.status == ModelRequestStatus::Failed && item.duration_ms == Some(9))
+        .expect("odd activity");
+    assert_eq!(odd_activity.failure_kind.as_deref(), Some("unknown"));
+    Ok(())
+}
+
+#[test]
+fn source_kind_registry_is_unique_and_model_kinds_prove_coverage() -> Result<()> {
+    use crate::domain::conversation::ConversationSourceKind;
+    let mut seen = std::collections::BTreeSet::new();
+    for kind in ConversationSourceKind::ALL {
+        assert!(
+            seen.insert(kind.as_str()),
+            "duplicate source kind {}",
+            kind.as_str()
+        );
+    }
+    assert_eq!(seen.len(), ConversationSourceKind::ALL.len());
+
+    let (_temp_dir, _path, _lock, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-model-coverage", 1))?;
+    db.record_model_request_evidence(
+        AGENT_ID,
+        &started_request("turn-model-coverage", "turn-model-coverage:1:1"),
+    )?;
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-model-coverage", 10, None, None)?
+        .expect("turn");
+    assert_eq!(page.coverage, DetailCoverage::Complete);
+    assert!(page
+        .activities
+        .iter()
+        .any(|activity| matches!(activity, ConversationActivity::ModelRequest(_))));
     Ok(())
 }

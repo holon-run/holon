@@ -374,6 +374,8 @@ pub enum ConversationActivity {
     Tool(ActivityItem),
     Wait(ActivityItem),
     Error(ActivityItem),
+    ModelRequest(ModelRequestActivity),
+    ModelSwitch(ModelSwitchActivity),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -382,6 +384,217 @@ pub struct ActivityItem {
     pub key: ActivityKey,
     pub revision: u64,
     pub summary: String,
+}
+
+/// Single authoritative registry of conversation activity source kinds.
+///
+/// Every source kind that can appear in `conversation_source_revisions` MUST be
+/// listed here. Activity SQL, coverage checks, and deletion/retention
+/// whitelists derive from this registry so a newly added kind cannot silently
+/// drift out of one hardcoded list (the failure mode is an activity that
+/// silently disappears or coverage that flips to `partial`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConversationSourceKind {
+    Operator,
+    Assistant,
+    Tool,
+    Wait,
+    Error,
+    ModelRequest,
+    ModelSwitch,
+}
+
+impl ConversationSourceKind {
+    pub const ALL: [Self; 7] = [
+        Self::Operator,
+        Self::Assistant,
+        Self::Tool,
+        Self::Wait,
+        Self::Error,
+        Self::ModelRequest,
+        Self::ModelSwitch,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Operator => "operator",
+            Self::Assistant => "assistant",
+            Self::Tool => "tool",
+            Self::Wait => "wait",
+            Self::Error => "error",
+            Self::ModelRequest => "model_request",
+            Self::ModelSwitch => "model_switch",
+        }
+    }
+
+    /// Evidence table backing this activity's display summary.
+    pub const fn evidence_table(self) -> &'static str {
+        match self {
+            Self::Operator => "messages",
+            Self::Assistant | Self::Error => "transcript_entries",
+            Self::Tool => "tool_executions",
+            Self::Wait => "wait_conditions",
+            Self::ModelRequest | Self::ModelSwitch => "model_requests",
+        }
+    }
+
+    /// True when the kind's evidence lives in its own turn-content bearing
+    /// table, so it participates in shared-content conflict checks before turn
+    /// content deletion.
+    pub const fn shares_exclusive_content_table(self) -> bool {
+        matches!(
+            self,
+            Self::Operator | Self::Assistant | Self::Tool | Self::ModelRequest | Self::ModelSwitch
+        )
+    }
+
+    pub const fn is_model(self) -> bool {
+        matches!(self, Self::ModelRequest | Self::ModelSwitch)
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == value)
+    }
+}
+
+/// Bounded, credential-free status of one model request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRequestStatus {
+    InFlight,
+    Succeeded,
+    Failed,
+    Aborted,
+    /// Read-time projection of an unpaired `started` on a terminal turn. Never
+    /// persisted and never backfilled with a synthetic `finished` fact.
+    Unfinished,
+}
+
+impl ModelRequestStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InFlight => "in_flight",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Aborted => "aborted",
+            Self::Unfinished => "unfinished",
+        }
+    }
+}
+
+const MODEL_ACTIVITY_SUMMARY_MAX_CHARS: usize = 256;
+
+fn bounded_summary(value: String) -> String {
+    if value.chars().count() <= MODEL_ACTIVITY_SUMMARY_MAX_CHARS {
+        value
+    } else {
+        value
+            .chars()
+            .take(MODEL_ACTIVITY_SUMMARY_MAX_CHARS)
+            .collect()
+    }
+}
+
+/// Builds the bounded display summary for a model request activity.
+pub fn model_request_summary(
+    provider: &str,
+    model_ref: &str,
+    status: ModelRequestStatus,
+    duration_ms: Option<u64>,
+    failure_kind: Option<&str>,
+) -> String {
+    let mut summary = format!("{provider}/{model_ref} · {}", status.as_str());
+    if status == ModelRequestStatus::Failed {
+        if let Some(kind) = failure_kind {
+            summary.push_str(" · ");
+            summary.push_str(kind);
+        }
+    }
+    if let Some(duration) = duration_ms {
+        summary.push_str(" · ");
+        summary.push_str(&duration.to_string());
+        summary.push_str("ms");
+    }
+    bounded_summary(summary)
+}
+
+/// Builds the bounded display summary for a model switch activity.
+pub fn model_switch_summary(
+    from_model_ref: &str,
+    to_model_ref: &str,
+    reason_category: &str,
+) -> String {
+    bounded_summary(format!(
+        "{from_model_ref} -> {to_model_ref} · {reason_category}"
+    ))
+}
+
+/// One projected model request inside the turn activity stream.
+///
+/// Field set is exactly the #4519 whitelist: no credentials, URLs, headers,
+/// raw provider error bodies, or hidden reasoning may appear here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelRequestActivity {
+    pub id: String,
+    pub key: ActivityKey,
+    pub revision: u64,
+    pub summary: String,
+    pub provider: String,
+    pub model_ref: String,
+    pub dispatch_reason: String,
+    pub status: ModelRequestStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
+}
+
+/// One projected model switch inside the turn activity stream.
+///
+/// Per-slot latest attempt, not a globally immutable fact: the slot identity
+/// is `model_switch:<turn_id>:<ordinal>`, an identical replay leaves it
+/// untouched, and a later write with a different payload for the same slot
+/// replaces the stored switch and bumps its revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelSwitchActivity {
+    pub id: String,
+    pub key: ActivityKey,
+    pub revision: u64,
+    pub summary: String,
+    pub from_provider: String,
+    pub from_model_ref: String,
+    pub to_provider: String,
+    pub to_model_ref: String,
+    pub reason_category: String,
+}
+
+/// Persisted payload of one `model_request` evidence row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelRequestEvidence {
+    pub request_id: String,
+    pub turn_id: String,
+    pub provider: String,
+    pub model_ref: String,
+    pub dispatch_reason: String,
+    pub status: ModelRequestStatus,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
+}
+
+/// Persisted payload of one `model_switch` evidence row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSwitchEvidence {
+    pub switch_id: String,
+    pub turn_id: String,
+    pub from_provider: String,
+    pub from_model_ref: String,
+    pub to_provider: String,
+    pub to_model_ref: String,
+    pub reason_category: String,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

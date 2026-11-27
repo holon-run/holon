@@ -502,3 +502,67 @@ test("task cards tolerate omitted nullable fields on pending and assigned inputs
     assert.equal(card.runtime_only, true);
   }
 });
+
+test("decodes whitelisted model activities and rejects unbounded statuses", () => {
+  const request = decodeConversationActivity({
+    kind: "model_request",
+    id: "model_request:turn-10:1",
+    key: { event_seq: 12, activity_id: "model_request:turn-10:1" },
+    revision: 2,
+    summary: "fixture/fixture@default/primary · succeeded · 12ms",
+    provider: "fixture",
+    model_ref: "fixture@default/primary",
+    dispatch_reason: "initial",
+    status: "succeeded",
+    duration_ms: 12,
+  });
+  assert.equal(request.kind, "model_request");
+  assert.equal(request.status, "succeeded");
+  assert.equal(request.duration_ms, 12);
+  assert.equal("failure_kind" in request, false);
+
+  const failed = decodeConversationActivity({
+    kind: "model_request",
+    id: "model_request:turn-10:2",
+    key: { event_seq: 13, activity_id: "model_request:turn-10:2" },
+    revision: 1,
+    summary: "fixture/fixture@default/primary · failed · timeout",
+    provider: "fixture",
+    model_ref: "fixture@default/primary",
+    dispatch_reason: "retry",
+    status: "failed",
+    failure_kind: "timeout",
+  });
+  assert.equal(failed.failure_kind, "timeout");
+
+  const switched = decodeConversationActivity({
+    kind: "model_switch",
+    id: "model_switch:turn-10:1",
+    key: { event_seq: 14, activity_id: "model_switch:turn-10:1" },
+    revision: 1,
+    summary: "fixture@default/primary -> fixture@default/fallback · retry",
+    from_provider: "fixture",
+    from_model_ref: "fixture@default/primary",
+    to_provider: "fixture",
+    to_model_ref: "fixture@default/fallback",
+    reason_category: "retry",
+  });
+  assert.equal(switched.to_model_ref, "fixture@default/fallback");
+
+  assert.throws(
+    () =>
+      decodeConversationActivity({
+        kind: "model_request",
+        id: "model_request:turn-10:3",
+        key: { event_seq: 15, activity_id: "model_request:turn-10:3" },
+        revision: 1,
+        summary: "unbounded",
+        provider: "fixture",
+        model_ref: "fixture@default/primary",
+        dispatch_reason: "initial",
+        status: "raw_error_body",
+      }),
+    (error) =>
+      error instanceof ConversationDecodeError && error.path === "$.status",
+  );
+});

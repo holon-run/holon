@@ -82,7 +82,7 @@ fn canonical_conversation_cells(
                 };
                 cells.push(keyed_cell(
                     &turn.turn_id,
-                    &super::conversation::activity_item(activity).id,
+                    super::conversation::activity_view(activity).id,
                     canonical_notice(turn.started_at, speaker.into(), body),
                 ));
             }
@@ -356,15 +356,15 @@ pub(super) fn conversation_input_text(preview: &str) -> String {
 fn conversation_activity_text(
     activity: &holon_domain::conversation::ConversationActivity,
 ) -> String {
-    let summary = &super::conversation::activity_item(activity).summary;
+    let summary = super::conversation::activity_view(activity).summary;
     if !matches!(
         activity,
         holon_domain::conversation::ConversationActivity::Assistant(_)
     ) {
-        return summary.clone();
+        return summary.to_owned();
     }
     let Some(object) = summary.trim_start().strip_prefix('{') else {
-        return summary.clone();
+        return summary.to_owned();
     };
     let provider_envelope = [
         "blocks",
@@ -384,7 +384,7 @@ fn conversation_activity_text(
             .is_some_and(|tail| tail.trim_start().starts_with(':'))
     });
     if !provider_envelope {
-        return summary.clone();
+        return summary.to_owned();
     }
     // Older daemons return transcript envelopes; only visible text is displayable.
     serde_json::from_str::<Value>(summary)

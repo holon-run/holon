@@ -8094,6 +8094,26 @@ code {
   opacity: 0.7;
 }
 
+.conversation-turn-header-route {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 24ch;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.conversation-turn-header-route>span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conversation-turn-header>time {
   opacity: 0.7;
 }

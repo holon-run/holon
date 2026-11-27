@@ -27,6 +27,7 @@ import {
   type DetailCoverageReason,
   type ExecutionState,
   type InputWithdrawal,
+  type ModelRequestStatus,
   type NoBriefReason,
   type PendingInput,
   type PresentationClass,
@@ -501,23 +502,79 @@ export function decodeConversationActivity(
     fail(`${path}.key.activity_id`, "must match id");
   }
   const kind = stringValue(source.kind, `${path}.kind`);
-  if (
-    kind !== "operator" &&
-    kind !== "assistant" &&
-    kind !== "tool" &&
-    kind !== "wait" &&
-    kind !== "error"
-  ) {
-    fail(`${path}.kind`, `unsupported value ${JSON.stringify(kind)}`);
+  const revision = safeInteger(source.revision, `${path}.revision`);
+  const summary = stringValue(source.summary, `${path}.summary`);
+  switch (kind) {
+    case "operator":
+    case "assistant":
+    case "tool":
+    case "wait":
+    case "error":
+      return { kind, id, key, revision, summary };
+    case "model_request": {
+      const durationMs = source.duration_ms;
+      const failureKind = optionalString(source, "failure_kind", path);
+      return {
+        kind,
+        id,
+        key,
+        revision,
+        summary,
+        provider: nonEmptyString(source.provider, `${path}.provider`),
+        model_ref: nonEmptyString(source.model_ref, `${path}.model_ref`),
+        dispatch_reason: nonEmptyString(
+          source.dispatch_reason,
+          `${path}.dispatch_reason`,
+        ),
+        status: enumValue(
+          source.status,
+          MODEL_REQUEST_STATUSES,
+          `${path}.status`,
+        ),
+        ...(durationMs === undefined || durationMs === null
+          ? {}
+          : { duration_ms: safeInteger(durationMs, `${path}.duration_ms`) }),
+        ...(failureKind === undefined ? {} : { failure_kind: failureKind }),
+      };
+    }
+    case "model_switch": {
+      return {
+        kind,
+        id,
+        key,
+        revision,
+        summary,
+        from_provider: nonEmptyString(
+          source.from_provider,
+          `${path}.from_provider`,
+        ),
+        from_model_ref: nonEmptyString(
+          source.from_model_ref,
+          `${path}.from_model_ref`,
+        ),
+        to_provider: nonEmptyString(source.to_provider, `${path}.to_provider`),
+        to_model_ref: nonEmptyString(
+          source.to_model_ref,
+          `${path}.to_model_ref`,
+        ),
+        reason_category: nonEmptyString(
+          source.reason_category,
+          `${path}.reason_category`,
+        ),
+      };
+    }
+    default:
+      return fail(`${path}.kind`, `unsupported value ${JSON.stringify(kind)}`);
   }
-  return {
-    kind,
-    id,
-    key,
-    revision: safeInteger(source.revision, `${path}.revision`),
-    summary: stringValue(source.summary, `${path}.summary`),
-  };
 }
+
+const MODEL_REQUEST_STATUSES: ReadonlySet<ModelRequestStatus> = new Set([
+  "in_flight",
+  "succeeded",
+  "failed",
+  "aborted",
+  "unfinished",
+]);
 
 function decodeBoundary(source: JsonRecord, path: string) {
   const schemaVersion = safeInteger(

@@ -12,6 +12,8 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use holon_domain::conversation::ConversationSourceKind;
+
 use crate::{
     runtime::resident_input_evidence::{
         CommittedInputEvidenceDelta, InputEvidenceFamily, InputEvidenceKey, InputEvidenceScope,
@@ -250,24 +252,25 @@ impl RuntimeDb {
         for scope in scopes {
             let mut keys = Vec::new();
             let mut related = BTreeSet::new();
-            for (family, removals, source_kinds) in [
+            for (family, removals, table) in [
                 (
                     InputEvidenceFamily::Transcript,
                     &committed.removed_transcript_entries,
-                    &["assistant", "error"][..],
+                    "transcript_entries",
                 ),
                 (
                     InputEvidenceFamily::ToolExecution,
                     &committed.removed_tool_executions,
-                    &["tool"][..],
+                    "tool_executions",
                 ),
             ] {
+                let source_kinds = source_kinds_for_evidence_table(table);
                 for removed in removals.iter().filter(|r| r.agent_id == scope.agent_id) {
                     keys.push(InputEvidenceKey::new(family, &removed.evidence_id));
                     if let Some(turn) = &removed.turn_id {
                         related.insert(InputEvidenceKey::new(InputEvidenceFamily::Turn, turn));
                     }
-                    for kind in source_kinds {
+                    for kind in source_kinds.iter().copied() {
                         let turn:Option<String>=tx.query_row("SELECT turn_id FROM conversation_source_revisions WHERE agent_id=?1 AND source_kind=?2 AND source_id=?3",params![scope.agent_id,kind,removed.evidence_id],|row|row.get(0)).optional()?.flatten();
                         if let Some(turn) = turn {
                             related.insert(InputEvidenceKey::new(InputEvidenceFamily::Turn, turn));
@@ -381,6 +384,17 @@ fn build_retention_report(
     delete_tx: Option<&Transaction<'_>>,
 ) -> Result<RuntimeDbRetentionReport> {
     Ok(build_retention_commit(connection, policy, now, dry_run, delete_tx)?.report)
+}
+
+/// Source kinds backed by the given evidence table, derived from the single
+/// source-kind registry so retention coverage cannot drift from the activity
+/// projection.
+fn source_kinds_for_evidence_table(table: &str) -> Vec<&'static str> {
+    ConversationSourceKind::ALL
+        .iter()
+        .filter(|kind| kind.evidence_table() == table)
+        .map(|kind| kind.as_str())
+        .collect()
 }
 
 fn build_retention_commit(

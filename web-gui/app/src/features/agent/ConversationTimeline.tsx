@@ -6,6 +6,7 @@ import {
 import { inputInspectorActivity, inputPresentation, taskResultFailureReason, taskResultPreview } from "../../runtime/conversation-input";
 import { TurnElapsedTime } from "./TurnElapsedTime";
 import {
+  ArrowLeftRight,
   Bot,
   ChevronDown,
   ChevronRight,
@@ -13,6 +14,7 @@ import {
   Check,
   Copy,
   Clock,
+  Cpu,
   LoaderCircle,
   RefreshCw,
   Unplug,
@@ -300,12 +302,13 @@ function LocalPendingPromptChip({ prompt }: { prompt: LocalPendingOperatorPrompt
  * commands and errors never appear here; they stay inside the execution
  * details so a failed task cannot masquerade as a failed turn.
  */
-function TurnBoundaryHeader({ turn, execution, timingStatus, syncing, onInspectActivity, children }: {
+function TurnBoundaryHeader({ turn, execution, timingStatus, syncing, onInspectActivity, modelRoute, children }: {
   turn: ConversationTurnGroup;
   execution: string;
   timingStatus: string;
   syncing: boolean;
   onInspectActivity?: ConversationTimelineActions["onInspectActivity"];
+  modelRoute?: string;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -327,6 +330,12 @@ function TurnBoundaryHeader({ turn, execution, timingStatus, syncing, onInspectA
         </button>
       ) : <span className="conversation-turn-header-source" title={sourceLabel} role="img" aria-label={sourceLabel}>{source}</span>}
       <span className="conversation-turn-header-index">#{turn.turnIndex}</span>
+      {modelRoute ? (
+        <span className="conversation-turn-header-route" title={t("agentPage.modelActivity.turnRoute")}>
+          <Cpu size={12} aria-hidden="true" />
+          <span>{modelRoute}</span>
+        </span>
+      ) : null}
       <InputTimestamp timestamp={turn.startedAt} />
       <span className="conversation-turn-header-actions">
         {timingStatus !== "completed" ? (
@@ -398,6 +407,11 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     responseBriefIds,
     actions.briefRecord,
     actions.locatedAnchor,
+  );
+  // Observed routing only: configured intent is not proof of the route used.
+  const modelRoute = useMemo(
+    () => (turn.detail ? turnModelRoute(turn.detail.activities) : undefined),
+    [turn.detail],
   );
 
   // Reveal anchors must open the execution details for machine inputs; the
@@ -476,7 +490,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
       data-conversation-anchor={`turn:${turn.turnId}`}
       aria-label={t("agentPage.turnAria", { index: turn.turnIndex })}>
       <TurnBoundaryHeader turn={turn} execution={execution} timingStatus={timingStatus} syncing={syncing || actions.historyOnly === true}
-        onInspectActivity={actions.onInspectActivity}>
+        onInspectActivity={actions.onInspectActivity} modelRoute={modelRoute}>
         <button type="button" className={`conversation-detail-toggle ${expanded ? "is-expanded" : ""}`}
           data-conversation-anchor={`process:${turn.turnId}`} aria-expanded={expanded} aria-controls={detailId}
           aria-label={t(expanded ? "agentPage.hideExecutionProcess" : "agentPage.executionDetails")}
@@ -1131,6 +1145,11 @@ function ConversationActivityRow({
                 {tool.durationMs != null ? ` · ${tool.durationMs < 1000 ? `${tool.durationMs}ms` : `${(tool.durationMs / 1000).toFixed(1)}s`}` : ""}
               </span>
             </span>
+          ) : activity.kind === "model_request" || activity.kind === "model_switch" ? (
+            <span className="conversation-tool-content">
+              <span className="conversation-activity-summary">{modelActivityRoute(activity)}</span>
+              <span className="conversation-tool-meta">{modelActivityMeta(activity, t)}</span>
+            </span>
           ) : <span className="conversation-activity-summary">{summary.display || label}</span>}
           <ChevronRight size={13} />
         </button>
@@ -1181,7 +1200,56 @@ function activityIcon(activity: ConversationActivity) {
       return <Clock size={12} />;
     case "error":
       return <CircleAlert size={12} />;
+    case "model_request":
+      return <Cpu size={12} />;
+    case "model_switch":
+      return <ArrowLeftRight size={12} />;
   }
+}
+
+type ModelActivity = Extract<ConversationActivity, { kind: "model_request" | "model_switch" }>;
+type Translate = ReturnType<typeof useTranslation>["t"];
+
+/** Whitelisted route text for a model activity: never provider credentials. */
+function modelActivityRoute(activity: ModelActivity): string {
+  if (activity.kind === "model_switch") {
+    return `${activity.from_provider}/${activity.from_model_ref} → ${activity.to_provider}/${activity.to_model_ref}`;
+  }
+  return `${activity.provider}/${activity.model_ref}`;
+}
+
+function modelActivityMeta(activity: ModelActivity, t: Translate): string {
+  if (activity.kind === "model_switch") {
+    return t("agentPage.modelActivity.switchReason", { reason: activity.reason_category });
+  }
+  const parts = [t(`agentPage.modelActivity.status.${activity.status}`)];
+  if (activity.duration_ms != null) {
+    parts.push(activity.duration_ms < 1000
+      ? `${activity.duration_ms}ms`
+      : `${(activity.duration_ms / 1000).toFixed(1)}s`);
+  }
+  if (activity.failure_kind) parts.push(activity.failure_kind);
+  parts.push(t("agentPage.modelActivity.dispatchReason", { reason: activity.dispatch_reason }));
+  return parts.join(" · ");
+}
+
+/**
+ * The last model activity describes the route the turn actually used, so the
+ * header shows observed routing instead of configured intent.
+ */
+export function turnModelRoute(
+  activities: readonly ConversationActivity[],
+): string | undefined {
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index];
+    if (activity.kind === "model_switch") {
+      return `${activity.to_provider}/${activity.to_model_ref}`;
+    }
+    if (activity.kind === "model_request") {
+      return `${activity.provider}/${activity.model_ref}`;
+    }
+  }
+  return undefined;
 }
 
 interface ActivitySummary {

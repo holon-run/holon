@@ -329,7 +329,10 @@ without changing their diagnostic contract.
 - Change scheduling, native turn boundaries, WorkItem lifecycle, or delivery.
 - Create a second execution log or copy brief bodies into another authority.
 - Design submission/cancellation APIs, token streaming, or a general projector framework.
-- Expose debug/trace, provider requests, secrets, or hidden reasoning as activity.
+- Expose raw provider request bodies, error payloads, credentials, or hidden
+  reasoning as activity. Only the #4519 whitelisted fields may be projected;
+  the provider request lifecycle and route switches are permitted as typed
+  activity (`model_request` / `model_switch`).
 - Specify desktop App parity or require its UI layout.
 
 ## 3. Resource and lifecycle model
@@ -647,10 +650,30 @@ The v1 activity vocabulary is closed:
 | `tool` | canonical `tool_execution_id` |
 | `wait` | canonical wait record or typed audit-event identity |
 | `error` | canonical typed failure/event identity |
+| `model_request` | `provider_request` evidence identity (`request_id`) |
+| `model_switch` | `provider_switch` evidence identity (`model_switch:<turn_id>:<ordinal>`) |
 
 Briefs are results and are not duplicated as activity. Unknown source types are
 omitted and force `coverage = partial` with a safe typed reason. V1 does not
-publish a generic item that can carry arbitrary source payload.
+publish a generic item that can carry arbitrary source payload. The two model
+activity kinds are typed whitelist items: `model_request` carries only
+`provider`, `model_ref`, `dispatch_reason`, `status`, optional `duration_ms`,
+and a `failure_kind` restricted to the public provider failure kinds;
+`model_switch` carries only `from_provider`, `from_model_ref`, `to_provider`,
+`to_model_ref`, and `reason_category`. One dispatch is one `model_request`
+activity whose `finished` transition bumps the revision in place. A `started`
+request without a `finished` counterpart is a legal terminal state; it is
+projected as `status = unfinished` only when the owning turn is terminal, read
+at request time and never backfilled into storage.
+
+Both model kinds store one slot per identity, and a slot always carries the
+latest attempt: an identical replay is a no-op, while a later write with a
+different payload for the same slot replaces the stored row and bumps that
+slot's revision. `model_switch` is therefore per-slot latest-attempt rather
+than a globally immutable fact. Its ordinal counts the switches of one
+execution of that turn, so an execution that later writes the same slot again
+makes the newest switch win and advances the revision; a turn that never
+rewrites a slot keeps every switch at `revision = 1`.
 
 These are safe typed verbose items with bounded fields and authorized detail
 references. Existing inspectors handle large output/diffs. Shared activity
