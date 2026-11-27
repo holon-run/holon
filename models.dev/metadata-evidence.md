@@ -5,6 +5,29 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-27
+
+The November 27 Beijing cycle re-sampled the official Tencent TokenHub pages:
+the [Messages guide](https://cloud.tencent.com/document/product/1823/130051) and
+the [thinking/effort reference](https://cloud.tencent.com/document/product/1823/135874)
+both returned HTTP 200. They document Anthropic Messages serving for the
+TokenHub language-model table, including `thinking.type` and
+`output_config.effort`.
+
+The `tencent-tokenhub@messages` route baseline was refreshed from the reviewed
+Chat facts for the same models. Published Chat limits and documented
+reasoning/vision support carry over per model; capacities without affirmative
+evidence stay `unknown` with an owner, date, reason, and recheck entry rather
+than being inferred from another protocol. The `@responses` routes keep their
+conservative compatibility facts.
+
+For `opencode-go`, default turn selection moves to `@messages/minimax-m3`
+because the previously recorded public
+[Go endpoint table](https://opencode.ai/docs/console/go/) and
+[Go model listing](https://opencode.ai/inference/go/v1/models) publish one
+per-model table across protocols. This review adds no new capability or limit
+facts; only the preferred route changes.
+
 ## Incremental review: 2026-11-26
 
 The November 26 Beijing cycle re-sampled 71 official Volcengine and other

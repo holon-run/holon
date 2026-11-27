@@ -55,7 +55,7 @@ fn explicitly_configured(config: &AppConfig, provider: &ProviderRuntimeConfig) -
             .is_some_and(|parent| parent.endpoints.contains_key(&provider.route_endpoint))
 }
 
-#[cfg(test)]
+#[cfg(all(test, holon_lib_test_shard = "c"))]
 mod tests {
     use super::{provider_exposure, ProviderExposure};
     use crate::config::{AppConfig, ProviderEndpointId, ProviderId, ProviderRuntimeConfig};

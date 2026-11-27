@@ -36940,7 +36940,7 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
@@ -36949,7 +36949,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -36957,25 +36963,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -36993,25 +36991,16 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -37036,11 +37025,22 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max",
+          "none"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": 1000000,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": 384000,
+          "max_output_tokens_upper_limit": 384000,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37048,23 +37048,22 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 384000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 384000,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max",
+            "none"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37081,13 +37080,12 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "route_builtin"
           }
         }
       },
       "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "output_status": "known"
     },
     {
       "route_ref": "tencent-tokenhub@messages/deepseek-v4-pro-0813",
@@ -37102,7 +37100,7 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
@@ -37111,7 +37109,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37119,25 +37123,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37155,25 +37151,16 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -37193,7 +37180,7 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
@@ -37202,7 +37189,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37210,25 +37203,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37246,25 +37231,16 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -37284,16 +37260,26 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37301,25 +37287,21 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37336,30 +37318,20 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-11-04",
-        "reason": "tencent-tokenhub@messages/deepseek-v4.1-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. November 4 review: only exact V4.1 Chat thinking and low/high/max effort are independently documented; Messages/Responses reasoning remains unaudited and disabled, with no borrowed capacity or default.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -37376,16 +37348,26 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37393,25 +37375,21 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37428,30 +37406,20 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-11-04",
-        "reason": "tencent-tokenhub@messages/deepseek-v4.1-flash-1017: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. November 4 review: only exact V4.1 Chat thinking and low/high/max effort are independently documented; Messages/Responses reasoning remains unaudited and disabled, with no borrowed capacity or default.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -37468,7 +37436,7 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
@@ -37477,7 +37445,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37485,25 +37459,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37521,25 +37487,16 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -37559,7 +37516,7 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
@@ -37568,7 +37525,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37576,25 +37539,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37612,25 +37567,16 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -37650,7 +37596,7 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
@@ -37659,7 +37605,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37667,25 +37619,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37703,25 +37647,16 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -37741,7 +37676,7 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
@@ -37750,7 +37685,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37758,25 +37699,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37794,25 +37727,16 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -37832,7 +37756,7 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
@@ -37841,7 +37765,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37849,25 +37779,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37885,25 +37807,16 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -37923,7 +37836,7 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
@@ -37932,7 +37845,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -37940,25 +37859,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -37976,25 +37887,16 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -38019,11 +37921,25 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low",
+          "minimal",
+          "none"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": 1000000,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": 131072,
+          "max_output_tokens_upper_limit": 131072,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38031,23 +37947,25 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 131072,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "max",
+            "xhigh",
+            "high",
+            "medium",
+            "low",
+            "minimal",
+            "none"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38064,13 +37982,12 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "route_builtin"
           }
         }
       },
       "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "output_status": "known"
     },
     {
       "route_ref": "tencent-tokenhub@messages/glm-5.3",
@@ -38085,16 +38002,26 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38102,25 +38029,21 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38137,26 +38060,17 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -38174,18 +38088,28 @@
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
-          "image_input": false,
+          "image_input": true,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38193,26 +38117,21 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "image_input": false,
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38229,33 +38148,17 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "image_input",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            },
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -38273,18 +38176,28 @@
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
-          "image_input": false,
+          "image_input": true,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38292,26 +38205,21 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "image_input": false,
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38328,33 +38236,17 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "image_input",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            },
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -38383,7 +38275,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38391,23 +38289,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38432,13 +38324,12 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/hunyuan-role-latest: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -38464,7 +38355,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38472,23 +38369,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38513,13 +38404,12 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/hunyuan-t1-vision-20250916: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -38545,7 +38435,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38553,23 +38449,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38594,13 +38484,12 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/hy-role: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -38626,7 +38515,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38634,23 +38529,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38675,13 +38564,12 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/hy-vision-2.0-instruct: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -38703,11 +38591,21 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "no_think"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": 256000,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": 128000,
+          "max_output_tokens_upper_limit": 128000,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38715,23 +38613,21 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 128000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "no_think"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38748,13 +38644,12 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "route_builtin"
           }
         }
       },
       "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "output_status": "known"
     },
     {
       "route_ref": "tencent-tokenhub@messages/hy4",
@@ -38769,16 +38664,25 @@
           "parallel_tool_calls": false,
           "image_input": true,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "high",
+          "no_think"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38786,25 +38690,20 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "high",
+            "no_think"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38821,26 +38720,17 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-11-05",
-        "reason": "Hy4 admission and vision follow the exact Tencent TokenHub endpoint model list. Only native Chat high/no_think thinking controls are independently confirmed; Messages/Responses reasoning remains disabled. Context, output ceiling and service output default remain unconfirmed and are not borrowed from OpenRouter or Go.",
-        "recheck": "Recheck each missing field independently at the next exact endpoint/model documentation change or before increasing a local execution budget.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -38860,16 +38750,25 @@
           "parallel_tool_calls": false,
           "image_input": true,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "high",
+          "no_think"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38877,25 +38776,20 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "high",
+            "no_think"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -38912,31 +38806,20 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-11-17",
-        "reason": "tencent-tokenhub@messages/hy4-flash: No exact context or output default/ceiling is established. Chat high/no_think is not advertised on Messages/Responses. Public evidence is not an account entitlement or paid inference check.",
-        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
-          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
-          "crates/holon-model-catalog/data/endpoint-mappings.json",
-          "models.dev/snapshot.json"
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -38953,16 +38836,25 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "high",
+          "no_think"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -38970,25 +38862,20 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "high",
+            "no_think"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -39005,26 +38892,17 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -39053,7 +38931,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": 262144,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": 262144,
+          "max_output_tokens_upper_limit": 262144,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39061,23 +38945,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": 262144,
-          "default_max_output_tokens": 262144,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 262144,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -39099,17 +38977,16 @@
         }
       },
       "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "output_status": "known"
     },
     {
       "route_ref": "tencent-tokenhub@messages/kimi-k2.7-code",
       "facts": {
         "context_window_tokens": 262144,
-        "default_max_output_tokens": 262144,
+        "default_max_output_tokens": 32768,
         "max_output_tokens_upper_limit": 262144,
         "prompt_budget_estimated_tokens": 249036,
-        "runtime_max_output_tokens": 262144,
+        "runtime_max_output_tokens": 32768,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -39124,7 +39001,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": 262144,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": 262144,
+          "max_output_tokens_upper_limit": 262144,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39132,30 +39015,25 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": 262144,
-          "default_max_output_tokens": 262144,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 262144,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "default_max_output_tokens": 32768,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
             "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
+            "runtime_max_output_tokens": "route_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
             "max_output_tokens_upper_limit": "model_builtin",
@@ -39170,17 +39048,16 @@
         }
       },
       "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "output_status": "known"
     },
     {
       "route_ref": "tencent-tokenhub@messages/kimi-k2.7-code-highspeed",
       "facts": {
         "context_window_tokens": 262144,
-        "default_max_output_tokens": 262144,
+        "default_max_output_tokens": 32768,
         "max_output_tokens_upper_limit": 262144,
         "prompt_budget_estimated_tokens": 249036,
-        "runtime_max_output_tokens": 262144,
+        "runtime_max_output_tokens": 32768,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -39195,7 +39072,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": 262144,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": 262144,
+          "max_output_tokens_upper_limit": 262144,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39203,30 +39086,25 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": 262144,
-          "default_max_output_tokens": 262144,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 262144,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "default_max_output_tokens": 32768,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
             "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
+            "runtime_max_output_tokens": "route_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
             "max_output_tokens_upper_limit": "model_builtin",
@@ -39241,32 +39119,41 @@
         }
       },
       "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "output_status": "known"
     },
     {
       "route_ref": "tencent-tokenhub@messages/kimi-k2.8-preview",
       "facts": {
         "context_window_tokens": null,
-        "default_max_output_tokens": null,
+        "default_max_output_tokens": 32768,
         "max_output_tokens_upper_limit": null,
         "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
+        "runtime_max_output_tokens": 32768,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
-          "image_input": false,
+          "image_input": true,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39274,33 +39161,29 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "image_input": false,
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "default_max_output_tokens": 32768,
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
             "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "route_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
             "max_output_tokens_upper_limit": "derived",
@@ -39310,33 +39193,17 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "image_input",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            },
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -39347,25 +39214,35 @@
       "route_ref": "tencent-tokenhub@messages/kimi-k3",
       "facts": {
         "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 1048576,
         "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
+        "runtime_max_output_tokens": 131072,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
-          "image_input": false,
+          "image_input": true,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39373,69 +39250,50 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "image_input": false,
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "default_max_output_tokens": 131072,
+          "max_output_tokens_upper_limit": 1048576,
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
             "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "route_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "route_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "image_input",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            },
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
-      "output_status": "unknown",
+      "output_status": "known",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -39446,25 +39304,35 @@
       "route_ref": "tencent-tokenhub@messages/kimi-k3.1-pro",
       "facts": {
         "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 1048576,
         "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
+        "runtime_max_output_tokens": 131072,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
-          "image_input": false,
+          "image_input": true,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39472,69 +39340,50 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "image_input": false,
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "default_max_output_tokens": 131072,
+          "max_output_tokens_upper_limit": 1048576,
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
             "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "route_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "route_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "image_input",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            },
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
-      "output_status": "unknown",
+      "output_status": "known",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -39545,25 +39394,35 @@
       "route_ref": "tencent-tokenhub@messages/kimi-k3.1-pro-highspeed",
       "facts": {
         "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 1048576,
         "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
+        "runtime_max_output_tokens": 131072,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
-          "image_input": false,
+          "image_input": true,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39571,69 +39430,50 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {
-            "image_input": false,
-            "supports_reasoning": false
-          },
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "default_max_output_tokens": 131072,
+          "max_output_tokens_upper_limit": 1048576,
+          "capabilities": {},
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
             "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "route_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "route_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "image_input",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            },
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
+            "reasoning_effort_options": "route_builtin"
+          }
         }
       },
       "context_status": "unknown",
-      "output_status": "unknown",
+      "output_status": "known",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -39662,7 +39502,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39670,23 +39516,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -39711,13 +39551,12 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/mimo-v2.6-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -39743,7 +39582,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39751,23 +39596,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -39792,13 +39631,12 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/mimo-v2.6-pro: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -39824,7 +39662,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": 1000000,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39832,23 +39676,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -39873,13 +39711,12 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/minimax-m3: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -39905,7 +39742,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39913,23 +39756,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -39954,13 +39791,12 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/minimax-m3.1-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -39986,7 +39822,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -39994,23 +39836,17 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          }
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
-            "description": "model_builtin",
+            "description": "route_builtin",
             "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
@@ -40035,13 +39871,12 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/step-5-preview: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-27",
+        "reason": "TokenHub serves these language models through Anthropic Messages with the same model table as Chat. Reviewed per model: documented thinking/effort support and the published Chat limits carry over instead of being narrowed as unconfirmed; capacities without affirmative evidence stay unknown.",
+        "recheck": "Recheck when the TokenHub Messages guide, model table, or reviewed Chat policy changes.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md"
         ]
       }
     },
