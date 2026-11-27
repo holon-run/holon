@@ -356,7 +356,8 @@ pub(super) fn conversation_input_text(preview: &str) -> String {
 fn conversation_activity_text(
     activity: &holon_domain::conversation::ConversationActivity,
 ) -> String {
-    let summary = &super::conversation::activity_item(activity).summary;
+    let item = super::conversation::activity_item(activity);
+    let summary = &item.summary;
     if !matches!(
         activity,
         holon_domain::conversation::ConversationActivity::Assistant(_)

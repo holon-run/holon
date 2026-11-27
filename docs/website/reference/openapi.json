@@ -7429,6 +7429,162 @@
                     "summary"
                   ],
                   "type": "object"
+                },
+                {
+                  "description": "One projected model request inside the turn activity stream.\n\n Field set is exactly the #4519 whitelist: no credentials, URLs, headers,\n raw provider error bodies, or hidden reasoning may appear here.",
+                  "properties": {
+                    "dispatch_reason": {
+                      "type": "string"
+                    },
+                    "duration_ms": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "failure_kind": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "key": {
+                      "properties": {
+                        "activity_id": {
+                          "type": "string"
+                        },
+                        "event_seq": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "event_seq",
+                        "activity_id"
+                      ],
+                      "type": "object"
+                    },
+                    "kind": {
+                      "const": "model_request",
+                      "type": "string"
+                    },
+                    "model_ref": {
+                      "type": "string"
+                    },
+                    "provider": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "status": {
+                      "description": "Bounded, credential-free status of one model request.",
+                      "oneOf": [
+                        {
+                          "enum": [
+                            "in_flight",
+                            "succeeded",
+                            "failed",
+                            "aborted"
+                          ],
+                          "type": "string"
+                        },
+                        {
+                          "const": "unfinished",
+                          "description": "Read-time projection of an unpaired `started` on a terminal turn. Never\n persisted and never backfilled with a synthetic `finished` fact.",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "summary": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id",
+                    "key",
+                    "revision",
+                    "summary",
+                    "provider",
+                    "model_ref",
+                    "dispatch_reason",
+                    "status"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "description": "One projected model switch inside the turn activity stream. Immutable: the\n switch is a single fact and never bumps its revision.",
+                  "properties": {
+                    "from_model_ref": {
+                      "type": "string"
+                    },
+                    "from_provider": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "key": {
+                      "properties": {
+                        "activity_id": {
+                          "type": "string"
+                        },
+                        "event_seq": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "event_seq",
+                        "activity_id"
+                      ],
+                      "type": "object"
+                    },
+                    "kind": {
+                      "const": "model_switch",
+                      "type": "string"
+                    },
+                    "reason_category": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "to_model_ref": {
+                      "type": "string"
+                    },
+                    "to_provider": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id",
+                    "key",
+                    "revision",
+                    "summary",
+                    "from_provider",
+                    "from_model_ref",
+                    "to_provider",
+                    "to_model_ref",
+                    "reason_category"
+                  ],
+                  "type": "object"
                 }
               ]
             },
@@ -10765,6 +10921,162 @@
                       "key",
                       "revision",
                       "summary"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "description": "One projected model request inside the turn activity stream.\n\n Field set is exactly the #4519 whitelist: no credentials, URLs, headers,\n raw provider error bodies, or hidden reasoning may appear here.",
+                    "properties": {
+                      "dispatch_reason": {
+                        "type": "string"
+                      },
+                      "duration_ms": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "failure_kind": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "properties": {
+                          "activity_id": {
+                            "type": "string"
+                          },
+                          "event_seq": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "event_seq",
+                          "activity_id"
+                        ],
+                        "type": "object"
+                      },
+                      "kind": {
+                        "const": "model_request",
+                        "type": "string"
+                      },
+                      "model_ref": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "status": {
+                        "description": "Bounded, credential-free status of one model request.",
+                        "oneOf": [
+                          {
+                            "enum": [
+                              "in_flight",
+                              "succeeded",
+                              "failed",
+                              "aborted"
+                            ],
+                            "type": "string"
+                          },
+                          {
+                            "const": "unfinished",
+                            "description": "Read-time projection of an unpaired `started` on a terminal turn. Never\n persisted and never backfilled with a synthetic `finished` fact.",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "summary": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "key",
+                      "revision",
+                      "summary",
+                      "provider",
+                      "model_ref",
+                      "dispatch_reason",
+                      "status"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "description": "One projected model switch inside the turn activity stream. Immutable: the\n switch is a single fact and never bumps its revision.",
+                    "properties": {
+                      "from_model_ref": {
+                        "type": "string"
+                      },
+                      "from_provider": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "properties": {
+                          "activity_id": {
+                            "type": "string"
+                          },
+                          "event_seq": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "event_seq",
+                          "activity_id"
+                        ],
+                        "type": "object"
+                      },
+                      "kind": {
+                        "const": "model_switch",
+                        "type": "string"
+                      },
+                      "reason_category": {
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "summary": {
+                        "type": "string"
+                      },
+                      "to_model_ref": {
+                        "type": "string"
+                      },
+                      "to_provider": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "key",
+                      "revision",
+                      "summary",
+                      "from_provider",
+                      "from_model_ref",
+                      "to_provider",
+                      "to_model_ref",
+                      "reason_category"
                     ],
                     "type": "object"
                   }

@@ -354,6 +354,8 @@ fn activity_seq(activity: &ConversationActivity) -> u64 {
         | ConversationActivity::Tool(item)
         | ConversationActivity::Wait(item)
         | ConversationActivity::Error(item) => item.key.event_seq,
+        ConversationActivity::ModelRequest(item) => item.key.event_seq,
+        ConversationActivity::ModelSwitch(item) => item.key.event_seq,
     }
 }
 

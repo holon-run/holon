@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 use crate::agent_registry::{relations::AgentRelations, AgentRegistryMaterial};
 use crate::diagnostics::{StorageDiagnostics, StorageStage};
+use holon_domain::conversation::ConversationSourceKind;
 use holon_domain::ObservationMaterial;
 use holon_domain::{
     AgentCanonicalRelationsProjection, AgentIdentityRecord, AgentKind, AgentOwnership,
@@ -355,15 +356,19 @@ fn verify_conversation_read_view(connection: &Connection) -> Result<bool> {
         [],
         |row| row.get(0),
     )?;
-    let invalid_sources: i64 = connection.query_row(
+    let known_sources = ConversationSourceKind::ALL
+        .iter()
+        .map(|kind| format!("'{}'", kind.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let invalid_sources_sql = format!(
         "SELECT COUNT(*)
          FROM conversation_source_revisions
-         WHERE source_kind NOT IN ('operator', 'assistant', 'tool', 'wait', 'error')
+         WHERE source_kind NOT IN ({known_sources})
             OR revision <= 0
-            OR (turn_id IS NOT NULL AND activity_seq IS NULL)",
-        [],
-        |row| row.get(0),
-    )?;
+            OR (turn_id IS NOT NULL AND activity_seq IS NULL)"
+    );
+    let invalid_sources: i64 = connection.query_row(&invalid_sources_sql, [], |row| row.get(0))?;
     Ok(missing_turn_revisions == 0 && invalid_assignments == 0 && invalid_sources == 0)
 }
 

@@ -13,8 +13,8 @@ use holon_domain::{
 };
 
 use crate::conversation::{
-    assigned_turn_id_tx, RevisionWrites, SOURCE_ASSISTANT, SOURCE_ERROR, SOURCE_OPERATOR,
-    SOURCE_TOOL,
+    assigned_turn_id_tx, RevisionWrites, SOURCE_ASSISTANT, SOURCE_ERROR, SOURCE_MODEL_REQUEST,
+    SOURCE_MODEL_SWITCH, SOURCE_OPERATOR, SOURCE_TOOL,
 };
 use crate::sequences::{
     agent_sequence_scope, allocate_runtime_sequence_tx, observe_runtime_sequence_tx,
@@ -510,6 +510,31 @@ impl EvidenceWrites {
                         )?;
                     }
                 }
+                "model_requests" => {
+                    let source = if evidence.kind == "provider_switch" {
+                        SOURCE_MODEL_SWITCH
+                    } else {
+                        SOURCE_MODEL_REQUEST
+                    };
+                    let _ = self.revisions.bump_source_revision_tx(
+                        tx,
+                        source,
+                        evidence.evidence_id,
+                        evidence.agent_id,
+                        evidence.turn_id,
+                        evidence.created_at,
+                    )?;
+                    if let Some(turn_id) = evidence.turn_id {
+                        let _ = self.revisions.bump_turn_revision_tx(
+                            tx,
+                            evidence.agent_id,
+                            turn_id,
+                            false,
+                            true,
+                            evidence.created_at,
+                        )?;
+                    }
+                }
                 "delivery_summaries" => {
                     if let Some(turn_id) = evidence.turn_id {
                         let _ = self.revisions.settle_turn_result_tx(
@@ -814,6 +839,56 @@ impl EvidenceWrites {
                 kind: record.tool_name.clone(),
                 preview: Some(truncate_evidence_string(&record.summary)),
                 payload_json: full_payload_json(record)?,
+            },
+        )
+    }
+
+    pub fn insert_model_request_evidence_tx(
+        &self,
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        work_item_id: Option<&str>,
+        evidence: &holon_domain::conversation::ModelRequestEvidence,
+    ) -> Result<()> {
+        self.insert_evidence_tx(
+            tx,
+            EvidenceInsert {
+                table: EvidenceKind::ModelRequest.table_name(),
+                evidence_id: &evidence.request_id,
+                agent_id,
+                turn_id: Some(&evidence.turn_id),
+                message_id: None,
+                task_id: None,
+                work_item_id,
+                created_at: evidence.started_at,
+                kind: "provider_request".to_string(),
+                preview: None,
+                payload_json: serde_json::to_string(evidence)?,
+            },
+        )
+    }
+
+    pub fn insert_model_switch_evidence_tx(
+        &self,
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        work_item_id: Option<&str>,
+        evidence: &holon_domain::conversation::ModelSwitchEvidence,
+    ) -> Result<()> {
+        self.insert_evidence_tx(
+            tx,
+            EvidenceInsert {
+                table: EvidenceKind::ModelRequest.table_name(),
+                evidence_id: &evidence.switch_id,
+                agent_id,
+                turn_id: Some(&evidence.turn_id),
+                message_id: None,
+                task_id: None,
+                work_item_id,
+                created_at: evidence.occurred_at,
+                kind: "provider_switch".to_string(),
+                preview: None,
+                payload_json: serde_json::to_string(evidence)?,
             },
         )
     }

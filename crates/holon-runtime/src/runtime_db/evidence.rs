@@ -195,6 +195,45 @@ pub(crate) fn insert_tool_evidence_tx(
     EVIDENCE_WRITES.insert_tool_evidence_tx(tx, record)
 }
 
+pub(crate) fn insert_model_request_evidence_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    evidence: &holon_domain::conversation::ModelRequestEvidence,
+) -> Result<()> {
+    EVIDENCE_WRITES.insert_model_request_evidence_tx(tx, agent_id, work_item_id, evidence)
+}
+
+pub(crate) fn insert_model_switch_evidence_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    evidence: &holon_domain::conversation::ModelSwitchEvidence,
+) -> Result<()> {
+    EVIDENCE_WRITES.insert_model_switch_evidence_tx(tx, agent_id, work_item_id, evidence)
+}
+
+impl super::RuntimeDb {
+    /// Persist one `model_request` evidence row (started or finished for the
+    /// same `request_id`). Replaying identical payloads does not bump revision.
+    pub fn record_model_request_evidence(
+        &self,
+        agent_id: &str,
+        evidence: &holon_domain::conversation::ModelRequestEvidence,
+    ) -> Result<()> {
+        self.transaction(|tx| insert_model_request_evidence_tx(tx, agent_id, None, evidence))
+    }
+
+    /// Persist one immutable `model_switch` evidence row.
+    pub fn record_model_switch_evidence(
+        &self,
+        agent_id: &str,
+        evidence: &holon_domain::conversation::ModelSwitchEvidence,
+    ) -> Result<()> {
+        self.transaction(|tx| insert_model_switch_evidence_tx(tx, agent_id, None, evidence))
+    }
+}
+
 pub(crate) fn insert_brief_evidence_tx(tx: &Transaction<'_>, brief: &BriefRecord) -> Result<()> {
     EVIDENCE_WRITES.insert_brief_evidence_tx(tx, brief)
 }

@@ -19,17 +19,24 @@ use holon_domain::conversation::{
 };
 use holon_domain::{ContinuationTriggerKind, MessageKind, TurnRecord, TurnTerminalKind};
 
-use holon_domain::conversation::HistoryAfterCursor;
+use holon_domain::conversation::{
+    model_request_summary, model_switch_summary, ConversationSourceKind, HistoryAfterCursor,
+    ModelRequestActivity, ModelRequestEvidence, ModelRequestStatus, ModelSwitchActivity,
+    ModelSwitchEvidence,
+};
+use holon_domain::provider_events::PUBLIC_PROVIDER_FAILURE_KINDS;
 use schemars::JsonSchema;
 use serde::Serialize;
 
 const MAX_CHANGE_ID_JSON_DEPTH: usize = 32;
 
-pub const SOURCE_OPERATOR: &str = "operator";
-pub const SOURCE_ASSISTANT: &str = "assistant";
-pub const SOURCE_TOOL: &str = "tool";
-pub const SOURCE_WAIT: &str = "wait";
-pub const SOURCE_ERROR: &str = "error";
+pub const SOURCE_OPERATOR: &str = ConversationSourceKind::Operator.as_str();
+pub const SOURCE_ASSISTANT: &str = ConversationSourceKind::Assistant.as_str();
+pub const SOURCE_TOOL: &str = ConversationSourceKind::Tool.as_str();
+pub const SOURCE_WAIT: &str = ConversationSourceKind::Wait.as_str();
+pub const SOURCE_ERROR: &str = ConversationSourceKind::Error.as_str();
+pub const SOURCE_MODEL_REQUEST: &str = ConversationSourceKind::ModelRequest.as_str();
+pub const SOURCE_MODEL_SWITCH: &str = ConversationSourceKind::ModelSwitch.as_str();
 
 pub const MAX_HISTORY_PAGE_LIMIT: usize = 100;
 pub const MAX_ACTIVITIES_PAGE_LIMIT: usize = 200;
@@ -190,6 +197,8 @@ SELECT sources.source_kind,
            || ' · ' || COALESCE(json_extract(tools.payload_json, '$.status'), 'unknown')
          WHEN 'wait' THEN waits.waiting_for
          WHEN 'error' THEN CASE WHEN transcript.evidence_id IS NOT NULL THEN 'Execution failed' END
+         WHEN 'model_request' THEN models.payload_json
+         WHEN 'model_switch' THEN models.payload_json
          ELSE NULL
        END
 FROM conversation_source_revisions AS sources
@@ -205,6 +214,9 @@ LEFT JOIN tool_executions AS tools
 LEFT JOIN wait_conditions AS waits
   ON sources.source_kind = 'wait'
  AND waits.wait_condition_id = sources.source_id
+LEFT JOIN model_requests AS models
+  ON sources.source_kind IN ('model_request', 'model_switch')
+ AND models.evidence_id = sources.source_id
 WHERE sources.agent_id = ?1
   AND sources.turn_id = ?2
   AND sources.activity_seq <= ?3
@@ -232,6 +244,8 @@ SELECT sources.source_kind,
            || ' · ' || COALESCE(json_extract(tools.payload_json, '$.status'), 'unknown')
          WHEN 'wait' THEN waits.waiting_for
          WHEN 'error' THEN CASE WHEN transcript.evidence_id IS NOT NULL THEN 'Execution failed' END
+         WHEN 'model_request' THEN models.payload_json
+         WHEN 'model_switch' THEN models.payload_json
          ELSE NULL
        END
 FROM conversation_source_revisions AS sources
@@ -247,6 +261,9 @@ LEFT JOIN tool_executions AS tools
 LEFT JOIN wait_conditions AS waits
   ON sources.source_kind = 'wait'
  AND waits.wait_condition_id = sources.source_id
+LEFT JOIN model_requests AS models
+  ON sources.source_kind IN ('model_request', 'model_switch')
+ AND models.evidence_id = sources.source_id
 WHERE sources.agent_id = ?1
   AND sources.turn_id = ?2
   AND sources.activity_seq <= ?3
@@ -1113,8 +1130,9 @@ pub fn activities_in(
         .flatten();
     let mut coverage = turn.detail_coverage.clone();
     let mut activities = Vec::with_capacity(raw_rows.len());
+    let turn_terminal = matches!(&turn.execution, ExecutionState::Terminal { .. });
     for row in raw_rows.into_iter().rev() {
-        if let Some(activity) = row.into_activity() {
+        if let Some(activity) = row.into_activity(turn_terminal) {
             activities.push(activity);
         } else {
             coverage = DetailCoverage::Partial {
@@ -1150,25 +1168,107 @@ impl ActivityRow {
         }
     }
 
-    fn into_activity(self) -> Option<ConversationActivity> {
-        let item = ActivityItem {
-            id: activity_id(&self.source_kind, &self.source_id),
-            key: ActivityKey {
-                event_seq: self.activity_seq,
-                activity_id: activity_id(&self.source_kind, &self.source_id),
-            },
-            revision: self.revision,
-            summary: self.summary?,
+    fn into_activity(self, turn_terminal: bool) -> Option<ConversationActivity> {
+        let id = activity_id(&self.source_kind, &self.source_id);
+        let key = ActivityKey {
+            event_seq: self.activity_seq,
+            activity_id: id.clone(),
         };
+        let revision = self.revision;
+        let raw = self.summary?;
         match self.source_kind.as_str() {
-            SOURCE_OPERATOR => Some(ConversationActivity::Operator(item)),
-            SOURCE_ASSISTANT => Some(ConversationActivity::Assistant(item)),
-            SOURCE_TOOL => Some(ConversationActivity::Tool(item)),
-            SOURCE_WAIT => Some(ConversationActivity::Wait(item)),
-            SOURCE_ERROR => Some(ConversationActivity::Error(item)),
+            SOURCE_OPERATOR => Some(ConversationActivity::Operator(ActivityItem {
+                id,
+                key,
+                revision,
+                summary: raw,
+            })),
+            SOURCE_ASSISTANT => Some(ConversationActivity::Assistant(ActivityItem {
+                id,
+                key,
+                revision,
+                summary: raw,
+            })),
+            SOURCE_TOOL => Some(ConversationActivity::Tool(ActivityItem {
+                id,
+                key,
+                revision,
+                summary: raw,
+            })),
+            SOURCE_WAIT => Some(ConversationActivity::Wait(ActivityItem {
+                id,
+                key,
+                revision,
+                summary: raw,
+            })),
+            SOURCE_ERROR => Some(ConversationActivity::Error(ActivityItem {
+                id,
+                key,
+                revision,
+                summary: raw,
+            })),
+            SOURCE_MODEL_REQUEST => {
+                let evidence: ModelRequestEvidence = serde_json::from_str(&raw).ok()?;
+                let status = if evidence.status == ModelRequestStatus::InFlight && turn_terminal {
+                    ModelRequestStatus::Unfinished
+                } else {
+                    evidence.status
+                };
+                let failure_kind = normalize_failure_kind(evidence.failure_kind.as_deref());
+                let summary = model_request_summary(
+                    &evidence.provider,
+                    &evidence.model_ref,
+                    status,
+                    evidence.duration_ms,
+                    failure_kind.as_deref(),
+                );
+                Some(ConversationActivity::ModelRequest(ModelRequestActivity {
+                    id,
+                    key,
+                    revision,
+                    summary,
+                    provider: evidence.provider,
+                    model_ref: evidence.model_ref,
+                    dispatch_reason: evidence.dispatch_reason,
+                    status,
+                    duration_ms: evidence.duration_ms,
+                    failure_kind,
+                }))
+            }
+            SOURCE_MODEL_SWITCH => {
+                let evidence: ModelSwitchEvidence = serde_json::from_str(&raw).ok()?;
+                let summary = model_switch_summary(
+                    &evidence.from_model_ref,
+                    &evidence.to_model_ref,
+                    &evidence.reason_category,
+                );
+                Some(ConversationActivity::ModelSwitch(ModelSwitchActivity {
+                    id,
+                    key,
+                    revision,
+                    summary,
+                    from_provider: evidence.from_provider,
+                    from_model_ref: evidence.from_model_ref,
+                    to_provider: evidence.to_provider,
+                    to_model_ref: evidence.to_model_ref,
+                    reason_category: evidence.reason_category,
+                }))
+            }
             _ => None,
         }
     }
+}
+
+/// Keeps `failure_kind` inside the public whitelist. Unknown or free-form
+/// kinds collapse to `unknown`; the raw provider error text is never exposed.
+fn normalize_failure_kind(kind: Option<&str>) -> Option<String> {
+    kind.map(|kind| {
+        if PUBLIC_PROVIDER_FAILURE_KINDS.contains(&kind) {
+            kind.to_string()
+        } else {
+            "unknown".to_string()
+        }
+    })
 }
 
 pub fn latest_turn_key(connection: &Connection, agent_id: &str) -> Result<Option<TurnKey>> {
@@ -1678,7 +1778,25 @@ fn detail_coverage(
     agent_id: &str,
     record: &TurnRecord,
 ) -> Result<DetailCoverage> {
-    let missing_source = connection.query_row(
+    // Whitelist and presence CASE both derive from the single source-kind
+    // registry so a newly added kind cannot silently widen coverage.
+    let known_sources = ConversationSourceKind::ALL
+        .iter()
+        .map(|kind| format!("'{}'", kind.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let presence_case = ConversationSourceKind::ALL
+        .iter()
+        .map(|kind| {
+            format!(
+                "WHEN '{}' THEN {}",
+                kind.as_str(),
+                evidence_join_column(*kind)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let missing_sql = format!(
         "SELECT EXISTS(
            SELECT 1
            FROM conversation_source_revisions AS sources
@@ -1694,23 +1812,21 @@ fn detail_coverage(
            LEFT JOIN wait_conditions AS waits
              ON sources.source_kind = 'wait'
             AND waits.wait_condition_id = sources.source_id
+           LEFT JOIN model_requests AS models
+             ON sources.source_kind IN ('model_request', 'model_switch')
+            AND models.evidence_id = sources.source_id
            WHERE sources.agent_id = ?1
              AND sources.turn_id = ?2
              AND (
-               sources.source_kind NOT IN ('operator', 'assistant', 'tool', 'wait', 'error')
-               OR CASE sources.source_kind
-                    WHEN 'operator' THEN messages.evidence_id
-                    WHEN 'assistant' THEN transcript.evidence_id
-                    WHEN 'tool' THEN tools.evidence_id
-                    WHEN 'wait' THEN waits.wait_condition_id
-                    WHEN 'error' THEN transcript.evidence_id
-                    ELSE NULL
-                  END IS NULL
+               sources.source_kind NOT IN ({known_sources})
+               OR CASE sources.source_kind {presence_case} ELSE NULL END IS NULL
              )
-         )",
-        params![agent_id, record.turn_id],
-        |row| row.get::<_, bool>(0),
-    )?;
+         )"
+    );
+    let missing_source =
+        connection.query_row(&missing_sql, params![agent_id, record.turn_id], |row| {
+            row.get::<_, bool>(0)
+        })?;
     if missing_source {
         return Ok(DetailCoverage::Partial {
             reason: DetailCoverageReason::RetentionGap,
@@ -1738,6 +1854,22 @@ fn detail_coverage(
         });
     }
     Ok(DetailCoverage::Complete)
+}
+
+/// Joined column that proves an activity's backing evidence row is present.
+/// Exhaustive over [`ConversationSourceKind`] so registry drift is a compile
+/// error rather than a silent coverage gap.
+fn evidence_join_column(kind: ConversationSourceKind) -> &'static str {
+    match kind {
+        ConversationSourceKind::Operator => "messages.evidence_id",
+        ConversationSourceKind::Assistant => "transcript.evidence_id",
+        ConversationSourceKind::Tool => "tools.evidence_id",
+        ConversationSourceKind::Wait => "waits.wait_condition_id",
+        ConversationSourceKind::Error => "transcript.evidence_id",
+        ConversationSourceKind::ModelRequest | ConversationSourceKind::ModelSwitch => {
+            "models.evidence_id"
+        }
+    }
 }
 
 fn latest_activity_key(

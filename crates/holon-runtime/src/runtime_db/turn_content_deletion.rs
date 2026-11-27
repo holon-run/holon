@@ -14,6 +14,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
+use holon_domain::conversation::ConversationSourceKind;
 use holon_domain::{command_receipt_source_ref, TurnRecord};
 use holon_storage::index_outbox::{
     insert_runtime_index_changes_tx, RuntimeIndexChange, RuntimeIndexOperation,
@@ -35,13 +36,16 @@ const EVIDENCE_TABLES: [&str; 8] = [
     "artifact_metadata",
 ];
 
-/// `conversation_source_revisions.source_kind` values joined against evidence
-/// tables for activity display.
-const SOURCE_KIND_TABLES: [(&str, &str); 3] = [
-    ("operator", "messages"),
-    ("assistant", "transcript_entries"),
-    ("tool", "tool_executions"),
-];
+/// `conversation_source_revisions.source_kind` values joined against their own
+/// turn-content bearing evidence tables for shared-content checks. Derived from
+/// the single source-kind registry so a new kind cannot silently skip the check.
+fn source_kind_tables() -> Vec<(&'static str, &'static str)> {
+    ConversationSourceKind::ALL
+        .iter()
+        .filter(|kind| kind.shares_exclusive_content_table())
+        .map(|kind| (kind.as_str(), kind.evidence_table()))
+        .collect()
+}
 
 /// `input_evidence_current.family` values whose `record_id` names turn-owned
 /// evidence. Matching rows flip to `availability = 'pruned'`.
@@ -404,7 +408,7 @@ fn audit_deletion_conflicts(
     }
 
     // Evidence shared through the activity spine of another turn.
-    for (source_kind, table) in SOURCE_KIND_TABLES {
+    for (source_kind, table) in source_kind_tables() {
         let ids = evidence.ids_for(table);
         if ids.is_empty() {
             continue;

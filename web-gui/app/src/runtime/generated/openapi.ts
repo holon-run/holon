@@ -5144,6 +5144,43 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 summary: string;
+            } | {
+                dispatch_reason: string;
+                /** Format: uint64 */
+                duration_ms?: number | null;
+                failure_kind?: string | null;
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "model_request";
+                model_ref: string;
+                provider: string;
+                /** Format: uint64 */
+                revision: number;
+                /** @description Bounded, credential-free status of one model request. */
+                status: ("in_flight" | "succeeded" | "failed" | "aborted") | "unfinished";
+                summary: string;
+            } | {
+                from_model_ref: string;
+                from_provider: string;
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "model_switch";
+                reason_category: string;
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+                to_model_ref: string;
+                to_provider: string;
             })[];
             coverage: {
                 /** @constant */
@@ -5969,6 +6006,43 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 summary: string;
+            } | {
+                dispatch_reason: string;
+                /** Format: uint64 */
+                duration_ms?: number | null;
+                failure_kind?: string | null;
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "model_request";
+                model_ref: string;
+                provider: string;
+                /** Format: uint64 */
+                revision: number;
+                /** @description Bounded, credential-free status of one model request. */
+                status: ("in_flight" | "succeeded" | "failed" | "aborted") | "unfinished";
+                summary: string;
+            } | {
+                from_model_ref: string;
+                from_provider: string;
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "model_switch";
+                reason_category: string;
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+                to_model_ref: string;
+                to_provider: string;
             };
             turn_id: string;
             /** @constant */

@@ -39,6 +39,7 @@ use crate::types::{
 };
 #[cfg(test)]
 use crate::types::{BriefKind, BriefRecord};
+use holon_domain::conversation::{ModelRequestEvidence, ModelRequestStatus, ModelSwitchEvidence};
 
 use super::checkpoint::{
     build_checkpoint_resume_round, checkpoint_state_from_last_terminal,
@@ -1140,6 +1141,7 @@ impl RuntimeHandle {
     #[allow(clippy::too_many_arguments)]
     async fn append_provider_switch_event(
         &self,
+        agent_id: &str,
         turn_id: &str,
         turn_index: u64,
         round: usize,
@@ -1150,6 +1152,7 @@ impl RuntimeHandle {
         to_model_ref: &str,
         reason: ProviderSwitchReason,
     ) -> Result<()> {
+        let occurred_at = self.now();
         let event = AuditEvent::typed(
             RuntimeEventKind::ProviderSwitch,
             &ProviderSwitchEvent {
@@ -1162,10 +1165,22 @@ impl RuntimeHandle {
                 to_provider: to_provider.to_string(),
                 to_model_ref: to_model_ref.to_string(),
                 reason_category: reason,
-                occurred_at: self.now(),
+                occurred_at,
             },
         )?;
-        self.append_observation_audit_event(event).await
+        let evidence = ModelSwitchEvidence {
+            switch_id: format!("model_switch:{turn_id}:{switch_ordinal}"),
+            turn_id: turn_id.to_string(),
+            from_provider: from_provider.to_string(),
+            from_model_ref: from_model_ref.to_string(),
+            to_provider: to_provider.to_string(),
+            to_model_ref: to_model_ref.to_string(),
+            reason_category: reason.as_str().to_string(),
+            occurred_at,
+        };
+        self.append_observation_audit_event(event).await?;
+        self.runtime_db()
+            .record_model_switch_evidence(agent_id, &evidence)
     }
 
     /// Publishes `provider_request_started` before the dispatch call so the
@@ -1173,6 +1188,7 @@ impl RuntimeHandle {
     #[allow(clippy::too_many_arguments)]
     async fn append_provider_request_started_event(
         &self,
+        agent_id: &str,
         request_id: &str,
         turn_id: &str,
         turn_index: u64,
@@ -1182,6 +1198,17 @@ impl RuntimeHandle {
         started_at: DateTime<Utc>,
         dispatch_reason: ProviderDispatchReason,
     ) -> Result<()> {
+        let evidence = ModelRequestEvidence {
+            request_id: request_id.to_string(),
+            turn_id: turn_id.to_string(),
+            provider: provider.to_string(),
+            model_ref: model_ref.to_string(),
+            dispatch_reason: dispatch_reason.as_str().to_string(),
+            status: ModelRequestStatus::InFlight,
+            started_at,
+            duration_ms: None,
+            failure_kind: None,
+        };
         let event = AuditEvent::typed(
             RuntimeEventKind::ProviderRequestStarted,
             &ProviderRequestStartedEvent {
@@ -1195,7 +1222,9 @@ impl RuntimeHandle {
                 dispatch_reason,
             },
         )?;
-        self.append_observation_audit_event(event).await
+        self.append_observation_audit_event(event).await?;
+        self.runtime_db()
+            .record_model_request_evidence(agent_id, &evidence)
     }
 
     /// Publishes `provider_request_finished` for the dispatch identified by
@@ -1204,7 +1233,11 @@ impl RuntimeHandle {
     #[allow(clippy::too_many_arguments)]
     async fn append_provider_request_finished_event(
         &self,
+        agent_id: &str,
         request_id: &str,
+        turn_id: &str,
+        started_at: DateTime<Utc>,
+        dispatch_reason: ProviderDispatchReason,
         started_provider: &str,
         started_model_ref: &str,
         outcome: ProviderRequestOutcome,
@@ -1238,6 +1271,22 @@ impl RuntimeHandle {
                 .filter(|kind| PUBLIC_PROVIDER_FAILURE_KINDS.contains(kind))
                 .map(str::to_string)
         };
+        let status = match outcome {
+            ProviderRequestOutcome::Succeeded => ModelRequestStatus::Succeeded,
+            ProviderRequestOutcome::Failed => ModelRequestStatus::Failed,
+            ProviderRequestOutcome::Aborted => ModelRequestStatus::Aborted,
+        };
+        let evidence = ModelRequestEvidence {
+            request_id: request_id.to_string(),
+            turn_id: turn_id.to_string(),
+            provider: provider.clone(),
+            model_ref: model_ref.to_string(),
+            dispatch_reason: dispatch_reason.as_str().to_string(),
+            status,
+            started_at,
+            duration_ms: Some(duration_ms),
+            failure_kind: failure_kind.clone(),
+        };
         let event = AuditEvent::typed(
             RuntimeEventKind::ProviderRequestFinished,
             &ProviderRequestFinishedEvent {
@@ -1251,7 +1300,9 @@ impl RuntimeHandle {
                 route_known,
             },
         )?;
-        self.append_observation_audit_event(event).await
+        self.append_observation_audit_event(event).await?;
+        self.runtime_db()
+            .record_model_request_evidence(agent_id, &evidence)
     }
 
     pub(super) async fn complete_turn_with_abort(
@@ -5856,6 +5907,7 @@ impl<'a> TurnExecution<'a> {
                     let dispatch_model_ref = turn_model.model.effective_model.as_string();
                     runtime
                         .append_provider_request_started_event(
+                            agent_id,
                             &request_id,
                             &turn_id,
                             turn_index,
@@ -5908,7 +5960,11 @@ impl<'a> TurnExecution<'a> {
                     };
                     runtime
                         .append_provider_request_finished_event(
+                            agent_id,
                             &request_id,
+                            &turn_id,
+                            dispatch_started_at,
+                            next_dispatch_reason,
                             &dispatch_provider,
                             &dispatch_model_ref,
                             dispatch_outcome,
@@ -5927,6 +5983,7 @@ impl<'a> TurnExecution<'a> {
                         provider_switch_ordinal += 1;
                         runtime
                             .append_provider_switch_event(
+                                agent_id,
                                 &turn_id,
                                 turn_index,
                                 round,
@@ -5968,6 +6025,7 @@ impl<'a> TurnExecution<'a> {
                             provider_switch_ordinal += 1;
                             runtime
                                 .append_provider_switch_event(
+                                    agent_id,
                                     &turn_id,
                                     turn_index,
                                     round,
@@ -6477,6 +6535,7 @@ impl<'a> TurnExecution<'a> {
                     let dispatch_model_ref = turn_model.model.effective_model.as_string();
                     runtime
                         .append_provider_request_started_event(
+                            agent_id,
                             &request_id,
                             &turn_id,
                             turn_index,
@@ -6529,7 +6588,11 @@ impl<'a> TurnExecution<'a> {
                     };
                     runtime
                         .append_provider_request_finished_event(
+                            agent_id,
                             &request_id,
+                            &turn_id,
+                            dispatch_started_at,
+                            next_dispatch_reason,
                             &dispatch_provider,
                             &dispatch_model_ref,
                             dispatch_outcome,
@@ -6548,6 +6611,7 @@ impl<'a> TurnExecution<'a> {
                         provider_switch_ordinal += 1;
                         runtime
                             .append_provider_switch_event(
+                                agent_id,
                                 &turn_id,
                                 turn_index,
                                 round,
@@ -6589,6 +6653,7 @@ impl<'a> TurnExecution<'a> {
                             provider_switch_ordinal += 1;
                             runtime
                                 .append_provider_switch_event(
+                                    agent_id,
                                     &turn_id,
                                     turn_index,
                                     round,

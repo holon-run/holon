@@ -715,13 +715,25 @@ impl ConversationModel {
 
 pub(super) fn activity_item(
     activity: &ConversationActivity,
-) -> &holon_domain::conversation::ActivityItem {
+) -> holon_domain::conversation::ActivityItem {
     match activity {
         ConversationActivity::Operator(item)
         | ConversationActivity::Assistant(item)
         | ConversationActivity::Tool(item)
         | ConversationActivity::Wait(item)
-        | ConversationActivity::Error(item) => item,
+        | ConversationActivity::Error(item) => item.clone(),
+        ConversationActivity::ModelRequest(item) => holon_domain::conversation::ActivityItem {
+            id: item.id.clone(),
+            key: item.key.clone(),
+            revision: item.revision,
+            summary: item.summary.clone(),
+        },
+        ConversationActivity::ModelSwitch(item) => holon_domain::conversation::ActivityItem {
+            id: item.id.clone(),
+            key: item.key.clone(),
+            revision: item.revision,
+            summary: item.summary.clone(),
+        },
     }
 }
 

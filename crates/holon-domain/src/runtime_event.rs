@@ -302,7 +302,7 @@ const REGISTRY: &[RuntimeEventDescriptor] = &[
     RuntimeEventDescriptor {
         kind: RuntimeEventKind::ProviderSwitch,
         wire_name: "provider_switch",
-        projection_effect: ProjectionEffect::None,
+        projection_effect: ProjectionEffect::DisplayInvalidation,
         payload_schema: ProviderSwitchEvent::SCHEMA_ID,
         payload_schema_version: ProviderSwitchEvent::SCHEMA_VERSION,
         display_family: RuntimeEventDisplayFamily::Model,
@@ -311,7 +311,7 @@ const REGISTRY: &[RuntimeEventDescriptor] = &[
     RuntimeEventDescriptor {
         kind: RuntimeEventKind::ProviderRequestStarted,
         wire_name: "provider_request_started",
-        projection_effect: ProjectionEffect::None,
+        projection_effect: ProjectionEffect::DisplayInvalidation,
         payload_schema: ProviderRequestStartedEvent::SCHEMA_ID,
         payload_schema_version: ProviderRequestStartedEvent::SCHEMA_VERSION,
         display_family: RuntimeEventDisplayFamily::Model,
@@ -320,7 +320,7 @@ const REGISTRY: &[RuntimeEventDescriptor] = &[
     RuntimeEventDescriptor {
         kind: RuntimeEventKind::ProviderRequestFinished,
         wire_name: "provider_request_finished",
-        projection_effect: ProjectionEffect::None,
+        projection_effect: ProjectionEffect::DisplayInvalidation,
         payload_schema: ProviderRequestFinishedEvent::SCHEMA_ID,
         payload_schema_version: ProviderRequestFinishedEvent::SCHEMA_VERSION,
         display_family: RuntimeEventDisplayFamily::Model,

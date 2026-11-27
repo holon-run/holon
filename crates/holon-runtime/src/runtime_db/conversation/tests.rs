@@ -218,6 +218,9 @@ fn activity_item(activity: &ConversationActivity) -> &ActivityItem {
         | ConversationActivity::Tool(item)
         | ConversationActivity::Wait(item)
         | ConversationActivity::Error(item) => item,
+        ConversationActivity::ModelRequest(_) | ConversationActivity::ModelSwitch(_) => {
+            unreachable!("model activities are not exercised by this helper")
+        }
     }
 }
 
