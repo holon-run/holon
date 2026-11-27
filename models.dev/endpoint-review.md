@@ -9,6 +9,24 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-28 incremental review
+
+The November 28 Beijing cycle re-fetched the live `models.dev` payload and
+resolved every drafted candidate against official endpoint sources. No
+credentials were read and no paid inference was called. Four default routes
+were admitted; the remaining draft drift is deferred.
+
+| Route | Decision |
+|---|---|
+| `bigmodel@default/glm-5.3-flashx-legal`, `zai@default/glm-5.3-flashx-legal` | Added: official model code `glm-5.3-flashx-legal`, 1M context / 128K output, multimodal input, `reasoning_effort: max`, `thinking.type=enabled` only. |
+| `dashscope@default/glm-5.3-prime` | Added: 1M context / 128K output, three thinking-depth levels, text-only. |
+| `dashscope@default/kimi-k3.1-pro-prime` | Added with unknown exact Anthropic-compatible capacity: the release note says Prime keeps Kimi-K3.1-Pro's capability and limits, and that route's exact Beijing capacity remains unreviewed. |
+| `volcengine@default/kimi-k3-1-pro-261024` | Deferred: the dated row is an internal response-only identifier, not a direct API alias; `volcengine@default/kimi-k3-1-pro` remains the reviewed ID. |
+| `dashscope@default/mindlab/macaron-v1.1-*` | Deferred: international (Singapore) scope only; no Beijing default-route admission. |
+| `openai@default/gpt-6*-healthcare` | Deferred: absent from the public OpenAI model index. |
+| Volcengine retained routes | The refresh's `reasoning_effort_options` narrowing is not adopted; the official reference accepts all seven tiers and the reviewed lists are preserved. |
+| `mistral@default/labs-leanstral-1-5-1`, `openai@default/gpt-realtime-2.1`, `xiaomi@default/mimo-v2.5-pro-ultraspeed`, `xiaomi@token-plan/mimo-v2.5-pro-ultraspeed` | Preserved: a missing models.dev node is not removal evidence. |
+
 ## 2026-11-27 incremental review
 
 Promote the default protocol of `tencent-tokenhub` and `opencode-go` to their

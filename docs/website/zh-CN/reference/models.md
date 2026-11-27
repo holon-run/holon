@@ -11,7 +11,7 @@ summary: Holon 内置支持的所有模型和提供商的完整参考。
 # Supported Models
 
 Holon includes built-in configuration for **38 provider accounts**
-across **52 endpoints** and **425 models**.
+across **52 endpoints** and **429 models**.
 
 This page is auto-generated from the Holon source code
 ([`crates/holon-model-catalog/src/lib.rs`](https://github.com/holon-run/holon/blob/main/crates/holon-model-catalog/src/lib.rs) and
@@ -130,6 +130,7 @@ and capabilities.
 | `bigmodel` | `glm-5.3` | `bigmodel/glm-5.3` | 1000000 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.3-flash` | `bigmodel/glm-5.3-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `bigmodel` | `glm-5.3-flashx` | `bigmodel/glm-5.3-flashx` | 1000000 | 131072 | ✅ | ✅ |
+| `bigmodel` | `glm-5.3-flashx-legal` | `bigmodel/glm-5.3-flashx-legal` | 1000000 | 131072 | ✅ | ✅ |
 | `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 204800 | 131072 | ✅ | ✅ |
 | `byteplus` | `ark-code-latest` | `byteplus/ark-code-latest` | — | — | — | — |
 | `byteplus` | `bytedance-seed-code` | `byteplus/bytedance-seed-code` | — | — | — | ✅ |
@@ -174,11 +175,13 @@ and capabilities.
 | `dashscope` | `glm-5.1` | `dashscope/glm-5.1` | 202752 | 131072 | ✅ | — |
 | `dashscope` | `glm-5.2` | `dashscope/glm-5.2` | 204800 | 128000 | ✅ | — |
 | `dashscope` | `glm-5.3` | `dashscope/glm-5.3` | 1000000 | 131072 | ✅ | — |
+| `dashscope` | `glm-5.3-prime` | `dashscope/glm-5.3-prime` | 1000000 | 131072 | ✅ | — |
 | `dashscope` | `kimi-k2.5` | `dashscope/kimi-k2.5` | 262144 | 32768 | ✅ | ✅ |
 | `dashscope` | `kimi-k2.6` | `dashscope/kimi-k2.6` | 262144 | 98304 | ✅ | ✅ |
 | `dashscope` | `kimi-k2.7-code` | `dashscope/kimi-k2.7-code` | 262144 | 98304 | ✅ | ✅ |
 | `dashscope` | `kimi-k3` | `dashscope/kimi-k3` | 1048576 | 1048576 | ✅ | ✅ |
 | `dashscope` | `kimi-k3.1-pro` | `dashscope/kimi-k3.1-pro` | — | — | ✅ | ✅ |
+| `dashscope` | `kimi-k3.1-pro-prime` | `dashscope/kimi-k3.1-pro-prime` | — | — | ✅ | ✅ |
 | `dashscope` | `mimo-v2.5-pro` | `dashscope/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
 | `dashscope` | `qwen-flash-2025-07-28` | `dashscope/qwen-flash-2025-07-28` | 1000000 | — | — | — |
 | `dashscope` | `qwen-plus-latest` | `dashscope/qwen-plus-latest` | 1000000 | — | — | — |
@@ -520,4 +523,5 @@ and capabilities.
 | `zai` | `glm-5.3` | `zai/glm-5.3` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-5.3-flash` | `zai/glm-5.3-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `zai` | `glm-5.3-flashx` | `zai/glm-5.3-flashx` | 1000000 | 131072 | ✅ | ✅ |
+| `zai` | `glm-5.3-flashx-legal` | `zai/glm-5.3-flashx-legal` | 1000000 | 131072 | ✅ | ✅ |
 | `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
