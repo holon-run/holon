@@ -5937,12 +5937,16 @@ fn detached_completion_command_lane(
 /// The lane of the live turn that owns `state`, if that turn is still running.
 ///
 /// A live turn exists while the State still points `current_turn_id` at its own
-/// execution binding. Terminal settlement replaces both, so a command issued for
-/// an ended turn keeps producing a stale lane.
+/// execution binding and still holds that turn's run. Terminal settlement
+/// clears the run while the ended turn's identity stays named for the next
+/// dispatch's prior closure, so a State that merely names a turn does not make
+/// that turn live: commands issued after its settlement fall back to the
+/// `Idle` lane instead of borrowing the ended turn.
 fn live_turn_command_lane(state: &crate::types::AgentState) -> Option<WorkCommandLane> {
     let binding = state.current_execution_binding.as_ref()?;
-    (state.current_turn_id.as_deref() == Some(binding.turn_id.as_str()))
-        .then(|| WorkCommandLane::for_binding(binding))
+    (state.current_turn_id.as_deref() == Some(binding.turn_id.as_str())
+        && state.current_run_id.is_some())
+    .then(|| WorkCommandLane::for_binding(binding))
 }
 
 /// Lane of the completion issuer: its live turn for agent execution, and a
