@@ -150,6 +150,7 @@ The model picker respects your configured providers. Manage them with:
 
 ```bash
 holon config providers list
+holon config model-providers list
 holon config models list
 ```
 

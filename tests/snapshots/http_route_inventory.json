@@ -1480,6 +1480,38 @@
   },
   {
     "method": "get",
+    "path": "/api/models/providers",
+    "handler": "model_providers_handler",
+    "operation_id": "modelProviders",
+    "tag": "discovery",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/models/providers/{provider}/models",
+    "handler": "provider_models_handler",
+    "operation_id": "providerModels",
+    "tag": "discovery",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/notifications/pending",
     "handler": "pending",
     "operation_id": "pendingNotifications",

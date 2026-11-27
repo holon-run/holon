@@ -101,7 +101,7 @@ schema/分发对齐，以及结果信封约定。
 
 ### 模型路由与查询
 
-模型与提供商目录查询（`ListModelProviders`、`ListProviderModels`）以及网络提供商列举（`ListWebSearchProviders`、`ListWebFetchProviders`）仅保留用于兼容性分发与重放，不再默认暴露在面向模型的 `tools[]` 中；常规模型轮次在显式路由覆盖失败时直接从结构化 `ToolError` 的 `details` 获取候选路由，在具备命令行权限时也可通过 `holon config providers list`、`holon config models list` 与 `holon config web-providers` 查询。
+模型与提供商目录查询（`ListModelProviders`、`ListProviderModels`）以及网络提供商列举（`ListWebSearchProviders`、`ListWebFetchProviders`）仅保留用于兼容性分发与重放，不再默认暴露在面向模型的 `tools[]` 中；常规模型轮次在显式路由覆盖失败时直接从结构化 `ToolError` 的 `details` 获取候选路由，在具备命令行权限时也可通过 `holon config providers list`、`holon config model-providers list`、`holon config models list` 与 `holon config web-providers` 查询。
 
 ### 图像平面
 

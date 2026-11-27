@@ -451,8 +451,9 @@ credential material ever appears in the report.
 holon config list                # All current config
 holon config schema              # All keys with types and defaults
 holon config doctor              # Full health check
-holon config providers list      # All registered providers
-holon config models list         # Available models with status
+holon config providers list      # All registered providers (configuration plane)
+holon config model-providers list # Resolved providers with availability and media capability
+holon config models list         # Ready selectable models (--all shows the full catalog)
 holon config credentials list    # Stored credential profiles
 ```
 

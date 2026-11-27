@@ -367,6 +367,11 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{agent_id}/avatar", get(avatar::get))
         .route("/models", get(agents::models_handler))
         .route("/models/refresh", post(agents::refresh_models_handler))
+        .route("/models/providers", get(agents::model_providers_handler))
+        .route(
+            "/models/providers/{provider}/models",
+            get(agents::provider_models_handler),
+        )
         .route("/agents/list", get(agents::list_agent_entries))
         .route(
             "/agents/snapshot",

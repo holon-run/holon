@@ -58,7 +58,7 @@ Holon 采用统一的 `provider@endpoint/model` 路由规范（例如 `ollama@de
    export ANTHROPIC_API_KEY="sk-..."
    ```
    *注意：环境变量须在启动 Holon 守护进程（Daemon）的终端会话中设置；在独立的临时客户端窗口 export 不会影响后台已运行的服务。*
-3. **查看所有可用模型编目**：
+3. **查看所有可用模型编目**（`--all` 同时显示不可用路由；`--provider <id>` 只看单个提供商）：
    ```bash
    holon config models list
    ```
@@ -215,7 +215,7 @@ holon config set providers.magpie.auth.env MAGPIE_API_KEY
    holon config models refresh --provider my-gateway
    ```
    `providers set` 的输出会报告当前发现缓存状态（`missing`、`stale`、`fresh`、`unauthenticated`、`unsupported`）以及作为 `next_step` 的刷新命令。
-3. **核验发现的模型**：
+3. **核验发现的模型**（`--provider <id>` 只看该网关；`--all` 包含不可用模型）：
    ```bash
    holon config models list
    ```

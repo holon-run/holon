@@ -115,6 +115,7 @@ from an operator session outside the daemon's own service.
 ```bash
 holon config doctor
 holon config providers list
+holon config model-providers list
 holon config models list
 holon config credentials list
 ```

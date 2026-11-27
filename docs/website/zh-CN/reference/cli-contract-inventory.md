@@ -78,7 +78,8 @@ order: 11
 | `holon config list` | none | none | 完整的持久化配置 JSON | `experimental` | 可达时优先使用守护进程运行时配置 API，保持 stdout 形态；会暴露较广的配置文件形态。 |
 | `holon config schema` | none | none | JSON 配置 schema/元数据 | `stable` JSON | 由 `tests/cli_json_contract.rs` 锁定；条目对象暴露 `key`、`kind`、`description`、`default` 以及可选的 `allowed_values`。 |
 | `holon config doctor` | none | none | JSON provider/系统诊断 | `experimental` | 诊断形态可能随 provider 变化。 |
-| `holon config models list` | none | none | JSON 模型可用性列表 | `experimental` | Provider 目录和可用性细节仍在演进。 |
+| `holon config models list` | none | `--provider <PROVIDER>`；`--operation <view_image\|generate_image>`；`--all` | `ProviderModelEntry` 的 JSON 数组 | `experimental` | 默认仅输出可选模型；`--all` 为诊断视图（仍受 `--provider` / `--operation` 约束）。元素与 `ListProviderModels` 工具及 `GET /api/models/providers/{provider}/models` 一致。 |
+| `holon config model-providers list` | none | `--operation <view_image\|generate_image>`；`--all` | `ModelProviderEntry` 的 JSON 数组 | `experimental` | 镜像 `ListModelProviders` 工具与 `GET /api/models/providers`；默认仅 `availability != unavailable` 的提供商，`--all` 等价 `include_unavailable=true`。 |
 
 ### Provider 配置
 

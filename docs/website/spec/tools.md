@@ -106,7 +106,7 @@ runtime result/capture services remain. See [Tasks](tasks.md).
 
 ### Model routing & inspection
 
-Model and provider catalog discovery (`ListModelProviders`, `ListProviderModels`) and web-provider listing (`ListWebSearchProviders`, `ListWebFetchProviders`) remain dispatchable for compatibility/replay, while model-facing turns inspect configured routes via `holon config providers list`, `holon config models list`, and `holon config web-providers` (or receive bounded candidate routes directly in structured `ToolError` `details` when an explicit override fails).
+Model and provider catalog discovery (`ListModelProviders`, `ListProviderModels`) and web-provider listing (`ListWebSearchProviders`, `ListWebFetchProviders`) remain dispatchable for compatibility/replay, while model-facing turns inspect configured routes via `holon config providers list`, `holon config model-providers list`, `holon config models list`, and `holon config web-providers` (or receive bounded candidate routes directly in structured `ToolError` `details` when an explicit override fails).
 
 ### Image plane
 

@@ -11,8 +11,13 @@ use super::*;
 use crate::{
     config::RuntimeModelCatalog,
     model_discovery::{
-        discovery_cache_needs_refresh, discovery_cache_path, load_discovery_cache_at,
-        provider_supports_model_discovery, refresh_provider_models, DEFAULT_DISCOVERY_CACHE_TTL,
+        discovery_cache_needs_refresh, discovery_cache_path, discovery_cache_status_for_provider,
+        load_discovery_cache_at, provider_supports_model_discovery, refresh_provider_models,
+        DEFAULT_DISCOVERY_CACHE_TTL,
+    },
+    provider::{
+        model_query, resolved_model_availability, resolved_model_providers,
+        resolved_provider_models,
     },
     provider::resolved_model_availability_with_explicit_refreshes,
 };
@@ -386,6 +391,154 @@ fn if_none_match_matches(headers: &HeaderMap, etag: &HeaderValue) -> bool {
     })
 }
 
+/// Query parameters for `GET /api/models/providers`.
+#[derive(Debug, Default, Deserialize)]
+pub struct ModelProvidersQuery {
+    #[serde(default)]
+    pub operation: Option<crate::types::MediaOperation>,
+    #[serde(default)]
+    pub include_unavailable: bool,
+}
+
+/// Response for `GET /api/models/providers`.
+///
+/// Unlike `GET /models`, `model_discovery_cache` reports the real cache state
+/// backing this projection instead of an always-empty placeholder.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ModelProvidersResponse {
+    pub providers: Vec<crate::types::ModelProviderEntry>,
+    pub model_discovery_cache: Vec<crate::model_discovery::ModelDiscoveryCacheStatus>,
+}
+
+/// Query parameters for `GET /api/models/providers/{provider}/models`.
+#[derive(Debug, Default, Deserialize)]
+pub struct ProviderModelsQuery {
+    #[serde(default)]
+    pub operation: Option<crate::types::MediaOperation>,
+    #[serde(default)]
+    pub include_unavailable: bool,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// Response for `GET /api/models/providers/{provider}/models`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProviderModelsResponse {
+    pub provider: String,
+    pub models: Vec<crate::types::ProviderModelEntry>,
+    pub limit: usize,
+    pub returned: usize,
+    pub next_cursor: Option<String>,
+}
+
+/// Resolved provider projection for the model listing routes.
+///
+/// `GET /models` serves a cached snapshot; these routes are request-scoped and
+/// must reflect the discovery cache on disk, so they reload it before building
+/// the projection.
+pub async fn model_providers_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ModelProvidersQuery>,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let started_at = Instant::now();
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let config = models_listing_config(&state).await?;
+    let mut providers = resolved_model_providers(&config);
+    providers.retain(|provider| {
+        model_query::provider_matches(provider, query.operation, query.include_unavailable)
+    });
+    traced_json(
+        "/models/providers",
+        started_at,
+        ModelProvidersResponse {
+            providers,
+            model_discovery_cache: discovery_cache_statuses(&config),
+        },
+    )
+}
+
+pub async fn provider_models_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(provider): axum::extract::Path<String>,
+    Query(query): Query<ProviderModelsQuery>,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let started_at = Instant::now();
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let config = models_listing_config(&state).await?;
+    let providers = resolved_model_providers(&config);
+    if !providers
+        .iter()
+        .any(|entry| entry.id == provider || entry.route_provider == provider)
+    {
+        return Err(http_error(
+            StatusCode::NOT_FOUND,
+            HttpErrorEnvelope::new(
+                "unknown_provider",
+                format!("unknown provider {provider}; list providers from /api/models/providers"),
+            ),
+        ));
+    }
+
+    let limit = model_query::clamp_page_limit(query.limit);
+    let mut models = resolved_provider_models(&config, &provider);
+    models.retain(|model| {
+        model_query::model_matches(model, query.operation, query.include_unavailable)
+    });
+    let (page, next_cursor) = model_query::page_models(models, query.cursor.as_deref(), limit)
+        .map_err(|_| {
+            http_error(
+                StatusCode::BAD_REQUEST,
+                HttpErrorEnvelope::new(
+                    "invalid_cursor",
+                    "cursor does not match a model in the filtered list",
+                )
+                .hint("restart without a cursor and use the returned next_cursor"),
+            )
+        })?;
+    let returned = page.len();
+    traced_json(
+        "/models/providers/models",
+        started_at,
+        ProviderModelsResponse {
+            provider,
+            models: page,
+            limit,
+            returned,
+            next_cursor,
+        },
+    )
+}
+
+async fn models_listing_config(
+    state: &AppState,
+) -> Result<crate::config::AppConfig, (StatusCode, Json<Value>)> {
+    let mut config = (*state.host.config()).clone();
+    load_model_discovery_cache(&mut config).await?;
+    Ok(config)
+}
+
+fn discovery_cache_statuses(
+    config: &crate::config::AppConfig,
+) -> Vec<crate::model_discovery::ModelDiscoveryCacheStatus> {
+    config
+        .providers
+        .values()
+        .map(|provider| {
+            discovery_cache_status_for_provider(
+                provider,
+                config.provider_discovery(provider).as_ref(),
+                &config.model_discovery_cache,
+                DEFAULT_DISCOVERY_CACHE_TTL,
+                false,
+            )
+        })
+        .collect()
+}
+
 fn model_discovery_refresh_candidates(
     config: &crate::config::AppConfig,
 ) -> Vec<(
@@ -724,7 +877,7 @@ fn list_build_error_response(
     error_response(error)
 }
 
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize)]
 pub struct AgentListQuery {
     /// Exact direct parent filter. The endpoint still returns only the
     /// lightweight public roster; private supervised children are exposed via

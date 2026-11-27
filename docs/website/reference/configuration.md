@@ -515,7 +515,24 @@ Manual JSON edits are not the normal login path.
 holon config models list
 ```
 
-This shows each model's availability, credential status, provider, transport, and policy (context window, max output tokens, capabilities).
+By default this lists only ready, selectable models. Add `--all` to include
+unavailable models with their diagnostic reasons (equivalent to
+`include_unavailable=true`), and narrow with `--provider <provider>` or
+`--operation <view_image|generate_image>`. Each entry reports the canonical
+`model_ref`, availability, selectable flag, credential status, media
+capabilities, and policy (context window, max output tokens, capabilities).
+
+`holon config providers list` remains the configuration-plane list: every
+built-in and configured provider, without availability or media aggregates. For
+the resolved runtime projection — availability, transport, credential state, and
+per-operation selectable model counts — use `holon config model-providers list`,
+which mirrors `GET /api/models/providers`:
+
+```bash
+holon config model-providers list                        # reachable providers
+holon config model-providers list --operation generate_image
+holon config model-providers list --all                  # include unavailable providers
+```
 
 ## Agent-Level Model Overrides
 

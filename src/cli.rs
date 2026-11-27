@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::types::AuthorityClass;
+use crate::types::MediaOperation;
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
     match value.parse::<usize>() {
@@ -565,6 +566,14 @@ pub enum ConfigCommands {
         #[command(subcommand)]
         command: ConfigModelCommands,
     },
+    #[command(
+        name = "model-providers",
+        about = "List resolved model providers with availability and media capability"
+    )]
+    ModelProviders {
+        #[command(subcommand)]
+        command: ConfigModelProviderCommands,
+    },
     #[command(about = "Inspect or rewrite legacy model selections as canonical route refs")]
     MigrateModelRoutes {
         #[arg(
@@ -690,11 +699,59 @@ pub enum ConfigCredentialCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigModelCommands {
-    List,
+    /// List resolved models (JSON array of ProviderModelEntry)
+    List {
+        /// Restrict to one provider id from `config model-providers list`
+        #[arg(long)]
+        provider: Option<String>,
+        /// Restrict to models callable for this media operation
+        #[arg(long, value_name = "view_image|generate_image")]
+        operation: Option<ModelOperationArg>,
+        /// Include models that are not selectable (diagnostic view)
+        #[arg(
+            long,
+            help = "Include non-selectable models (equivalent to include_unavailable=true)"
+        )]
+        all: bool,
+    },
     Refresh {
         #[arg(long)]
         provider: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigModelProviderCommands {
+    /// List resolved model providers (mirrors the ListModelProviders tool)
+    List {
+        /// Restrict to providers with a selectable model for this media operation
+        #[arg(long, value_name = "view_image|generate_image")]
+        operation: Option<ModelOperationArg>,
+        /// Include unavailable providers (equivalent to include_unavailable=true)
+        #[arg(
+            long,
+            help = "Include unavailable providers (equivalent to include_unavailable=true)"
+        )]
+        all: bool,
+    },
+}
+
+/// `--operation` values shared by the model listing commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ModelOperationArg {
+    #[value(name = "view_image")]
+    ViewImage,
+    #[value(name = "generate_image")]
+    GenerateImage,
+}
+
+impl ModelOperationArg {
+    pub fn into_media_operation(self) -> MediaOperation {
+        match self {
+            Self::ViewImage => MediaOperation::ViewImage,
+            Self::GenerateImage => MediaOperation::GenerateImage,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]

@@ -5,6 +5,7 @@ pub(crate) use runtime_material::{encode_image, material_matches_runtime};
 mod diagnostics;
 pub mod image_generation;
 pub mod media;
+pub mod model_query;
 mod registry;
 mod transports;
 
@@ -15,7 +16,7 @@ pub(crate) use catalog::{
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
 pub use diagnostics::{
     provider_doctor, resolved_model_availability,
-    resolved_model_availability_with_explicit_refreshes, resolved_model_providers,
+    resolved_model_availability_with_explicit_refreshes, resolved_model_providers, resolved_models,
     resolved_provider_models, resolved_route_availability,
 };
 pub(crate) use diagnostics::{
