@@ -224,6 +224,7 @@ const zh: Record<string, any> = {
     posture: "姿态",
     currentWork: "当前工作",
     dismiss: "关闭",
+    remove: "移除",
     openWebsite: "打开 Holon 官网",
     openGithub: "打开 GitHub 仓库",
     lastActivity: "最后活动",

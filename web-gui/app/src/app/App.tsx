@@ -3,6 +3,7 @@ import { agentAvatarResources } from "../runtime/agent-avatar-resources";
 import type { AgentCreationResult } from "../runtime/agent-creation";
 import { shouldDismissAgentCreation } from "../runtime/agent-creation-dismiss";
 import { BLANK_AGENT_TEMPLATE, canSubmitCreateAgent, resolveCreateAgentTemplate } from "./create-agent-template";
+import { HeaderPendingReminder } from "./HeaderPendingReminder";
 import { AgentCreationError, AgentCreationStatus } from "../features/agent/AgentCreationFeedback";
 import { useCopyText } from "../components/ClipboardProvider";
 import { NotificationCenter } from "../features/notifications/NotificationCenter";
@@ -22,7 +23,6 @@ import {
   Folder,
   LayoutDashboard,
   LayoutTemplate,
-  ListTodo,
   LoaderCircle,
   LogOut,
   Menu,
@@ -30,7 +30,6 @@ import {
   RefreshCw,
   Search as SearchIcon,
   Settings as SettingsIcon,
-  X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -1029,35 +1028,14 @@ export function App() {
                         </button>
                       );
                     })()}
-                    {activeAgent && activeAgentPendingReminders[0]?.target.work_item_id ? (
-                      <span className="header-pending-reminder">
-                        <button
-                          type="button"
-                          className="header-pending-open"
-                          title={activeAgentPendingReminders[0]?.title ?? activeAgentPendingReminders[0]?.summary ?? undefined}
-                          onClick={() => {
-                            const id = activeAgentPendingReminders[0]!.target.work_item_id!;
-                            const work = useRuntimeStore.getState().sessionsByAgentId[activeAgent.id]?.workItemDetailsById[id]?.workItem;
-                            showWorkItemDetail(activeAgent.id, work ?? { id, objective: id, state: "unknown" });
-                          }}
-                        >
-                          <ListTodo size={12} aria-hidden="true" />
-                          <span>{t("dashboard.triageOpenWorkItem")}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="header-pending-ignore"
-                          aria-label={t("notifications.ignoreItem")}
-                          title={t("notifications.ignore")}
-                          onClick={() => {
-                            for (const item of activeAgentPendingReminders) {
-                              runtimeNotificationSync.ignorePending(item.id);
-                            }
-                          }}
-                        >
-                          <X size={12} aria-hidden="true" />
-                        </button>
-                      </span>
+                    {activeAgent && activeAgentPendingReminders.length > 0 ? (
+                      <HeaderPendingReminder
+                        reminders={activeAgentPendingReminders}
+                        onOpenWorkItem={(id) => {
+                          const work = useRuntimeStore.getState().sessionsByAgentId[activeAgent.id]?.workItemDetailsById[id]?.workItem;
+                          showWorkItemDetail(activeAgent.id, work ?? { id, objective: id, state: "unknown" });
+                        }}
+                      />
                     ) : null}
                   </>
                 ) : route === "dashboard" ? (

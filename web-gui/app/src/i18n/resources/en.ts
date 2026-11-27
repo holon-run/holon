@@ -222,6 +222,7 @@ const en = {
     posture: "Posture",
     currentWork: "Current work",
     dismiss: "Dismiss",
+    remove: "Remove",
     openWebsite: "Open Holon website",
     openGithub: "Open Holon on GitHub",
     lastActivity: "Last activity",
