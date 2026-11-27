@@ -18,8 +18,11 @@ Adopted as reviewed supplement entries with default routes:
   [Zhipu GLM-5.3-Flash/FlashX page](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash)
   and the [Z.ai GLM-5.3-Flash page](https://docs.z.ai/guides/vlm/glm-5.3-flash.md)
   list the model code `glm-5.3-flashx-legal` with a 1M context window, 128K
-  maximum output, video/image/text/file input, and `reasoning_effort: max`
-  with `thinking.type` restricted to `enabled`. Reviewed facts keep
+  maximum output, video/image/text/file input, and a recommended
+  `reasoning_effort: max` listed alongside `temperature: 1` and `top_p: 0.95`.
+  Text parameters are stated to be consistent with GLM-5.3, so the accepted
+  effort tiers stay `low/high/max`; the only hard restriction is
+  `thinking.type` restricted to `enabled`. Reviewed facts keep
   **1000000** context and **131072** output.
 - `dashscope/glm-5.3-prime`: the
   [Model releases page](https://help.aliyun.com/zh/model-studio/newly-released-models)

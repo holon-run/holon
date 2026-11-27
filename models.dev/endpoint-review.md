@@ -18,7 +18,7 @@ were admitted; the remaining draft drift is deferred.
 
 | Route | Decision |
 |---|---|
-| `bigmodel@default/glm-5.3-flashx-legal`, `zai@default/glm-5.3-flashx-legal` | Added: official model code `glm-5.3-flashx-legal`, 1M context / 128K output, multimodal input, `reasoning_effort: max`, `thinking.type=enabled` only. |
+| `bigmodel@default/glm-5.3-flashx-legal`, `zai@default/glm-5.3-flashx-legal` | Added: official model code `glm-5.3-flashx-legal`, 1M context / 128K output, multimodal input. `reasoning_effort: max` is a recommended setting (alongside `temperature: 1`), not the only accepted tier; effort tiers follow GLM-5.3 (`low/high/max`). The only hard restriction is `thinking.type` = `enabled` only. |
 | `dashscope@default/glm-5.3-prime` | Added: 1M context / 128K output, three thinking-depth levels, text-only. |
 | `dashscope@default/kimi-k3.1-pro-prime` | Added with unknown exact Anthropic-compatible capacity: the release note says Prime keeps Kimi-K3.1-Pro's capability and limits, and that route's exact Beijing capacity remains unreviewed. |
 | `volcengine@default/kimi-k3-1-pro-261024` | Deferred: the dated row is an internal response-only identifier, not a direct API alias; `volcengine@default/kimi-k3-1-pro` remains the reviewed ID. |
