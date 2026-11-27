@@ -45,6 +45,38 @@ class FixtureControlError(RuntimeError):
         self.data = data
 
 
+class ShareImageReferenceError(RuntimeError):
+    """The current attempt's share window does not hold exactly one image."""
+
+
+def attempt_share_image(inbox, attempt_started_at):
+    """Return the one share image this attempt wrote into ``inbox``.
+
+    A retried case shares again into the same media inbox, so the previous
+    attempt's PNG is still on disk. Only files written at or after this
+    attempt started are candidates; counting the stale one made "exactly one"
+    false, so the retry answered 404 without exercising the read-back it
+    exists to retry. The single-image rule stays: two candidates inside one
+    attempt could mean the reference names the wrong file.
+    """
+    images = []
+    for candidate in inbox.glob("request-*.png"):
+        try:
+            if candidate.stat().st_mtime < attempt_started_at:
+                continue
+            with candidate.open("rb") as stream:
+                header = stream.read(24)
+        except OSError:
+            continue  # The daemon may be moving the file out of the inbox.
+        if (header.startswith(b"\x89PNG\r\n\x1a\n") and len(header) == 24
+                and struct.unpack(">II", header[16:24]) == (16, 16)):
+            images.append(candidate)
+    if len(images) != 1:
+        raise ShareImageReferenceError(
+            f"Expected one share image from this attempt, found {len(images)}")
+    return images[0]
+
+
 def report(message):
     """Write a CI annotation without ever raising.
 
@@ -729,6 +761,10 @@ with fixture_directory(repo) as root:
     # after this baseline so a bounded retry of that case starts from a clean
     # count instead of deterministically failing its second attempt.
     automatic_read_baseline_seq = -1
+    # Wall clock: the reference endpoint compares it against st_mtime. Every
+    # attempt resets it, so a retried share case never counts the failed
+    # attempt's image, which is still in the inbox.
+    share_attempt_started_at = 0.0
     lost_lock = threading.Lock()
     proxy_control_token = secrets.token_hex(32)
     proxy_available = threading.Event()
@@ -744,16 +780,12 @@ with fixture_directory(repo) as root:
             if share_acceptance and self.path == "/fixture/shared-image-reference":
                 if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
                     self.send_error(403); return
-                images = []
-                for candidate in (workspace / "media" / "inbox").glob("request-*.png"):
-                    with candidate.open("rb") as stream:
-                        header = stream.read(24)
-                    if (header.startswith(b"\x89PNG\r\n\x1a\n") and len(header) == 24
-                            and struct.unpack(">II", header[16:24]) == (16, 16)):
-                        images.append(candidate)
-                if len(images) != 1:
-                    self.send_error(404, "Expected one isolated share image"); return
-                data = json.dumps({"reference": str(images[0])}).encode()
+                try:
+                    reference = attempt_share_image(
+                        workspace / "media" / "inbox", share_attempt_started_at)
+                except ShareImageReferenceError as error:
+                    self.send_error(404, str(error)); return
+                data = json.dumps({"reference": str(reference)}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
@@ -1765,6 +1797,9 @@ with fixture_directory(repo) as root:
                                 reset_app_group_consent(
                                     simulator, "run.holon.ios", "group.run.holon.ios")
                             started = time.monotonic()
+                            # Same attempt boundary as `started`, on the wall
+                            # clock the inbox's st_mtime is expressed in.
+                            share_attempt_started_at = time.time()
                             try:
                                 run_ui_case(method, content_size, case_bundle)
                                 ui_telemetry.append({

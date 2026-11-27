@@ -337,9 +337,16 @@ final class HolonUITests: XCTestCase {
         close.tap()
     }
 
-    private func reveal(_ element: XCUIElement, in app: XCUIApplication,
-                        fullyVisible: Bool = false,
-                        file: StaticString = #filePath, line: UInt = #line) {
+    /// Scroll a control into the viewport without asserting anything.
+    ///
+    /// Seeking and asserting are separate on purpose: content that is still
+    /// rendering (an image the Agent has not materialized yet) never reached
+    /// the viewport, and reporting that as "present but offscreen" mislabels
+    /// a missing element as an obscured one. Callers that legitimately wait
+    /// for content seek first, assert existence, then reveal.
+    @discardableResult
+    private func seek(_ element: XCUIElement, in app: XCUIApplication,
+                      fullyVisible: Bool = false) -> Bool {
         func viewport() -> CGRect {
             let window = app.windows.firstMatch.frame
             let navigation = app.navigationBars.firstMatch
@@ -395,7 +402,7 @@ final class HolonUITests: XCTestCase {
             guard viewport.height > 0 else { break }
             if element.exists && element.isHittable
                 && contained(element.frame, in: viewport) {
-                return
+                return true
             }
             // Form rows are lazy; small drags load them without skipping the target.
             var distance = viewport.height * 0.3
@@ -421,12 +428,25 @@ final class HolonUITests: XCTestCase {
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow,
                         thenHoldForDuration: 0.1)
         }
+        // Existence is the caller's assertion. A control that has not
+        // rendered yet must not read as one that is present but offscreen.
+        return element.exists && element.isHittable && contained(element.frame, in: viewport())
+    }
+
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication,
+                        fullyVisible: Bool = false,
+                        file: StaticString = #filePath, line: UInt = #line) {
+        if seek(element, in: app, fullyVisible: fullyVisible) { return }
         guard element.waitForExistence(timeout: UIWaitScale.scaled(10)), element.isHittable,
               contained(element.frame, in: viewport()) else {
             capture(app, "unreachable-control")
-            XCTFail("Tap target must remain inside the unobscured viewport", file: file, line: line)
+            XCTFail("Tap target never appeared: existence never became true while seeking it into view",
+                    file: file, line: line)
             return
         }
+        capture(app, "unreachable-control")
+        XCTFail("Tap target exists but did not settle inside the unobscured viewport",
+                file: file, line: line)
     }
 
     private func required(_ key: String) throws -> String {
@@ -1479,11 +1499,13 @@ final class HolonUITests: XCTestCase {
         let more = app.buttons["conversation.more"]
         if !more.waitForExistence(timeout: UIWaitScale.scaled(5)) {
             let agentRow = app.buttons["agent." + agent]
-            reveal(agentRow, in: app); agentRow.tap()
+            seek(agentRow, in: app); agentRow.tap()
         }
         XCTAssertTrue(more.waitForExistence(timeout: UIWaitScale.scaled(15)))
         let image = app.images["conversation.image.loaded"].firstMatch
-        reveal(image, in: app)
+        // The canonical image is materialized by the Agent after the share
+        // receipt, so it can appear later than the seek budget.
+        seek(image, in: app)
         XCTAssertTrue(image.waitForExistence(timeout: UIWaitScale.scaled(20)),
                       "Reopened chat must render the canonical system-share image")
         reveal(image, in: app, fullyVisible: true)

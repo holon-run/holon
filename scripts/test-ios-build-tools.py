@@ -2454,6 +2454,74 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             self.assertEqual(daemon.wait.call_args_list, [call(timeout=8), call()])
 
 
+class UIFixtureShareImageWindowContracts(unittest.TestCase):
+    """A retried share case is judged on its own attempt's image.
+
+    testDirectAgentShareWorkflow re-shares into the same media inbox when the
+    sweep retries it. The reference endpoint used to count every valid PNG in
+    the inbox, so the retry's own image made the count two and the retry
+    answered 404 without ever reading back what it retries for.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="holon-ios-share-window-")
+        self.addCleanup(temporary.cleanup)
+        self.helpers = fixture_helpers()
+        self.select = self.helpers["attempt_share_image"]
+        self.error = self.helpers["ShareImageReferenceError"]
+        self.inbox = Path(temporary.name).resolve() / "media" / "inbox"
+        self.inbox.mkdir(parents=True)
+
+    def share_image(self, name, modified, size=16):
+        def chunk(kind, data):
+            return (struct.pack("!I", len(data)) + kind + data
+                    + struct.pack("!I", self.helpers["zlib"].crc32(kind + data)))
+        image = (b"\x89PNG\r\n\x1a\n"
+                 + chunk(b"IHDR", struct.pack("!2I5B", size, size, 8, 2, 0, 0, 0))
+                 + chunk(b"IDAT", self.helpers["zlib"].compress(
+                     (b"\0" + bytes([40, 100, 190]) * size) * size))
+                 + chunk(b"IEND", b""))
+        path = self.inbox / name
+        path.write_bytes(image)
+        os.utime(path, (modified, modified))
+        return path
+
+    def test_retried_attempt_selects_only_the_image_it_wrote(self):
+        self.share_image("request-attempt1.png", 1_000.0)
+        second = self.share_image("request-attempt2.png", 2_000.0)
+        self.assertEqual(self.select(self.inbox, 1_500.0), second)
+        # Without the attempt window the failed attempt's file is a candidate
+        # too, which is exactly the stale count this window removes.
+        with self.assertRaises(self.error):
+            self.select(self.inbox, 0.0)
+
+    def test_attempt_window_without_exactly_one_valid_image_is_a_missing_reference(self):
+        self.share_image("request-attempt1.png", 1_000.0)
+        with self.assertRaises(self.error):  # nothing written in this window
+            self.select(self.inbox, 1_500.0)
+        self.share_image("request-attempt2.png", 2_000.0)
+        self.share_image("request-attempt2-retry.png", 2_100.0)
+        with self.assertRaises(self.error):  # two candidates in one window
+            self.select(self.inbox, 1_500.0)
+
+    def test_ambiguity_protection_ignores_non_canonical_inbox_files(self):
+        canonical = self.share_image("request-attempt2.png", 2_000.0)
+        # A second in-window file must still disqualify the reference, while
+        # files the endpoint never accepted are not candidates at all.
+        self.share_image("request-thumb.png", 2_100.0, size=32)
+        (self.inbox / "request-file.txt").write_bytes(b"IOS_SHARED_FILE_BYTES")
+        self.assertEqual(self.select(self.inbox, 1_500.0), canonical)
+
+    def test_reference_endpoint_reports_a_window_failure_as_missing(self):
+        source = (ROOT / "scripts/ios_ui_fixture.py").read_text()
+        start = source.index(
+            'if share_acceptance and self.path == "/fixture/shared-image-reference":')
+        endpoint = source[start:source.index("self.forward()", start)]
+        self.assertIn("attempt_share_image(", endpoint)
+        self.assertIn("except ShareImageReferenceError as error:", endpoint)
+        self.assertIn("self.send_error(404, str(error))", endpoint)
+
+
 class UIFixtureProxyAvailabilityContracts(unittest.TestCase):
     def setUp(self):
         self.requests = []
