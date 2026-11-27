@@ -247,7 +247,48 @@ export type ConversationActivity =
       readonly key: ActivityKey;
       readonly revision: number;
       readonly summary: string;
-    };
+    }
+  | ModelRequestActivity
+  | ModelSwitchActivity;
+
+/** Bounded, credential-free status of one projected model request. */
+export type ModelRequestStatus =
+  | "in_flight"
+  | "succeeded"
+  | "failed"
+  | "aborted"
+  | "unfinished";
+
+/**
+ * One provider request inside a turn. The field set is the #4519 whitelist:
+ * no credentials, URLs, headers, raw error bodies, or hidden reasoning.
+ */
+export interface ModelRequestActivity extends ActivityItem {
+  readonly kind: "model_request";
+  readonly provider: string;
+  readonly model_ref: string;
+  readonly dispatch_reason: string;
+  readonly status: ModelRequestStatus;
+  readonly duration_ms?: number;
+  readonly failure_kind?: string;
+}
+
+/** One model route switch. Immutable: the switch never bumps its revision. */
+export interface ModelSwitchActivity extends ActivityItem {
+  readonly kind: "model_switch";
+  readonly from_provider: string;
+  readonly from_model_ref: string;
+  readonly to_provider: string;
+  readonly to_model_ref: string;
+  readonly reason_category: string;
+}
+
+/** Narrows a decoded activity to the model activity kinds. */
+export function isModelActivity(
+  activity: ConversationActivity,
+): activity is ModelRequestActivity | ModelSwitchActivity {
+  return activity.kind === "model_request" || activity.kind === "model_switch";
+}
 
 export interface ConversationBoundary {
   readonly schema_version: number;
