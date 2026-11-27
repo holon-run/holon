@@ -57,6 +57,11 @@ import {
 } from "../lib/agent-workspaces";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import {
+  readSettingsTab,
+  SETTINGS_TAB_LABEL_KEYS,
+  type SettingsTabKey,
+} from "../features/settings/settings-preferences";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
 import { TemplateDetailPage, TemplatesPage } from "../features/templates/TemplatesPage";
 import { deriveAgentAvatarExpression, deriveAgentDisplayStatus } from "../runtime/agent-status";
@@ -118,6 +123,9 @@ export function App() {
   useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
   const developerDiagnosticsEnabled = isRuntimeTraceEnabled();
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabKey>(() =>
+    readSettingsTab(window.location.search),
+  );
   const [onboardingSuspended, setOnboardingSuspended] = useState(false);
   const [setupTarget, setSetupTarget] = useState<{ action: string; provider: string | null }>();
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
@@ -976,7 +984,7 @@ export function App() {
                 </Button>
               ) : null}
               <div>
-                <strong title={route === "agent" && selectedAgent?.name ? `${selectedAgent.name} (${selectedAgent.id})` : undefined}>{route === "agent" ? (selectedAgent?.name ?? selectedAgent?.id ?? selectedAgentId) || t("rightPanel.agent") : route === "search" ? t("nav.search") : route === "skills" || route === "skillDetail" ? t("nav.skills") : route === "templates" || route === "templateDetail" ? t("nav.templates") : route === "settings" ? t("nav.settings") : t("nav.dashboard")}</strong>
+                <strong title={route === "agent" && selectedAgent?.name ? `${selectedAgent.name} (${selectedAgent.id})` : undefined}>{route === "agent" ? (selectedAgent?.name ?? selectedAgent?.id ?? selectedAgentId) || t("rightPanel.agent") : route === "search" ? t("nav.search") : route === "skills" || route === "skillDetail" ? t("nav.skills") : route === "templates" || route === "templateDetail" ? t("nav.templates") : route === "settings" ? `${t("nav.settings")} · ${t(SETTINGS_TAB_LABEL_KEYS[activeSettingsTab])}` : t("nav.dashboard")}</strong>
                 {route === "agent" && selectedAgentStatus ? (
                   <>
                     <AgentStatusIndicator
@@ -1297,6 +1305,7 @@ export function App() {
             codexDeviceLogin={codexDeviceLogin}
             onStartCodexDeviceLogin={startCodexDeviceLogin}
             onClearCodexDeviceLogin={clearCodexDeviceLogin}
+            onActiveTabChange={setActiveSettingsTab}
           />
         ) : null}
       </main>

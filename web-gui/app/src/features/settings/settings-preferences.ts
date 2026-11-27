@@ -1,6 +1,26 @@
 export const SETTINGS_TAB_KEY = "holon.webGui.settingsTab.v1";
-export const SETTINGS_TABS = ["general", "models", "vision", "decision", "search", "advanced"] as const;
+export const SETTINGS_TABS = [
+  "general",
+  "access",
+  "providers",
+  "models",
+  "vision",
+  "search",
+  "decision",
+  "advanced",
+] as const;
 export type SettingsTabKey = typeof SETTINGS_TABS[number];
+
+export const SETTINGS_TAB_LABEL_KEYS: Record<SettingsTabKey, string> = {
+  general: "settings.tabGeneral",
+  access: "settings.tabAccess",
+  providers: "settings.tabProviders",
+  models: "settings.tabModels",
+  vision: "settings.tabVision",
+  search: "settings.tabSearch",
+  decision: "settings.tabDecision",
+  advanced: "settings.tabAdvanced",
+};
 
 export function readSettingsTab(search = ""): SettingsTabKey {
   const requested = new URLSearchParams(search).get("tab");

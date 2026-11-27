@@ -15,10 +15,11 @@ describe("model presentation", () => {
     for (const id of ["private-coding-plan", "constructor", "__proto__"]) expect(providerPresentation(id).label).toBe(id);
   });
   it("distinguishes configured or used services from all no-auth builtins", () => {
-    const provider = { id: "ollama", credentialKind: "none", credentialConfigured: false, configuredInConfig: false } as RuntimeProviderSummary;
+    // The daemon reports credentialConfigured: true whenever credentialKind === "none".
+    const provider = { id: "vllm", credentialKind: "none", credentialConfigured: true, configuredInConfig: false } as RuntimeProviderSummary;
     expect(providerIsConnected(provider, new Set())).toBe(false);
-    expect(providerIsConnected(provider, new Set(["ollama"]))).toBe(true);
+    expect(providerIsConnected(provider, new Set(["vllm"]))).toBe(true);
     expect(providerIsConnected({ ...provider, configuredInConfig: true }, new Set())).toBe(true);
-    expect(providerIsConnected({ ...provider, credentialConfigured: true, credentialSource: "env" }, new Set())).toBe(true);
+    expect(providerIsConnected({ ...provider, credentialKind: "api_key", credentialConfigured: true, credentialSource: "env" }, new Set())).toBe(true);
   });
 });

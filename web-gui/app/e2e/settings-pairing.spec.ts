@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function setupPairing(page: Page, serving: boolean, settingsUrl = "/settings") {
+async function setupPairing(page: Page, serving: boolean, settingsUrl = "/settings?tab=access") {
   let issued = 0;
   await page.route("**/api/auth/method", (route) => route.fulfill({ json: { mode: "local" } }));
   await page.route("**/api/control/network/tailscale/serve", (route) => route.fulfill({
@@ -53,7 +53,7 @@ for (const host of ["192.168.1.10", "holon-http.test"]) {
       localUrl.hostname = "127.0.0.1";
       return route.fetch({ url: localUrl.toString() }).then((response) => route.fulfill({ response }));
     });
-    await setupPairing(page, false, `${origin.origin}/settings`);
+    await setupPairing(page, false, `${origin.origin}/settings?tab=access`);
     await expect(page.getByRole("textbox", { name: "Device-accessible server address", exact: true }))
       .toHaveValue(origin.origin);
     await page.getByRole("button", { name: "Create one-time pairing link", exact: true }).click();
@@ -172,7 +172,7 @@ test("OIDC explains normal sign-in and does not issue a pairing ticket", async (
   let issued = 0;
   await page.route("**/api/auth/method", (route) => route.fulfill({ json: { mode: "oidc" } }));
   await page.route("**/api/auth/pairing/issue", (route) => { issued++; return route.fulfill({ json: {} }); });
-  await page.goto("/settings");
+  await page.goto("/settings?tab=access");
   await expect(page.getByText("This runtime uses OIDC.", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: "Create one-time pairing link", exact: true })).toBeDisabled();
   expect(issued).toBe(0);
@@ -231,7 +231,7 @@ test("initial authentication failure can be retried without remounting or issuin
     issued++;
     return route.fulfill({ json: { ticket: "retried", expires_at: new Date(Date.now() + 60_000).toISOString() } });
   });
-  await page.goto("/settings");
+  await page.goto("/settings?tab=access");
   const button = page.getByRole("button", { name: "Create one-time pairing link", exact: true });
   const alert = page.getByRole("alert").filter({ hasText: "Cannot reach the sign-in service" });
   await expect(alert).toBeVisible();

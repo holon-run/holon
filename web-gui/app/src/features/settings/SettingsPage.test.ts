@@ -165,6 +165,16 @@ describe("sortProvidersForSettings", () => {
 
     expect(sorted.map((entry) => entry.id)).toEqual(["ready-a", "ready-b", "missing-a", "missing-b"]);
   });
+
+  it("places unconfigured keyless builtins after configured providers", () => {
+    const sorted = sortProvidersForSettings([
+      { ...provider("vllm", true), credentialKind: "none", configuredInConfig: false },
+      provider("openai", true),
+      { ...provider("edge0", true), credentialKind: "none", configuredInConfig: true },
+    ]);
+
+    expect(sorted.map((entry) => entry.id)).toEqual(["openai", "edge0", "vllm"]);
+  });
 });
 
 describe("sortSearchProvidersForSettings", () => {
