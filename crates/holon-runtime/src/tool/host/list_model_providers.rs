@@ -1,8 +1,8 @@
 use super::serialize_success;
+use crate::provider::model_query;
 use crate::runtime::RuntimeHandle;
 use crate::tool::helpers::parse_tool_args;
 use crate::types::AuthorityClass;
-use crate::types::ModelProviderAvailability;
 use anyhow::Result;
 use serde_json::Value;
 
@@ -17,12 +17,9 @@ pub(crate) async fn execute(
     let args: ListModelProvidersArgs = parse_tool_args(NAME, input)?;
     let mut providers = runtime.model_providers().await?;
     let model_discovery_cache = runtime.model_discovery_status().await?;
-    if !args.include_unavailable {
-        providers.retain(|provider| match args.operation {
-            Some(operation) => provider.media.selectable_models(operation) > 0,
-            None => provider.availability != ModelProviderAvailability::Unavailable,
-        });
-    }
+    providers.retain(|provider| {
+        model_query::provider_matches(provider, args.operation, args.include_unavailable)
+    });
     serialize_success(
         NAME,
         &ListModelProvidersResult {

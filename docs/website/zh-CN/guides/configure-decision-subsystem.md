@@ -23,6 +23,7 @@ order: 140
 holon config get decision.enabled
 holon config get decision.model
 holon config get decision.local_onnx.enabled
+holon config model-providers list
 holon config models list
 ```
 

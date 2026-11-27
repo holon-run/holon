@@ -58,7 +58,7 @@ When you need advanced cloud reasoning models, use Holon's interactive onboardin
    export ANTHROPIC_API_KEY="sk-..."
    ```
    *Note: Environment variables must be set in the shell session that launches the Holon daemon. Exporting variables in a temporary client terminal does not alter an already running daemon.*
-3. **List available model routes**:
+3. **List available model routes** (`--all` also shows unavailable routes; `--provider <id>` narrows to one provider):
    ```bash
    holon config models list
    ```
@@ -223,7 +223,7 @@ The built-in entry declares only the Anthropic Messages endpoint. To call Magpie
    holon config models refresh --provider my-gateway
    ```
    The `providers set` output reports the current discovery cache state (`missing`, `stale`, `fresh`, `unauthenticated`, or `unsupported`) and the exact refresh command as `next_step`.
-3. **Verify the discovered models**:
+3. **Verify the discovered models** (`--provider <id>` narrows to this gateway; `--all` includes unavailable ones):
    ```bash
    holon config models list
    ```

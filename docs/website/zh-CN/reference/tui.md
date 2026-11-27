@@ -137,6 +137,7 @@ TUI 用键盘操作。在底部的提示词区域输入消息，按 `Enter` 发�
 
 ```bash
 holon config providers list
+holon config model-providers list
 holon config models list
 ```
 

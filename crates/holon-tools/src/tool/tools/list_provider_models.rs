@@ -1,6 +1,5 @@
 use super::BuiltinToolDefinition;
 use crate::tool::spec::typed_spec;
-use crate::types::ModelAvailability;
 use crate::types::ProviderModelEntry;
 use crate::types::ToolCapabilityFamily;
 use anyhow::Result;
@@ -11,10 +10,6 @@ use serde::Deserialize;
 use serde::Serialize;
 
 pub const NAME: &str = crate::tool::names::LIST_PROVIDER_MODELS;
-
-pub const DEFAULT_LIMIT: usize = 100;
-
-pub const MAX_LIMIT: usize = 500;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -57,43 +52,4 @@ pub fn definition() -> Result<BuiltinToolDefinition> {
             include_str!("../tool_descriptions/list_provider_models.md"),
         )?,
     })
-}
-
-pub fn model_matches_operation(
-    model: &ProviderModelEntry,
-    operation: Option<MediaOperation>,
-    include_unavailable: bool,
-) -> bool {
-    include_unavailable
-        || match operation {
-            Some(operation) => model.media.operation(operation).call_selectable,
-            None => model.availability != ModelAvailability::Unavailable,
-        }
-}
-
-pub fn page_provider_models(
-    models: Vec<ProviderModelEntry>,
-    cursor: Option<&str>,
-    limit: usize,
-) -> (Vec<ProviderModelEntry>, Option<String>) {
-    let start = cursor
-        .and_then(|cursor| {
-            models
-                .iter()
-                .position(|model| model.model_ref == cursor)
-                .map(|index| index + 1)
-        })
-        .unwrap_or(0);
-    let mut page = models
-        .into_iter()
-        .skip(start)
-        .take(limit + 1)
-        .collect::<Vec<_>>();
-    if page.len() <= limit {
-        return (page, None);
-    }
-
-    page.truncate(limit);
-    let next_cursor = page.last().map(|model| model.model_ref.clone());
-    (page, next_cursor)
 }

@@ -327,11 +327,7 @@ pub(crate) fn resolved_model_providers_from_availability_for_runtime(
 }
 
 fn provider_endpoint_group_id(provider_family: &str, endpoint: &str) -> String {
-    if endpoint == "default" {
-        provider_family.to_string()
-    } else {
-        format!("{provider_family}:{endpoint}")
-    }
+    super::model_query::provider_group_id(provider_family, endpoint)
 }
 
 pub fn resolved_provider_models(config: &AppConfig, provider: &str) -> Vec<ProviderModelEntry> {
@@ -339,20 +335,32 @@ pub fn resolved_provider_models(config: &AppConfig, provider: &str) -> Vec<Provi
     provider_models_from_availability_for_runtime(&models, provider)
 }
 
+/// Resolved model projection across every provider.
+///
+/// CLI listings need the full model set; building it from the shared
+/// availability projection once avoids recomputing per provider.
+pub fn resolved_models(config: &AppConfig) -> Vec<ProviderModelEntry> {
+    let models = resolved_model_availability(config);
+    model_entries_from_availability(models.iter())
+}
+
 pub(crate) fn provider_models_from_availability_for_runtime(
     models: &[ResolvedModelAvailability],
     provider: &str,
 ) -> Vec<ProviderModelEntry> {
-    models
-        .iter()
-        .filter(|model| {
-            // Accept the endpoint-qualified group id exposed by ListModelProviders
-            // and the legacy runtime config id for backward compatibility.
-            model.route_provider == provider
-                || provider_endpoint_group_id(&model.provider_family, &model.endpoint) == provider
-        })
-        .cloned()
+    // Accept the endpoint-qualified group id exposed by ListModelProviders and
+    // the legacy runtime config id for backward compatibility.
+    model_entries_from_availability(models.iter())
         .into_iter()
+        .filter(|entry| super::model_query::model_matches_provider(entry, provider))
+        .collect()
+}
+
+fn model_entries_from_availability<'a>(
+    models: impl Iterator<Item = &'a ResolvedModelAvailability>,
+) -> Vec<ProviderModelEntry> {
+    models
+        .cloned()
         .map(|model| {
             let model_id = model.policy.model_ref.model.clone();
             let model_ref = format!("{}@{}/{}", model.provider_family, model.endpoint, model_id);

@@ -2605,6 +2605,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List model providers
+         * @description Return the resolved Provider projection filtered by availability and media capability.
+         */
+        get: operations["modelProviders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/providers/{provider}/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List models for one provider
+         * @description Return the resolved model projection for one provider id from `/models/providers`, filtered by availability and media operation and paged by `model_ref` cursor. Unknown providers return `unknown_provider`; stale cursors return `invalid_cursor`.
+         */
+        get: operations["providerModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/models/refresh": {
         parameters: {
             query?: never;
@@ -11774,7 +11814,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                /** @description Provider id taken verbatim from `GET /api/models/providers`. */
+                provider: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -15325,6 +15368,99 @@ export interface operations {
             query?: never;
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    modelProviders: {
+        parameters: {
+            query?: {
+                /** @description Restrict to entries with a model that is call-selectable for this media operation. Ignored when `include_unavailable=true`. */
+                operation?: "view_image" | "generate_image";
+                /** @description Diagnostic view. When true, both the availability and `operation` filters are skipped so every resolved entry is returned. */
+                include_unavailable?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    providerModels: {
+        parameters: {
+            query?: {
+                /** @description Restrict to entries with a model that is call-selectable for this media operation. Ignored when `include_unavailable=true`. */
+                operation?: "view_image" | "generate_image";
+                /** @description Diagnostic view. When true, both the availability and `operation` filters are skipped so every resolved entry is returned. */
+                include_unavailable?: boolean;
+                /** @description Maximum models returned in one page. Values outside the range are clamped. */
+                limit?: number;
+                /** @description Opaque `model_ref` cursor returned by the preceding page. Pages concatenate back into the full filtered sequence; an unknown cursor returns `invalid_cursor` instead of restarting. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Provider id taken verbatim from `GET /api/models/providers`. */
+                provider: string;
+            };
             cookie?: never;
         };
         requestBody?: never;

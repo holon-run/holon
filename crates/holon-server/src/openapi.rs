@@ -57,6 +57,8 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/", "root", "discovery", "Root discovery", "Return the default agent id.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/handshake", "handshake", "discovery", "Protocol handshake", "Return auth mode, protocol version, capabilities, and runtime hints.", None, "HandshakeResponse", AuthKind::RemoteAccess),
     route("get", "/models", "models", "discovery", "List available models", "Return model catalog entries and runtime availability.", None, AuthKind::RemoteAccess),
+    route("get", "/models/providers", "modelProviders", "discovery", "List model providers", "Return the resolved Provider projection filtered by availability and media capability." , None, AuthKind::RemoteAccess),
+    route("get", "/models/providers/{provider}/models", "providerModels", "discovery", "List models for one provider", "Return the resolved model projection for one provider id from `/models/providers`, filtered by availability and media operation and paged by `model_ref` cursor. Unknown providers return `unknown_provider`; stale cursors return `invalid_cursor`." , None, AuthKind::RemoteAccess),
     route("post", "/models/refresh", "refreshModels", "discovery", "Refresh available models", "Discover models for providers with missing or expired caches, then return the model catalog and runtime availability.", None, AuthKind::RemoteAccess),
     route_with_response("post", "/content-reports", "createContentReport", "content-reports", "Report AI content", "Save an authenticated user's report about user-visible AI content.", Some("CreateContentReportRequest"), "CreateContentReportResponse", AuthKind::RemoteAccess),
     aide_route_with_response("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries. Optional parent query parameter filters the public roster to direct children of that parent.", None, "AgentListResponse", AuthKind::RemoteAccess),
@@ -666,6 +668,33 @@ fn operation(spec: &RouteSpec, shadow_limits: ConversationShadowLimits) -> Value
             json!({"name":"If-None-Match","in":"header","schema":{"type":"string"},"description":"Compare the actual image byte ETag, after authenticating and checking the target."}),
         ]);
     }
+    if spec.operation_id == "modelProviders" {
+        parameters.extend(model_operation_filter_parameters());
+    }
+    if spec.operation_id == "providerModels" {
+        parameters.extend(model_operation_filter_parameters());
+        parameters.extend([
+            json!({
+                "name": "limit",
+                "in": "query",
+                "required": false,
+                "description": "Maximum models returned in one page. Values outside the range are clamped.",
+                "schema": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 100
+                }
+            }),
+            json!({
+                "name": "cursor",
+                "in": "query",
+                "required": false,
+                "description": "Opaque `model_ref` cursor returned by the preceding page. Pages concatenate back into the full filtered sequence; an unknown cursor returns `invalid_cursor` instead of restarting.",
+                "schema": { "type": "string", "minLength": 1 }
+            }),
+        ]);
+    }
     let mut op = json!({
         "operationId": spec.operation_id,
         "tags": [spec.tag],
@@ -694,10 +723,39 @@ fn operation(spec: &RouteSpec, shadow_limits: ConversationShadowLimits) -> Value
     op
 }
 
+/// Query parameters shared by the provider and provider-model listing routes.
+///
+/// `include_unavailable` is a diagnostic view: when set it skips both the
+/// availability and `operation` filters, matching the Agent tool contract.
+fn model_operation_filter_parameters() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "operation",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to entries with a model that is call-selectable for this media operation. Ignored when `include_unavailable=true`.",
+            "schema": { "type": "string", "enum": ["view_image", "generate_image"] }
+        }),
+        json!({
+            "name": "include_unavailable",
+            "in": "query",
+            "required": false,
+            "description": "Diagnostic view. When true, both the availability and `operation` filters are skipped so every resolved entry is returned.",
+            "schema": { "type": "boolean", "default": false }
+        }),
+    ]
+}
+
 fn path_parameters(path: &str) -> Vec<Value> {
     let mut params = Vec::new();
     if path.contains("{agent_id}") {
         params.push(path_param("agent_id", "Agent id."));
+    }
+    if path.contains("{provider}") {
+        params.push(path_param(
+            "provider",
+            "Provider id taken verbatim from `GET /api/models/providers`.",
+        ));
     }
     if path.contains("{task_id}") {
         params.push(path_param("task_id", "Task id."));

@@ -479,8 +479,22 @@ holon onboard
 holon config models list
 ```
 
-它会显示每个模型的可用性、凭据状态、提供商、transport 和策略（上下文窗口、最大输出
+默认仅列出已就绪、可选的模型。加 `--all` 可包含不可用模型及其诊断原因（等价于
+`include_unavailable=true`），并可用 `--provider <provider>` 或
+`--operation <view_image|generate_image>` 进一步收窄。每条记录包含规范
+`model_ref`、可用性、可选标记、凭据状态、媒体能力与策略（上下文窗口、最大输出
 token 数、能力）。
+
+`holon config providers list` 仍是配置平面清单：列出全部内置与已配置提供商，不含
+可用性与媒体聚合。若需要运行时解析后的投影（可用性、transport、凭据状态、按媒体
+操作的可选模型计数），使用 `holon config model-providers list`，它与
+`GET /api/models/providers` 同源：
+
+```bash
+holon config model-providers list                        # 可达的提供商
+holon config model-providers list --operation generate_image
+holon config model-providers list --all                  # 包含不可用提供商
+```
 
 ## Agent 级模型覆盖
 

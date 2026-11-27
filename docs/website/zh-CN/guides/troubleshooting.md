@@ -109,6 +109,7 @@ printf '%s\n' "${HOLON_HOME:-<default home>}"
 ```bash
 holon config doctor
 holon config providers list
+holon config model-providers list
 holon config models list
 holon config credentials list
 ```

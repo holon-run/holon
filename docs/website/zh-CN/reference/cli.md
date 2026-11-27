@@ -386,8 +386,9 @@ credentials）和 `next_actions`。它在设计上对密钥安全：报告中不
 holon config list                # 当前全部配置
 holon config schema              # 所有配置键及其类型和默认值
 holon config doctor              # 完整健康检查
-holon config providers list      # 所有已注册的提供商
-holon config models list         # 可用模型及其状态
+holon config providers list      # 所有已注册的提供商（配置平面）
+holon config model-providers list # 已解析的提供商及其可用性与媒体能力
+holon config models list         # 默认仅已就绪可选模型（--all 显示全量）
 holon config credentials list    # 已存储的凭据配置
 ```
 

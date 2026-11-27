@@ -26499,7 +26499,17 @@
       "post": {
         "description": "Request a provider OAuth device code and start a background job that persists the OAuth credential profile after user authorization. Supported providers include openai-codex, xai, and github-copilot (which uses a bundled public OAuth app by default, with optional client id overrides).",
         "operationId": "startOAuthDeviceLogin",
-        "parameters": [],
+        "parameters": [
+          {
+            "description": "Provider id taken verbatim from `GET /api/models/providers`.",
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -31632,6 +31642,181 @@
           }
         ],
         "summary": "List available models",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/api/models/providers": {
+      "get": {
+        "description": "Return the resolved Provider projection filtered by availability and media capability.",
+        "operationId": "modelProviders",
+        "parameters": [
+          {
+            "description": "Restrict to entries with a model that is call-selectable for this media operation. Ignored when `include_unavailable=true`.",
+            "in": "query",
+            "name": "operation",
+            "required": false,
+            "schema": {
+              "enum": [
+                "view_image",
+                "generate_image"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Diagnostic view. When true, both the availability and `operation` filters are skipped so every resolved entry is returned.",
+            "in": "query",
+            "name": "include_unavailable",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List model providers",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/api/models/providers/{provider}/models": {
+      "get": {
+        "description": "Return the resolved model projection for one provider id from `/models/providers`, filtered by availability and media operation and paged by `model_ref` cursor. Unknown providers return `unknown_provider`; stale cursors return `invalid_cursor`.",
+        "operationId": "providerModels",
+        "parameters": [
+          {
+            "description": "Provider id taken verbatim from `GET /api/models/providers`.",
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Restrict to entries with a model that is call-selectable for this media operation. Ignored when `include_unavailable=true`.",
+            "in": "query",
+            "name": "operation",
+            "required": false,
+            "schema": {
+              "enum": [
+                "view_image",
+                "generate_image"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Diagnostic view. When true, both the availability and `operation` filters are skipped so every resolved entry is returned.",
+            "in": "query",
+            "name": "include_unavailable",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Maximum models returned in one page. Values outside the range are clamped.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque `model_ref` cursor returned by the preceding page. Pages concatenate back into the full filtered sequence; an unknown cursor returns `invalid_cursor` instead of restarting.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List models for one provider",
         "tags": [
           "discovery"
         ]

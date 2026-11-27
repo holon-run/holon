@@ -50,7 +50,10 @@ use holon::{
     },
     onboarding_tui::run_onboarding_tui,
     otlp_exporter::OtlpExporter,
-    provider::{provider_doctor, resolved_model_availability},
+    provider::{
+        model_query, provider_doctor, resolved_model_providers, resolved_models,
+        resolved_provider_models,
+    },
     resource_policy::{apply_startup_policy, startup_report},
     run_once::{run_once, RunOnceRequest},
     runtime::seed_scheduler_terminal_recovery_fixture,
@@ -72,11 +75,11 @@ use tracing_subscriber::EnvFilter;
 
 use holon::cli::{
     AgentCommands, AgentDetailArg, AgentModelCommands, Cli, Commands, ConfigCommands,
-    ConfigCredentialCommands, ConfigModelCommands, ConfigProviderCommands,
-    ConfigProviderHeaderCommands, ControlCommandAction, DaemonCommands, DebugCommands,
-    DeletionResolveDecision, EventsCommands, MemoryIndexCommands, ModelsDevCommands, ServeAccess,
-    ServeOptions, SkillsCommands, TaskCommands, TemplateCommands, TimerCommands, TimerCreateArgs,
-    WorkItemCommands, WorkspaceCommands,
+    ConfigCredentialCommands, ConfigModelCommands, ConfigModelProviderCommands,
+    ConfigProviderCommands, ConfigProviderHeaderCommands, ControlCommandAction, DaemonCommands,
+    DebugCommands, DeletionResolveDecision, EventsCommands, MemoryIndexCommands, ModelOperationArg,
+    ModelsDevCommands, ServeAccess, ServeOptions, SkillsCommands, TaskCommands, TemplateCommands,
+    TimerCommands, TimerCreateArgs, WorkItemCommands, WorkspaceCommands,
 };
 
 // Linux daemons swap in jemalloc so freed pages are purged back to the OS
@@ -8187,6 +8190,9 @@ async fn handle_config_command(command: ConfigCommands) -> Result<()> {
         ConfigCommands::Providers { command } => handle_config_providers_command(command).await,
         ConfigCommands::Credentials { command } => handle_config_credentials_command(command).await,
         ConfigCommands::Models { command } => handle_config_models_command(command).await,
+        ConfigCommands::ModelProviders { command } => {
+            handle_config_model_providers_command(command).await
+        }
         ConfigCommands::MigrateModelRoutes { write } => {
             config_migrate_model_routes_command(write).await
         }
@@ -8538,9 +8544,22 @@ async fn apply_runtime_config_updates(
 
 async fn handle_config_models_command(command: ConfigModelCommands) -> Result<()> {
     match command {
-        ConfigModelCommands::List => {
+        ConfigModelCommands::List {
+            provider,
+            operation,
+            all,
+        } => {
             let config = AppConfig::load_for_config_inspection()?;
-            print_json(&serde_json::to_value(resolved_model_availability(&config))?)
+            let operation = operation.map(ModelOperationArg::into_media_operation);
+            let mut models = match provider.as_deref() {
+                Some(provider) => {
+                    ensure_known_model_provider(&config, provider)?;
+                    resolved_provider_models(&config, provider)
+                }
+                None => resolved_models(&config),
+            };
+            models.retain(|model| model_query::model_matches(model, operation, all));
+            print_json(&serde_json::to_value(models)?)
         }
         ConfigModelCommands::Refresh { provider } => {
             let provider_id = ProviderId::parse(&provider)?;
@@ -8561,6 +8580,32 @@ async fn handle_config_models_command(command: ConfigModelCommands) -> Result<()
             print_json(&serde_json::to_value(report)?)
         }
     }
+}
+
+async fn handle_config_model_providers_command(command: ConfigModelProviderCommands) -> Result<()> {
+    match command {
+        ConfigModelProviderCommands::List { operation, all } => {
+            let config = AppConfig::load_for_config_inspection()?;
+            let operation = operation.map(ModelOperationArg::into_media_operation);
+            let mut providers = resolved_model_providers(&config);
+            providers.retain(|provider| model_query::provider_matches(provider, operation, all));
+            print_json(&serde_json::to_value(providers)?)
+        }
+    }
+}
+
+/// Reject provider ids that no resolved provider projection knows about, so a
+/// typo does not silently print an empty model array.
+fn ensure_known_model_provider(config: &AppConfig, provider: &str) -> Result<()> {
+    let known = resolved_model_providers(config)
+        .iter()
+        .any(|entry| entry.id == provider || entry.route_provider == provider);
+    if known {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "unknown model provider {provider}; run `holon config model-providers list` to see provider ids"
+    )
 }
 
 async fn handle_config_providers_command(command: ConfigProviderCommands) -> Result<()> {

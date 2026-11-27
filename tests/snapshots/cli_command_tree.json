@@ -490,6 +490,39 @@
     "aliases": []
   },
   {
+    "path": "config.model-providers",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.model-providers.list",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "all",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "operation",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "view_image",
+          "generate_image"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "config.models",
     "positionals": [],
     "flags": [],
@@ -498,7 +531,35 @@
   {
     "path": "config.models.list",
     "positionals": [],
-    "flags": [],
+    "flags": [
+      {
+        "long": "all",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "operation",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "view_image",
+          "generate_image"
+        ],
+        "required": false
+      },
+      {
+        "long": "provider",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
     "aliases": []
   },
   {

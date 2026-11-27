@@ -1480,6 +1480,75 @@
   },
   {
     "method": "get",
+    "path": "/api/models/providers",
+    "handler": "model_providers_handler",
+    "operation_id": "modelProviders",
+    "tag": "discovery",
+    "parameters": [
+      {
+        "name": "include_unavailable",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "operation",
+        "location": "query",
+        "required": false
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/models/providers/{provider}/models",
+    "handler": "provider_models_handler",
+    "operation_id": "providerModels",
+    "tag": "discovery",
+    "parameters": [
+      {
+        "name": "provider",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "cursor",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "include_unavailable",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "limit",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "operation",
+        "location": "query",
+        "required": false
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/notifications/pending",
     "handler": "pending",
     "operation_id": "pendingNotifications",
@@ -2013,7 +2082,13 @@
     "handler": "start_oauth_device_login",
     "operation_id": "startOAuthDeviceLogin",
     "tag": "auth",
-    "parameters": [],
+    "parameters": [
+      {
+        "name": "provider",
+        "location": "path",
+        "required": true
+      }
+    ],
     "request_schema": null,
     "request_strict": null,
     "response_content_types": [
