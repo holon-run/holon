@@ -106,6 +106,7 @@ impl ModelCatalogSource for AppConfig {
             model_discovery_cache: &config.model_discovery_cache,
             validated_model_overrides: &config.validated_model_overrides,
             validated_unknown_model_fallback: config.validated_unknown_model_fallback.as_ref(),
+            explicitly_refreshed_providers: None,
             runtime_max_output_tokens: config.runtime_max_output_tokens,
         }
     }

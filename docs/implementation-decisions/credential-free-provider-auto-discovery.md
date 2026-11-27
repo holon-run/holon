@@ -29,5 +29,9 @@ Preserved boundary:
 - providers with a credential requirement keep the historical discovery
   behavior, including `Required`/`Optional` discovery auth handling.
 - explicit `holon config models refresh --provider <id>` remains available; it
-  writes the cache, but the catalog only serves the entry once the provider is
-  opted in as above.
+  writes the cache and refreshes the provider in the foreground.
+- an explicit refresh is a foreground operator action, not background probing,
+  so the refreshed provider counts as opted in for the rest of the session:
+  `POST /api/models/refresh` keeps serving what it just discovered. The opt-in
+  is session-scoped and never reaches `config.json`; declaring `providers.<id>`
+  stays the durable opt-in.

@@ -305,6 +305,11 @@ pub struct ModelCatalogConfig<'a> {
     pub model_discovery_cache: &'a holon_provider::model_discovery::ModelDiscoveryCacheFile,
     pub validated_model_overrides: &'a HashMap<ModelRef, ModelRuntimeOverride>,
     pub validated_unknown_model_fallback: Option<&'a ModelRuntimeOverride>,
+    /// Providers the operator explicitly refreshed in this runtime session.
+    /// An explicit refresh is an operator opt-in, so the refreshed provider
+    /// keeps serving its discovered models even when it is not declared in
+    /// `config.json`.
+    pub explicitly_refreshed_providers: Option<&'a HashSet<ProviderId>>,
     pub runtime_max_output_tokens: u32,
 }
 
@@ -330,6 +335,9 @@ impl ModelCatalogConfig<'_> {
             || self
                 .explicitly_referenced_provider_ids()
                 .contains(&provider.id)
+            || self
+                .explicitly_refreshed_providers
+                .is_some_and(|providers| providers.contains(&provider.id))
     }
 
     /// Provider ids referenced by configured model routes or model overrides.
@@ -530,7 +538,25 @@ impl RuntimeModelCatalog {
     }
 
     pub fn from_config(config: &impl ModelCatalogSource) -> Self {
-        let config = config.model_catalog_config();
+        Self::from_catalog_config(config.model_catalog_config())
+    }
+
+    /// Build the catalog with the providers the operator explicitly refreshed
+    /// in this session treated as opted in.
+    ///
+    /// An explicit refresh is a foreground operator action, unlike the
+    /// background probing this gate protects against, so its result stays
+    /// visible for the rest of the session.
+    pub fn from_config_with_explicit_refreshes(
+        config: &impl ModelCatalogSource,
+        providers: &HashSet<ProviderId>,
+    ) -> Self {
+        let mut catalog_config = config.model_catalog_config();
+        catalog_config.explicitly_refreshed_providers = Some(providers);
+        Self::from_catalog_config(catalog_config)
+    }
+
+    fn from_catalog_config(config: ModelCatalogConfig<'_>) -> Self {
         let mut provider_endpoints = config
             .providers
             .iter()

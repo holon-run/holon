@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     path::Path,
     sync::Mutex as StdMutex,
     time::{Duration as StdDuration, Instant, SystemTime},
@@ -13,7 +14,7 @@ use crate::{
         discovery_cache_needs_refresh, discovery_cache_path, load_discovery_cache_at,
         provider_supports_model_discovery, refresh_provider_models, DEFAULT_DISCOVERY_CACHE_TTL,
     },
-    provider::resolved_model_availability,
+    provider::resolved_model_availability_with_explicit_refreshes,
 };
 
 /// Upper bound on how long `/api/models` may serve a cached catalog snapshot
@@ -104,6 +105,7 @@ pub async fn refresh_models_handler(
     let mut config = (*source).clone();
     load_model_discovery_cache(&mut config).await?;
     let cache_path = discovery_cache_path(&config.home_dir);
+    let mut refreshed = Vec::new();
     for (provider, discovery) in model_discovery_refresh_candidates(&config) {
         if let Err(error) =
             refresh_provider_models(&provider, discovery.as_ref(), &cache_path).await
@@ -113,8 +115,11 @@ pub async fn refresh_models_handler(
                 error = %error,
                 "explicit model discovery refresh failed"
             );
+        } else {
+            refreshed.push(provider.id.clone());
         }
     }
+    state.models_cache.record_explicit_refreshes(refreshed);
 
     load_model_discovery_cache(&mut config).await?;
     let snapshot = state.models_cache.replace(source, config).await?;
@@ -170,6 +175,11 @@ pub(crate) struct ModelsResponseCache {
     snapshot: StdMutex<Option<Arc<ModelsSnapshot>>>,
     build_gate: tokio::sync::Mutex<()>,
     ttl: StdDuration,
+    /// Providers the operator explicitly refreshed in this session. An
+    /// explicit refresh is an operator opt-in, so the refreshed provider keeps
+    /// serving its discovered models even when it is not declared in
+    /// `config.json`.
+    explicit_refreshes: StdMutex<HashSet<crate::config::ProviderId>>,
     #[cfg(test)]
     builds: std::sync::atomic::AtomicUsize,
 }
@@ -180,9 +190,29 @@ impl ModelsResponseCache {
             snapshot: StdMutex::new(None),
             build_gate: tokio::sync::Mutex::new(()),
             ttl: MODELS_SNAPSHOT_TTL,
+            explicit_refreshes: StdMutex::new(HashSet::new()),
             #[cfg(test)]
             builds: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Record providers the operator explicitly refreshed in this session.
+    pub(crate) fn record_explicit_refreshes(
+        &self,
+        providers: impl IntoIterator<Item = crate::config::ProviderId>,
+    ) {
+        let mut guard = self
+            .explicit_refreshes
+            .lock()
+            .expect("models snapshot cache poisoned");
+        guard.extend(providers);
+    }
+
+    fn explicit_refreshes(&self) -> HashSet<crate::config::ProviderId> {
+        self.explicit_refreshes
+            .lock()
+            .expect("models snapshot cache poisoned")
+            .clone()
     }
 
     #[cfg(test)]
@@ -226,7 +256,9 @@ impl ModelsResponseCache {
 
         let mut config = (*source).clone();
         load_model_discovery_cache(&mut config).await?;
-        let snapshot = Arc::new(build_models_snapshot(source, config, stamp).await?);
+        let explicit_refreshes = self.explicit_refreshes();
+        let snapshot =
+            Arc::new(build_models_snapshot(source, config, stamp, explicit_refreshes).await?);
         #[cfg(test)]
         self.builds
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -244,7 +276,10 @@ impl ModelsResponseCache {
     ) -> Result<Arc<ModelsSnapshot>, (StatusCode, Json<Value>)> {
         let _build = self.build_gate.lock().await;
         let stamp = discovery_cache_stamp(&source_config.home_dir);
-        let snapshot = Arc::new(build_models_snapshot(source_config, config, stamp).await?);
+        let explicit_refreshes = self.explicit_refreshes();
+        let snapshot = Arc::new(
+            build_models_snapshot(source_config, config, stamp, explicit_refreshes).await?,
+        );
         #[cfg(test)]
         self.builds
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -260,9 +295,10 @@ async fn build_models_snapshot(
     source_config: Arc<crate::config::AppConfig>,
     config: crate::config::AppConfig,
     discovery_cache: Option<DiscoveryCacheStamp>,
+    explicit_refreshes: HashSet<crate::config::ProviderId>,
 ) -> Result<ModelsSnapshot, (StatusCode, Json<Value>)> {
     tokio::task::spawn_blocking(move || {
-        build_models_snapshot_blocking(source_config, config, discovery_cache)
+        build_models_snapshot_blocking(source_config, config, discovery_cache, explicit_refreshes)
     })
     .await
     .map_err(|error| error_response(error.into()))?
@@ -273,9 +309,13 @@ fn build_models_snapshot_blocking(
     source_config: Arc<crate::config::AppConfig>,
     config: crate::config::AppConfig,
     discovery_cache: Option<DiscoveryCacheStamp>,
+    explicit_refreshes: HashSet<crate::config::ProviderId>,
 ) -> anyhow::Result<ModelsSnapshot> {
-    let available_models = RuntimeModelCatalog::from_config(&config).available_models();
-    let model_availability = resolved_model_availability(&config);
+    let available_models =
+        RuntimeModelCatalog::from_config_with_explicit_refreshes(&config, &explicit_refreshes)
+            .available_models();
+    let model_availability =
+        resolved_model_availability_with_explicit_refreshes(&config, &explicit_refreshes);
     let payload = serde_json::to_vec(&json!({
         "available_models": available_models,
         "model_availability": model_availability,

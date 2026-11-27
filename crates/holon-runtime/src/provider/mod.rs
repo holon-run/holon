@@ -14,7 +14,8 @@ pub(crate) use catalog::{
 };
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
 pub use diagnostics::{
-    provider_doctor, resolved_model_availability, resolved_model_providers,
+    provider_doctor, resolved_model_availability,
+    resolved_model_availability_with_explicit_refreshes, resolved_model_providers,
     resolved_provider_models, resolved_route_availability,
 };
 pub(crate) use diagnostics::{

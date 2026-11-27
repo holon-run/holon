@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde_json::{json, Value};
 
@@ -94,6 +94,19 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
 
 pub fn resolved_model_availability(config: &AppConfig) -> Vec<ResolvedModelAvailability> {
     let catalog = RuntimeModelCatalog::from_config(config);
+    resolved_model_availability_with_catalog(config, &catalog)
+}
+
+/// Availability for a session that explicitly refreshed some providers.
+///
+/// An explicit refresh is a foreground operator action, so the refreshed
+/// provider keeps serving its discovered models even when it is not declared
+/// in `config.json`.
+pub fn resolved_model_availability_with_explicit_refreshes(
+    config: &AppConfig,
+    providers: &HashSet<ProviderId>,
+) -> Vec<ResolvedModelAvailability> {
+    let catalog = RuntimeModelCatalog::from_config_with_explicit_refreshes(config, providers);
     resolved_model_availability_with_catalog(config, &catalog)
 }
 

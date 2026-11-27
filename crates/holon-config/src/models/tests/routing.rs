@@ -1,6 +1,7 @@
 use super::*;
 use holon_model_catalog::{ModelCapabilityOverride, ModelMetadataSource};
 use holon_provider::model_discovery::ProviderModelDiscoveryCache;
+use std::collections::HashSet;
 
 #[test]
 fn provider_chain_refs_match_independent_owned_selection_matrix() {
@@ -974,4 +975,29 @@ fn credential_free_provider_cached_models_load_when_a_model_route_references_the
         ModelRuntimeOverride::default(),
     );
     assert_loaded(model_override_referenced);
+}
+
+#[test]
+fn explicitly_refreshed_credential_free_provider_keeps_its_discovered_models() {
+    let route = route_ref("vllm@default/edge0-model");
+    let fixture = fixture_with_polluted_credential_free_cache();
+    let vllm = vllm_provider_id();
+
+    // An explicit refresh is a foreground operator action, so the refreshed
+    // provider keeps serving what it just discovered.
+    let refreshed = RuntimeModelCatalog::from_config_with_explicit_refreshes(
+        &fixture,
+        &HashSet::from([vllm.clone()]),
+    );
+    assert!(
+        refreshed.discovered_models.contains_key(&route),
+        "an explicitly refreshed credential-free provider must serve its discovered models"
+    );
+
+    // Without that opt-in the same cache entry stays out of the catalog.
+    let blocked = RuntimeModelCatalog::from_config(&fixture);
+    assert!(
+        !blocked.discovered_models.contains_key(&route),
+        "an unconfigured, unreferenced credential-free built-in must not load a polluted cache entry"
+    );
 }
