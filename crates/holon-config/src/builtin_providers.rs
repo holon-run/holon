@@ -1057,7 +1057,99 @@ pub fn resolve_provider_registry(
                 resolve_provider_credential(&provider.auth, settings_env, credential_store)?;
         }
     }
+    // Protocol sub-endpoints inherit the credential configured for the main
+    // provider entry.
+    let inherited = resolve_endpoint_auth_inheritance(
+        stored_config,
+        &registry,
+        settings_env,
+        credential_store,
+    )?;
+    for (id, (auth, credential)) in inherited {
+        if let Some(provider) = registry.get_mut(&id) {
+            provider.auth = auth;
+            provider.credential = credential;
+        }
+    }
     Ok(registry)
+}
+
+/// Credential configuration explicitly stored for a provider entry.
+/// `providers.<id>.auth` and `providers.<id>.endpoints.default.auth` both
+/// count; an entry without either keeps the built-in default. Only the
+/// presence of a stored credential matters here: the effective credential
+/// itself comes from the materialized provider entry.
+fn stored_provider_auth(provider_config: &ProviderConfigFile) -> Option<&ProviderAuthConfig> {
+    if !provider_config.auth.is_effectively_empty() {
+        return Some(&provider_config.auth);
+    }
+    provider_config
+        .endpoints
+        .get(&ProviderEndpointId::default_endpoint())
+        .and_then(|endpoint| endpoint.auth.as_ref())
+        .filter(|auth| !auth.is_effectively_empty())
+}
+
+/// Resolve the credential a protocol sub-endpoint uses when the operator
+/// configured the credential for the main provider entry only.
+///
+/// `opencode-go-messages` and `tencent-tokenhub-responses` share the main
+/// provider's credential. Without inheritance a credential saved for
+/// `opencode-go` never reaches the `@messages` route and those calls fail
+/// authentication, or force the operator to configure the same credential
+/// twice.
+///
+/// An explicit credential for the sub-endpoint always wins: either its own
+/// provider entry or `providers.<main>.endpoints.<endpoint>.auth`.
+fn resolve_endpoint_auth_inheritance(
+    stored_config: &HolonConfigFile,
+    registry: &ProviderRegistry,
+    settings_env: &HashMap<String, String>,
+    credential_store: &CredentialStoreFile,
+) -> Result<BTreeMap<ProviderId, (ProviderAuthConfig, Option<String>)>> {
+    let mut resolved = BTreeMap::new();
+    for (id, provider) in registry {
+        // Only protocol sub-endpoints of another provider inherit; the main
+        // entry owns its own credential.
+        if provider.route_endpoint.as_str() == ProviderEndpointId::DEFAULT
+            || provider.route_provider == *id
+        {
+            continue;
+        }
+        // An explicit credential for the sub-endpoint itself wins.
+        if stored_config
+            .providers
+            .get(id)
+            .and_then(stored_provider_auth)
+            .is_some()
+        {
+            continue;
+        }
+        let main_config = stored_config.providers.get(&provider.route_provider);
+        // An explicit endpoint credential on the main provider wins over the
+        // inherited one.
+        if let Some(auth) = main_config
+            .and_then(|config| config.endpoints.get(&provider.route_endpoint))
+            .and_then(|endpoint| endpoint.auth.as_ref())
+        {
+            validate_provider_auth(&provider.route_provider, auth)?;
+            let credential = resolve_provider_credential(auth, settings_env, credential_store)?;
+            resolved.insert(id.clone(), (auth.clone(), credential));
+            continue;
+        }
+        // Otherwise inherit the main entry's configured credential. Without an
+        // explicitly configured credential on the main provider the
+        // sub-endpoint keeps its built-in default, so it never gains a
+        // credential out of thin air.
+        if main_config.and_then(stored_provider_auth).is_none() {
+            continue;
+        }
+        let Some(main) = registry.get(&provider.route_provider) else {
+            continue;
+        };
+        resolved.insert(id.clone(), (main.auth.clone(), main.credential.clone()));
+    }
+    Ok(resolved)
 }
 
 fn provider_plan_alias_id(provider_id: &ProviderId, plan_id: &str) -> Result<ProviderId> {
