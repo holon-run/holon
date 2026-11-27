@@ -3307,3 +3307,30 @@ fn runtime_retention_usage_ledger_keys_round_trip_defaults_and_bounds() {
         400
     );
 }
+
+#[test]
+fn acp_profile_switches_default_to_suppression_and_an_explicit_gate_setting() {
+    let config = AcpConfigFile::default();
+    assert!(config.is_empty());
+    // Telemetry suppression has a profile-independent default; the bypass
+    // switch has none because its default depends on `permission_mode`.
+    assert!(config.disable_telemetry("antigravity"));
+    assert_eq!(config.permission_bypass_override("antigravity"), None);
+
+    let mut overrides = AcpHarnessProfileConfigFile::default();
+    overrides.disable_telemetry = Some(false);
+    overrides.dangerously_skip_permissions = Some(false);
+    let mut config = AcpConfigFile::default();
+    config.profiles.insert("antigravity".to_string(), overrides);
+    assert!(!config.is_empty());
+    // Explicit values opt back into upstream telemetry and the static gate.
+    assert!(!config.disable_telemetry("antigravity"));
+    assert_eq!(
+        config.permission_bypass_override("antigravity"),
+        Some(false)
+    );
+    // A profile with no override still follows the telemetry default and keeps
+    // the bypass switch unset.
+    assert!(config.disable_telemetry("other"));
+    assert_eq!(config.permission_bypass_override("other"), None);
+}

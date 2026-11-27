@@ -26,7 +26,7 @@ fn adc_credentials_are_forwarded_and_other_env_is_dropped() {
 }
 
 #[test]
-fn launch_command_carries_add_dir_sandbox_and_never_skips_permissions() {
+fn launch_command_carries_add_dir_and_sandbox_without_permission_bypass() {
     let spec = antigravity::profile();
     let request = LaunchRequest {
         workspace_dir: "/tmp/worktree".to_string(),
@@ -35,6 +35,7 @@ fn launch_command_carries_add_dir_sandbox_and_never_skips_permissions() {
         agent: None,
         log_file: None,
         disable_telemetry: true,
+        dangerously_skip_permissions: false,
     };
 
     let command = spec.build_launch(&request);
@@ -52,6 +53,50 @@ fn launch_command_carries_add_dir_sandbox_and_never_skips_permissions() {
             .args
             .iter()
             .any(|arg| arg.contains("dangerously-skip-permissions")),
-        "ACP delegation must never pass --dangerously-skip-permissions by default"
+        "the profile must not pass --dangerously-skip-permissions unless the request enables it"
     );
+}
+
+#[test]
+fn launch_command_passes_permission_bypass_only_when_requested() {
+    let spec = antigravity::profile();
+    let request = LaunchRequest {
+        workspace_dir: "/tmp/worktree".to_string(),
+        sandbox: SandboxMode::FullAccess,
+        dangerously_skip_permissions: true,
+        ..LaunchRequest::default()
+    };
+
+    let command = spec.build_launch(&request);
+
+    assert!(command
+        .args
+        .iter()
+        .any(|arg| arg == "--dangerously-skip-permissions"));
+}
+
+#[test]
+fn telemetry_flag_follows_the_request() {
+    let spec = antigravity::profile();
+    let suppressed = LaunchRequest {
+        workspace_dir: "/tmp/worktree".to_string(),
+        disable_telemetry: true,
+        ..LaunchRequest::default()
+    };
+    assert!(spec
+        .build_launch(&suppressed)
+        .args
+        .iter()
+        .any(|arg| arg == "--disable-telemetry"));
+
+    let restored = LaunchRequest {
+        workspace_dir: "/tmp/worktree".to_string(),
+        disable_telemetry: false,
+        ..LaunchRequest::default()
+    };
+    assert!(!spec
+        .build_launch(&restored)
+        .args
+        .iter()
+        .any(|arg| arg == "--disable-telemetry"));
 }

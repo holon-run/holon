@@ -723,6 +723,27 @@ impl AcpConfigFile {
         self.profiles.get(name)
     }
 
+    /// Whether the harness launch suppresses upstream telemetry.
+    ///
+    /// Defaults to `true`; profiles that declare no telemetry flag ignore it.
+    /// Set `acp.profiles.<name>.disable_telemetry = false` to opt back into
+    /// the harness' own telemetry reporting.
+    pub fn disable_telemetry(&self, profile: &str) -> bool {
+        self.profile(profile)
+            .and_then(|overrides| overrides.disable_telemetry)
+            .unwrap_or(true)
+    }
+
+    /// The explicit `acp.profiles.<name>.dangerously_skip_permissions` value.
+    ///
+    /// The effective default is resolved by the caller because it depends on
+    /// `permission_mode`: unattended turns open the gate, while interactive
+    /// approval keeps it closed unless the profile opens it explicitly.
+    pub fn permission_bypass_override(&self, profile: &str) -> Option<bool> {
+        self.profile(profile)
+            .and_then(|overrides| overrides.dangerously_skip_permissions)
+    }
+
     /// Effective interaction timeout. Zero is rejected by the caller.
     pub fn interaction_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.interaction_timeout_ms.unwrap_or(120_000))
@@ -751,6 +772,14 @@ pub struct AcpHarnessProfileConfigFile {
     /// surfaces permission and elicitation prompts through the control plane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// Suppress the harness' own upstream telemetry. Unset means `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_telemetry: Option<bool>,
+    /// Allow the profile's declared permission-bypass flag. Unset means `true`
+    /// for `unattended` and `false` for `interactive`, so interactive approval
+    /// is never silently auto-approved; an explicit value always wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dangerously_skip_permissions: Option<bool>,
 }
 
 impl AcpHarnessProfileConfigFile {
@@ -761,6 +790,8 @@ impl AcpHarnessProfileConfigFile {
             && self.env.is_empty()
             && self.role.is_none()
             && self.permission_mode.is_none()
+            && self.disable_telemetry.is_none()
+            && self.dangerously_skip_permissions.is_none()
     }
 }
 
