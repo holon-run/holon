@@ -887,63 +887,73 @@ class CaseHarness:
             "git add README.md; git commit -m 'acceptance fixture'",
         )
 
+    def ensure_stub_provider(self) -> None:
+        """Run the deterministic provider stub for a stub-provider case.
+
+        A missing stub container is launched fresh, which is what gives a
+        bounded retry a new transcript. An existing stub is reused only while
+        it still runs, because a stub process cannot replay a consumed
+        transcript.
+        """
+        require(
+            bool(self.stub_scenario), "stub provider mode requires stub_scenario"
+        )
+        stub_state = self.docker(
+            "inspect",
+            "--format",
+            "{{.State.Running}}",
+            self.stub_container,
+            check=False,
+        )
+        if stub_state.returncode != 0:
+            self.docker(
+                "run",
+                "--detach",
+                "--name",
+                self.stub_container,
+                "--network",
+                self.network,
+                "--network-alias",
+                "provider-stub",
+                "--volume",
+                f"{self.evidence}:/data",
+                OPENAI_STUB_IMAGE,
+                "--scenario",
+                self.stub_scenario,
+            )
+        else:
+            require(
+                stub_state.stdout.strip() == "true",
+                "deterministic provider stub stopped during case restart",
+            )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            ready = self.docker(
+                "exec",
+                self.stub_container,
+                "python",
+                "-c",
+                "import urllib.request;"
+                "urllib.request.urlopen('http://127.0.0.1:8080/healthz')",
+                check=False,
+            )
+            if ready.returncode == 0:
+                break
+            time.sleep(0.2)
+        else:
+            raise TimeoutError("deterministic provider stub did not become ready")
+        self.model = "openai/gpt-5.4"
+        self.runtime_env["HOLON_OPENAI_BASE_URL"] = (
+            self.stub_provider_base_url or "http://provider-stub:8080/v1"
+        )
+        self.runtime_env["OPENAI_API_KEY"] = "deterministic-test-key"
+
     def start(self, *, wait_idle: bool = True) -> None:
         self.docker("volume", "create", self.volume)
         if self.docker("network", "inspect", self.network, check=False).returncode != 0:
             self.docker("network", "create", self.network)
         if self.provider_mode == "stub":
-            require(
-                bool(self.stub_scenario), "stub provider mode requires stub_scenario"
-            )
-            stub_state = self.docker(
-                "inspect",
-                "--format",
-                "{{.State.Running}}",
-                self.stub_container,
-                check=False,
-            )
-            if stub_state.returncode != 0:
-                self.docker(
-                    "run",
-                    "--detach",
-                    "--name",
-                    self.stub_container,
-                    "--network",
-                    self.network,
-                    "--network-alias",
-                    "provider-stub",
-                    "--volume",
-                    f"{self.evidence}:/data",
-                    OPENAI_STUB_IMAGE,
-                    "--scenario",
-                    self.stub_scenario,
-                )
-            else:
-                require(
-                    stub_state.stdout.strip() == "true",
-                    "deterministic provider stub stopped during case restart",
-                )
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                ready = self.docker(
-                    "exec",
-                    self.stub_container,
-                    "python",
-                    "-c",
-                    "import urllib.request;"
-                    "urllib.request.urlopen('http://127.0.0.1:8080/healthz')",
-                    check=False,
-                )
-                if ready.returncode == 0:
-                    break
-                time.sleep(0.2)
-            else:
-                raise TimeoutError("deterministic provider stub did not become ready")
-            self.model = "openai/gpt-5.4"
-            self.runtime_env["HOLON_OPENAI_BASE_URL"] = (
-                self.stub_provider_base_url or "http://provider-stub:8080/v1"
-            )
-            self.runtime_env["OPENAI_API_KEY"] = "deterministic-test-key"
+            self.ensure_stub_provider()
         if (
             self.runtime_config or self.model_runtime_override
         ) and not self._model_runtime_override_seeded:
@@ -1089,6 +1099,13 @@ class CaseHarness:
             pass
         self.docker("rm", "-f", self.container, check=False)
         self.base_url = ""
+        if self.provider_mode == "stub":
+            # A stub process keeps one monotonic transcript phase, so reusing an
+            # exhausted stub would answer the retried attempt with 409 instead
+            # of letting the scenario run again. Remove it before archiving so
+            # it cannot write further evidence into the archived attempt;
+            # ``start()`` launches a fresh stub when the name is gone.
+            self.docker("rm", "-f", self.stub_container, check=False)
         archive_attempt_evidence(self.evidence, attempt - 1)
         require(
             not self.workspace_parent.exists(),
@@ -1953,6 +1970,15 @@ class CaseHarness:
                 )
         else:
             require(not failures, f"tool failures occurred in {label}: {failures}")
+            if storage_busy_tolerance is not None:
+                tolerated_store = getattr(self, "_tolerated_storage_busy", None)
+                if tolerated_store is None:
+                    tolerated_store = {}
+                    self._tolerated_storage_busy = tolerated_store
+                # A no-failure window clears the label so a later assertion
+                # cannot read tolerated busy from an earlier window and treat
+                # an unrelated gap as retry eligible.
+                tolerated_store[label] = []
         completed_items: dict[str, dict[str, Any]] | None = None
 
         def completed_tool(event: dict[str, Any]) -> bool:
