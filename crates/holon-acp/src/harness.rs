@@ -127,6 +127,11 @@ pub struct LaunchRequest {
     pub log_file: Option<String>,
     #[serde(default)]
     pub disable_telemetry: bool,
+    /// Whether the launch may pass the profile's declared permission-bypass
+    /// flag. Defaults to `false`; the runtime sets it from
+    /// `acp.profiles.<name>.dangerously_skip_permissions`.
+    #[serde(default)]
+    pub dangerously_skip_permissions: bool,
 }
 
 /// Program and arguments for one harness launch.
@@ -197,6 +202,10 @@ pub struct AcpHarnessSpec {
     pub log_file_arg: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_telemetry_arg: Option<String>,
+    /// Flag that makes the harness auto-approve its own tool permission
+    /// requests. Only passed when the launch request explicitly enables it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dangerously_skip_permissions_arg: Option<String>,
     pub session_option_keys: SessionOptionKeysMap,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_allowlist: Vec<String>,
@@ -263,6 +272,11 @@ impl AcpHarnessSpec {
         }
         if request.disable_telemetry {
             if let Some(flag) = &self.disable_telemetry_arg {
+                args.push(flag.clone());
+            }
+        }
+        if request.dangerously_skip_permissions {
+            if let Some(flag) = &self.dangerously_skip_permissions_arg {
                 args.push(flag.clone());
             }
         }
@@ -361,6 +375,7 @@ mod tests {
             agent: Some("reviewer".into()),
             log_file: Some("/tmp/agy.log".into()),
             disable_telemetry: true,
+            dangerously_skip_permissions: false,
         };
         let command = spec.build_launch(&request);
         assert_eq!(command.program, "agy");
@@ -389,6 +404,61 @@ mod tests {
             ..LaunchRequest::default()
         };
         assert_eq!(spec.build_launch(&request).args, vec!["acp"]);
+    }
+
+    #[test]
+    fn permission_bypass_flag_requires_an_explicit_request_and_declared_flag() {
+        let spec = crate::antigravity::profile();
+        let disabled = LaunchRequest {
+            workspace_dir: "/work/repo".into(),
+            ..LaunchRequest::default()
+        };
+        assert!(!spec
+            .build_launch(&disabled)
+            .args
+            .iter()
+            .any(|arg| arg.contains("dangerously-skip-permissions")));
+
+        let enabled = LaunchRequest {
+            workspace_dir: "/work/repo".into(),
+            dangerously_skip_permissions: true,
+            ..LaunchRequest::default()
+        };
+        assert!(spec
+            .build_launch(&enabled)
+            .args
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"));
+
+        // A profile that does not declare the flag never receives it, even
+        // when the launch request asks for it.
+        let undeclared = AcpHarnessSpec {
+            name: "plain".into(),
+            program: "plain-harness".into(),
+            default_args: Vec::new(),
+            additional_dir_arg: None,
+            sandbox_args: BTreeMap::new(),
+            agent_arg: None,
+            log_file_arg: None,
+            disable_telemetry_arg: None,
+            dangerously_skip_permissions_arg: None,
+            session_option_keys: SessionOptionKeysMap::default(),
+            env_allowlist: Vec::new(),
+            api_key_env: Vec::new(),
+            auth_methods: Vec::new(),
+            auth_help: None,
+            default_session_options: SessionOptions::default(),
+        };
+        assert_eq!(undeclared.build_launch(&enabled).args, Vec::<String>::new());
+
+        // Suppressing telemetry on a profile that declares no telemetry flag
+        // leaves the launch unchanged: the request may not invent a flag.
+        let suppress_telemetry = LaunchRequest {
+            workspace_dir: "/work/repo".into(),
+            disable_telemetry: true,
+            ..LaunchRequest::default()
+        };
+        assert!(undeclared.build_launch(&suppress_telemetry).args.is_empty());
     }
 
     #[test]

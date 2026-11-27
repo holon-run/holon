@@ -107,8 +107,9 @@ impl AcpError {
     pub fn recovery_hint(&self) -> Option<&'static str> {
         match self {
             AcpError::AuthenticationRequired { .. } => Some(
-                "run `agy acp --login`, or configure GEMINI_API_KEY before retrying; \
-                 do not retry in a loop and do not fall back to a different model",
+                "run `agy acp --login`, or configure the harness credential environment \
+                 variables documented for this profile before retrying; do not retry in a \
+                 loop and do not fall back to a different model",
             ),
             AcpError::SessionNotFound { .. } => Some(
                 "rebuild the session with session/new and replay only task-level handoff content",

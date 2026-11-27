@@ -1462,6 +1462,31 @@ struct ResolvedProfile {
     sandbox: SandboxMode,
     permission_mode: AcpPermissionMode,
     interaction_timeout: Duration,
+    /// Whether the launch suppresses the harness' own upstream telemetry.
+    disable_telemetry: bool,
+    /// Whether the launch may pass the profile's declared permission-bypass
+    /// flag. The static gate still rejects any undeclared bypass argument.
+    dangerously_skip_permissions: bool,
+    /// Where `dangerously_skip_permissions` came from, for audit evidence.
+    permission_bypass_source: AcpPermissionBypassSource,
+}
+
+/// Where the permission-bypass decision came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AcpPermissionBypassSource {
+    /// `acp.profiles.<name>.dangerously_skip_permissions` is unset.
+    ProfileDefault,
+    /// The profile configuration sets the switch explicitly.
+    Config,
+}
+
+impl AcpPermissionBypassSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ProfileDefault => "profile_default",
+            Self::Config => "config",
+        }
+    }
 }
 
 /// Resolve the harness profile, its overrides, and the injected environment.
@@ -1514,6 +1539,16 @@ fn resolve_profile(
         ));
     }
 
+    // Telemetry is suppressed by default for profiles that declare the flag,
+    // and the permission-bypass switch is open by default. Both stay
+    // configurable per profile so an operator can restore upstream behaviour.
+    let disable_telemetry = config.disable_telemetry(&binding.profile);
+    let dangerously_skip_permissions = config.dangerously_skip_permissions(&binding.profile);
+    let permission_bypass_source = overrides
+        .and_then(|profile| profile.dangerously_skip_permissions)
+        .map(|_| AcpPermissionBypassSource::Config)
+        .unwrap_or(AcpPermissionBypassSource::ProfileDefault);
+
     Ok(ResolvedProfile {
         spec,
         role,
@@ -1521,6 +1556,9 @@ fn resolve_profile(
         sandbox,
         permission_mode,
         interaction_timeout,
+        disable_telemetry,
+        dangerously_skip_permissions,
+        permission_bypass_source,
     })
 }
 
@@ -1636,9 +1674,90 @@ fn launch_request(
         // never materializes a temporary `agent.md` inside a managed worktree.
         agent: None,
         log_file: None,
-        disable_telemetry: false,
+        disable_telemetry: profile.disable_telemetry,
+        dangerously_skip_permissions: profile.dangerously_skip_permissions,
     };
     Ok((request, harness_env(&profile.env)))
+}
+
+/// Whether a launch argument asks the harness to stop gating its own tool
+/// permission requests.
+fn is_permission_bypass_arg(arg: &str) -> bool {
+    arg.contains("dangerously-skip-permissions") || arg.contains("yolo")
+}
+
+/// Keep the harness permission gate static unless the profile explicitly
+/// declares the bypass flag and the configuration opens it.
+///
+/// The gate is deliberately argument-level rather than a silent pass: a bypass
+/// injected through `acp.profiles.<name>.args` still fails closed when the
+/// per-profile switch is off, and the launched flag must be the profile-owned
+/// one so the decision stays attributable.
+fn ensure_permission_gate_preserved(
+    launch: &holon_acp::harness::LaunchCommand,
+    profile: &ResolvedProfile,
+) -> Result<()> {
+    let declared = profile.spec.dangerously_skip_permissions_arg.as_deref();
+    for arg in &launch.args {
+        if !is_permission_bypass_arg(arg) {
+            continue;
+        }
+        ensure!(
+            profile.dangerously_skip_permissions && declared == Some(arg.as_str()),
+            "ACP harness `{}` may disable its permission gate only through the profile-declared flag `{}` \
+             with `acp.profiles.{}.dangerously_skip_permissions = true`",
+            profile.spec.name,
+            declared.unwrap_or("<none>"),
+            profile.spec.name,
+        );
+    }
+    Ok(())
+}
+
+/// Convert one ACP client error into the runtime error surface.
+///
+/// An authentication failure is an operator-actionable state, not a generic
+/// ACP failure: it names the harness that needs credentials, lists the auth
+/// methods the peer advertised, and carries the harness' own recovery hint.
+/// Provider credential wording never applies here.
+fn acp_client_error(harness: &str, operation: &'static str, error: AcpError) -> anyhow::Error {
+    if error.is_authentication_required() {
+        return acp_authentication_error(harness, &error).into();
+    }
+    anyhow!(error).context(operation)
+}
+
+/// Structured `auth_error` for a harness that rejected Holon as unauthenticated.
+fn acp_authentication_error(harness: &str, error: &AcpError) -> crate::runtime_error::RuntimeError {
+    use crate::runtime_error::{RuntimeError, RuntimeErrorDomain};
+
+    let (message, auth_methods) = match error {
+        AcpError::AuthenticationRequired {
+            message,
+            auth_methods,
+        } => (message.as_str(), auth_methods.as_slice()),
+        _ => ("authentication required", &[][..]),
+    };
+    let methods = if auth_methods.is_empty() {
+        "no auth method advertised".to_string()
+    } else {
+        format!("auth methods: {}", auth_methods.join(", "))
+    };
+    let mut operator_message = format!(
+        "ACP harness `{harness}` requires authentication: {} ({methods})",
+        message.trim()
+    );
+    if let Some(hint) = error.recovery_hint() {
+        operator_message.push_str("; ");
+        operator_message.push_str(hint);
+    }
+    let runtime_error =
+        RuntimeError::new(RuntimeErrorDomain::Runtime, "auth_error", operator_message)
+            .with_safe_context("stage", "acp_authentication");
+    match error.recovery_hint() {
+        Some(hint) => runtime_error.with_recovery_hint(hint),
+        None => runtime_error,
+    }
 }
 
 /// Session metadata that never enters the model prompt.
@@ -1678,13 +1797,7 @@ async fn spawn_harness(
     }
     let (request, env) = launch_request(profile, execution)?;
     let launch = profile.spec.build_launch(&request);
-    ensure!(
-        !launch
-            .args
-            .iter()
-            .any(|arg| { arg.contains("dangerously-skip-permissions") || arg.contains("yolo") }),
-        "ACP harness launch must not disable the harness permission gate"
-    );
+    ensure_permission_gate_preserved(&launch, profile)?;
 
     let system = runtime.system();
     let scope = super::resident_input_evidence::InputEvidenceScope {
@@ -1942,6 +2055,42 @@ impl super::RuntimeHandle {
 }
 
 impl super::RuntimeHandle {
+    /// Record the explicit launch decisions that change harness-side behaviour.
+    ///
+    /// Suppressing harness telemetry and opening the permission gate are
+    /// deliberate departures from the harness defaults. Each turn leaves one
+    /// attributable marker (profile, turn, decision source) instead of relying
+    /// on argv inspection after the fact.
+    async fn record_acp_launch_decision(
+        &self,
+        agent_id: &str,
+        binding: &AcpDriverBinding,
+        profile: &ResolvedProfile,
+        turn: &AcpTurnMetadata,
+    ) -> Result<()> {
+        if !profile.dangerously_skip_permissions
+            || profile.spec.dangerously_skip_permissions_arg.is_none()
+        {
+            return Ok(());
+        }
+        self.append_audit_event(
+            "acp_permission_gate_disabled",
+            json!({
+                "driver": "acp",
+                "agent_id": agent_id,
+                "acp_profile": binding.profile,
+                "turn_id": turn.turn_id,
+                "turn_index": turn.turn_index,
+                "work_item_id": turn.work_item_id,
+                "flag": profile.spec.dangerously_skip_permissions_arg,
+                "decision_source": profile.permission_bypass_source.as_str(),
+                "telemetry_disabled": profile.disable_telemetry,
+            }),
+        )
+        .await
+        .context("record ACP launch decision")
+    }
+
     /// Retire a persisted upstream session that can no longer be continued.
     ///
     /// The rotation is recorded before the credential is dropped so the
@@ -2097,7 +2246,11 @@ impl super::RuntimeHandle {
             Ok(handshake) => handshake,
             Err(error) => {
                 reap_process(&process, group.as_ref()).await;
-                return Err(anyhow!(error).context("ACP initialize failed"));
+                return Err(acp_client_error(
+                    &profile.spec.name,
+                    "ACP initialize failed",
+                    error,
+                ));
             }
         };
 
@@ -2126,7 +2279,13 @@ impl super::RuntimeHandle {
                         client
                             .new_session(session_new_params(execution, profile, &handshake))
                             .await
-                            .map_err(|error| anyhow!(error).context("ACP session/new failed"))?
+                            .map_err(|error| {
+                                acp_client_error(
+                                    &profile.spec.name,
+                                    "ACP session/new failed",
+                                    error,
+                                )
+                            })?
                     }
                     Err(AcpError::UnsupportedByPeer { .. }) if handshake.supports_load() => {
                         new_session = false;
@@ -2157,18 +2316,30 @@ impl super::RuntimeHandle {
                                     .new_session(session_new_params(execution, profile, &handshake))
                                     .await
                                     .map_err(|error| {
-                                        anyhow!(error).context("ACP session/new failed")
+                                        acp_client_error(
+                                            &profile.spec.name,
+                                            "ACP session/new failed",
+                                            error,
+                                        )
                                     })?
                             }
                             Err(error) => {
                                 reap_process(&process, group.as_ref()).await;
-                                return Err(anyhow!(error).context("ACP session/load failed"));
+                                return Err(acp_client_error(
+                                    &profile.spec.name,
+                                    "ACP session/load failed",
+                                    error,
+                                ));
                             }
                         }
                     }
                     Err(error) => {
                         reap_process(&process, group.as_ref()).await;
-                        return Err(anyhow!(error).context("ACP session/resume failed"));
+                        return Err(acp_client_error(
+                            &profile.spec.name,
+                            "ACP session/resume failed",
+                            error,
+                        ));
                     }
                 }
             } else if handshake.supports_load() {
@@ -2199,11 +2370,21 @@ impl super::RuntimeHandle {
                         client
                             .new_session(session_new_params(execution, profile, &handshake))
                             .await
-                            .map_err(|error| anyhow!(error).context("ACP session/new failed"))?
+                            .map_err(|error| {
+                                acp_client_error(
+                                    &profile.spec.name,
+                                    "ACP session/new failed",
+                                    error,
+                                )
+                            })?
                     }
                     Err(error) => {
                         reap_process(&process, group.as_ref()).await;
-                        return Err(anyhow!(error).context("ACP session/load failed"));
+                        return Err(acp_client_error(
+                            &profile.spec.name,
+                            "ACP session/load failed",
+                            error,
+                        ));
                     }
                 }
             } else {
@@ -2218,13 +2399,17 @@ impl super::RuntimeHandle {
                 client
                     .new_session(session_new_params(execution, profile, &handshake))
                     .await
-                    .map_err(|error| anyhow!(error).context("ACP session/new failed"))?
+                    .map_err(|error| {
+                        acp_client_error(&profile.spec.name, "ACP session/new failed", error)
+                    })?
             }
         } else {
             client
                 .new_session(session_new_params(execution, profile, &handshake))
                 .await
-                .map_err(|error| anyhow!(error).context("ACP session/new failed"))?
+                .map_err(|error| {
+                    acp_client_error(&profile.spec.name, "ACP session/new failed", error)
+                })?
         };
 
         if let Err(error) = self
@@ -2343,6 +2528,8 @@ impl super::RuntimeHandle {
         let config = self.inner.config_snapshot.load().acp.clone();
         let acp_config = &config;
         let profile = resolve_profile(acp_config, binding, execution)?;
+        self.record_acp_launch_decision(agent_id, binding, &profile, turn)
+            .await?;
         let interaction: Option<Arc<dyn AcpInteractionChannel>> =
             profile.permission_mode.is_interactive().then(|| {
                 Arc::new(AcpInteractionBroker::new(
@@ -2448,7 +2635,11 @@ impl super::RuntimeHandle {
                 self.store_acp_session(session).await;
             }
             Outcome::Settled(Err(error)) => {
-                return Err(anyhow!(error).context("ACP session/prompt failed"));
+                return Err(acp_client_error(
+                    &profile.spec.name,
+                    "ACP session/prompt failed",
+                    error,
+                ));
             }
             Outcome::Cancelled => {
                 return Err(anyhow!("ACP turn cancelled before the harness settled"));
@@ -2885,11 +3076,13 @@ mod acp_driver_tests {
     use crate::system::RunningProcessExitStatus;
 
     /// How the mock peer answers session continuation calls.
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Default)]
     struct TestPeerConfig {
         supports_resume: bool,
         supports_load: bool,
         resume_missing: bool,
+        /// Error response for `session/prompt`, used to exercise ACP failure paths.
+        prompt_error: Option<holon_acp::RpcError>,
     }
 
     /// Session ids are unique per mock connection so a rotated session is
@@ -3207,6 +3400,10 @@ mod acp_driver_tests {
                     .await;
                 }
                 "session/prompt" => {
+                    if let Some(error) = config.prompt_error.clone() {
+                        write_peer_frame(&mut write_half, Frame::Error { id, error }).await;
+                        continue;
+                    }
                     let session_id = param_session_id(&params);
                     let text = prompt_text(&params);
                     let round = {
@@ -3282,6 +3479,185 @@ mod acp_driver_tests {
             .text
     }
 
+    fn acp_config(
+        disable_telemetry: Option<bool>,
+        dangerously_skip_permissions: Option<bool>,
+    ) -> crate::config::AcpConfigFile {
+        let mut overrides = crate::config::AcpHarnessProfileConfigFile::default();
+        overrides.disable_telemetry = disable_telemetry;
+        overrides.dangerously_skip_permissions = dangerously_skip_permissions;
+        let mut config = crate::config::AcpConfigFile::default();
+        config
+            .profiles
+            .insert(holon_acp::antigravity::NAME.to_string(), overrides);
+        config
+    }
+
+    #[test]
+    fn launch_defaults_disable_telemetry_and_open_the_permission_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exec = execution(dir.path(), true);
+        let profile = resolve_profile(
+            &crate::config::AcpConfigFile::default(),
+            &antigravity_binding(),
+            &exec,
+        )
+        .expect("profile");
+        assert!(profile.disable_telemetry);
+        assert!(profile.dangerously_skip_permissions);
+        assert_eq!(
+            profile.permission_bypass_source,
+            AcpPermissionBypassSource::ProfileDefault
+        );
+
+        let (request, _env) = launch_request(&profile, &exec).expect("launch request");
+        let launch = profile.spec.build_launch(&request);
+        assert!(launch.args.iter().any(|arg| arg == "--disable-telemetry"));
+        assert!(launch
+            .args
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"));
+        ensure_permission_gate_preserved(&launch, &profile).expect("declared bypass is admitted");
+    }
+
+    #[test]
+    fn explicit_profile_config_restores_telemetry_and_the_static_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exec = execution(dir.path(), true);
+        let profile = resolve_profile(
+            &acp_config(Some(false), Some(false)),
+            &antigravity_binding(),
+            &exec,
+        )
+        .expect("profile");
+        assert!(!profile.disable_telemetry);
+        assert!(!profile.dangerously_skip_permissions);
+        assert_eq!(
+            profile.permission_bypass_source,
+            AcpPermissionBypassSource::Config
+        );
+
+        let (request, _env) = launch_request(&profile, &exec).expect("launch request");
+        let launch = profile.spec.build_launch(&request);
+        assert!(!launch.args.iter().any(|arg| arg == "--disable-telemetry"));
+        assert!(!launch
+            .args
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"));
+        ensure_permission_gate_preserved(&launch, &profile).expect("nothing to reject");
+
+        // A bypass injected through `acp.profiles.<name>.args` still fails
+        // closed once the per-profile switch is off.
+        let mut injected = launch.clone();
+        injected.args.push("--dangerously-skip-permissions".into());
+        let error = ensure_permission_gate_preserved(&injected, &profile)
+            .expect_err("an undeclared bypass must be rejected");
+        assert!(error.to_string().contains("dangerously_skip_permissions"));
+    }
+
+    #[tokio::test]
+    async fn permission_gate_decision_is_audited_once_per_turn() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        install_test_peer(
+            &runtime,
+            TestPeerConfig {
+                supports_resume: false,
+                ..TestPeerConfig::default()
+            },
+        )
+        .await;
+        let root = tempdir().unwrap();
+        let exec = execution(root.path(), true);
+
+        turn(&runtime, &exec, "audit the launch decision").await;
+
+        let connection = runtime.runtime_db().connection().unwrap();
+        let (count, payload): (i64, String) = connection
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(data_json), '') FROM audit_events \
+                 WHERE kind = 'acp_permission_gate_disabled'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "one explicit marker per turn");
+        let payload: Value = serde_json::from_str(&payload).expect("audit payload");
+        let data = &payload["data"];
+        assert_eq!(data["acp_profile"], "antigravity");
+        assert_eq!(data["turn_id"], "turn-acp-test");
+        assert_eq!(data["flag"], "--dangerously-skip-permissions");
+        assert_eq!(data["decision_source"], "profile_default");
+        assert_eq!(data["telemetry_disabled"], true);
+    }
+
+    #[tokio::test]
+    async fn harness_authentication_failure_settles_as_structured_auth_error() {
+        let (_home, _workspace, runtime) = acp_continuity_runtime();
+        install_test_peer(
+            &runtime,
+            TestPeerConfig {
+                prompt_error: Some(holon_acp::RpcError {
+                    code: holon_acp::AUTHENTICATION_REQUIRED,
+                    message: "Authentication required".into(),
+                    data: Some(json!({
+                        "authMethods": [{"id": "oauth-personal"}, {"id": "terminal-login"}],
+                    })),
+                }),
+                ..TestPeerConfig::default()
+            },
+        )
+        .await;
+        let root = tempdir().unwrap();
+        let exec = execution(root.path(), true);
+        let turn_metadata = AcpTurnMetadata::resolve(Some("turn-acp-test"), 0, None, None, None)
+            .expect("turn metadata");
+
+        let outcome = runtime
+            .run_acp_turn(
+                "default",
+                "authenticate me",
+                &exec,
+                &antigravity_binding(),
+                &turn_metadata,
+                CancellationToken::new(),
+            )
+            .await;
+        let error = match outcome {
+            Ok(_) => panic!("the harness rejected the prompt as unauthenticated"),
+            Err(error) => error,
+        };
+
+        let descriptor = crate::runtime_error::describe_runtime_error(&error);
+        assert_eq!(descriptor.code, "auth_error");
+        assert!(!descriptor.retryable);
+        assert!(
+            descriptor.operator_message.contains("antigravity"),
+            "the message names the harness: {}",
+            descriptor.operator_message
+        );
+        assert!(
+            descriptor.operator_message.contains("oauth-personal")
+                && descriptor.operator_message.contains("terminal-login"),
+            "the message carries the advertised auth methods: {}",
+            descriptor.operator_message
+        );
+        assert!(
+            descriptor.operator_message.contains("agy acp --login"),
+            "the message carries the harness recovery hint: {}",
+            descriptor.operator_message
+        );
+        assert!(descriptor
+            .recovery_hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("agy acp --login")));
+        assert!(
+            !descriptor
+                .operator_message
+                .contains("check provider authentication"),
+            "provider credential wording must not leak into harness auth failures"
+        );
+    }
+
     #[tokio::test]
     async fn resident_session_reuses_one_peer_across_turns_without_replaying_history() {
         let (_home, _workspace, runtime) = acp_continuity_runtime();
@@ -3291,6 +3667,7 @@ mod acp_driver_tests {
                 supports_resume: true,
                 supports_load: false,
                 resume_missing: false,
+                prompt_error: None,
             },
         )
         .await;
@@ -3327,6 +3704,7 @@ mod acp_driver_tests {
                 supports_resume: true,
                 supports_load: false,
                 resume_missing: false,
+                prompt_error: None,
             },
         )
         .await;
@@ -3367,6 +3745,7 @@ mod acp_driver_tests {
                 supports_resume: true,
                 supports_load: false,
                 resume_missing: false,
+                prompt_error: None,
             },
         )
         .await;
@@ -3405,6 +3784,7 @@ mod acp_driver_tests {
                 supports_resume: true,
                 supports_load: false,
                 resume_missing: true,
+                prompt_error: None,
             },
         )
         .await;
@@ -3457,6 +3837,7 @@ mod acp_driver_tests {
                 supports_resume: true,
                 supports_load: false,
                 resume_missing: false,
+                prompt_error: None,
             },
         )
         .await;
@@ -3496,6 +3877,7 @@ mod acp_driver_tests {
                 supports_resume: true,
                 supports_load: false,
                 resume_missing: false,
+                prompt_error: None,
             },
             1,
         )

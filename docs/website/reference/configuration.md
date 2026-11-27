@@ -812,6 +812,8 @@ Agents using the `acp` execution driver run model turns inside an external harne
 | `acp.profiles.<name>.env` | object | `{}` | Extra environment variables injected alongside the allowlisted host environment |
 | `acp.profiles.<name>.role` | string | unset | Role text delivered through the harness persona channel |
 | `acp.profiles.<name>.permission_mode` | string | `"unattended"` | `unattended` applies static workspace rules immediately; `interactive` routes permissions and elicitation prompts through the [HTTP Control Plane](/reference/http-control-plane.md) |
+| `acp.profiles.<name>.disable_telemetry` | boolean | `true` | Suppress the harness' own upstream telemetry by passing the profile's telemetry flag; set `false` to restore upstream telemetry. Profiles that declare no telemetry flag are unchanged |
+| `acp.profiles.<name>.dangerously_skip_permissions` | boolean | `true` | Pass the profile-declared permission-bypass flag (`--dangerously-skip-permissions` for `antigravity`); set `false` to restore the static permission gate. Each turn that opens the gate records one `acp_permission_gate_disabled` audit event |
 
 In `interactive` mode, every permission prompt (including in-root requests) waits for an operator response via `GET/POST /api/control/agents/:id/acp-interactions` and falls back to rejection on timeout. Only `allow_always` is saved for the current ACP session and workspace trust domain (and cleared when the session rotates); `reject_always` rejects only that request. See [Troubleshooting ACP harness agents](/guides/troubleshooting.md#acp-harness-agents-agy-acp) for login, error codes, and event details.
 

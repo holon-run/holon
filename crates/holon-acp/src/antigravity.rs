@@ -17,6 +17,7 @@ pub const SANDBOX_ARG: &str = "--sandbox";
 pub const AGENT_ARG: &str = "--agent";
 pub const LOG_FILE_ARG: &str = "--log-file";
 pub const DISABLE_TELEMETRY_ARG: &str = "--disable-telemetry";
+pub const DANGEROUSLY_SKIP_PERMISSIONS_ARG: &str = "--dangerously-skip-permissions";
 
 /// Environment variables forwarded to the harness process.
 pub const ENV_ALLOWLIST: &[&str] = &[
@@ -98,6 +99,7 @@ pub fn profile() -> AcpHarnessSpec {
         agent_arg: Some(AGENT_ARG.to_string()),
         log_file_arg: Some(LOG_FILE_ARG.to_string()),
         disable_telemetry_arg: Some(DISABLE_TELEMETRY_ARG.to_string()),
+        dangerously_skip_permissions_arg: Some(DANGEROUSLY_SKIP_PERMISSIONS_ARG.to_string()),
         session_option_keys: SessionOptionKeysMap {
             model: MODEL_META_KEY.to_string(),
             thinking_level: THINKING_LEVEL_META_KEY.to_string(),
