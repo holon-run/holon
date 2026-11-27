@@ -325,10 +325,17 @@ impl ModelCatalogConfig<'_> {
     /// limited to providers the operator opted into by declaring
     /// `providers.<id>` in `config.json` or by referencing the provider from a
     /// configured model route or model override. Providers that require a
-    /// credential keep the historical behavior; a missing credential already
-    /// prevents discovery.
+    /// credential but are not anonymous-access built-ins keep the historical
+    /// behavior; a missing credential already prevents discovery.
     pub fn provider_auto_discovery_allowed(&self, provider: &ProviderRuntimeConfig) -> bool {
-        if provider.auth.kind != CredentialKind::None {
+        // Anonymous-access built-ins opt into a loopback endpoint, so requiring
+        // a credential does not make automatic discovery safe on its own: they
+        // still need an explicit declaration or a route reference.
+        if provider.auth.kind != CredentialKind::None
+            && !holon_domain::model_values::built_in_provider_allows_anonymous_access(
+                provider.route_provider.as_str(),
+            )
+        {
             return true;
         }
         self.stored_config.providers.contains_key(&provider.id)
@@ -1756,7 +1763,12 @@ pub(crate) fn authenticated_provider_ids(providers: &ProviderRegistry) -> Vec<Pr
 #[doc(hidden)]
 pub fn provider_has_usable_auth(provider: &ProviderRuntimeConfig) -> bool {
     match provider.auth.source {
-        CredentialSource::Env => provider.has_configured_credential(),
+        CredentialSource::Env => {
+            provider.has_configured_credential()
+                || holon_domain::model_values::built_in_provider_allows_anonymous_access(
+                    provider.route_provider.as_str(),
+                )
+        }
         CredentialSource::AuthProfile => {
             provider.has_configured_credential()
                 || (provider.id.is_openai_codex()

@@ -93,8 +93,10 @@ async fn built_in_magpie_default_endpoint_sends_anthropic_messages_without_autho
         }),
     ))
     .await;
-    // The built-in `magpie` provider is zero-config: root base URL and no
-    // credential, matching the registry default before any user override.
+    // The built-in `magpie` provider binds an optional `MAGPIE_API_KEY`, but
+    // loopback Magpie accepts anonymous requests. With the key unset the
+    // transport must not reject the request: it sends no Authorization header
+    // instead of failing on the missing credential.
     let provider_config = ProviderRuntimeConfig {
         headers: Default::default(),
         id: ProviderId::parse("magpie").unwrap(),
@@ -102,7 +104,14 @@ async fn built_in_magpie_default_endpoint_sends_anthropic_messages_without_autho
         route_endpoint: ProviderEndpointId::default_endpoint(),
         transport: ProviderTransportKind::AnthropicMessages,
         base_url,
-        auth: Default::default(),
+        auth: ProviderAuthConfig {
+            source: CredentialSource::Env,
+            kind: CredentialKind::ApiKey,
+            env: Some("MAGPIE_API_KEY".into()),
+            profile: None,
+            external: None,
+            client_id: None,
+        },
         credential: None,
         credential_store_path: None,
         codex_home: None,
@@ -132,6 +141,49 @@ async fn built_in_magpie_default_endpoint_sends_anthropic_messages_without_autho
     let headers = headers.as_ref().expect("server should capture headers");
     assert!(headers.get("authorization").is_none());
     assert_eq!(headers["anthropic-version"], "2023-06-01");
+}
+
+#[tokio::test]
+async fn magpie_plan_alias_without_credential_stays_anonymous() {
+    // Plan aliases materialize with `id = <provider>-<plan>` while
+    // `route_provider` keeps `magpie`; the anonymous-access check must follow
+    // the route provider so an alias without a key still constructs instead
+    // of failing on the missing credential.
+    let provider_config = ProviderRuntimeConfig {
+        headers: Default::default(),
+        id: ProviderId::parse("magpie-solo").unwrap(),
+        route_provider: ProviderId::parse("magpie").unwrap(),
+        route_endpoint: ProviderEndpointId::default_endpoint(),
+        transport: ProviderTransportKind::AnthropicMessages,
+        base_url: "http://127.0.0.1:3425".into(),
+        auth: ProviderAuthConfig {
+            source: CredentialSource::Env,
+            kind: CredentialKind::ApiKey,
+            env: Some("MAGPIE_API_KEY".into()),
+            profile: None,
+            external: None,
+            client_id: None,
+        },
+        credential: None,
+        credential_store_path: None,
+        codex_home: None,
+        originator: None,
+        reasoning_effort: None,
+        context_management: Default::default(),
+        builtin_web_search: None,
+    };
+    let provider = AnthropicProvider::from_runtime_config(
+        &provider_config,
+        "magpie-default",
+        1024,
+        Path::new("."),
+        true,
+        TEST_CLIENT_VERSION,
+    );
+    assert!(
+        provider.is_ok(),
+        "plan alias without a credential must stay anonymous"
+    );
 }
 
 #[tokio::test]

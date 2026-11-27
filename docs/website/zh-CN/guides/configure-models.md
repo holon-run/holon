@@ -186,12 +186,11 @@ holon config set providers.magpie.base_url http://127.0.0.1:4325
 holon config models refresh --provider magpie
 ```
 
-本机 loopback 上的 Magpie 接受任意 key，因此凭据是可选的。只有需要按应用计量（`Authorization: Bearer magpie-<app-id>`）或连接远程共享网关时才显式配置；Holon 不内置默认 key：
+本机 loopback 上的 Magpie 接受任意 key，因此凭据是可选的。内置条目已绑定可选的 Holon 侧约定变量 `MAGPIE_API_KEY`（这是 Holon 的约定，不是 Magpie 官方环境变量）；未设置时不发送 `Authorization` 头。仅在需要按应用计量（`Authorization: Bearer magpie-<app-id>`）或跨机共享、需要用户 gateway key 时才设置：
 
 ```bash
-holon config set providers.magpie.auth.source env
-holon config set providers.magpie.auth.kind api_key
-holon config set providers.magpie.auth.env MAGPIE_API_KEY
+# 可选：仅在计量或跨机共享网关场景设置。
+export MAGPIE_API_KEY=magpie-<app-id>
 ```
 
 内置条目只声明 Anthropic Messages 端点。如需通过 Holon 调用 Magpie 的 OpenAI Chat Completions 或 Gemini 协议，按[多协议网关](#multi-protocol-gateways)添加 `endpoints.*`/`plans.*`；OpenAI 客户端 base 为 `http://127.0.0.1:3425/v1`，Anthropic 与 Gemini 使用 `http://127.0.0.1:3425`。

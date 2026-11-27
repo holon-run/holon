@@ -1001,3 +1001,100 @@ fn explicitly_refreshed_credential_free_provider_keeps_its_discovered_models() {
         "an unconfigured, unreferenced credential-free built-in must not load a polluted cache entry"
     );
 }
+
+fn magpie_provider_id() -> ProviderId {
+    ProviderId::parse("magpie").unwrap()
+}
+
+/// A cache entry of the shape recorded when an unrelated service answers on
+/// magpie's default loopback port.
+fn fixture_with_polluted_magpie_cache() -> CatalogFixture {
+    let mut fixture = catalog_fixture("openai@default/gpt-5.4", &[]);
+    let magpie = magpie_provider_id();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture
+        .providers
+        .insert(magpie.clone(), built_ins.get(&magpie).unwrap().clone());
+    fixture.model_discovery_cache.providers.insert(
+        holon_provider::model_discovery::ModelDiscoveryCacheKey::new(
+            magpie.clone(),
+            ProviderEndpointId::default_endpoint(),
+        ),
+        ProviderModelDiscoveryCache {
+            provider: magpie,
+            fetched_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            source_url: Some("http://127.0.0.1:3425/v1/models".into()),
+            response_hash: Some("sha256:test".into()),
+            models: vec![BuiltInModelMetadata {
+                model_ref: ModelRef::parse("magpie/edge0-model").unwrap(),
+                display_name: "Edge0".into(),
+                description: "Recorded from a non-magpie service on the same port.".into(),
+                context_window_tokens: Some(424_242),
+                effective_context_window_percent: 95,
+                auto_compact_token_limit: None,
+                default_max_output_tokens: None,
+                max_output_tokens_upper_limit: None,
+                default_verbosity: None,
+                tool_output_truncation_estimated_tokens: None,
+                capabilities: Default::default(),
+                reasoning_effort_options: Vec::new(),
+                source: ModelMetadataSource::RemoteDiscovered,
+                endpoint: None,
+            }],
+        },
+    );
+    fixture
+}
+
+#[test]
+fn magpie_optional_credential_still_requires_explicit_discovery_opt_in() {
+    let route = route_ref("magpie@default/edge0-model");
+    let magpie = magpie_provider_id();
+
+    let mut fixture = fixture_with_polluted_magpie_cache();
+    let provider = fixture.providers.get(&magpie).unwrap().clone();
+    assert_eq!(
+        provider.auth.kind,
+        CredentialKind::ApiKey,
+        "magpie advertises an optional API key, so it is not a credential-free provider"
+    );
+    let unconfigured_config = fixture.model_catalog_config();
+    assert!(
+        !unconfigured_config
+            .provider_auto_discovery_allowed(fixture.providers.get(&magpie).unwrap()),
+        "an optional credential must not opt magpie into probing its loopback port"
+    );
+    let blocked = RuntimeModelCatalog::from_config(&fixture);
+    assert!(
+        !blocked.discovered_models.contains_key(&route),
+        "an unconfigured, unreferenced magpie must not load a polluted cache entry"
+    );
+
+    fixture.stored_config.providers.insert(
+        magpie.clone(),
+        ProviderConfigFile {
+            transport: ProviderTransportKind::AnthropicMessages,
+            base_url: "http://127.0.0.1:3425".into(),
+            ..Default::default()
+        },
+    );
+    let configured_config = fixture.model_catalog_config();
+    assert!(
+        configured_config.provider_auto_discovery_allowed(fixture.providers.get(&magpie).unwrap()),
+        "declaring providers.magpie must opt magpie into automatic discovery"
+    );
+    let configured = RuntimeModelCatalog::from_config(&fixture);
+    assert!(
+        configured.discovered_models.contains_key(&route),
+        "declaring providers.magpie must restore cached discovery models"
+    );
+
+    let mut referenced = fixture_with_polluted_magpie_cache();
+    referenced.default_model = route.clone();
+    assert!(
+        RuntimeModelCatalog::from_config(&referenced)
+            .discovered_models
+            .contains_key(&route),
+        "a configured model reference must opt magpie into discovery"
+    );
+}

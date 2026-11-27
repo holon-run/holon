@@ -50,7 +50,7 @@ used in existing `provider/model` refs and config shortcuts.
 | `huggingface` | `default` | `huggingface` | OpenAI Chat Completions | `https://router.huggingface.co/v1` | `HUGGINGFACE_API_KEY or HF_TOKEN` |
 | `kilocode` | `default` | `kilocode` | OpenAI Chat Completions | `https://api.kilo.ai/api/gateway` | `KILOCODE_API_KEY` |
 | `litellm` | `default` | `litellm` | OpenAI Chat Completions | `http://localhost:4000` | `LITELLM_API_KEY` |
-| `magpie` | `default` | `magpie` | Anthropic Messages | `http://127.0.0.1:3425` | `—` |
+| `magpie` | `default` | `magpie` | Anthropic Messages | `http://127.0.0.1:3425` | `MAGPIE_API_KEY (optional)` |
 | `minimax` | `default` | `minimax` | Anthropic Messages | `https://api.minimax.io/anthropic` | `MINIMAX_API_KEY` |
 | `minimax-cn` | `default` | `minimax-cn` | Anthropic Messages | `https://api.minimax.cn/anthropic` | `MINIMAX_CN_API_KEY` |
 | `minimax-cn` | `m-plan` | `minimax-cn-m-plan` | Anthropic Messages | `https://api.minimax.cn/anthropic` | `MINIMAX_CN_M_PLAN_API_KEY` |

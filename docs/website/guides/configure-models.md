@@ -194,12 +194,16 @@ holon config set providers.magpie.base_url http://127.0.0.1:4325
 holon config models refresh --provider magpie
 ```
 
-Loopback Magpie accepts any key, so a credential is optional. Configure one explicitly only for usage attribution (`Authorization: Bearer magpie-<app-id>`) or a shared/remote gateway; there is no built-in default key:
+Loopback Magpie accepts any key, so a credential is optional. The built-in
+entry already binds the optional Holon-side `MAGPIE_API_KEY` (a Holon
+convention, not an official Magpie environment variable) and sends no
+`Authorization` header when it is unset. Set it only for usage attribution
+(`Authorization: Bearer magpie-<app-id>`) or to reach a shared/remote gateway
+that requires the user gateway key:
 
 ```bash
-holon config set providers.magpie.auth.source env
-holon config set providers.magpie.auth.kind api_key
-holon config set providers.magpie.auth.env MAGPIE_API_KEY
+# Optional: only for attribution or a shared/remote gateway.
+export MAGPIE_API_KEY=magpie-<app-id>
 ```
 
 The built-in entry declares only the Anthropic Messages endpoint. To call Magpie's OpenAI Chat Completions or Gemini protocols through Holon, add `endpoints.*`/`plans.*` as shown in [Multi-protocol gateways](#multi-protocol-gateways); the OpenAI client base is `http://127.0.0.1:3425/v1`, while the Anthropic and Gemini bases use `http://127.0.0.1:3425`.

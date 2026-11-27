@@ -1,8 +1,8 @@
 use super::*;
 pub(crate) use holon_domain::model_values::built_in_provider_endpoint_identity;
 use holon_domain::model_values::{
-    provider_definitions, ProviderContextManagement, ProviderDefinition, ProviderMaterializer,
-    ProviderWebSearch,
+    built_in_provider_allows_anonymous_access, provider_definitions, ProviderContextManagement,
+    ProviderDefinition, ProviderMaterializer, ProviderWebSearch,
 };
 
 pub fn validate_provider_config(
@@ -933,8 +933,14 @@ pub fn built_in_provider_default_config_with_settings(
         .map(|provider| ProviderConfigFile {
             transport: provider.transport,
             base_url: provider.base_url.clone(),
-            // Copilot onboarding needs its OAuth profile before a credential exists.
-            auth: if provider_id.as_str() == "github-copilot" {
+            // Copilot onboarding needs its OAuth profile before a credential
+            // exists. Anonymous-access providers keep their built-in optional
+            // credential binding so a persisted `providers.<id>` entry (for
+            // example `providers.magpie.base_url`) does not silently drop the
+            // optional key contract.
+            auth: if provider_id.as_str() == "github-copilot"
+                || built_in_provider_allows_anonymous_access(provider_id.as_str())
+            {
                 provider.auth.clone()
             } else {
                 ProviderAuthConfig::default()
@@ -959,6 +965,11 @@ pub struct ProviderDocEntry {
     pub transport: ProviderTransportKind,
     pub base_url: String,
     pub auth_env: Option<String>,
+    /// Whether the provider works without the credential. The docs page must
+    /// render the built-in env var as optional for anonymous-access providers
+    /// such as `magpie`; marking it in the page by hand would desynchronize the
+    /// generated English page and its zh-CN copy.
+    pub credential_optional: bool,
 }
 
 /// Returns built-in provider metadata for documentation generation.
@@ -1196,6 +1207,9 @@ impl BuiltInProviderCatalog {
                 transport: endpoint.runtime_config.transport,
                 base_url: endpoint.runtime_config.base_url.clone(),
                 auth_env: endpoint.runtime_config.auth.env.clone(),
+                credential_optional: built_in_provider_allows_anonymous_access(
+                    endpoint.legacy_provider.as_str(),
+                ),
             })
             .collect::<Vec<_>>();
         entries.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
@@ -1726,6 +1740,10 @@ pub fn materialize_provider_config(
         settings_env,
         credential_store,
     )?;
+    let anonymous_access_provider = built_in
+        .as_ref()
+        .map(|builtin| builtin.route_provider.clone())
+        .unwrap_or_else(|| id.clone());
     let mut runtime = built_in.unwrap_or_else(|| ProviderRuntimeConfig {
         headers: Default::default(),
         id: id.clone(),
@@ -1751,10 +1769,19 @@ pub fn materialize_provider_config(
         }
     }
     validate_provider_builtin_web_search(&id, &effective_provider_config)?;
+    // A persisted entry with an effectively empty auth block must not wipe the
+    // built-in optional credential binding of an anonymous-access provider
+    // (magpie); entries written before the default template kept the binding
+    // rely on this fallback.
+    let keep_builtin_auth = effective_provider_config.auth.is_effectively_empty()
+        && built_in_provider_allows_anonymous_access(anonymous_access_provider.as_str())
+        && !runtime.auth.is_effectively_empty();
     runtime.id = id;
     runtime.transport = effective_provider_config.transport;
     runtime.base_url = effective_provider_config.base_url;
-    runtime.auth = effective_provider_config.auth;
+    if !keep_builtin_auth {
+        runtime.auth = effective_provider_config.auth;
+    }
     let configured_headers =
         effective_provider_headers(&provider_config, &ProviderEndpointId::default_endpoint())?;
     // Built-in default headers (e.g. Copilot-Integration-Id) survive absent

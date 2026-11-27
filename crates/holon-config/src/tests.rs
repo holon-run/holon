@@ -1797,13 +1797,28 @@ fn built_in_magpie_provider_is_zero_config_and_usable_without_api_key() {
 
     assert_eq!(magpie.transport, ProviderTransportKind::AnthropicMessages);
     assert_eq!(magpie.base_url, "http://127.0.0.1:3425");
-    assert_eq!(magpie.auth.source, CredentialSource::None);
-    assert_eq!(magpie.auth.kind, CredentialKind::None);
-    assert!(magpie.auth.env.is_none());
+    // The built-in declares an optional Holon-side `MAGPIE_API_KEY`; without it
+    // the provider is still usable because loopback Magpie accepts anonymous
+    // requests.
+    assert_eq!(magpie.auth.source, CredentialSource::Env);
+    assert_eq!(magpie.auth.kind, CredentialKind::ApiKey);
+    assert_eq!(magpie.auth.env.as_deref(), Some("MAGPIE_API_KEY"));
     assert!(magpie.credential.is_none());
-    // D3: an empty `credential_envs` list keeps the zero-config provider usable
-    // even when `MAGPIE_API_KEY` is not set.
     assert!(provider_has_usable_auth(magpie));
+    // The credential stays optional for discovery: without a key the effective
+    // plan is not `Unauthenticated`, so discovery still runs anonymously.
+    let status = holon_provider::model_discovery::discovery_cache_status_for_provider(
+        magpie,
+        None,
+        &holon_provider::model_discovery::ModelDiscoveryCacheFile::default(),
+        std::time::Duration::from_secs(3600),
+        false,
+    );
+    assert!(status.supports_auto_refresh);
+    assert_ne!(
+        status.state,
+        holon_provider::model_discovery::ModelDiscoveryCacheState::Unauthenticated
+    );
 
     let default_config = super::built_in_provider_default_config_with_settings(
         &ProviderId::parse("magpie").unwrap(),
@@ -1816,7 +1831,13 @@ fn built_in_magpie_provider_is_zero_config_and_usable_without_api_key() {
         ProviderTransportKind::AnthropicMessages
     );
     assert_eq!(default_config.base_url, "http://127.0.0.1:3425");
-    assert_eq!(default_config.auth.source, CredentialSource::None);
+    // The default config template keeps the built-in optional key binding so
+    // a persisted `providers.magpie` entry (for example a custom base_url)
+    // does not silently drop the optional credential contract; the key stays
+    // optional and unset here.
+    assert_eq!(default_config.auth.source, CredentialSource::Env);
+    assert_eq!(default_config.auth.kind, CredentialKind::ApiKey);
+    assert_eq!(default_config.auth.env.as_deref(), Some("MAGPIE_API_KEY"));
 
     let doc_entries = super::built_in_provider_doc_entries().unwrap();
     let entry = doc_entries
@@ -1827,7 +1848,7 @@ fn built_in_magpie_provider_is_zero_config_and_usable_without_api_key() {
     assert_eq!(entry.endpoint.as_str(), "default");
     assert_eq!(entry.transport, ProviderTransportKind::AnthropicMessages);
     assert_eq!(entry.base_url, "http://127.0.0.1:3425");
-    assert!(entry.auth_env.is_none());
+    assert_eq!(entry.auth_env.as_deref(), Some("MAGPIE_API_KEY"));
 }
 
 #[test]
@@ -1848,11 +1869,14 @@ fn magpie_explicit_config_overrides_built_in_defaults() {
         .expect("magpie provider");
     assert_eq!(magpie.base_url, "http://127.0.0.1:4325");
     assert_eq!(magpie.transport, ProviderTransportKind::AnthropicMessages);
-    assert_eq!(magpie.auth.source, CredentialSource::None);
+    // An explicit `providers.magpie` block keeps the built-in optional key
+    // binding from the default template; the key itself stays optional
+    // (unset here), so the provider remains usable without it.
+    assert_eq!(magpie.auth.source, CredentialSource::Env);
+    assert_eq!(magpie.auth.env.as_deref(), Some("MAGPIE_API_KEY"));
     assert!(provider_has_usable_auth(magpie));
 
-    // Explicit env auth is opt-in; it resolves a credential only when the
-    // named variable is set.
+    // Opting into env auth resolves a credential when the variable is set.
     set_config_key(&mut config, "providers.magpie.auth.source", "env").unwrap();
     set_config_key(&mut config, "providers.magpie.auth.kind", "api_key").unwrap();
     set_config_key(&mut config, "providers.magpie.auth.env", "MAGPIE_API_KEY").unwrap();
@@ -1907,6 +1931,89 @@ fn materialize_provider_config_preserves_builtin_runtime_fields() {
     assert!(runtime.codex_home.is_some());
     assert_eq!(runtime.originator.as_deref(), Some("codex_cli_rs"));
     assert_eq!(runtime.reasoning_effort.as_deref(), Some("low"));
+}
+
+#[test]
+fn materialized_magpie_stored_entry_keeps_optional_api_key_contract() {
+    // `holon config set providers.magpie.base_url ...` persists the built-in
+    // default template; it must carry the optional `MAGPIE_API_KEY` binding so
+    // the materialized provider keeps reporting `api_key` support.
+    let settings_env = HashMap::new();
+    let template = super::built_in_provider_default_config_with_settings(
+        &ProviderId::parse("magpie").unwrap(),
+        &settings_env,
+    )
+    .unwrap()
+    .expect("magpie default config");
+    assert_eq!(template.auth.kind, CredentialKind::ApiKey);
+    assert_eq!(template.auth.env.as_deref(), Some("MAGPIE_API_KEY"));
+
+    let providers = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
+    let built_in = providers
+        .get(&ProviderId::parse("magpie").unwrap())
+        .cloned();
+    let runtime = super::materialize_provider_config(
+        ProviderId::parse("magpie").unwrap(),
+        template,
+        &settings_env,
+        &CredentialStoreFile::default(),
+        built_in,
+    )
+    .unwrap();
+    assert_eq!(runtime.auth.source, CredentialSource::Env);
+    assert_eq!(runtime.auth.kind, CredentialKind::ApiKey);
+    assert_eq!(runtime.auth.env.as_deref(), Some("MAGPIE_API_KEY"));
+    assert!(runtime.credential.is_none());
+    assert!(provider_has_usable_auth(&runtime));
+}
+
+#[test]
+fn materialized_magpie_legacy_empty_auth_keeps_builtin_api_key_binding() {
+    // Entries persisted before the default template kept the binding carry an
+    // effectively empty auth block; materialization falls back to the
+    // built-in binding instead of wiping the optional credential contract.
+    let settings_env = HashMap::new();
+    let mut legacy_entry = super::built_in_provider_default_config_with_settings(
+        &ProviderId::parse("magpie").unwrap(),
+        &settings_env,
+    )
+    .unwrap()
+    .expect("magpie default config");
+    legacy_entry.auth = ProviderAuthConfig::default();
+
+    let providers = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
+    let built_in = providers
+        .get(&ProviderId::parse("magpie").unwrap())
+        .cloned();
+    let runtime = super::materialize_provider_config(
+        ProviderId::parse("magpie").unwrap(),
+        legacy_entry,
+        &settings_env,
+        &CredentialStoreFile::default(),
+        built_in,
+    )
+    .unwrap();
+    assert_eq!(runtime.auth.source, CredentialSource::Env);
+    assert_eq!(runtime.auth.kind, CredentialKind::ApiKey);
+    assert_eq!(runtime.auth.env.as_deref(), Some("MAGPIE_API_KEY"));
+    assert!(runtime.credential.is_none());
+    assert!(provider_has_usable_auth(&runtime));
+}
+
+#[test]
+fn provider_has_usable_auth_follows_route_provider_for_plan_alias() {
+    // Plan aliases materialize with `id = <provider>-<plan>` while
+    // `route_provider` keeps the provider identity; the anonymous-access
+    // check must follow the route provider.
+    let settings_env = HashMap::new();
+    let providers = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
+    let mut alias = providers
+        .get(&ProviderId::parse("magpie").unwrap())
+        .cloned()
+        .expect("built-in magpie provider");
+    alias.id = ProviderId::parse("magpie-solo").unwrap();
+    assert_ne!(alias.id.as_str(), alias.route_provider.as_str());
+    assert!(provider_has_usable_auth(&alias));
 }
 
 #[test]
@@ -3333,4 +3440,20 @@ fn acp_profile_switches_default_to_suppression_and_an_explicit_gate_setting() {
     // the bypass switch unset.
     assert!(config.disable_telemetry("other"));
     assert_eq!(config.permission_bypass_override("other"), None);
+}
+
+#[test]
+fn doc_entries_mark_only_anonymous_access_providers_as_optional() {
+    let entries = built_in_provider_doc_entries().unwrap();
+    let magpie = entries
+        .iter()
+        .find(|entry| entry.legacy_provider.as_str() == "magpie")
+        .expect("magpie doc entry");
+    assert!(magpie.credential_optional);
+    assert_eq!(magpie.auth_env.as_deref(), Some("MAGPIE_API_KEY"));
+    let required = entries
+        .iter()
+        .find(|entry| entry.legacy_provider.as_str() == "opencode-go-messages")
+        .expect("opencode-go-messages doc entry");
+    assert!(!required.credential_optional);
 }
