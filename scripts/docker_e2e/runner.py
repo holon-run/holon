@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from xml.etree import ElementTree
 
 from .turn_protocol import agent_attribution, agent_binding, turn_settlement
@@ -54,6 +54,13 @@ CONTEXT_TRANSCRIPT_LIMIT = 20
 # visible; exceeding either cap still fails the scenario.
 SPAWN_STORAGE_BUSY_TOLERANCE_MAX_EVENTS = 2
 SPAWN_STORAGE_BUSY_TOLERANCE_MAX_WINDOW_SECONDS = 60.0
+# Bounded retry for the same case (issue #4577): tolerance alone leaves a
+# required tool without any successful event, so the scenario retries once when
+# the only gap is tolerated retryable storage busy. The retried attempt must
+# still produce real success events; both caps bound the extra cost, and
+# exceeding either cap fails the case with both attempts' evidence.
+SPAWN_STORAGE_BUSY_RETRY_MAX_ATTEMPTS = 2
+SPAWN_STORAGE_BUSY_RETRY_MAX_WINDOW_SECONDS = 1800.0
 
 
 class DockerCircuitBreakerOpen(RuntimeError):
@@ -228,6 +235,144 @@ def tolerated_storage_busy_evidence(
         "window_seconds": round(window, 3),
         "tolerated": records,
     }
+
+
+class RetryableStorageBusyCoverage(Exception):
+    """Required tools are missing only because of tolerated storage busy.
+
+    Raised from tool assertions so a scenario can retry within its caps instead
+    of failing on a transient publication read. A required tool that is missing
+    for any other reason keeps its strict assertion.
+    """
+
+    def __init__(
+        self,
+        label: str,
+        missing: list[str],
+        records: list[dict[str, Any]],
+    ) -> None:
+        self.label = label
+        self.missing = missing
+        self.records = records
+        super().__init__(
+            f"{label}: required tools {missing} have no successful event and "
+            f"only tolerated retryable storage busy was observed: {records}"
+        )
+
+
+def storage_busy_retry_attempt(
+    attempt: int,
+    error: RetryableStorageBusyCoverage | None = None,
+) -> dict[str, Any]:
+    """Describe one retry attempt for the durable retry evidence record."""
+    record: dict[str, Any] = {
+        "attempt": attempt,
+        "outcome": "pass" if error is None else "retryable-storage-busy",
+    }
+    if error is not None:
+        record["label"] = error.label
+        record["missing_required_tools"] = error.missing
+        record["tolerated_storage_busy"] = error.records
+    return record
+
+
+def archive_attempt_evidence(evidence: Path, attempt: int) -> Path:
+    """Move one attempt's evidence under ``attempt-<n>`` before a retry.
+
+    A bounded retry must keep both attempts visible, so the retried attempt
+    starts with an empty evidence directory while the previous attempt's files
+    stay preserved in a stable subdirectory. Only directory entries are moved,
+    which also works for root-owned container output.
+    """
+    archived = evidence / f"attempt-{attempt}"
+    require(
+        not archived.exists(),
+        f"attempt {attempt} evidence is already archived at {archived}",
+    )
+    archived.mkdir(parents=True)
+    for child in sorted(evidence.iterdir()):
+        if child == archived:
+            continue
+        child.rename(archived / child.name)
+    return archived
+
+
+def run_case_with_storage_busy_retry(
+    harness: "CaseHarness",
+    label: str,
+    attempt: Callable[[], None],
+    *,
+    max_attempts: int,
+    max_window_seconds: float,
+) -> None:
+    """Run a case attempt with bounded retry for tolerated storage busy.
+
+    The retry only happens when the attempt reports that its required tools are
+    missing solely because of tolerated retryable storage busy. Both caps are
+    enforced and at least one retry is only taken while both still have room, so
+    a persistent busy stays a visible failure instead of a silent pass.
+    """
+    require(max_attempts >= 1, "storage busy retry needs at least one attempt")
+    require(
+        max_window_seconds > 0,
+        "storage busy retry window must be positive",
+    )
+    started = time.monotonic()
+    attempts: list[dict[str, Any]] = []
+    for attempt_number in range(1, max_attempts + 1):
+        try:
+            attempt()
+        except RetryableStorageBusyCoverage as error:
+            attempts.append(storage_busy_retry_attempt(attempt_number, error))
+            elapsed = time.monotonic() - started
+            if attempt_number >= max_attempts:
+                exhausted_reason = (
+                    f"attempts exhausted ({attempt_number} >= {max_attempts})"
+                )
+            elif elapsed >= max_window_seconds:
+                exhausted_reason = (
+                    f"retry window exhausted ({elapsed:.1f}s >= "
+                    f"{max_window_seconds:.1f}s)"
+                )
+            else:
+                exhausted_reason = ""
+            if exhausted_reason:
+                write_json(
+                    harness.evidence / f"{label}-storage-busy-retry.json",
+                    {
+                        "label": label,
+                        "outcome": "failed",
+                        "reason": exhausted_reason,
+                        "max_attempts": max_attempts,
+                        "max_window_seconds": max_window_seconds,
+                        "attempts": attempts,
+                    },
+                )
+                raise AssertionError(
+                    f"{label}: required tools stayed unavailable after bounded "
+                    f"storage busy retry ({exhausted_reason}); attempts: "
+                    f"{json.dumps(attempts, ensure_ascii=False)}"
+                ) from error
+            print(
+                f"RETRY {label}: attempt {attempt_number} missed required tools "
+                f"{error.missing} with tolerated retryable storage busy only; "
+                f"retrying as attempt {attempt_number + 1}/{max_attempts}"
+            )
+            harness.reset_for_retry(attempt_number + 1)
+            continue
+        attempts.append(storage_busy_retry_attempt(attempt_number))
+        if attempt_number > 1:
+            write_json(
+                harness.evidence / f"{label}-storage-busy-retry.json",
+                {
+                    "label": label,
+                    "outcome": "passed",
+                    "max_attempts": max_attempts,
+                    "max_window_seconds": max_window_seconds,
+                    "attempts": attempts,
+                },
+            )
+        return
 
 
 CALLBACK_CAPABILITY_PATTERN = re.compile(
@@ -509,6 +654,7 @@ class CaseHarness:
             "claimed": set(),
         }
         self._prompt_scopes: dict[str, dict[str, Any]] = {}
+        self._tolerated_storage_busy: dict[str, list[dict[str, Any]]] = {}
         self.evidence.mkdir(parents=True, exist_ok=True)
 
     def docker(self, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -741,63 +887,73 @@ class CaseHarness:
             "git add README.md; git commit -m 'acceptance fixture'",
         )
 
+    def ensure_stub_provider(self) -> None:
+        """Run the deterministic provider stub for a stub-provider case.
+
+        A missing stub container is launched fresh, which is what gives a
+        bounded retry a new transcript. An existing stub is reused only while
+        it still runs, because a stub process cannot replay a consumed
+        transcript.
+        """
+        require(
+            bool(self.stub_scenario), "stub provider mode requires stub_scenario"
+        )
+        stub_state = self.docker(
+            "inspect",
+            "--format",
+            "{{.State.Running}}",
+            self.stub_container,
+            check=False,
+        )
+        if stub_state.returncode != 0:
+            self.docker(
+                "run",
+                "--detach",
+                "--name",
+                self.stub_container,
+                "--network",
+                self.network,
+                "--network-alias",
+                "provider-stub",
+                "--volume",
+                f"{self.evidence}:/data",
+                OPENAI_STUB_IMAGE,
+                "--scenario",
+                self.stub_scenario,
+            )
+        else:
+            require(
+                stub_state.stdout.strip() == "true",
+                "deterministic provider stub stopped during case restart",
+            )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            ready = self.docker(
+                "exec",
+                self.stub_container,
+                "python",
+                "-c",
+                "import urllib.request;"
+                "urllib.request.urlopen('http://127.0.0.1:8080/healthz')",
+                check=False,
+            )
+            if ready.returncode == 0:
+                break
+            time.sleep(0.2)
+        else:
+            raise TimeoutError("deterministic provider stub did not become ready")
+        self.model = "openai/gpt-5.4"
+        self.runtime_env["HOLON_OPENAI_BASE_URL"] = (
+            self.stub_provider_base_url or "http://provider-stub:8080/v1"
+        )
+        self.runtime_env["OPENAI_API_KEY"] = "deterministic-test-key"
+
     def start(self, *, wait_idle: bool = True) -> None:
         self.docker("volume", "create", self.volume)
         if self.docker("network", "inspect", self.network, check=False).returncode != 0:
             self.docker("network", "create", self.network)
         if self.provider_mode == "stub":
-            require(
-                bool(self.stub_scenario), "stub provider mode requires stub_scenario"
-            )
-            stub_state = self.docker(
-                "inspect",
-                "--format",
-                "{{.State.Running}}",
-                self.stub_container,
-                check=False,
-            )
-            if stub_state.returncode != 0:
-                self.docker(
-                    "run",
-                    "--detach",
-                    "--name",
-                    self.stub_container,
-                    "--network",
-                    self.network,
-                    "--network-alias",
-                    "provider-stub",
-                    "--volume",
-                    f"{self.evidence}:/data",
-                    OPENAI_STUB_IMAGE,
-                    "--scenario",
-                    self.stub_scenario,
-                )
-            else:
-                require(
-                    stub_state.stdout.strip() == "true",
-                    "deterministic provider stub stopped during case restart",
-                )
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                ready = self.docker(
-                    "exec",
-                    self.stub_container,
-                    "python",
-                    "-c",
-                    "import urllib.request;"
-                    "urllib.request.urlopen('http://127.0.0.1:8080/healthz')",
-                    check=False,
-                )
-                if ready.returncode == 0:
-                    break
-                time.sleep(0.2)
-            else:
-                raise TimeoutError("deterministic provider stub did not become ready")
-            self.model = "openai/gpt-5.4"
-            self.runtime_env["HOLON_OPENAI_BASE_URL"] = (
-                self.stub_provider_base_url or "http://provider-stub:8080/v1"
-            )
-            self.runtime_env["OPENAI_API_KEY"] = "deterministic-test-key"
+            self.ensure_stub_provider()
         if (
             self.runtime_config or self.model_runtime_override
         ) and not self._model_runtime_override_seeded:
@@ -928,6 +1084,40 @@ class CaseHarness:
         self.capture_logs()
         self.docker("rm", "-f", self.container, check=False)
         self.base_url = ""
+
+    def reset_for_retry(self, attempt: int) -> None:
+        """Tear down a failed attempt and prepare a clean retry attempt.
+
+        Evidence from the previous attempt is archived under ``attempt-<n>`` so
+        a bounded retry keeps both attempts visible instead of overwriting the
+        first one. Runtime resources are removed so the retried attempt starts
+        from a fresh daemon, volume, and workspace.
+        """
+        try:
+            self.capture_logs()
+        except Exception:
+            pass
+        self.docker("rm", "-f", self.container, check=False)
+        self.base_url = ""
+        if self.provider_mode == "stub":
+            # A stub process keeps one monotonic transcript phase, so reusing an
+            # exhausted stub would answer the retried attempt with 409 instead
+            # of letting the scenario run again. Remove it before archiving so
+            # it cannot write further evidence into the archived attempt;
+            # ``start()`` launches a fresh stub when the name is gone.
+            self.docker("rm", "-f", self.stub_container, check=False)
+        archive_attempt_evidence(self.evidence, attempt - 1)
+        require(
+            not self.workspace_parent.exists(),
+            f"retry workspace was not isolated: {self.workspace_parent}",
+        )
+        self.docker("volume", "rm", self.volume, check=False)
+        self.docker("network", "rm", self.network, check=False)
+        self.agent_id = ""
+        self._prompt_scopes = {}
+        self._tolerated_storage_busy = {}
+        self.log_index = 0
+        self._model_runtime_override_seeded = False
 
     def restart(self, *, wait_idle: bool = True) -> None:
         self.stop()
@@ -1758,6 +1948,11 @@ class CaseHarness:
                 not intolerable,
                 f"tool failures occurred in {label}: {intolerable}",
             )
+            tolerated_store = getattr(self, "_tolerated_storage_busy", None)
+            if tolerated_store is None:
+                tolerated_store = {}
+                self._tolerated_storage_busy = tolerated_store
+            tolerated_store[label] = tolerated_records
             if tolerated_records:
                 evidence = tolerated_storage_busy_evidence(
                     storage_busy_tolerance, tolerated_records
@@ -1775,6 +1970,15 @@ class CaseHarness:
                 )
         else:
             require(not failures, f"tool failures occurred in {label}: {failures}")
+            if storage_busy_tolerance is not None:
+                tolerated_store = getattr(self, "_tolerated_storage_busy", None)
+                if tolerated_store is None:
+                    tolerated_store = {}
+                    self._tolerated_storage_busy = tolerated_store
+                # A no-failure window clears the label so a later assertion
+                # cannot read tolerated busy from an earlier window and treat
+                # an unrelated gap as retry eligible.
+                tolerated_store[label] = []
         completed_items: dict[str, dict[str, Any]] | None = None
 
         def completed_tool(event: dict[str, Any]) -> bool:
@@ -1855,6 +2059,19 @@ class CaseHarness:
                 },
             )
             return events
+        if missing and storage_busy_tolerance is not None:
+            tolerated = (getattr(self, "_tolerated_storage_busy", {}) or {}).get(
+                label, []
+            )
+            covered = [
+                name
+                for name in missing
+                if any(record.get("tool_name") == name for record in tolerated)
+            ]
+            # Retry only when every missing required tool is explained by a
+            # tolerated busy; a gap with any other cause keeps failing here.
+            if covered and len(covered) == len(missing):
+                raise RetryableStorageBusyCoverage(label, missing, tolerated)
         require(
             not missing, f"{label} missing successful tools {missing}; got {actual}"
         )
@@ -5961,7 +6178,25 @@ def run_scheduler_worktree_isolation_case(
 def run_scheduler_spawn_agent_supervision_case(
     harness: CaseHarness, case: dict[str, Any]
 ) -> None:
-    """SCHED-E2E-014: agent invokes a new subagent and completes parent WorkItem."""
+    """SCHED-E2E-014: agent invokes a new subagent and completes parent WorkItem.
+
+    Issue #4577 (path 2): a tolerated retryable storage busy on a required tool
+    leaves no successful tool event, so the case is retried within explicit
+    attempt and window caps instead of failing on a transient read. The retried
+    attempt still has to produce the real success events.
+    """
+    run_case_with_storage_busy_retry(
+        harness,
+        "scheduler-spawn-agent-supervision",
+        lambda: _run_scheduler_spawn_agent_supervision_attempt(harness, case),
+        max_attempts=SPAWN_STORAGE_BUSY_RETRY_MAX_ATTEMPTS,
+        max_window_seconds=SPAWN_STORAGE_BUSY_RETRY_MAX_WINDOW_SECONDS,
+    )
+
+
+def _run_scheduler_spawn_agent_supervision_attempt(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
     harness.initialize_workspace()
     harness.start()
     marker = secrets.token_hex(4)

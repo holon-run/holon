@@ -4376,6 +4376,341 @@ class StorageBusyToleranceTests(unittest.TestCase):
             self.assertEqual(data["window_seconds"], 0.0)
             self.assertEqual(data["tolerated"][0]["event_seq"], 9)
 
+    @staticmethod
+    def fake_harness(events: list, evidence: Path) -> object:
+        """Duck-typed harness for tool assertions without Docker resources."""
+        return type(
+            "Harness",
+            (),
+            {
+                "events": lambda self, label: events,
+                "evidence": evidence,
+                "tool_assertion_mode": "strict",
+                "successful_tool_events": runner.CaseHarness.successful_tool_events,
+                "_tolerated_storage_busy": {},
+            },
+        )()
+
+    @staticmethod
+    def retry_harness(evidence: Path) -> object:
+        class RetryHarness:
+            def __init__(self) -> None:
+                self.evidence = evidence
+                self.reset_attempts: list[int] = []
+
+            def reset_for_retry(self, attempt: int) -> None:
+                self.reset_attempts.append(attempt)
+
+        return RetryHarness()
+
+    def coverage(self) -> "runner.RetryableStorageBusyCoverage":
+        failure = self.busy_failure(ts="2026-11-26T03:00:05Z", seq=11)
+        _, records = runner.partition_storage_busy_failures(
+            "spawn-check", [failure], self.TOLERANCE
+        )
+        return runner.RetryableStorageBusyCoverage(
+            "spawn-check", ["TaskStatus"], records
+        )
+
+    def test_required_tool_missing_only_via_tolerated_busy_is_retry_eligible(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events = [
+                {
+                    "type": "turn_started",
+                    "payload": {"turn_id": "turn-busy", "turn_index": 1},
+                },
+                self.busy_failure(ts="2026-11-26T03:00:05Z", seq=9),
+            ]
+            harness = self.fake_harness(events, Path(tmp))
+            with self.assertRaises(runner.RetryableStorageBusyCoverage) as caught:
+                runner.CaseHarness.assert_tools(
+                    harness,
+                    "spawn-check",
+                    0,
+                    ["TaskStatus"],
+                    storage_busy_tolerance=self.TOLERANCE,
+                )
+            self.assertEqual(caught.exception.label, "spawn-check")
+            self.assertEqual(caught.exception.missing, ["TaskStatus"])
+            self.assertEqual(
+                caught.exception.records[0]["tool_name"], "TaskStatus"
+            )
+
+    def test_required_tool_missing_without_tolerated_busy_fails_immediately(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events = [
+                {
+                    "type": "turn_started",
+                    "payload": {"turn_id": "turn-busy", "turn_index": 1},
+                },
+                self.busy_failure(ts="2026-11-26T03:00:05Z", seq=9),
+            ]
+            harness = self.fake_harness(events, Path(tmp))
+            with self.assertRaises(AssertionError) as caught:
+                runner.CaseHarness.assert_tools(
+                    harness,
+                    "spawn-check",
+                    0,
+                    ["TaskStatus", "InvokeAgent"],
+                    storage_busy_tolerance=self.TOLERANCE,
+                )
+            self.assertNotIsInstance(
+                caught.exception, runner.RetryableStorageBusyCoverage
+            )
+            self.assertIn("missing successful tools", str(caught.exception))
+
+    def test_archive_attempt_evidence_moves_previous_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = Path(tmp)
+            (evidence / "failure.txt").write_text("first attempt\n")
+            (evidence / "workspace").mkdir()
+            (evidence / "workspace" / "repo.txt").write_text("repo\n")
+            archived = runner.archive_attempt_evidence(evidence, 1)
+            self.assertEqual(archived, evidence / "attempt-1")
+            self.assertEqual(
+                (archived / "failure.txt").read_text(), "first attempt\n"
+            )
+            self.assertEqual(
+                (archived / "workspace" / "repo.txt").read_text(), "repo\n"
+            )
+            self.assertEqual(
+                sorted(child.name for child in evidence.iterdir()), ["attempt-1"]
+            )
+
+    def test_bounded_retry_succeeds_after_one_tolerated_storage_busy_attempt(
+        self,
+    ) -> None:
+        """Acceptance branches 1 and 2: publication change then a retry success."""
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = Path(tmp)
+            harness = self.retry_harness(evidence)
+            error = self.coverage()
+            calls: list[int] = []
+
+            def attempt() -> None:
+                calls.append(len(calls) + 1)
+                if len(calls) == 1:
+                    raise error
+
+            runner.run_case_with_storage_busy_retry(
+                harness,
+                "spawn-check",
+                attempt,
+                max_attempts=2,
+                max_window_seconds=60.0,
+            )
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(harness.reset_attempts, [2])
+            data = json.loads(
+                (evidence / "spawn-check-storage-busy-retry.json").read_text()
+            )
+            self.assertEqual(data["outcome"], "passed")
+            self.assertEqual(
+                [entry["outcome"] for entry in data["attempts"]],
+                ["retryable-storage-busy", "pass"],
+            )
+            self.assertEqual(
+                data["attempts"][0]["missing_required_tools"], ["TaskStatus"]
+            )
+            self.assertEqual(
+                data["attempts"][0]["tolerated_storage_busy"][0]["tool_name"],
+                "TaskStatus",
+            )
+
+    def test_bounded_retry_exhaustion_keeps_both_attempt_evidence(self) -> None:
+        """Acceptance branch 3: retrying past the cap fails with both attempts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = Path(tmp)
+            harness = self.retry_harness(evidence)
+            error = self.coverage()
+            calls: list[int] = []
+
+            def attempt() -> None:
+                calls.append(len(calls) + 1)
+                raise error
+
+            with self.assertRaises(AssertionError) as caught:
+                runner.run_case_with_storage_busy_retry(
+                    harness,
+                    "spawn-check",
+                    attempt,
+                    max_attempts=2,
+                    max_window_seconds=60.0,
+                )
+            self.assertEqual(len(calls), 2)
+            self.assertIn("attempts exhausted", str(caught.exception))
+            self.assertIn('"attempt": 2', str(caught.exception))
+            data = json.loads(
+                (evidence / "spawn-check-storage-busy-retry.json").read_text()
+            )
+            self.assertEqual(data["outcome"], "failed")
+            self.assertEqual(len(data["attempts"]), 2)
+            self.assertEqual(
+                [entry["missing_required_tools"] for entry in data["attempts"]],
+                [["TaskStatus"], ["TaskStatus"]],
+            )
+
+    def test_bounded_retry_respects_window_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = self.retry_harness(Path(tmp))
+            error = self.coverage()
+            calls: list[int] = []
+
+            def attempt() -> None:
+                calls.append(len(calls) + 1)
+                time.sleep(0.002)
+                raise error
+
+            with self.assertRaises(AssertionError) as caught:
+                runner.run_case_with_storage_busy_retry(
+                    harness,
+                    "spawn-check",
+                    attempt,
+                    max_attempts=3,
+                    max_window_seconds=0.000001,
+                )
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(harness.reset_attempts, [])
+            self.assertIn("retry window exhausted", str(caught.exception))
+
+    @staticmethod
+    def stub_case_harness(evidence_root: Path) -> runner.CaseHarness:
+        """Real CaseHarness for a stub-provider case without Docker resources."""
+        return runner.CaseHarness(
+            case_id="scheduler-spawn-agent-supervision",
+            image="holon:e2e",
+            model="openai/gpt-5.4",
+            credential_envs=[],
+            env_file=None,
+            runtime_env={},
+            evidence_root=evidence_root,
+            timeout_seconds=30,
+            keep=False,
+            provider_mode="stub",
+            stub_scenario="scheduler-spawn",
+            resource_names={
+                "container": "holon-case-under-test",
+                "stub_container": "holon-stub-under-test",
+                "volume": "holon-volume-under-test",
+                "network": "holon-network-under-test",
+            },
+        )
+
+    def test_reset_for_retry_removes_exhausted_stub_before_archiving(
+        self,
+    ) -> None:
+        """A retried stub-provider case must start a fresh stub transcript.
+
+        The stub keeps one monotonic phase per process, so reusing the stub
+        that already consumed the whole scenario would answer the retry with
+        ``transcript_exhausted`` instead of re-running the case.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = self.stub_case_harness(Path(tmp))
+            (harness.evidence / "failure.txt").write_text("first attempt\n")
+            calls: list[tuple[str, ...]] = []
+            archived_seen_at_stub_removal: list[bool] = []
+
+            def fake_docker(*args: str, **kwargs: object) -> object:
+                calls.append(args)
+                if args == ("rm", "-f", "holon-stub-under-test"):
+                    archived_seen_at_stub_removal.append(
+                        (harness.evidence / "attempt-1").exists()
+                    )
+                return subprocess.CompletedProcess(["docker", *args], 0, "", "")
+
+            harness.docker = fake_docker  # type: ignore[method-assign]
+            harness.capture_logs = lambda: None  # type: ignore[method-assign]
+            harness.reset_for_retry(2)
+
+            self.assertIn(("rm", "-f", "holon-stub-under-test"), calls)
+            self.assertEqual(archived_seen_at_stub_removal, [False])
+            self.assertTrue(
+                (harness.evidence / "attempt-1" / "failure.txt").exists()
+            )
+            self.assertEqual(
+                sorted(child.name for child in harness.evidence.iterdir()),
+                ["attempt-1"],
+            )
+
+    def test_retried_stub_case_starts_a_fresh_stub_transcript(self) -> None:
+        """The real reset plus start path relaunches the stub, not reusing it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = self.stub_case_harness(Path(tmp))
+            (harness.evidence / "failure.txt").write_text("first attempt\n")
+            calls: list[tuple[str, ...]] = []
+            stub_present = True
+
+            def fake_docker(*args: str, **kwargs: object) -> object:
+                nonlocal stub_present
+                calls.append(args)
+                if args[:2] == ("rm", "-f") and args[2] == "holon-stub-under-test":
+                    stub_present = False
+                if args[0] == "inspect" and args[-1] == "holon-stub-under-test":
+                    if not stub_present:
+                        return subprocess.CompletedProcess(
+                            ["docker", *args], 1, "", "No such object"
+                        )
+                    return subprocess.CompletedProcess(
+                        ["docker", *args], 0, "true", ""
+                    )
+                if (
+                    args[0] == "run"
+                    and "holon-stub-under-test" in args
+                ):
+                    stub_present = True
+                return subprocess.CompletedProcess(["docker", *args], 0, "", "")
+
+            harness.docker = fake_docker  # type: ignore[method-assign]
+            harness.capture_logs = lambda: None  # type: ignore[method-assign]
+            harness.reset_for_retry(2)
+            harness.ensure_stub_provider()
+
+            stub_runs = [
+                call
+                for call in calls
+                if call[0] == "run" and "holon-stub-under-test" in call
+            ]
+            self.assertEqual(len(stub_runs), 1)
+            self.assertIn("--scenario", stub_runs[0])
+            self.assertIn("scheduler-spawn", stub_runs[0])
+            self.assertEqual(harness.model, "openai/gpt-5.4")
+
+    def test_no_failure_window_clears_tolerated_storage_busy(self) -> None:
+        """Stale tolerance from an earlier window cannot mark a later gap."""
+        stale = self.coverage().records
+        with tempfile.TemporaryDirectory() as tmp:
+            events = [
+                {
+                    "type": "turn_started",
+                    "payload": {"turn_id": "turn-clean", "turn_index": 1},
+                }
+            ]
+            harness = self.fake_harness(events, Path(tmp))
+            harness._tolerated_storage_busy = {"spawn-check": list(stale)}
+            runner.CaseHarness.successful_tool_events(
+                harness,
+                "spawn-check",
+                0,
+                storage_busy_tolerance=self.TOLERANCE,
+            )
+            self.assertEqual(harness._tolerated_storage_busy["spawn-check"], [])
+            with self.assertRaises(AssertionError) as caught:
+                runner.CaseHarness.assert_tools(
+                    harness,
+                    "spawn-check",
+                    0,
+                    ["TaskStatus"],
+                    storage_busy_tolerance=self.TOLERANCE,
+                )
+            self.assertNotIsInstance(
+                caught.exception, runner.RetryableStorageBusyCoverage
+            )
+
 
 class LiveAcceptanceEvidenceTests(unittest.TestCase):
     def test_live_input_batch_accepts_async_sender_creation_before_bootstrap(self) -> None:
