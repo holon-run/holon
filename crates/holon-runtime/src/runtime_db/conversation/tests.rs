@@ -12,10 +12,11 @@ use super::{
 };
 use crate::domain::conversation::{
     ActivityItem, Attention, ConversationActivity, ConversationChange,
-    ConversationShadowMismatchKind, CursorBinding, CursorCodec, DetailCoverage, ExecutionState,
-    ModelRequestActivity, ModelRequestEvidence, ModelRequestStatus, ModelSwitchActivity,
-    ModelSwitchEvidence, NoBriefReason, PendingInputState, ResultState, StreamCursor,
-    TerminalOutcome, TurnKey, CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
+    ConversationShadowMismatchKind, CursorBinding, CursorCodec, DetailCoverage,
+    DetailCoverageReason, ExecutionState, ModelRequestActivity, ModelRequestEvidence,
+    ModelRequestStatus, ModelSwitchActivity, ModelSwitchEvidence, NoBriefReason, PendingInputState,
+    ResultState, StreamCursor, TerminalOutcome, TurnKey, CONVERSATION_QUERY_VERSION,
+    CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::RuntimeDb;
 use crate::types::{
@@ -1624,6 +1625,8 @@ fn transcript_coverage_changes_advance_the_turn_summary_revision() -> Result<()>
         .conversation()
         .activities(AGENT_ID, "turn-live-coverage", 10, None, None)?
         .expect("active turn");
+    assert_eq!(before.turn.detail_coverage, DetailCoverage::Complete);
+    assert_eq!(before.coverage, DetailCoverage::Complete);
     let entry = TranscriptEntry::new(
         AGENT_ID,
         TranscriptEntryKind::ToolResults,
@@ -1636,7 +1639,11 @@ fn transcript_coverage_changes_advance_the_turn_summary_revision() -> Result<()>
         .conversation()
         .activities(AGENT_ID, "turn-live-coverage", 10, None, None)?
         .expect("updated turn");
-    assert_ne!(before.turn.detail_coverage, after.turn.detail_coverage);
+    // `tool_results` is a known transcript detail kind, not an unknown activity
+    // type, so the normal tool-using turn stays complete. The summary revision
+    // must still advance so stream and detail reads cannot disagree.
+    assert_eq!(after.turn.detail_coverage, DetailCoverage::Complete);
+    assert_eq!(after.coverage, DetailCoverage::Complete);
     assert!(after.turn.revision > before.turn.revision);
     db.evidence().append_transcript_entry(&entry)?;
     let replay = db
@@ -1751,6 +1758,47 @@ fn activity_keyset_is_stable_and_source_updates_replace_in_place() -> Result<()>
     );
     assert!(updated.detail_revision > first.detail_revision);
 
+    // Known non-activity transcript kinds are written by normal tool-using
+    // turns. None of them may add an activity, drop one, or downgrade coverage.
+    for (index, kind) in [
+        TranscriptEntryKind::ToolResults,
+        TranscriptEntryKind::IncomingMessage,
+        TranscriptEntryKind::ContinuationPrompt,
+        TranscriptEntryKind::SubagentPrompt,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut detail = TranscriptEntry::new(
+            AGENT_ID,
+            kind,
+            Some(1),
+            None,
+            serde_json::json!({"turn_id": "turn-activity", "results": []}),
+        );
+        detail.id = format!("transcript-detail-{index}");
+        detail.created_at = timestamp(6 + i64::try_from(index).expect("test index"));
+        db.evidence().append_transcript_entry(&detail)?;
+    }
+    let with_details = db
+        .conversation()
+        .activities(AGENT_ID, "turn-activity", 10, None, None)?
+        .expect("activity turn with transcript details");
+    assert_eq!(with_details.turn.detail_coverage, DetailCoverage::Complete);
+    assert_eq!(with_details.coverage, DetailCoverage::Complete);
+    assert_eq!(
+        with_details
+            .activities
+            .iter()
+            .map(|activity| activity_item(activity).id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "operator:message-activity",
+            "assistant:assistant-activity",
+            "tool:tool-activity"
+        ]
+    );
+
     let mut error = TranscriptEntry::new(
         AGENT_ID,
         TranscriptEntryKind::RuntimeFailure,
@@ -1784,6 +1832,239 @@ fn activity_keyset_is_stable_and_source_updates_replace_in_place() -> Result<()>
         ["operator:message-activity"]
     );
     assert!(!older.has_more);
+    Ok(())
+}
+
+fn insert_raw_transcript_kind(
+    db: &RuntimeDb,
+    evidence_id: &str,
+    turn_id: &str,
+    kind: &str,
+    created_seq: i64,
+) -> Result<()> {
+    db.connection()?.execute(
+        "INSERT INTO transcript_entries (
+            evidence_id, agent_id, turn_id, created_at, kind, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            evidence_id,
+            AGENT_ID,
+            turn_id,
+            timestamp(created_seq).to_rfc3339(),
+            kind,
+            serde_json::json!({"turn_id": turn_id}).to_string(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_raw_source_kind(
+    db: &RuntimeDb,
+    source_kind: &str,
+    source_id: &str,
+    turn_id: &str,
+    activity_seq: i64,
+) -> Result<()> {
+    db.connection()?.execute(
+        "INSERT INTO conversation_source_revisions (
+            source_kind, source_id, agent_id, turn_id, activity_seq, revision, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)",
+        params![
+            source_kind,
+            source_id,
+            AGENT_ID,
+            turn_id,
+            activity_seq,
+            timestamp(1).to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn unknown_transcript_kind_reports_unknown_activity_type() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    db.turn_records()
+        .upsert(&turn("turn-future-transcript", 1))?;
+    insert_raw_transcript_kind(
+        &db,
+        "transcript-future",
+        "turn-future-transcript",
+        "future_kind",
+        2,
+    )?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-future-transcript", 10, None, None)?
+        .expect("turn");
+    assert_eq!(
+        page.turn.detail_coverage,
+        DetailCoverage::Partial {
+            reason: DetailCoverageReason::UnknownActivityType
+        }
+    );
+    assert_eq!(page.coverage, page.turn.detail_coverage);
+    assert!(page.activities.is_empty());
+    Ok(())
+}
+
+#[test]
+fn unknown_source_kind_reports_unknown_activity_type() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-future-source", 1))?;
+    insert_raw_source_kind(
+        &db,
+        "future_activity",
+        "activity-future",
+        "turn-future-source",
+        3,
+    )?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-future-source", 10, None, None)?
+        .expect("turn");
+    assert_eq!(
+        page.turn.detail_coverage,
+        DetailCoverage::Partial {
+            reason: DetailCoverageReason::UnknownActivityType
+        }
+    );
+    // The unmodeled row is not rendered, and the page fallback must not relabel
+    // it as a retention gap.
+    assert_eq!(page.coverage, page.turn.detail_coverage);
+    assert!(page.activities.is_empty());
+    Ok(())
+}
+
+#[test]
+fn known_source_missing_canonical_row_reports_retention_gap() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-retention-gap", 1))?;
+    insert_raw_source_kind(&db, "tool", "tool-retained-out", "turn-retention-gap", 4)?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-retention-gap", 10, None, None)?
+        .expect("turn");
+    assert_eq!(
+        page.turn.detail_coverage,
+        DetailCoverage::Partial {
+            reason: DetailCoverageReason::RetentionGap
+        }
+    );
+    assert_eq!(page.coverage, page.turn.detail_coverage);
+    assert!(page.activities.is_empty());
+    Ok(())
+}
+
+#[test]
+fn legacy_turn_without_trigger_reports_legacy_ownership() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let mut record = turn("turn-legacy", 1);
+    record.trigger = None;
+    db.turn_records().upsert(&record)?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-legacy", 10, None, None)?
+        .expect("turn");
+    assert_eq!(
+        page.turn.detail_coverage,
+        DetailCoverage::Partial {
+            reason: DetailCoverageReason::LegacyOwnership
+        }
+    );
+    assert_eq!(page.coverage, page.turn.detail_coverage);
+    Ok(())
+}
+
+#[test]
+fn retention_gap_outranks_unknown_activity_type() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-mixed-gap", 1))?;
+    insert_raw_source_kind(&db, "tool", "tool-retained-out", "turn-mixed-gap", 4)?;
+    insert_raw_source_kind(
+        &db,
+        "future_activity",
+        "activity-future",
+        "turn-mixed-gap",
+        5,
+    )?;
+    insert_raw_transcript_kind(&db, "transcript-future", "turn-mixed-gap", "future_kind", 2)?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-mixed-gap", 10, None, None)?
+        .expect("turn");
+    assert_eq!(
+        page.turn.detail_coverage,
+        DetailCoverage::Partial {
+            reason: DetailCoverageReason::RetentionGap
+        }
+    );
+    assert_eq!(page.coverage, page.turn.detail_coverage);
+    Ok(())
+}
+
+#[test]
+fn unknown_transcript_outside_the_page_keeps_the_turn_partial() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let mut message = MessageEnvelope::new(
+        AGENT_ID,
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "operator input".into(),
+        },
+    );
+    message.id = "message-off-page".into();
+    message.created_at = timestamp(1);
+    db.evidence().append_message(&message)?;
+    let mut record = turn("turn-off-page-unknown", 1);
+    record.input_message_ids = vec![message.id.clone()];
+    db.turn_records().upsert(&record)?;
+    insert_raw_transcript_kind(
+        &db,
+        "transcript-future",
+        "turn-off-page-unknown",
+        "future_kind",
+        3,
+    )?;
+
+    let page = db
+        .conversation()
+        .activities(AGENT_ID, "turn-off-page-unknown", 1, None, None)?
+        .expect("turn");
+    assert_eq!(
+        page.activities
+            .iter()
+            .map(|activity| activity_item(activity).id.as_str())
+            .collect::<Vec<_>>(),
+        ["operator:message-off-page"]
+    );
+    // The unknown row is outside this page, but coverage is a turn-level fact.
+    assert_eq!(
+        page.coverage,
+        DetailCoverage::Partial {
+            reason: DetailCoverageReason::UnknownActivityType
+        }
+    );
+    assert_eq!(page.turn.detail_coverage, page.coverage);
+
+    let summary = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    let turn_summary = summary
+        .turns
+        .iter()
+        .find(|turn| turn.turn_id == "turn-off-page-unknown")
+        .expect("turn summary");
+    assert_eq!(turn_summary.detail_coverage, page.coverage);
     Ok(())
 }
 

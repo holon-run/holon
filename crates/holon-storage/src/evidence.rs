@@ -13,8 +13,8 @@ use holon_domain::{
 };
 
 use crate::conversation::{
-    assigned_turn_id_tx, RevisionWrites, SOURCE_ASSISTANT, SOURCE_ERROR, SOURCE_MODEL_REQUEST,
-    SOURCE_MODEL_SWITCH, SOURCE_OPERATOR, SOURCE_TOOL,
+    assigned_turn_id_tx, RevisionWrites, SOURCE_MODEL_REQUEST, SOURCE_MODEL_SWITCH,
+    SOURCE_OPERATOR, SOURCE_TOOL,
 };
 use crate::sequences::{
     agent_sequence_scope, allocate_runtime_sequence_tx, observe_runtime_sequence_tx,
@@ -785,15 +785,10 @@ impl EvidenceWrites {
             ],
         )?;
         if changed {
-            let source_kind = match entry.kind {
-                holon_domain::TranscriptEntryKind::AssistantRound
-                | holon_domain::TranscriptEntryKind::SubagentAssistantRound => {
-                    Some(SOURCE_ASSISTANT)
-                }
-                holon_domain::TranscriptEntryKind::RuntimeFailure => Some(SOURCE_ERROR),
-                _ => None,
-            };
-            if let Some(source_kind) = source_kind {
+            // Shared classification so the writer and the coverage check cannot
+            // disagree about which transcript kinds back an activity source.
+            if let Some(source_kind) = crate::conversation::transcript_activity_source(&entry.kind)
+            {
                 let _ = self.revisions.bump_source_revision_tx(
                     tx,
                     source_kind,

@@ -655,7 +655,17 @@ The v1 activity vocabulary is closed:
 
 Briefs are results and are not duplicated as activity. Unknown source types are
 omitted and force `coverage = partial` with a safe typed reason. V1 does not
-publish a generic item that can carry arbitrary source payload. The two model
+publish a generic item that can carry arbitrary source payload. Detail coverage
+is computed per turn over two closed vocabularies instead of one string union: an
+activity row whose `source_kind` is outside the activity vocabulary reports
+`unknown_activity_type`, while a known source whose canonical evidence row was
+retained away reports `retention_gap`. Transcript entry kinds are classified
+explicitly: the kinds that back an activity source, the known detail kinds that
+never do (`incoming_message`, `tool_results`, `continuation_prompt`,
+`subagent_prompt`), and a stored kind the domain enum cannot represent, which is
+conservatively `unknown_activity_type`. A known detail row therefore never
+degrades coverage, and coverage remains a turn-level fact even when an unknown
+row falls outside the requested page. The two model
 activity kinds are typed whitelist items: `model_request` carries only
 `provider`, `model_ref`, `dispatch_reason`, `status`, optional `duration_ms`,
 and a `failure_kind` restricted to the public provider failure kinds;
