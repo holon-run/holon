@@ -672,6 +672,8 @@ struct RecordedOutcomeFields {
     message: String,
     reader_reprepare: bool,
     callback_phases_us: Option<String>,
+    agent_id: Option<String>,
+    begin_mode: Option<String>,
 }
 
 impl tracing::field::Visit for RecordedOutcomeFields {
@@ -679,6 +681,8 @@ impl tracing::field::Visit for RecordedOutcomeFields {
         match field.name() {
             "message" => self.message = format!("{value:?}"),
             "callback_phases_us" => self.callback_phases_us = Some(format!("{value:?}")),
+            "agent_id" => self.agent_id = Some(format!("{value:?}")),
+            "begin_mode" => self.begin_mode = Some(format!("{value:?}")),
             _ => {}
         }
     }
@@ -725,6 +729,7 @@ fn captured_write_outcomes(failure: anyhow::Error) -> Vec<RecordedOutcome> {
                 RuntimeDbWriteContext::sync("probe.write", "probe"),
                 Duration::ZERO,
                 Duration::ZERO,
+                crate::write_queue::RuntimeDbTransactionBegin::Immediate,
                 None,
                 |_transaction| Err(failure),
             )
@@ -792,9 +797,10 @@ fn write_callback_phases_follow_transaction_outcomes() -> Result<()> {
         run_transaction_on_connection(
             &connection,
             &path,
-            context,
+            context.clone(),
             wait,
             Duration::ZERO,
+            crate::write_queue::RuntimeDbTransactionBegin::Immediate,
             phases,
             |_| f(phases),
         )
@@ -871,4 +877,86 @@ fn ownership_unresolved_marker_overrides_retryable_classification() {
         "shared history requires explicit ownership resolution"
     ));
     assert!(!is_retryable_db_error(&unresolved));
+}
+
+fn slow_write_outcomes(
+    context: RuntimeDbWriteContext,
+    begin: crate::write_queue::RuntimeDbTransactionBegin,
+) -> Vec<RecordedOutcome> {
+    let recorder = WriteOutcomeRecorder::default();
+    let dir = tempdir().expect("tempdir");
+    let db_path = dir.path().join("slow-write-scope.db");
+    let result: Result<()> = tracing::subscriber::with_default(
+        tracing_subscriber::registry().with(recorder.clone()),
+        || {
+            let connection = open_connection(&db_path)?;
+            run_transaction_on_connection(
+                &connection,
+                &db_path,
+                context,
+                // The slow-write budget counts queue wait, so one queued
+                // second is enough to trigger the warning without a slow
+                // body on a starved host.
+                Duration::from_secs(1),
+                Duration::ZERO,
+                begin,
+                None,
+                |_transaction| Ok(()),
+            )
+        },
+    );
+    assert!(result.is_ok());
+    let events = recorder.events.lock().unwrap().clone();
+    assert!(
+        events.iter().any(|(level, fields)| {
+            matches!(*level, tracing::Level::WARN)
+                && fields.message.contains("slow runtime db write")
+        }),
+        "the slow-write warn must fire"
+    );
+    events
+}
+
+#[test]
+fn slow_write_warn_carries_explicit_agent_scope() {
+    let events = slow_write_outcomes(
+        RuntimeDbWriteContext::sync("runtime_db.bootstrap_derived", "unknown")
+            .with_agent_id("holon-probe-agent"),
+        crate::write_queue::RuntimeDbTransactionBegin::Immediate,
+    );
+    let slow = events
+        .iter()
+        .find(|(level, fields)| {
+            matches!(*level, tracing::Level::WARN)
+                && fields.message.contains("slow runtime db write")
+        })
+        .expect("slow write warn captured");
+    assert!(
+        slow.1
+            .agent_id
+            .as_deref()
+            .is_some_and(|agent_id| agent_id.contains("holon-probe-agent")),
+        "the bootstrap write scope must attribute the slow write to its agent"
+    );
+    assert_eq!(slow.1.begin_mode.as_deref(), Some("\"immediate\""));
+}
+
+#[test]
+fn non_agent_slow_write_warn_adds_no_agent_field() {
+    let events = slow_write_outcomes(
+        RuntimeDbWriteContext::sync("runtime_db.bootstrap_derived", "unknown"),
+        crate::write_queue::RuntimeDbTransactionBegin::Deferred,
+    );
+    let slow = events
+        .iter()
+        .find(|(level, fields)| {
+            matches!(*level, tracing::Level::WARN)
+                && fields.message.contains("slow runtime db write")
+        })
+        .expect("slow write warn captured");
+    assert!(
+        slow.1.agent_id.is_none(),
+        "a non-agent scope must not fabricate a default agent_id field"
+    );
+    assert_eq!(slow.1.begin_mode.as_deref(), Some("\"deferred\""));
 }

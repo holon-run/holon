@@ -27,7 +27,10 @@ use crate::persistence::{
 };
 #[cfg(target_os = "linux")]
 use crate::RuntimeDbProtectionError;
-use crate::{write_callback_phases::WriteCallbackPhases, write_queue::RuntimeDbWriteContext};
+use crate::{
+    write_callback_phases::WriteCallbackPhases,
+    write_queue::{RuntimeDbTransactionBegin, RuntimeDbWriteContext},
+};
 use crate::{
     ReaderReprepareRequested, RuntimeDbRetryableError, RuntimeStateTransitionConflict,
     RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL, RUNTIME_DB_BUSY_TIMEOUT,
@@ -566,15 +569,18 @@ pub(crate) fn run_transaction_on_connection<T>(
     context: RuntimeDbWriteContext,
     queue_wait: Duration,
     mutex_wait: Duration,
+    begin: RuntimeDbTransactionBegin,
     callback_phases: Option<&WriteCallbackPhases>,
     f: impl FnOnce(&Transaction<'_>) -> Result<T>,
 ) -> Result<T> {
+    let context = context.with_caller();
     run_transaction_attempt(
         connection,
         path,
-        context.with_caller(),
+        context.clone(),
         queue_wait,
         mutex_wait,
+        begin,
         callback_phases,
         f,
     )
@@ -587,6 +593,7 @@ fn run_transaction_attempt<T>(
     context: RuntimeDbWriteContext,
     queue_wait: Duration,
     mutex_wait: Duration,
+    begin: RuntimeDbTransactionBegin,
     callback_phases: Option<&WriteCallbackPhases>,
     f: impl FnOnce(&Transaction<'_>) -> Result<T>,
 ) -> Result<T> {
@@ -600,21 +607,28 @@ fn run_transaction_attempt<T>(
         operation = context.operation,
         table = context.table,
         mode = context.mode.as_str(),
+        agent_id = context.agent_id_field(),
+        begin_mode = begin.as_str(),
         origin_file,
         origin_line,
         queue_wait_ms = queue_wait.as_millis(),
         mutex_wait_ms = mutex_wait.as_millis(),
         "runtime db write starting"
     );
-    let (transaction, begin_retry_count, begin_wait) =
-        begin_immediate_transaction_with_retry(connection, path, context).map_err(|error| {
-            mark_persistence_failure(
-                error,
-                PersistenceCertainty::DefinitelyNotCommitted,
-                PersistenceFailurePhase::Begin,
-                None,
-            )
-        })?;
+    let (transaction, begin_retry_count, begin_wait) = match begin {
+        RuntimeDbTransactionBegin::Immediate => {
+            begin_immediate_transaction_with_retry(connection, path, &context)
+        }
+        RuntimeDbTransactionBegin::Deferred => begin_deferred_transaction(connection, path),
+    }
+    .map_err(|error| {
+        mark_persistence_failure(
+            error,
+            PersistenceCertainty::DefinitelyNotCommitted,
+            PersistenceFailurePhase::Begin,
+            None,
+        )
+    })?;
     let callback_started_at = Instant::now();
     let result = f(&transaction);
     let callback_finished_at = Instant::now();
@@ -630,6 +644,8 @@ fn run_transaction_attempt<T>(
                 tracing::warn!(
                     operation = context.operation,
                     table = context.table,
+                    agent_id = context.agent_id_field(),
+                    begin_mode = begin.as_str(),
                     origin_file,
                     origin_line,
                     phase = "commit",
@@ -660,6 +676,8 @@ fn run_transaction_attempt<T>(
                     operation = context.operation,
                     table = context.table,
                     mode = context.mode.as_str(),
+                    agent_id = context.agent_id_field(),
+                    begin_mode = begin.as_str(),
                     origin_file,
                     origin_line,
                     phase = "committed",
@@ -680,6 +698,8 @@ fn run_transaction_attempt<T>(
                 operation = context.operation,
                 table = context.table,
                 mode = context.mode.as_str(),
+                agent_id = context.agent_id_field(),
+                begin_mode = begin.as_str(),
                 origin_file,
                 origin_line,
                 queue_wait_ms = queue_wait.as_millis(),
@@ -743,6 +763,8 @@ fn run_transaction_attempt<T>(
                     operation = context.operation,
                     table = context.table,
                     mode = context.mode.as_str(),
+                    agent_id = context.agent_id_field(),
+                    begin_mode = begin.as_str(),
                     origin_file,
                     origin_line,
                     queue_wait_ms = queue_wait.as_millis(),
@@ -767,6 +789,8 @@ fn run_transaction_attempt<T>(
                     operation = context.operation,
                     table = context.table,
                     mode = context.mode.as_str(),
+                    agent_id = context.agent_id_field(),
+                    begin_mode = begin.as_str(),
                     origin_file,
                     origin_line,
                     queue_wait_ms = queue_wait.as_millis(),
@@ -793,6 +817,8 @@ fn run_transaction_attempt<T>(
                     operation = context.operation,
                     table = context.table,
                     mode = context.mode.as_str(),
+                    agent_id = context.agent_id_field(),
+                    begin_mode = begin.as_str(),
                     origin_file,
                     origin_line,
                     queue_wait_ms = queue_wait.as_millis(),
@@ -811,7 +837,7 @@ fn run_transaction_attempt<T>(
 fn begin_immediate_transaction_with_retry<'connection>(
     connection: &'connection Connection,
     path: &Path,
-    context: RuntimeDbWriteContext,
+    context: &RuntimeDbWriteContext,
 ) -> Result<(Transaction<'connection>, u32, Duration)> {
     let (origin_file, origin_line) = context.origin();
     let started_at = Instant::now();
@@ -842,6 +868,7 @@ fn begin_immediate_transaction_with_retry<'connection>(
                 if elapsed >= next_warn_at {
                     tracing::warn!(
                         error = %error,
+                        agent_id = context.agent_id_field(),
                         path = %path.display(),
                         operation = context.operation,
                         table = context.table,
@@ -872,6 +899,27 @@ fn begin_immediate_transaction_with_retry<'connection>(
             }
         }
     }
+}
+
+/// Begin one DEFERRED transaction on the writer connection. Reads inside the
+/// transaction hold no SQLite write lock; the first write statement upgrades.
+/// If another connection committed after this transaction's read snapshot, the
+/// upgrade fails with `SQLITE_BUSY_SNAPSHOT`, which callers must consume as a
+/// rolled-back definitely-not-committed error instead of retrying in place.
+/// `BEGIN DEFERRED` acquires no lock, so there is no busy retry loop here.
+fn begin_deferred_transaction<'connection>(
+    connection: &'connection Connection,
+    path: &Path,
+) -> Result<(Transaction<'connection>, u32, Duration)> {
+    let started_at = Instant::now();
+    Transaction::new_unchecked(connection, TransactionBehavior::Deferred)
+        .map_err(|error| {
+            anyhow::Error::from(error).context(format!(
+                "starting deferred runtime db transaction for {}",
+                path.display()
+            ))
+        })
+        .map(|transaction| (transaction, 0, started_at.elapsed()))
 }
 
 pub(crate) fn next_runtime_db_retry_delay(current: Duration, max: Duration) -> Duration {
