@@ -617,6 +617,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
                 cases=[(method, "large")], bundles=[bundle],
                 release_lost_response=threading.Event(), lost_receipts=[],
                 lost_lock=threading.Lock(), lost_response_acceptance=False,
+                share_acceptance=False,
                 simulator=UUID, repo=str(ROOT), destination="fixture", derived="fixture",
                 test_env={}, local=Mock(return_value={"ticket": "fixture"}),
                 fixture_evidence=None,
@@ -2124,6 +2125,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         namespace = dict(self.helpers, cases=[(method, "large") for method in methods],
             bundles=[Path(method + ".xcresult") for method in methods], home=home,
             fixture_evidence=evidence, lost_response_acceptance=False,
+            share_acceptance=False,
             simulator=UUID, repo=str(ROOT), agent="holon-tester", rich_turn="turn-fixture",
             destination="fixture", derived="fixture", test_env={},
             local=Mock(return_value={"ticket": "do-not-export-pairing-ticket"}),
@@ -2329,18 +2331,15 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         # The proxy handler also branches on `share_acceptance`; only the export
         # block gates on `mode != '--sdk-only'`, delegates to direct_share_evidence
         # and writes direct-share.json.
-        share_block = next(node for node in ast.walk(self.tree)
-                           if isinstance(node, ast.If) and isinstance(node.test, ast.BoolOp)
-                           and isinstance(node.test.values[0], ast.Name)
-                           and node.test.values[0].id == "share_acceptance"
-                           and any(isinstance(item, ast.Compare) for item in node.test.values)
-                           and any(isinstance(item, ast.Compare)
-                                   and isinstance(item.left, ast.Name)
-                                   and item.left.id == "mode"
-                                   for item in node.test.values)
-                           and any(isinstance(item, ast.Call) and isinstance(item.func, ast.Name)
-                                   and item.func.id == "direct_share_evidence"
-                                   for item in ast.walk(node)))
+        # The daemon half lives in its own function so a failed UI case can still
+        # report it; execute that function with the names the sweep would pass.
+        share_checks = next(node for node in ast.walk(self.tree)
+                            if isinstance(node, ast.FunctionDef)
+                            and node.name == "verify_direct_share_acceptance")
+        share_block = [share_checks] + ast.parse(
+            "verify_direct_share_acceptance(root, workspace, agent, prompt_evidence,"
+            " lost_lock, fixture_evidence, local, ui_telemetry, 'contract')",
+            mode="exec").body
         def local(method, path, payload=None):
             self.assertEqual(method, "GET")
             if "/messages/" in path:
@@ -2358,7 +2357,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         namespace.update(mode="--populated", root=self.directory, workspace=workspace, agent="holon-tester",
                          local=local, ui_telemetry=telemetry)
         with patch("builtins.print"):
-            self.execute([share_block], namespace)
+            self.execute(share_block, namespace)
         shared = json.loads((evidence / "direct-share.json").read_text())
         self.assertEqual(len(shared["inputs"]), 4)
         self.assertEqual(len(shared["files"]), 2)
@@ -2430,7 +2429,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                              ui_telemetry=[] if fault == "no-passing-attempt" else telemetry)
             with self.subTest(fault=fault), patch("builtins.print"):
                 with self.assertRaises(RuntimeError):
-                    self.execute([share_block], namespace)
+                    self.execute(share_block, namespace)
                 self.assertFalse((destination / "direct-share.json").exists())
         for path in evidence.iterdir():
             self.assertNotIn(b"do-not-record", path.read_bytes())

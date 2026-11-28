@@ -1551,8 +1551,15 @@ final class HolonUITests: XCTestCase {
         let markers = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS %@", "IOS_SHARED")).count
         let latest = app.buttons["conversation.latest"].exists
+        // Which window the chat actually rendered separates "the message is not
+        // here" from "the reader opened an older window and never advanced".
+        let turns = app.staticTexts.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "conversation.time.")).count
+        let activities = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "activities.")).count
         print("[share-readback] loaded=\(loaded) unavailable=\(unavailable)"
-            + " references=\(references) rows=\(rows) markers=\(markers) latest=\(latest)")
+            + " references=\(references) rows=\(rows) markers=\(markers) latest=\(latest)"
+            + " turns=\(turns) activities=\(activities)")
     }
 
     func testConversationLongImageHistory() async throws {

@@ -601,6 +601,65 @@ def direct_share_evidence(root, workspace, agent, prompts, inputs, local):
             "prompts": prompts, "files": files}
 
 
+def verify_direct_share_acceptance(root, workspace, agent, prompt_evidence,
+                                   lost_lock, fixture_evidence, local, ui_telemetry,
+                                   detail, strict=True):
+    """Verify the daemon half of the direct-share chain and name its state.
+
+    The UI half can fail on its own, and the bare sweep-level check after the
+    case loop never ran then, so every red run left the failing layer unknown.
+    Both call sites share this one implementation, and the state line is
+    printed before any mismatch raises so a failure still says what the
+    daemon did hold.
+    """
+    conversation = local("GET", f"/agents/{agent}/conversation?limit=60")
+    inputs = conversation_inputs(conversation)
+    previews = json.dumps(inputs, ensure_ascii=False)
+    markers = ["IOS_SHARED_TEXT", "https://example.test/holon-share", "shared-note"]
+    missing_markers = [marker for marker in markers if marker not in previews]
+    received_paths = [path for path in workspace.rglob("request-*") if path.is_file()]
+    received_files = [path.read_bytes() for path in received_paths]
+    file_materialized = b"IOS_SHARED_FILE_BYTES" in received_files
+    image_materialized = any(
+        data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24
+        and struct.unpack(">II", data[16:24]) == (16, 16) for data in received_files)
+    print(f"Direct-share daemon state ({detail}): inputs={len(inputs)} "
+          "missing_markers=" + (",".join(missing_markers) or "none") +
+          f" file_bytes={file_materialized} image_bytes={image_materialized}", flush=True)
+    if missing_markers:
+        raise RuntimeError(
+            "Direct-share input missing from authoritative conversation: " + missing_markers[0])
+    if not file_materialized:
+        raise RuntimeError("Direct-share file bytes were not materialized by the daemon")
+    if not image_materialized:
+        raise RuntimeError("Direct-share image bytes were not materialized by the daemon")
+    share_case = "testDirectAgentShareWorkflow"
+    passing_attempt = next((record["attempt"] for record in ui_telemetry
+                            if record["case"] == share_case
+                            and record["outcome"] == "passed"), None)
+    if passing_attempt is None:
+        if strict:
+            raise RuntimeError("Direct-share evidence requires a passing UI case attempt")
+        # Only the state above is knowable when the UI half failed.
+        print(f"Direct-share evidence skipped ({detail}): no passing UI case attempt",
+              flush=True)
+        return
+    if fixture_evidence is not None:
+        # Keep all raw prompt files. Only link the passing XCTest attempt's
+        # requests; HTTP resends within it still share an identity.
+        with lost_lock:
+            share_prompts = [record for record in prompt_evidence
+                             if record["case"] == share_case
+                             and record["case_attempt"] == passing_attempt
+                             and record["kind"].startswith("share-")]
+        evidence = direct_share_evidence(
+            root, workspace, agent, share_prompts, inputs, local)
+        evidence["case_attempt"] = passing_attempt
+        write_fixture_json(fixture_evidence, "direct-share.json", evidence)
+    print(f"Direct-share acceptance ({detail}): OS extension text, URL, image and "
+          "file received by isolated Agent", flush=True)
+
+
 def content_report_snapshot(report_db, evidence, method, phase):
     """Export the actual table, never a synthetic receipt or the auth-containing DB."""
     with sqlite3.connect(report_db.as_uri() + "?mode=ro", uri=True) as database:
@@ -1815,6 +1874,20 @@ with fixture_directory(repo) as root:
                                     "case": method, "attempt": attempt,
                                     "outcome": "failed", "seconds": elapsed})
                                 if attempt >= max_attempts:
+                                    if (share_acceptance
+                                            and method == "testDirectAgentShareWorkflow"):
+                                        # The UI half failed; report the daemon half
+                                        # anyway so a red run names the failing layer.
+                                        try:
+                                            verify_direct_share_acceptance(
+                                                root, workspace, agent, prompt_evidence,
+                                                lost_lock, fixture_evidence, local,
+                                                ui_telemetry,
+                                                f"post-UI-failure attempt {attempt}",
+                                                strict=False)
+                                        except Exception as daemon_state:  # noqa: BLE001
+                                            print("Direct-share daemon state check failed: "
+                                                  f"{daemon_state}", flush=True)
                                     raise
                                 ui_retries.append(method)
                                 detail = (f"{method} attempt {attempt} failed after "
@@ -1860,36 +1933,9 @@ with fixture_directory(repo) as root:
             if FakeProvider.image_requests:
                 raise RuntimeError("Markdown renderer made an unconfirmed external image request")
             if share_acceptance and mode != "--sdk-only":
-                conversation = local("GET", f"/agents/{agent}/conversation?limit=60")
-                inputs = conversation_inputs(conversation)
-                previews = json.dumps(inputs, ensure_ascii=False)
-                for marker in ["IOS_SHARED_TEXT", "https://example.test/holon-share", "shared-note"]:
-                    if marker not in previews:
-                        raise RuntimeError("Direct-share input missing from authoritative conversation: " + marker)
-                received_paths = [path for path in workspace.rglob("request-*") if path.is_file()]
-                received_files = [path.read_bytes() for path in received_paths]
-                if b"IOS_SHARED_FILE_BYTES" not in received_files:
-                    raise RuntimeError("Direct-share file bytes were not materialized by the daemon")
-                if not any(data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24 and
-                           struct.unpack(">II", data[16:24]) == (16, 16) for data in received_files):
-                    raise RuntimeError("Direct-share image bytes were not materialized by the daemon")
-                if fixture_evidence is not None:
-                    share_case = "testDirectAgentShareWorkflow"
-                    passing_attempt = next((record["attempt"] for record in ui_telemetry
-                                            if record["case"] == share_case and record["outcome"] == "passed"), None)
-                    if passing_attempt is None:
-                        raise RuntimeError("Direct-share evidence requires a passing UI case attempt")
-                    # Keep all raw prompt files. Only link the passing XCTest
-                    # attempt's requests; HTTP resends within it still share an identity.
-                    with lost_lock:
-                        share_prompts = [record for record in prompt_evidence
-                                         if record["case"] == share_case
-                                         and record["case_attempt"] == passing_attempt
-                                         and record["kind"].startswith("share-")]
-                    evidence = direct_share_evidence(root, workspace, agent, share_prompts, inputs, local)
-                    evidence["case_attempt"] = passing_attempt
-                    write_fixture_json(fixture_evidence, "direct-share.json", evidence)
-                print("Direct-share acceptance: OS extension text, URL, image and file received by isolated Agent", flush=True)
+                verify_direct_share_acceptance(
+                    root, workspace, agent, prompt_evidence, lost_lock,
+                    fixture_evidence, local, ui_telemetry, "sweep")
         finally:
             try:
                 if task_id is not None:
