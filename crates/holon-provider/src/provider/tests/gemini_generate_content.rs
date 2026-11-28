@@ -598,6 +598,10 @@ async fn gemini_request_mounts_google_search_grounding_tool() {
         tools.iter().any(|tool| tool.get("google_search").is_some()),
         "wire tools must carry the google_search grounding tool: {tools:?}"
     );
+    assert!(
+        body.get("tool_config").is_none(),
+        "google_search without function tools must not set tool_config: {body:?}"
+    );
     let diagnostics = response
         .request_diagnostics
         .expect("gemini responses include diagnostics");
@@ -606,6 +610,74 @@ async fn gemini_request_mounts_google_search_grounding_tool() {
         .expect("native search diagnostics must be attached");
     assert!(native.lowered);
     assert_eq!(native.advertised_tool_type, "google_search");
+}
+
+fn gemini_mixed_tools_request() -> ProviderTurnRequest {
+    let mut request = ProviderTurnRequest::plain(
+        "search",
+        vec![ConversationMessage::UserText("fixture query".into())],
+        vec![ToolSpec {
+            name: "ProbeTool".into(),
+            description: "inspect a fixture".into(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            freeform_grammar: None,
+        }],
+    );
+    request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind: ProviderNativeWebSearchKind::Gemini,
+        provider_id: "gemini".into(),
+        provider_model_ref: "gemini/gemini-3-pro".into(),
+        advertised_tool_type: "google_search".into(),
+        backend_kind: "gemini_web_search".into(),
+        max_results: Some(5),
+    });
+    request
+}
+
+#[tokio::test]
+async fn gemini_request_opts_in_to_server_side_tool_invocations_for_mixed_tools() {
+    let (body, _) = capture_gemini_request(gemini_mixed_tools_request()).await;
+    let tools = body["tools"].as_array().expect("tools must be an array");
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.get("function_declarations").is_some()),
+        "mixed wire tools must carry function declarations: {tools:?}"
+    );
+    assert!(
+        tools.iter().any(|tool| tool.get("google_search").is_some()),
+        "mixed wire tools must carry the google_search grounding tool: {tools:?}"
+    );
+    assert_eq!(
+        body["tool_config"]["include_server_side_tool_invocations"], true,
+        "mixed tools must opt in to server-side tool invocations: {body:?}"
+    );
+}
+
+#[tokio::test]
+async fn gemini_request_omits_tool_config_for_function_tools_alone() {
+    let (body, _) = capture_gemini_request(ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("fixture query".into())],
+        vec![ToolSpec {
+            name: "ProbeTool".into(),
+            description: "inspect a fixture".into(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            freeform_grammar: None,
+        }],
+    ))
+    .await;
+    let tools = body["tools"].as_array().expect("tools must be an array");
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.get("function_declarations").is_some()),
+        "wire tools must carry function declarations: {tools:?}"
+    );
+    assert!(
+        body.get("tool_config").is_none(),
+        "function tools without a built-in tool must not set tool_config: {body:?}"
+    );
 }
 
 #[tokio::test]
@@ -695,6 +767,10 @@ async fn gemini_native_web_search_sends_query_and_maps_grounding_citations() {
     assert!(
         tools.iter().any(|tool| tool.get("google_search").is_some()),
         "standalone search wire tools must carry google_search: {tools:?}"
+    );
+    assert!(
+        body.get("tool_config").is_none(),
+        "standalone google_search search must not set tool_config: {body:?}"
     );
     assert_eq!(body["contents"][0]["parts"][0]["text"], "fixture query");
     // The standalone search must reuse the route output budget instead of a
