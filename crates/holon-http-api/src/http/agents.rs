@@ -557,15 +557,17 @@ pub(super) fn model_discovery_refresh_candidates(
     Vec<(crate::config::ProviderRuntimeConfig, &'static str)>,
 ) {
     // The manual refresh is the operator's explicit opt-in, so the automatic
-    // TTL gate deliberately does not apply: an endpoint that is authorized
-    // below is always probed remotely, exactly like
-    // `holon config models refresh --provider <id>`. Providers that cannot be
-    // refreshed keep reporting why instead of disappearing silently.
+    // TTL gate deliberately does not apply: an opted-in provider is always
+    // probed remotely. Unlike `holon config models refresh --provider <id>`,
+    // which names its target, the sweep names no provider, so it only probes
+    // providers the operator opted into (declared, route-referenced, or
+    // explicitly refreshed). Providers that cannot be refreshed keep reporting
+    // why instead of disappearing silently.
+    let catalog = config.model_catalog_config();
     config.providers.values().fold(
         (Vec::new(), Vec::new()),
         |(mut candidates, mut skipped), provider| {
             let discovery = config.provider_discovery(provider);
-            let catalog = config.model_catalog_config();
             match catalog.explicit_model_discovery_refresh_exclusion(provider, discovery.as_ref()) {
                 Some(reason) => skipped.push((provider.clone(), reason)),
                 None => candidates.push((provider.clone(), discovery)),

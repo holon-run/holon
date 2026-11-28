@@ -338,20 +338,20 @@ impl ModelCatalogConfig<'_> {
         {
             return true;
         }
-        self.stored_config.providers.contains_key(&provider.id)
-            || self
-                .explicitly_referenced_provider_ids()
-                .contains(&provider.id)
-            || self
-                .explicitly_refreshed_providers
-                .is_some_and(|providers| providers.contains(&provider.id))
+        self.provider_explicitly_opted_in(provider)
     }
 
     /// Why an explicit operator-initiated model refresh must skip one provider.
     ///
-    /// Explicit refresh is an operator opt-in, so it applies the authorization
-    /// half of [`Self::provider_auto_discovery_allowed`] without the cache TTL;
-    /// the reason string is the one reported in the refresh diagnostics.
+    /// The manual sweep names no provider (unlike
+    /// `holon config models refresh --provider <id>`), so it does not inherit
+    /// the automatic gate's pass-through for providers that merely declare a
+    /// credential kind: that pass-through assumes auto discovery fails fast on
+    /// a missing credential, while an untimed manual sweep would anonymously
+    /// probe undeclared remote endpoints. Only an explicit operator opt-in
+    /// (declaration, route reference, or a prior explicit refresh) admits a
+    /// provider. The reason string is the one reported in the refresh
+    /// diagnostics.
     pub fn explicit_model_discovery_refresh_exclusion(
         &self,
         provider: &ProviderRuntimeConfig,
@@ -360,8 +360,22 @@ impl ModelCatalogConfig<'_> {
         holon_provider::model_discovery::explicit_refresh_exclusion(
             provider,
             configured,
-            self.provider_auto_discovery_allowed(provider),
+            self.provider_explicitly_opted_in(provider),
         )
+    }
+
+    /// Whether the operator explicitly opted into this provider by declaring
+    /// `providers.<id>` in `config.json`, referencing it from a configured
+    /// model route or model override, or explicitly refreshing it in this
+    /// runtime session.
+    fn provider_explicitly_opted_in(&self, provider: &ProviderRuntimeConfig) -> bool {
+        self.stored_config.providers.contains_key(&provider.id)
+            || self
+                .explicitly_referenced_provider_ids()
+                .contains(&provider.id)
+            || self
+                .explicitly_refreshed_providers
+                .is_some_and(|providers| providers.contains(&provider.id))
     }
 
     /// Provider ids referenced by configured model routes or model overrides.

@@ -14,7 +14,6 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex as StdMutex;
 use tower::ServiceExt;
-use tracing::instrument::WithSubscriber;
 
 #[derive(Clone)]
 struct LogBuffer(Arc<StdMutex<Vec<u8>>>);
@@ -205,9 +204,8 @@ fn explicit_refresh_reports_refreshed_and_skipped_outcomes() -> Result<()> {
                 "explicit model discovery refresh skipped provider"
             );
         }
-        // The mock accepts exactly one request, so only the provider under
-        // test is probed; every other candidate is a real endpoint that must
-        // not be touched from a unit test.
+        // The sweep only probes providers the operator opted into, and this
+        // config opts into magpie alone, so the mock is the only probe target.
         let magpie = candidates
             .into_iter()
             .find(|(provider, _)| provider.id.as_str() == "magpie")
@@ -324,6 +322,19 @@ fn explicit_refresh_exclusion_keeps_reasons_for_skipped_providers() {
     // the operator's back, and it must say why.
     assert_eq!(
         catalog.explicit_model_discovery_refresh_exclusion(&magpie, None),
+        Some("discovery_not_allowed")
+    );
+    // A credential-kind built-in that merely declares an API key is not an
+    // opt-in either: undeclared and unreferenced, it stays out of the manual
+    // sweep even though the automatic gate would pass it through on the
+    // credential-kind branch alone.
+    let huggingface = config
+        .providers
+        .get(&ProviderId::parse("huggingface").unwrap())
+        .expect("huggingface is built in")
+        .clone();
+    assert_eq!(
+        catalog.explicit_model_discovery_refresh_exclusion(&huggingface, None),
         Some("discovery_not_allowed")
     );
     let static_only = config
