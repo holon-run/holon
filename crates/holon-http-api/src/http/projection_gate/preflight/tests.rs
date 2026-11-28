@@ -335,6 +335,15 @@ async fn deadline_returns_without_releasing_a_running_worker() {
     assert!(gate.state.lock().unwrap().entries.is_empty());
 }
 
+/// Real wall-clock budget for one capability verification.
+///
+/// `deadline.into_std()` hands `RuntimeDbReadScope` a real `std::time::Instant`,
+/// so the paused Tokio clock cannot bound it: a caller starved by parallel test
+/// load would observe an already exhausted scope before the worker ever starts.
+/// Keep this far above any host scheduling delay; the expiry semantics below
+/// are still exercised deterministically through `tokio::time::advance`.
+const VERIFICATION_WALL_CLOCK_BUDGET: Duration = Duration::from_secs(60);
+
 #[tokio::test(start_paused = true)]
 async fn capability_read_and_build_share_the_callers_absolute_deadline() {
     let directory = tempfile::tempdir().unwrap();
@@ -345,7 +354,9 @@ async fn capability_read_and_build_share_the_callers_absolute_deadline() {
     .unwrap();
     let gate = Arc::new(ProjectionGate::new(1, Duration::from_millis(250)));
     let began = Instant::now();
-    let deadline = began + Duration::from_secs(5);
+    // The wall-clock budget must not be mistaken for a bounded host delay; it
+    // only keeps the read scope alive long enough to observe the real work.
+    let deadline = began + VERIFICATION_WALL_CLOCK_BUDGET;
     let (started_tx, started) = oneshot::channel();
     let (release, released) = oneshot::channel();
     let mut verification = Box::pin(gate.preflight(deadline, move |scope| {
@@ -368,7 +379,9 @@ async fn capability_read_and_build_share_the_callers_absolute_deadline() {
     let mut caller = Box::pin(gate.run_owned(
         key(),
         deadline,
-        Duration::from_secs(30),
+        // The caller's absolute deadline must stay the binding constraint, so
+        // the build budget has to outlive it.
+        VERIFICATION_WALL_CLOCK_BUDGET * 2,
         move |context| async move {
             context
                 .blocking(move |_| {
@@ -381,12 +394,12 @@ async fn capability_read_and_build_share_the_callers_absolute_deadline() {
     ));
     enroll(caller.as_mut()).await;
     started.await.unwrap();
-    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::advance(VERIFICATION_WALL_CLOCK_BUDGET - Duration::from_secs(4)).await;
     let Err(ProjectionGateError::Build(failure)) = caller.await else {
         panic!("the original request deadline must still expire");
     };
     assert_eq!(failure.error_code(), Some("projection_deadline_exhausted"));
-    assert_eq!(Instant::now() - began, Duration::from_secs(5));
+    assert_eq!(Instant::now() - began, VERIFICATION_WALL_CLOCK_BUDGET);
     assert_eq!(gate.leaders.available_permits(), 0);
     release.send(()).unwrap();
     gate.close_and_drain().await;

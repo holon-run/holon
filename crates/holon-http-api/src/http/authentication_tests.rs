@@ -6,6 +6,16 @@ use axum::{
 use std::sync::mpsc;
 use tower::ServiceExt;
 
+/// Real wall-clock budget for holding the entire reader pool.
+///
+/// Readiness waits on an OS thread plus a storage read checkout, neither of
+/// which a paused Tokio clock can accelerate, so a host starved by parallel
+/// test load must be given far more than the previous five seconds. The pool
+/// keeps the small checkout budget that makes the requests under test fail
+/// fast, so the fixture also re-attempts a missed checkout within this budget
+/// instead of widening the budget the product path observes.
+const HELD_READER_READY_BUDGET: Duration = Duration::from_secs(60);
+
 /// Hold the actual host's entire reader pool until this guard is dropped.
 /// The worker threads do not depend on the request's Tokio executor.
 struct HeldReaders {
@@ -115,6 +125,45 @@ async fn origin_bearer_session_checkout_failure_is_not_csrf_rejection() {
 }
 
 impl HeldReaders {
+    /// Check out one pooled reader and keep it until the returned sender fires.
+    ///
+    /// A checkout can fail fast with the pool's small budget when the thread
+    /// starting here is starved, so the caller re-attempts inside its own
+    /// wall-clock budget.
+    fn hold_one(
+        db: &crate::runtime_db::RuntimeDb,
+        ready_budget: Duration,
+    ) -> Result<
+        (
+            mpsc::Sender<()>,
+            std::thread::JoinHandle<anyhow::Result<()>>,
+        ),
+        String,
+    > {
+        let db = db.clone();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            db.read_for_http_test(|_| {
+                ready_tx.send(())?;
+                release_rx.recv_timeout(Duration::from_secs(30))?;
+                Ok(())
+            })
+        });
+        match ready_rx.recv_timeout(ready_budget) {
+            Ok(()) => Ok((release_tx, worker)),
+            Err(error) => {
+                let checkout = worker
+                    .join()
+                    .expect("held-reader worker must not panic")
+                    .err()
+                    .map(|error| format!("{error:#}"))
+                    .unwrap_or_else(|| "worker exited without a ready signal".to_string());
+                Err(format!("{error} / {checkout}"))
+            }
+        }
+    }
+
     fn new(db: &crate::runtime_db::RuntimeDb) -> Self {
         let capacity = db.reader_pool_stats_for_tests().capacity;
         assert!(capacity > 0);
@@ -122,19 +171,24 @@ impl HeldReaders {
             releases: Vec::new(),
             workers: Vec::new(),
         };
-        for _ in 0..capacity {
-            let db = db.clone();
-            let (ready_tx, ready_rx) = mpsc::channel();
-            let (release_tx, release_rx) = mpsc::channel();
-            held.releases.push(release_tx);
-            held.workers.push(std::thread::spawn(move || {
-                db.read_for_http_test(|_| {
-                    ready_tx.send(())?;
-                    release_rx.recv_timeout(Duration::from_secs(30))?;
-                    Ok(())
-                })
-            }));
-            ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let began = std::time::Instant::now();
+        while held.workers.len() < capacity as usize {
+            match Self::hold_one(db, HELD_READER_READY_BUDGET.saturating_sub(began.elapsed())) {
+                Ok((release, worker)) => {
+                    held.releases.push(release);
+                    held.workers.push(worker);
+                }
+                Err(missed) => {
+                    // A starved thread can miss the pool's small checkout
+                    // budget on its own; retry until this fixture's budget is
+                    // gone, then report why the last attempt failed.
+                    assert!(
+                        began.elapsed() < HELD_READER_READY_BUDGET,
+                        "held reader pool not ready after {:?}: {missed}",
+                        began.elapsed(),
+                    );
+                }
+            }
         }
         held
     }
