@@ -2199,6 +2199,32 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
     def test_direct_share_retry_preserves_raw_evidence_but_exports_only_passing_attempt(self):
         self.check_direct_share_evidence(passing_attempt=2)
 
+    def test_direct_share_failure_reports_unattributed_state_from_earlier_attempts(self):
+        # Only a prior attempt left material; the last attempt sent nothing.
+        (self.directory / "request-earlier.txt").write_bytes(b"IOS_SHARED_FILE_BYTES")
+        (self.directory / "request-earlier.png").write_bytes(
+            b"\x89PNG\r\n\x1a\n" + bytes(8) + struct.pack(">II", 16, 16))
+        local = Mock(return_value={"turns": [], "pending_inputs": [
+            {"text": "IOS_SHARED_TEXT https://example.test/holon-share shared-note"}]})
+        with patch("builtins.print") as output:
+            self.helpers["report_direct_share_failure"](self.directory, "holon-tester", local)
+        line, = output.call_args.args
+        self.assertIn("cross-attempt aggregate; not attributable to any single UI attempt", line)
+        self.assertIn("inputs=1 missing_markers=none file_bytes=True image_bytes=True", line)
+        self.assertFalse(list(self.directory.rglob("direct-share.json")))
+
+    def test_direct_share_failure_does_not_log_exception_details(self):
+        private = "private fixture detail"
+        for error, diagnostic in [
+            (self.helpers["FixtureControlError"]("/private", 503, private), "fixture control HTTP 503"),
+            (OSError(private), "could not read fixture state"),
+        ]:
+            with self.subTest(diagnostic=diagnostic), patch("builtins.print") as output:
+                self.helpers["report_direct_share_failure"](
+                    self.directory, "holon-tester", Mock(side_effect=error))
+                output.assert_called_once_with(
+                    f"Direct-share daemon state unavailable: {diagnostic}", flush=True)
+
     def check_direct_share_evidence(self, passing_attempt):
         evidence = self.directory / "evidence"
         workspace = self.directory / "workspace"
@@ -2328,17 +2354,12 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         self.assertEqual({record["kind"] for record in records},
                          {"app-lost-response", "share-text", "share-url", "share-image", "share-file"})
         # Execute the real post-run daemon material check/export, not a test-only exporter.
-        # The proxy handler also branches on `share_acceptance`; only the export
-        # block gates on `mode != '--sdk-only'`, delegates to direct_share_evidence
-        # and writes direct-share.json.
-        # The daemon half lives in its own function so a failed UI case can still
-        # report it; execute that function with the names the sweep would pass.
         share_checks = next(node for node in ast.walk(self.tree)
                             if isinstance(node, ast.FunctionDef)
                             and node.name == "verify_direct_share_acceptance")
         share_block = [share_checks] + ast.parse(
             "verify_direct_share_acceptance(root, workspace, agent, prompt_evidence,"
-            " lost_lock, fixture_evidence, local, ui_telemetry, 'contract')",
+            " lost_lock, fixture_evidence, local, ui_telemetry)",
             mode="exec").body
         def local(method, path, payload=None):
             self.assertEqual(method, "GET")
