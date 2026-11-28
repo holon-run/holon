@@ -662,7 +662,10 @@ mod tests {
     #[test]
     fn localhost_legacy_rule_can_migrate_to_resolved_listener() {
         let directory = tempfile::tempdir().unwrap();
-        let listener = std::net::TcpListener::bind("[::1]:0").unwrap();
+        // The legacy rule is host-name based, so the loopback family is
+        // incidental here; bind IPv4 to stay deterministic on hosts without
+        // an IPv6 loopback.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let bound = listener.local_addr().unwrap();
         let configured = format!("localhost:{}", bound.port());
         let state =
@@ -680,8 +683,21 @@ mod tests {
         assert_eq!(target(&state).unwrap(), format!("http://{bound}"));
     }
 
+    // Probes bind+connect over the IPv6 loopback so the wildcard case skips
+    // (with a visible reason) only when IPv6 is genuinely unavailable.
+    fn probe_ipv6_loopback() -> std::io::Result<()> {
+        let listener = std::net::TcpListener::bind("[::1]:0")?;
+        let address = listener.local_addr()?;
+        std::net::TcpStream::connect(address)?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn ipv6_wildcard_listener_accepts_selected_backend_target() {
+        if let Err(error) = probe_ipv6_loopback() {
+            eprintln!("skipping: no IPv6 loopback available ({error})");
+            return;
+        }
         let listener = tokio::net::TcpListener::bind("[::]:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let directory = tempfile::tempdir().unwrap();
