@@ -283,10 +283,6 @@ export function RightSidePanel({
   const runtimeTraceActive = activeView.kind === "agent_overview" && showRuntimeTrace && runtimeTraceEnabled;
   const isDetailView = activeView.kind !== "agent_overview" && activeView.kind !== "file_browser";
   const isOverviewRoot = activeView.kind === "agent_overview" && !skillManagerActive && !runtimeTraceActive;
-  const activeWorkCount =
-    agent.activeWorkItemCount
-    ?? (agent.workItems ?? (agent.currentWork ? [agent.currentWork] : [])).filter((item) => item.state !== "completed").length;
-  const executionBadgeCount = activeWorkCount + (agent.activeTaskCount ?? 0);
   const title =
     runtimeTraceActive
       ? t("runtimeTrace.title")
@@ -369,7 +365,6 @@ export function RightSidePanel({
               }}
             >
               <span>{t("rightPanel.overviewTab")}</span>
-              {executionBadgeCount > 0 ? <span className="panel-tab-badge" aria-hidden="true">{executionBadgeCount}</span> : null}
             </button>
             <button
               type="button"
