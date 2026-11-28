@@ -110,6 +110,15 @@ running, independently check its status in the external service manager before
 deciding whether to start a similar operation. Run any authorized daemon restart
 from an operator session outside the daemon's own service.
 
+### Agents quarantined after upgrading from a 0.62.0 beta
+
+If a node had already run a 0.62.0 beta, the upgrade could leave historical
+turn input evidence drifted. The daemon then quarantined the affected agents
+during startup, logged `input evidence canonical projection changed without
+qualified writer`, answered their wakes with 503, and held their queued
+inputs. v0.62.0 repairs the drifted evidence during startup: upgrade
+directly to v0.62.0 or later and restart the daemon.
+
 ### "No available model" or credential errors
 
 ```bash

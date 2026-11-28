@@ -100,10 +100,12 @@ Holon 把认证、消息来源、信任级别、优先级和权威当作彼此�
 
 **`POST /api/models/refresh`** — 刷新可用模型
 
-为发现缓存缺失或过期的 provider 发现模型，然后返回与 `GET /api/models` 相同的目录结构。
-刷新操作同时会让无需凭据或支持匿名访问的内置 provider（如 `ollama`、`vllm`、`magpie`）
-在当前运行时会话中生效并开放已发现的模型，无需修改 `config.json`。某个 provider 发现失败
-不会阻止其他可用模型被返回。
+即使发现缓存仍在有效期内，也会重新探测你已启用的 provider，然后返回与
+`GET /api/models` 相同的目录结构。以下任一情况即视为已启用：在 `config.json`
+中声明了 `providers.<id>`、被已配置的模型路由引用，或被当前会话中之前的刷新
+指定过。已启用的免凭据、支持匿名访问的内置 provider（如 `ollama`、`vllm`、
+`magpie`）无需修改 `config.json`，即可在当前会话中提供已发现的模型。某个
+provider 发现失败不会阻止其他可用模型被返回。
 
 ```json
 {
