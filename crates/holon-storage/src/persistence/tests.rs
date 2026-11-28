@@ -22,6 +22,7 @@ fn transaction<T>(
         RuntimeDbWriteContext::sync("persistence_test", "test_rows"),
         Duration::ZERO,
         Duration::ZERO,
+        crate::write_queue::RuntimeDbTransactionBegin::Immediate,
         None,
         f,
     )

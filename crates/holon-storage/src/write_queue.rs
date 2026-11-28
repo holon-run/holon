@@ -148,17 +148,32 @@ pub(crate) struct RuntimeDbWriteRequest {
     completion: Option<mpsc::Sender<Result<(), String>>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RuntimeDbWriteContext {
     pub(crate) operation: &'static str,
     pub(crate) table: &'static str,
     pub(crate) mode: RuntimeDbWriteMode,
+    /// Explicit write-scope attribution. `None` for non-agent scopes: the
+    /// slow-write diagnostics must not fabricate a default agent identity.
+    pub(crate) agent_id: Option<std::sync::Arc<str>>,
     origin: Option<&'static Location<'static>>,
 }
 
 impl RuntimeDbWriteContext {
-    pub fn operation(self) -> &'static str {
+    pub fn operation(&self) -> &'static str {
         self.operation
+    }
+
+    /// Attach an explicit agent attribution to this write context.
+    pub fn with_agent_id(mut self, agent_id: impl Into<std::sync::Arc<str>>) -> Self {
+        self.agent_id = Some(agent_id.into());
+        self
+    }
+
+    /// Tracing value for the agent attribution. `None` records no field, so
+    /// non-agent-scope writes gain no fabricated default.
+    pub(crate) fn agent_id_field(&self) -> Option<tracing::field::DisplayValue<&str>> {
+        self.agent_id.as_deref().map(tracing::field::display)
     }
 
     pub(crate) const TRANSACTION: Self = Self::sync("runtime_db.transaction", "unknown");
@@ -172,6 +187,7 @@ impl RuntimeDbWriteContext {
             operation,
             table,
             mode,
+            agent_id: None,
             origin: None,
         }
     }
@@ -190,7 +206,7 @@ impl RuntimeDbWriteContext {
         self
     }
 
-    pub(crate) fn origin(self) -> (&'static str, u32) {
+    pub(crate) fn origin(&self) -> (&'static str, u32) {
         self.origin
             .map_or(("unknown", 0), |origin| (origin.file(), origin.line()))
     }
@@ -207,6 +223,27 @@ impl RuntimeDbWriteMode {
         match self {
             Self::Sync => "sync",
             Self::Background => "background",
+        }
+    }
+}
+
+/// How a queued runtime DB transaction acquires the SQLite write lock.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeDbTransactionBegin {
+    /// `BEGIN IMMEDIATE`: the write lock is held from begin to commit.
+    Immediate,
+    /// `BEGIN DEFERRED`: reads hold no write lock; the first write statement
+    /// upgrades. A stale read snapshot fails that upgrade with
+    /// `SQLITE_BUSY_SNAPSHOT`, which callers must map into their
+    /// definitely-not-committed rejection path instead of retrying in place.
+    Deferred,
+}
+
+impl RuntimeDbTransactionBegin {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Immediate => "immediate",
+            Self::Deferred => "deferred",
         }
     }
 }
@@ -264,7 +301,9 @@ impl RuntimeDbWriter {
                     } = request;
                     let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
                     loop {
-                        match thread_state.append_wait_with_context(context, None, |tx| job(tx)) {
+                        match thread_state
+                            .append_wait_with_context(context.clone(), None, |tx| job(tx))
+                        {
                             Ok(()) => {
                                 #[cfg(any(test, feature = "test-support"))]
                                 if let Some(completion) = completion.take() {
@@ -473,6 +512,22 @@ impl RuntimeDbWriter {
         let context = context.with_caller();
         at_blocking_boundary(|| self.state.append_wait_once(context, phases, f))
     }
+
+    /// Run one DEFERRED transaction on the writer connection, through the
+    /// write channel. The read phase holds no SQLite write lock; the first
+    /// write statement upgrades it. A stale snapshot fails the upgrade with
+    /// `SQLITE_BUSY_SNAPSHOT` and surfaces as a rolled-back
+    /// definitely-not-committed error for the caller's rejection path. The
+    /// body never retries: bounded retries are the caller's decision.
+    #[track_caller]
+    pub fn append_wait_deferred_once_with_context<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let context = context.with_caller();
+        at_blocking_boundary(|| self.state.append_wait_deferred_once(context, None, f))
+    }
 }
 
 impl RuntimeDbWriterState {
@@ -605,10 +660,11 @@ impl RuntimeDbWriterState {
             self.ensure_protected().map_err(before_begin_failure)?;
             match self.run_transaction_attempt(
                 &connection,
-                context,
+                context.clone(),
                 queue_wait,
                 mutex_wait,
                 phases,
+                RuntimeDbTransactionBegin::Immediate,
                 |tx| f(tx),
             ) {
                 Ok(value) => return Ok(value),
@@ -670,7 +726,47 @@ impl RuntimeDbWriterState {
             .map_err(|_| before_begin_failure(anyhow!("runtime db writer mutex poisoned")))?;
         let mutex_wait = mutex_wait_started_at.elapsed();
         self.ensure_protected().map_err(before_begin_failure)?;
-        self.run_transaction_attempt(&connection, context, queue_wait, mutex_wait, phases, f)
+        self.run_transaction_attempt(
+            &connection,
+            context,
+            queue_wait,
+            mutex_wait,
+            phases,
+            RuntimeDbTransactionBegin::Immediate,
+            f,
+        )
+    }
+
+    /// Run one DEFERRED transaction through the write channel. Reads inside
+    /// the body hold no SQLite write lock; the first write statement upgrades
+    /// it. A stale snapshot fails that upgrade with `SQLITE_BUSY_SNAPSHOT`,
+    /// surfaced as a rolled-back definitely-not-committed error. Unlike
+    /// [`Self::append_wait_with_context`] the body never retries.
+    fn append_wait_deferred_once<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        phases: Option<&crate::write_callback_phases::WriteCallbackPhases>,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let queue_wait_started_at = Instant::now();
+        let _turn = self.queue.wait_turn().map_err(before_begin_failure)?;
+        let queue_wait = queue_wait_started_at.elapsed();
+        let mutex_wait_started_at = Instant::now();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| before_begin_failure(anyhow!("runtime db writer mutex poisoned")))?;
+        let mutex_wait = mutex_wait_started_at.elapsed();
+        self.ensure_protected().map_err(before_begin_failure)?;
+        self.run_transaction_attempt(
+            &connection,
+            context,
+            queue_wait,
+            mutex_wait,
+            phases,
+            RuntimeDbTransactionBegin::Deferred,
+            f,
+        )
     }
 
     fn run_transaction_attempt<T>(
@@ -680,13 +776,14 @@ impl RuntimeDbWriterState {
         queue_wait: std::time::Duration,
         mutex_wait: std::time::Duration,
         phases: Option<&crate::write_callback_phases::WriteCallbackPhases>,
+        begin: RuntimeDbTransactionBegin,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let observations = TransactionObservation::begin(&self.queue);
         let result = self.finish_transaction_attempt(
             connection,
             run_transaction_on_connection(
-                connection, &self.path, context, queue_wait, mutex_wait, phases, f,
+                connection, &self.path, context, queue_wait, mutex_wait, begin, phases, f,
             ),
         );
         let mut writes = observations.finish();

@@ -2594,7 +2594,8 @@ impl ScopedInputPreparationRejected {
         if matches!(
             error.downcast_ref::<InputEvidenceSnapshotError>(),
             Some(InputEvidenceSnapshotError::ProjectionChanged(_))
-        ) {
+        ) || is_sqlite_busy_snapshot(&error)
+        {
             let message = error.to_string();
             error.context(Self { message })
         } else {
@@ -2606,6 +2607,109 @@ impl ScopedInputPreparationRejected {
         error.is::<Self>()
             && crate::runtime_db::persistence_certainty(error)
                 == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+    }
+}
+
+/// `SQLITE_BUSY_SNAPSHOT` (517): a DEFERRED transaction's first write could
+/// not upgrade to the write lock because another writer committed after our
+/// read snapshot began. The snapshot is stale; the attempt is rolled back.
+fn is_sqlite_busy_snapshot(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|failure| {
+                failure.sqlite_error().is_some_and(|sqlite| {
+                    sqlite.extended_code == rusqlite::ffi::SQLITE_BUSY_SNAPSHOT
+                })
+            })
+    })
+}
+
+/// The read-only preparation connection rejected a write (its authorizer or
+/// `query_only` mode denies every write statement): the derived snapshot
+/// needs the writer channel.
+fn is_reader_write_rejected(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|failure| {
+                matches!(
+                    failure.sqlite_error_code(),
+                    Some(rusqlite::ffi::ErrorCode::AuthorizationForStatementDenied)
+                        | Some(rusqlite::ffi::ErrorCode::ReadOnly)
+                )
+            })
+    })
+}
+
+/// A read-only preparation snapshot cannot have written anything, so its
+/// scoped rejections are definitely not committed. Mark them so the
+/// rolled-back quarantine gate sees the same certainty the writer channel
+/// would have attached.
+fn mark_scoped_reader_rejection(error: anyhow::Error) -> anyhow::Error {
+    if error.is::<ScopedInputPreparationRejected>() {
+        holon_storage::persistence::mark_persistence_failure(
+            error,
+            crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted,
+            crate::runtime_db::PersistenceFailurePhase::Callback,
+            None,
+        )
+    } else {
+        error
+    }
+}
+
+/// Load the per-agent derived bootstrap domains with a read-first plan.
+///
+/// The snapshot prefers the reserved read-only preparation connection, so
+/// steady-state bootstraps take no write-channel turn and hold no SQLite
+/// write lock while reading. When the snapshot needs its conditional write
+/// (membership qualification backfill or the native birth cursor baseline),
+/// the query-only reader rejects the write and the whole snapshot re-runs
+/// as one DEFERRED transaction on the writer channel: same transaction, same
+/// read view, and the write lock is taken only at the first write statement.
+/// A `SQLITE_BUSY_SNAPSHOT` upgrade failure is a rolled-back
+/// definitely-not-committed rejection; it is retried at most once per call
+/// with a fresh snapshot, and further failures stay visible and countable.
+fn load_derived_bootstrap_domains<T>(
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    context: crate::runtime_db::write_queue::RuntimeDbWriteContext,
+    body: impl Fn(&rusqlite::Transaction<'_>) -> Result<T>,
+) -> Result<T> {
+    let mut busy_snapshot_retried = false;
+    loop {
+        match runtime_db.read_for_preparation(&body) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                if !is_reader_write_rejected(&error) {
+                    return Err(mark_scoped_reader_rejection(error));
+                }
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    operation = context.operation(),
+                    "bootstrap derived snapshot needs its conditional write; re-running on the writer channel"
+                );
+            }
+        }
+        match runtime_db.transaction_deferred_once_with_context(context.clone(), &body) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                if !busy_snapshot_retried
+                    && ScopedInputPreparationRejected::is_rolled_back(&error)
+                    && is_sqlite_busy_snapshot(&error)
+                {
+                    busy_snapshot_retried = true;
+                    tracing::debug!(
+                        agent_id = %agent_id,
+                        operation = context.operation(),
+                        "bootstrap derived deferred write raced a concurrent writer; retrying once with a fresh snapshot"
+                    );
+                    continue;
+                }
+                return Err(error);
+            }
+        }
     }
 }
 
@@ -2996,7 +3100,7 @@ fn prepare_runtime_storage_owned(
     storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
 
     let recent_episode_candidates = context_config.recent_episode_candidates;
-    let derived = runtime_db.transaction(|tx| {
+    let derived_body = |tx: &rusqlite::Transaction<'_>| {
         let current = crate::runtime_db::episode_snapshot::load_episode_memory_snapshot_in(
             tx,
             &crate::runtime_db::episode_snapshot::EpisodeMemoryLoadScope {
@@ -3181,7 +3285,17 @@ fn prepare_runtime_storage_owned(
             scheduling,
             pending,
         ))
-    });
+    };
+    let derived = load_derived_bootstrap_domains(
+        &runtime_db,
+        &agent_id,
+        crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
+            "runtime_db.bootstrap_derived",
+            "unknown",
+        )
+        .with_agent_id(agent_id.clone()),
+        &derived_body,
+    );
     let (episodes, inputs, work, tasks, scheduling, pending) = match derived {
         Ok(derived) => derived,
         Err(error)
@@ -4635,6 +4749,251 @@ mod view_image_candidate_health_tests {
                 .as_deref(),
             Some("anthropic@default/vision-b")
         );
+    }
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[cfg(test)]
+mod derived_bootstrap_snapshot_tests {
+    use super::*;
+    use crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError;
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    fn open_derived_db(temp: &tempfile::TempDir) -> Result<RuntimeDb> {
+        RuntimeDb::open_and_migrate(
+            temp.path().join("runtime.sqlite"),
+            temp.path().join("runtime.lock"),
+        )
+    }
+
+    fn write_admissions(db: &RuntimeDb) -> u64 {
+        db.reader_pool_writer_weak_for_tests()
+            .upgrade()
+            .expect("writer state alive")
+            .write_channel_admissions_for_tests()
+            .expect("write queue healthy")
+    }
+
+    fn derived_context(agent_id: &str) -> crate::runtime_db::write_queue::RuntimeDbWriteContext {
+        crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
+            "runtime_db.bootstrap_derived",
+            "unknown",
+        )
+        .with_agent_id(agent_id)
+    }
+
+    fn external_connection(temp: &tempfile::TempDir) -> Result<rusqlite::Connection> {
+        let connection = rusqlite::Connection::open(temp.path().join("runtime.sqlite"))?;
+        connection.busy_timeout(Duration::from_secs(10))?;
+        Ok(connection)
+    }
+
+    fn read_identity_count(tx: &rusqlite::Transaction<'_>) -> Result<i64> {
+        Ok(
+            tx.query_row("SELECT count(*) FROM agent_identities", [], |row| {
+                row.get(0)
+            })?,
+        )
+    }
+
+    /// A read-only derived snapshot must run entirely on the reserved
+    /// preparation reader: zero write-channel turns (#4685 §4.2-2).
+    #[test]
+    fn steady_state_derived_snapshot_takes_no_write_channel_turn() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = open_derived_db(&temp)?;
+        let before = write_admissions(&db);
+        let body = |tx: &rusqlite::Transaction<'_>| -> Result<()> {
+            read_identity_count(tx)?;
+            Ok(())
+        };
+        load_derived_bootstrap_domains(
+            &db,
+            "steady-agent",
+            derived_context("steady-agent"),
+            &body,
+        )?;
+        assert_eq!(write_admissions(&db), before);
+        Ok(())
+    }
+
+    /// A slow read body must not hold the SQLite write lock: an external
+    /// BEGIN IMMEDIATE probe keeps acquiring the lock throughout (#4685
+    /// §4.2-1, continuous hold budget 500ms; the read body deliberately
+    /// runs longer than the budget).
+    #[test]
+    fn slow_derived_read_body_holds_no_continuous_write_lock() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = open_derived_db(&temp)?;
+        let mut probe = external_connection(&temp)?;
+        let max_block_ms = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let probe_thread = {
+            let max_block_ms = Arc::clone(&max_block_ms);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    let started = Instant::now();
+                    // A failed probe still reports how long the write lock
+                    // was unavailable to an external writer.
+                    let _ = (|| -> Result<()> {
+                        let transaction = probe
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        transaction.commit()?;
+                        Ok(())
+                    })();
+                    max_block_ms.fetch_max(started.elapsed().as_millis() as u64, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            })
+        };
+        let body_started = Instant::now();
+        let body = |tx: &rusqlite::Transaction<'_>| -> Result<()> {
+            let deadline = Instant::now() + Duration::from_millis(600);
+            while Instant::now() < deadline {
+                read_identity_count(tx)?;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(())
+        };
+        load_derived_bootstrap_domains(&db, "probe-agent", derived_context("probe-agent"), &body)?;
+        let body_elapsed = body_started.elapsed();
+        stop.store(true, Ordering::SeqCst);
+        probe_thread.join().expect("probe thread must join");
+        assert!(
+            body_elapsed >= Duration::from_millis(600),
+            "fixture read body must outlast the write-lock budget"
+        );
+        let blocked = max_block_ms.load(Ordering::SeqCst);
+        assert!(
+            blocked < 500,
+            "continuous write-lock hold {blocked}ms exceeded the 500ms budget"
+        );
+        Ok(())
+    }
+
+    /// A concurrent writer committing between the deferred snapshot and the
+    /// first write makes the upgrade fail with SQLITE_BUSY_SNAPSHOT; the
+    /// rejection stays rolled back, and only one bounded retry runs: two
+    /// reader attempts (write rejected) plus two writer attempts (#4685
+    /// §4.2-3).
+    #[test]
+    fn derived_busy_snapshot_rejection_is_bounded_to_one_retry() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = open_derived_db(&temp)?;
+        let external = external_connection(&temp)?;
+        external.execute("CREATE TABLE busy_probe(marker INTEGER)", [])?;
+        let admissions_before = write_admissions(&db);
+        let external_writes = AtomicUsize::new(0);
+        let body = |tx: &rusqlite::Transaction<'_>| -> Result<()> {
+            read_identity_count(tx)?;
+            external.execute("INSERT INTO busy_probe(marker) VALUES (1)", [])?;
+            external_writes.fetch_add(1, Ordering::SeqCst);
+            tx.execute("INSERT INTO busy_probe(marker) VALUES (2)", [])
+                .map_err(|error| ScopedInputPreparationRejected::tag(error.into()))?;
+            Ok(())
+        };
+        let error =
+            load_derived_bootstrap_domains(&db, "busy-agent", derived_context("busy-agent"), &body)
+                .expect_err("an exhausted bounded retry must surface the rejection");
+        assert!(
+            ScopedInputPreparationRejected::is_rolled_back(&error),
+            "the busy-snapshot rejection must be definitely-not-committed"
+        );
+        assert!(
+            is_sqlite_busy_snapshot(&error),
+            "the surfaced rejection must keep the SQLITE_BUSY_SNAPSHOT cause"
+        );
+        assert_eq!(
+            external_writes.load(Ordering::SeqCst),
+            4,
+            "expected exactly two reader attempts and two writer attempts"
+        );
+        assert_eq!(
+            write_admissions(&db) - admissions_before,
+            2,
+            "only the two writer-channel deferred attempts take write turns"
+        );
+        let rows: i64 =
+            external.query_row("SELECT count(*) FROM busy_probe", [], |row| row.get(0))?;
+        assert_eq!(
+            rows, 4,
+            "every upgraded write rolled back; only external rows persist"
+        );
+        Ok(())
+    }
+
+    /// The single bounded retry recovers once the concurrent writer goes
+    /// quiet: the second deferred writer attempt upgrades, writes, and
+    /// commits.
+    #[test]
+    fn derived_busy_snapshot_retry_recovers_when_the_writer_goes_quiet() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = open_derived_db(&temp)?;
+        let external = external_connection(&temp)?;
+        external.execute("CREATE TABLE busy_probe(marker INTEGER)", [])?;
+        let external_writes = AtomicUsize::new(0);
+        let body = |tx: &rusqlite::Transaction<'_>| -> Result<()> {
+            read_identity_count(tx)?;
+            if external_writes.fetch_add(1, Ordering::SeqCst) < 3 {
+                external.execute("INSERT INTO busy_probe(marker) VALUES (1)", [])?;
+            }
+            tx.execute("INSERT INTO busy_probe(marker) VALUES (2)", [])
+                .map_err(|error| ScopedInputPreparationRejected::tag(error.into()))?;
+            Ok(())
+        };
+        load_derived_bootstrap_domains(
+            &db,
+            "recover-agent",
+            derived_context("recover-agent"),
+            &body,
+        )?;
+        let rows: i64 =
+            external.query_row("SELECT count(*) FROM busy_probe", [], |row| row.get(0))?;
+        assert_eq!(
+            rows, 4,
+            "three external writes plus one committed in-transaction write"
+        );
+        Ok(())
+    }
+
+    /// A scoped consistency rejection observed on the read-only path is
+    /// marked definitely-not-committed, so the quarantine gate in
+    /// `prepare_runtime_storage_owned` keeps its writer-channel semantics.
+    #[test]
+    fn reader_scoped_rejection_is_marked_definitely_not_committed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = open_derived_db(&temp)?;
+        let before = write_admissions(&db);
+        let body = |tx: &rusqlite::Transaction<'_>| -> Result<()> {
+            read_identity_count(tx)?;
+            Err(anyhow!(InputEvidenceSnapshotError::ProjectionChanged(
+                "fixture-projection".into(),
+            )))
+            .map_err(ScopedInputPreparationRejected::tag)
+        };
+        let error = load_derived_bootstrap_domains(
+            &db,
+            "reject-agent",
+            derived_context("reject-agent"),
+            &body,
+        )
+        .expect_err("a scoped consistency rejection must surface");
+        assert!(
+            ScopedInputPreparationRejected::is_rolled_back(&error),
+            "the reader rejection must be marked definitely-not-committed"
+        );
+        assert!(matches!(
+            error.downcast_ref::<InputEvidenceSnapshotError>(),
+            Some(InputEvidenceSnapshotError::ProjectionChanged(record))
+                if record == "fixture-projection"
+        ));
+        assert_eq!(
+            write_admissions(&db),
+            before,
+            "a reader-path rejection takes no write turn"
+        );
+        Ok(())
     }
 }
 

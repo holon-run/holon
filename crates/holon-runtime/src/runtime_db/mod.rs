@@ -1057,6 +1057,21 @@ impl RuntimeDb {
         self.writer.append_wait_once_with_context(context, f)
     }
 
+    /// Run one DEFERRED write-channel transaction. Reads inside the body
+    /// hold no SQLite write lock; the first write statement upgrades it. A
+    /// stale read snapshot fails the upgrade with `SQLITE_BUSY_SNAPSHOT`
+    /// and surfaces as a rolled-back definitely-not-committed error. The
+    /// body never retries: bounded retries are the caller's decision.
+    #[track_caller]
+    pub(crate) fn transaction_deferred_once_with_context<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer
+            .append_wait_deferred_once_with_context(context, f)
+    }
+
     #[track_caller]
     #[cfg(test)]
     pub(crate) fn recovery_transaction_once<T>(
