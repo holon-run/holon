@@ -2278,15 +2278,48 @@ final class HolonUITests: XCTestCase {
         let statusButton = waitForConversationConnection("Live", in: app)
         let viewport = app.scrollViews["conversation.viewport"]
         XCTAssertTrue(viewport.exists)
+        let composer = app.otherElements["sending.composer"].firstMatch
         let onlineViewport = viewport.frame
         let onlineAction = statusButton.frame
-        let onlineComposer = app.otherElements["sending.composer"].firstMatch.frame
+        let onlineComposer = composer.frame
+        // A connection or sheet transition keeps the chrome settling after the
+        // action returns, so a single read can catch an all-zero or half-laid-out
+        // frame. Poll until two consecutive samples agree, then assert on that
+        // settled sample: a bounded wait instead of one mid-transition snapshot.
+        let stableChromeTimeout = UIWaitScale.scaled(10)
         func assertStableChrome(_ phase: String) {
-            XCTAssertEqual(viewport.frame.minY, onlineViewport.minY, accuracy: 1, phase)
-            XCTAssertEqual(viewport.frame.height, onlineViewport.height, accuracy: 1, phase)
-            XCTAssertEqual(statusButton.frame.height, onlineAction.height, accuracy: 1, phase)
-            XCTAssertEqual(app.otherElements["sending.composer"].firstMatch.frame.minY,
-                           onlineComposer.minY, accuracy: 1, phase)
+            let chrome: [(name: String, element: XCUIElement, baseline: CGRect)] = [
+                ("conversation.viewport", viewport, onlineViewport),
+                ("conversation.connectionStatus", statusButton, onlineAction),
+                ("sending.composer", composer, onlineComposer),
+            ]
+            var previousFrames: [CGRect] = []
+            var stableSamples = 0
+            let stable = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let frames = chrome.map { $0.element.frame }
+                if frames == previousFrames {
+                    stableSamples += 1
+                } else {
+                    stableSamples = 0
+                }
+                previousFrames = frames
+                return stableSamples >= 2 && frames.allSatisfy { !$0.isEmpty }
+            }, object: nil)
+            let settled = XCTWaiter.wait(for: [stable], timeout: stableChromeTimeout) == .completed
+            let measured = chrome.map { $0.element.frame }
+            let report = zip(chrome, measured)
+                .map { item, frame in "\(item.name): measured \(frame), baseline \(item.baseline)" }
+                .joined(separator: "; ")
+            XCTAssertTrue(settled && measured.allSatisfy { !$0.isEmpty },
+                          "Chrome did not settle in phase \"\(phase)\" within \(stableChromeTimeout)s: \(report)")
+            XCTAssertEqual(measured[0].minY, onlineViewport.minY, accuracy: 1,
+                           "Chrome shifted in phase \"\(phase)\": \(report)")
+            XCTAssertEqual(measured[0].height, onlineViewport.height, accuracy: 1,
+                           "Chrome shifted in phase \"\(phase)\": \(report)")
+            XCTAssertEqual(measured[1].height, onlineAction.height, accuracy: 1,
+                           "Chrome shifted in phase \"\(phase)\": \(report)")
+            XCTAssertEqual(measured[2].minY, onlineComposer.minY, accuracy: 1,
+                           "Chrome shifted in phase \"\(phase)\": \(report)")
         }
         capture(app, "live-interruption-before")
 

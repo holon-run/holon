@@ -405,9 +405,12 @@ The route format is `ollama@default/<installed-model>`. The model must already
 be available on that Ollama server. See the
 [local endpoint setup](/guides/configure-models.md#local-or-custom-endpoints).
 
-The Web GUI discovers locally running Ollama models without any credential
-configuration, and `ViewImage` automatically discovers Ollama vision models
-for image analysis.
+Holon does not auto-probe unconfigured credential-free providers on startup.
+Local Ollama (or `vllm`) models are discovered and loaded once you opt in by
+referencing the provider in a configured model route (`model.default`,
+`model.fallbacks`, `vision.default`, `vision.candidates`,
+`image_generation.default`, or `models.catalog`), declaring `providers.ollama`
+in `config.json`, or running an explicit model refresh.
 
 ### Adding a Custom Provider
 

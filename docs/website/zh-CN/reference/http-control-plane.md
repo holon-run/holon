@@ -101,7 +101,9 @@ Holon 把认证、消息来源、信任级别、优先级和权威当作彼此�
 **`POST /api/models/refresh`** — 刷新可用模型
 
 为发现缓存缺失或过期的 provider 发现模型，然后返回与 `GET /api/models` 相同的目录结构。
-某个 provider 发现失败不会阻止其他可用模型被返回。
+刷新操作同时会让无需凭据或支持匿名访问的内置 provider（如 `ollama`、`vllm`、`magpie`）
+在当前运行时会话中生效并开放已发现的模型，无需修改 `config.json`。某个 provider 发现失败
+不会阻止其他可用模型被返回。
 
 ```json
 {
@@ -111,6 +113,28 @@ Holon 把认证、消息来源、信任级别、优先级和权威当作彼此�
   "model_availability": { "claude-sonnet-4-20250514": true, … }
 }
 ```
+
+**`GET /api/models/providers`** — 列出已解析的模型提供商
+
+返回经过解析的提供商投影（`providers`）及其背后的发现缓存状态（`model_discovery_cache`），
+与 `holon config model-providers list` 及 `ListModelProviders` 同源。
+
+- `operation`（可选查询参数）：`view_image` 或 `generate_image`。仅保留至少有一个可调用模型的提供商；当 `include_unavailable=true` 时忽略。
+- `include_unavailable`（可选查询参数，默认 `false`）：诊断视图，跳过可用性与 `operation` 过滤。
+
+**`GET /api/models/providers/:provider/models`** — 列出单个提供商的已解析模型
+
+按 `GET /api/models/providers` 返回的提供商 ID 获取解析后的 `ProviderModelEntry` 列表，
+支持按 `model_ref` 游标分页，与 `holon config models list` 及 `ListProviderModels` 同源。
+
+- `operation`（可选查询参数）：`view_image` 或 `generate_image`（当 `include_unavailable=true` 时忽略）。
+- `include_unavailable`（可选查询参数，默认 `false`）：诊断视图，跳过可用性与 `operation` 过滤。
+- `limit`（可选查询参数，默认 `100`，范围 `1..=500`）：每页返回的最大模型数，超出范围的值会被钳制。
+- `cursor`（可选查询参数）：上一页 `next_cursor` 返回的不透明 `model_ref` 游标。
+
+响应包含 `{ provider, models, limit, returned, next_cursor }`。若提供商 ID 不存在，
+返回 `404` 与错误码 `unknown_provider`；若游标无法匹配筛选后的模型序列，返回 `400`
+与 `invalid_cursor`。
 
 ### Agent
 

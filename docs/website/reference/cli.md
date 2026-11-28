@@ -48,6 +48,7 @@ the existing default brief snapshot remains available without it.
 holon (v0.61.0)
 ├── context      Show the declared caller context
 ├── commands     Show machine-readable CLI command metadata
+├── docs         Read versioned embedded Holon operational manuals offline
 ├── serve        Start HTTP control plane server
 ├── onboard      Interactive setup wizard or secret-safe diagnostics
 ├── daemon       Background daemon lifecycle
@@ -462,6 +463,14 @@ Stable script-facing JSON contracts currently cover `holon config schema`,
 Other configuration inspection commands emit JSON too, but remain experimental
 until their provider/runtime DTO ownership is fully stabilized. Human-readable
 help and prose output are separate from these JSON contracts.
+
+### Embedded manuals
+
+```bash
+holon docs                       # List embedded operational topics
+holon docs models                # Read one topic offline (cli, skills, apps, agents, workspace, agent-home, models)
+holon docs models --json         # Structured JSON output (also --output json)
+```
 
 ### Credential setup
 

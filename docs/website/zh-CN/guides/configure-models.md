@@ -30,10 +30,11 @@ Holon 采用统一的 `provider@endpoint/model` 路由规范（例如 `ollama@de
    ollama pull qwen2.5-coder:latest
    ```
 2. **设为全局默认模型**：
-   Holon 会自动扫描本机正在运行的 Ollama 服务，无需任何 API Key：
+   把 `model.default` 设为 Ollama 路由即可启用本地 Ollama 的模型发现，无需任何 API Key：
    ```bash
    holon config set model.default "ollama@default/qwen2.5-coder:latest"
    ```
+   如果想先浏览本地 Ollama 模型再决定默认路由，可运行 `holon config models refresh --provider ollama`，或在 `config.json` 中声明 `providers.ollama`。
 3. **验证连通性**：
    运行配置诊断命令，确认本地 Ollama 端点健康可用：
    ```bash
@@ -178,7 +179,7 @@ holon config set image_generation.default "openai@default/dall-e-3"
 
 ### 场景六：Magpie（内置）与自托管 OpenAI 兼容网关
 
-**Magpie 已内置。** 当 Magpie 运行在默认端口时无需任何 provider 配置：内置 `magpie` 条目指向 `http://127.0.0.1:3425`，使用 Anthropic Messages 传输（`POST /v1/messages`），通过 Magpie 解码器从 `GET /v1/models` 发现模型，且不需要 API key。
+**Magpie 已内置。** 内置 `magpie` 条目指向 `http://127.0.0.1:3425`，使用 Anthropic Messages 传输（`POST /v1/messages`），通过 Magpie 解码器从 `GET /v1/models` 发现模型，且不需要 API key。由于它允许本地匿名访问，Holon 启动时不会自动探测其端口——你可以通过运行 `holon config models refresh --provider magpie`、在路由中引用 `magpie@default/<model>` 或在 `config.json` 中声明 `providers.magpie` 来启用它。
 
 ```bash
 # 仅在 Magpie 监听非默认端口时需要。
