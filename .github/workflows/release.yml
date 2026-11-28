@@ -28,7 +28,11 @@ jobs:
     outputs:
       candidate_image: ${{ steps.gate.outputs.candidate_image }}
       e2e_run_id: ${{ steps.gate.outputs.e2e_run_id }}
+      promotion_source_tag: ${{ steps.gate.outputs.promotion_source_tag }}
     steps:
+      - name: Check out release ref
+        uses: actions/checkout@v4
+
       - name: Validate dispatch handoff
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
@@ -55,20 +59,48 @@ jobs:
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
           mkdir -p release-e2e-gate
 
+          # A stable tag may promote a beta built from the identical commit:
+          # promotion requires the beta tag to point at this exact SHA and to
+          # share the stable version base (v0.62.0 <- v0.62.0-beta.*). Beta
+          # tags still require the attestation named for that exact tag.
+          artifact_names=("${artifact_name}")
+          if [[ "${tag}" != *-beta.* ]]; then
+            beta_refs="$(git ls-remote --tags origin "refs/tags/${tag}-beta.*")"
+            while IFS= read -r beta_tag; do
+              [ -z "${beta_tag}" ] && continue
+              artifact_names+=("release-e2e-attestation-${sha}-${beta_tag}")
+            done < <(
+              awk -v sha="${sha}" '
+                {
+                  object=$1
+                  ref=$2
+                  if (substr(ref, length(ref) - 2) == "^{}") {
+                    ref = substr(ref, 1, length(ref) - 3)
+                  }
+                  if (object == sha) {
+                    sub("refs/tags/", "", ref)
+                    print ref
+                  }
+                }' <<<"${beta_refs}" | sort -r
+            )
+          fi
+
           # release-e2e.yml dispatches run against a harness_ref checkout (#4357),
           # so run head_sha is the harness branch SHA, not the release candidate
           # SHA. The attestation artifact name already embeds the candidate SHA and
           # tag, so discover it by exact artifact name, then bind it back to a
           # successful workflow_dispatch run of release-e2e.yml.
-          artifacts_json="$(curl -fsSL \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "${api}/actions/artifacts?name=${artifact_name}&per_page=100")"
-
           artifact_url=""
           e2e_run_id=""
-          for run_id in $(jq -r --arg name "${artifact_name}" \
-            '.artifacts[] | select(.name == $name and .expired == false and .workflow_run.id != null) | .workflow_run.id' <<<"${artifacts_json}"); do
+          attestation_tag=""
+          artifacts_json=""
+          for candidate_name in "${artifact_names[@]}"; do
+            candidate_json="$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${api}/actions/artifacts?name=${candidate_name}&per_page=100")"
+            for run_id in $(jq -r --arg name "${candidate_name}" \
+              '.artifacts[] | select(.name == $name and .expired == false and .workflow_run.id != null) | .workflow_run.id' <<<"${candidate_json}"); do
             run_json="$(curl -fsSL \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
@@ -77,20 +109,20 @@ jobs:
               '(.path == ".github/workflows/release-e2e.yml")
                and (.event == "workflow_dispatch")
                and (.conclusion == "success")' <<<"${run_json}" >/dev/null; then
-              artifact_url="$(jq -r --arg name "${artifact_name}" --argjson run_id "${run_id}" \
-                '.artifacts[] | select(.name == $name and .expired == false and .workflow_run.id == $run_id) | .archive_download_url' <<<"${artifacts_json}" | head -n1)"
+              artifact_url="$(jq -r --arg name "${candidate_name}" --argjson run_id "${run_id}" \
+                '.artifacts[] | select(.name == $name and .expired == false and .workflow_run.id == $run_id) | .archive_download_url' <<<"${candidate_json}" | head -n1)"
               e2e_run_id="${run_id}"
-              break
+              artifacts_json="${candidate_json}"
+              attestation_tag="${candidate_name#release-e2e-attestation-${sha}-}"
+              break 2
             fi
+            done
           done
 
           if [ -z "${artifact_url}" ]; then
-            unexpired_count="$(jq -r --arg name "${artifact_name}" \
-              '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<<"${artifacts_json}")"
-            if [ "${unexpired_count}" -gt 0 ]; then
-              echo "Release E2E attestation artifact ${artifact_name} exists for ${sha}, but none of its owning runs passed validation (expected workflow=.github/workflows/release-e2e.yml, event=workflow_dispatch, conclusion=success)." >&2
-            else
-              echo "No successful Release E2E attestation artifact named ${artifact_name} was found for ${sha}." >&2
+            echo "No successful Release E2E attestation artifact was found for ${sha}; checked: ${artifact_names[*]}" >&2
+            if [[ "${tag}" != *-beta.* ]]; then
+              echo "Stable promotion accepts only beta attestations whose tag points at ${sha} and starts with ${tag}-beta." >&2
             fi
             exit 1
           fi
@@ -104,11 +136,14 @@ jobs:
             > release-e2e-gate/release-e2e-attestation.json
 
           jq -e \
-            --arg tag "${tag}" \
+            --arg release_tag "${tag}" \
+            --arg attestation_tag "${attestation_tag}" \
             --arg sha "${sha}" \
             --arg run_id "${e2e_run_id}" \
             '.schema_version == 1
-             and .release_tag == $tag
+             and .release_tag == $attestation_tag
+             and (($attestation_tag == $release_tag)
+                  or ($attestation_tag | startswith($release_tag + "-beta.")))
              and .git_sha == $sha
              and (.workflow_run_id | tostring) == $run_id
              and .status == "pass"
@@ -133,8 +168,14 @@ jobs:
             release-e2e-gate/release-e2e-attestation.json >/dev/null
 
           candidate_image="$(jq -r '.image.ref' release-e2e-gate/release-e2e-attestation.json)"
+          promotion_source_tag=""
+          if [ "${attestation_tag}" != "${tag}" ]; then
+            promotion_source_tag="${attestation_tag}"
+            echo "::notice::Stable tag ${tag} promotes the beta attestation for ${attestation_tag} at the identical commit ${sha}."
+          fi
           echo "candidate_image=${candidate_image}" >> "$GITHUB_OUTPUT"
           echo "e2e_run_id=${e2e_run_id}" >> "$GITHUB_OUTPUT"
+          echo "promotion_source_tag=${promotion_source_tag}" >> "$GITHUB_OUTPUT"
 
       - name: Upload verified release E2E attestation
         uses: actions/upload-artifact@v4
@@ -991,6 +1032,10 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Check out release source for promotion rebuild
+        if: ${{ needs.e2e-gate.outputs.promotion_source_tag != '' }}
+        uses: actions/checkout@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -1002,6 +1047,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Promote verified candidate image
+        if: ${{ needs.e2e-gate.outputs.promotion_source_tag == '' }}
         env:
           SOURCE_IMAGE: ${{ needs.e2e-gate.outputs.candidate_image }}
         run: |
@@ -1018,3 +1064,35 @@ jobs:
             args+=(--tag "${repository}:${channel}")
           done
           docker buildx imagetools create "${args[@]}" "${SOURCE_IMAGE}"
+
+      - name: Prepare promotion rebuild context
+        if: ${{ needs.e2e-gate.outputs.promotion_source_tag != '' }}
+        run: python3 scripts/prepare-identified-docker-context.py --destination "$RUNNER_TEMP/holon-promotion"
+
+      - name: Rebuild and verify promoted stable container
+        if: ${{ needs.e2e-gate.outputs.promotion_source_tag != '' }}
+        env:
+          PROMOTION_SOURCE_TAG: ${{ needs.e2e-gate.outputs.promotion_source_tag }}
+        run: |
+          set -euo pipefail
+          repository="$(printf '%s' "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          version="${GITHUB_REF_NAME#v}"
+          image="${repository}:${version}"
+          echo "Promoting ${PROMOTION_SOURCE_TAG} (${GITHUB_SHA}) to stable container ${image}"
+          docker buildx build \
+            --load \
+            --platform linux/amd64 \
+            --context "${RUNNER_TEMP}/holon-promotion/context" \
+            --file "${RUNNER_TEMP}/holon-promotion/Dockerfile" \
+            --build-arg "OCI_VERSION=${GITHUB_REF_NAME}" \
+            --build-arg "OCI_REVISION=${GITHUB_SHA}" \
+            --build-arg "OCI_SOURCE=https://github.com/${GITHUB_REPOSITORY}" \
+            --build-arg "HOLON_PKG_VERSION_OVERRIDE=${GITHUB_REF_NAME}" \
+            --cache-from type=gha,scope=holon-docker \
+            --tag "${image}"
+          # The beta candidate image bakes the beta tag into the binary; rebuild
+          # the same commit with the stable identity and smoke it before
+          # publishing the channel tags.
+          scripts/docker-smoke.sh "${image}" "${version}"
+          docker push "${image}"
+          docker buildx imagetools create --tag "${repository}:latest" "${image}"
