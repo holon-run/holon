@@ -6517,10 +6517,10 @@ def live_snapshot(harness: CaseHarness, label: str) -> dict[str, Any]:
 
 def bounded_command_read(path: str) -> str:
     return (
-        f"p={shlex.quote(path)}; n=$(stat -c %s -- \"$p\"); "
-        'h=$(head -c 1024 -- "$p" | wc -c); '
-        't=$(tail -c 1024 -- "$p" | wc -c); '
-        'e=$(dd if="$p" bs=1 skip="$n" count=1 status=none | wc -c); '
+        f"p={shlex.quote(path)}; n=$(wc -c < \"$p\" | tr -d ' '); "
+        "h=$(head -c 1024 -- \"$p\" | wc -c | tr -d ' '); "
+        "t=$(tail -c 1024 -- \"$p\" | wc -c | tr -d ' '); "
+        "e=$(dd if=\"$p\" bs=1 skip=\"$n\" count=1 2>/dev/null | wc -c | tr -d ' '); "
         "printf '{\"path\":%s,\"size\":%s,\"head_bytes\":%s,"
         "\"tail_bytes\":%s,\"eof\":%s}\\n' "
         f"{shlex.quote(json.dumps(path))} "
