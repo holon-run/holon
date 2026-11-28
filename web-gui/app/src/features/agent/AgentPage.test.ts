@@ -16,6 +16,7 @@ import {
   SyncRecoveryStatus,
   writeStoredComposerDraft,
   resolveModelSwitchReasoningEffort,
+  reasoningEffortLabel,
 } from "./AgentPage";
 import type { RuntimeModelOption } from "../../runtime/types";
 
@@ -152,6 +153,28 @@ describe("model switch reasoning effort", () => {
 
   it("resets to auto for models without reasoning support", () => {
     expect(resolveModelSwitchReasoningEffort(modelOption(false, []), "medium")).toBe("auto");
+  });
+});
+
+describe("reasoning effort labels", () => {
+  const t = (key: string, options?: Record<string, unknown>) => i18next.t(key, options);
+
+  it("labels every supported effort level distinctly in English", async () => {
+    await i18next.changeLanguage("en");
+    const labels = ["auto", "low", "medium", "high", "xhigh", "max"].map((effort) => reasoningEffortLabel(effort, t));
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels).toEqual(["Auto", "Low", "Medium", "High", "Extra High", "Max"]);
+  });
+
+  it("labels every supported effort level distinctly in zh-CN", async () => {
+    await i18next.changeLanguage("zh-CN");
+    const labels = ["auto", "low", "medium", "high", "xhigh", "max"].map((effort) => reasoningEffortLabel(effort, t));
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels).toEqual(["自动", "低", "中", "高", "超高", "最高"]);
+  });
+
+  it("falls back to title case for unknown effort levels", () => {
+    expect(reasoningEffortLabel("minimal", t)).toBe("Minimal");
   });
 });
 
