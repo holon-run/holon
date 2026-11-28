@@ -347,6 +347,23 @@ impl ModelCatalogConfig<'_> {
                 .is_some_and(|providers| providers.contains(&provider.id))
     }
 
+    /// Why an explicit operator-initiated model refresh must skip one provider.
+    ///
+    /// Explicit refresh is an operator opt-in, so it applies the authorization
+    /// half of [`Self::provider_auto_discovery_allowed`] without the cache TTL;
+    /// the reason string is the one reported in the refresh diagnostics.
+    pub fn explicit_model_discovery_refresh_exclusion(
+        &self,
+        provider: &ProviderRuntimeConfig,
+        configured: Option<&ProviderDiscoveryConfig>,
+    ) -> Option<&'static str> {
+        holon_provider::model_discovery::explicit_refresh_exclusion(
+            provider,
+            configured,
+            self.provider_auto_discovery_allowed(provider),
+        )
+    }
+
     /// Provider ids referenced by configured model routes or model overrides.
     fn explicitly_referenced_provider_ids(&self) -> HashSet<ProviderId> {
         std::iter::once(self.default_model)

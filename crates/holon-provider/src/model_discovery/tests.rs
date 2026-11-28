@@ -2837,3 +2837,65 @@ fn built_in_magpie_discovers_models_through_openai_v1_and_magpie_decoder() {
         "http://127.0.0.1:3425/v1/models"
     );
 }
+
+#[test]
+fn explicit_refresh_exclusion_applies_authorization_without_the_ttl() {
+    // The manual refresh is the operator's opt-in: it never consults the cache
+    // TTL, so a Fresh entry cannot exclude the provider by itself.
+    let provider = magpie_provider("http://127.0.0.1:3425".into());
+    assert_eq!(
+        explicit_refresh_exclusion(&provider, None, true),
+        None,
+        "an authorized provider is probed on every explicit refresh"
+    );
+    assert_eq!(
+        explicit_refresh_exclusion(&provider, None, false),
+        Some("discovery_not_allowed"),
+        "the authorization half still applies"
+    );
+
+    // A provider whose discovery plan was explicitly disabled has no plan at
+    // all, so there is nothing to probe.
+    let mut static_only = provider.clone();
+    static_only.id = ProviderId::parse("static-only").unwrap();
+    static_only.route_provider = static_only.id.clone();
+    static_only.transport = ProviderTransportKind::OpenAiChatCompletions;
+    let disabled = ProviderDiscoveryConfig::disabled();
+    assert_eq!(
+        explicit_refresh_exclusion(&static_only, Some(&disabled), true),
+        Some("discovery_unsupported")
+    );
+
+    // Credential-gated discovery stays out when the credential is missing, and
+    // becomes eligible once it is configured.
+    let mut gated = magpie_provider("https://gated.example/v1".into());
+    gated.id = ProviderId::parse("gated").unwrap();
+    gated.route_provider = gated.id.clone();
+    gated.transport = ProviderTransportKind::OpenAiChatCompletions;
+    gated.auth = crate::config::ProviderAuthConfig {
+        source: crate::config::CredentialSource::Env,
+        kind: crate::config::CredentialKind::ApiKey,
+        env: Some("GATED_API_KEY".into()),
+        profile: None,
+        external: None,
+        client_id: None,
+    };
+    gated.credential = None;
+    // `gated` keeps the optional discovery auth of its Magpie origin, so a
+    // missing credential does not exclude it.
+    assert_eq!(
+        explicit_refresh_exclusion(&gated, None, true),
+        None,
+        "optional discovery auth does not require a credential"
+    );
+    // A provider whose discovery declares required auth does. `litellm` is a
+    // built-in endpoint with `discovery!(Required, ...)` and no credential.
+    let mut required = custom_openai_provider("http://127.0.0.1:4000".into());
+    required.id = ProviderId::parse("litellm").unwrap();
+    required.route_provider = required.id.clone();
+    assert_eq!(
+        explicit_refresh_exclusion(&required, None, true),
+        Some("credential_missing"),
+        "required discovery auth without a credential is skipped"
+    );
+}
