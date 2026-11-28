@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { sessionFor } from "./test-session";
 
 const primary = "openai@default/shared-model";
@@ -114,6 +114,37 @@ test("model search keeps routes distinct, persists favorites and next-run select
   await page.locator(".model-button").click();
   await expect(dialog.getByRole("button", { name: /Runtime default/ })).toBeDisabled();
 });
+
+test("model search keeps the icon gutter so the placeholder text stays clear", async ({ page }) => {
+  await setup(page);
+  await page.goto("/agents/bootstrap-agent/conversation");
+  await page.locator(".model-button").click();
+  const dialog = page.getByRole("dialog", { name: "Switch agent model" });
+  await expect(dialog.getByRole("textbox", { name: "Search models or services…" })).toBeFocused();
+  // Regression after the #4641 restyle: a later same-specificity rule collapsed
+  // the search input's left padding onto the absolute-positioned search icon.
+  const chatGutter = await measureSearchGutter(dialog);
+  expect(chatGutter.iconRight).toBeLessThan(chatGutter.textLeft);
+  await page.keyboard.press("Escape");
+  await page.goto("/settings");
+  await page.locator("#settings-tab-models").click();
+  await page.locator(".model-select-trigger").first().click();
+  await expect(page.locator(".model-select-panel").getByRole("textbox", { name: "Search models or services…" })).toBeVisible();
+  const settingsGutter = await measureSearchGutter(page.locator(".model-select-panel").filter({ visible: true }));
+  expect(settingsGutter.iconRight).toBeLessThan(settingsGutter.textLeft);
+});
+
+async function measureSearchGutter(scope: Locator) {
+  return await scope.evaluate((root) => {
+    const input = root.querySelector<HTMLInputElement>(".model-browser-search-field input");
+    const icon = root.querySelector<SVGSVGElement>(".model-browser-search-icon");
+    if (!input || !icon) throw new Error("model search field not found");
+    const inputRect = input.getBoundingClientRect();
+    const iconRect = icon.getBoundingClientRect();
+    const style = getComputedStyle(input);
+    return { iconRight: iconRect.right - inputRect.left, textLeft: parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft) };
+  });
+}
 
 test("model management opens Model Providers regardless of the remembered settings tab", async ({ page }) => {
   await setup(page);
