@@ -20,7 +20,8 @@ use holon::{
     },
     config::{
         AppConfig, ControlAuthMode, CredentialKind, CredentialSource, ProviderAuthConfig,
-        ProviderEndpointId, ProviderId, ProviderRuntimeConfig, ProviderTransportKind,
+        ProviderConfigFile, ProviderEndpointId, ProviderId, ProviderRuntimeConfig,
+        ProviderTransportKind,
     },
     daemon::RuntimeServiceHandle,
     host::RuntimeHost,
@@ -401,7 +402,27 @@ pub async fn explicit_model_refresh_discovers_credential_free_ollama_models() ->
 
     let mut config = test_config();
     let ollama_id = ProviderId::parse("ollama")?;
+    // The manual refresh sweep only probes providers the operator opted into
+    // (declared in the stored config, route-referenced, or explicitly
+    // refreshed), so the Ollama declaration must exist at the config-file
+    // layer too; a runtime-registry-only entry is not an opt-in.
     config.providers.clear();
+    config.stored_config.providers.insert(
+        ollama_id.clone(),
+        ProviderConfigFile {
+            transport: ProviderTransportKind::AnthropicMessages,
+            base_url: base_url.clone(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::None,
+                kind: CredentialKind::None,
+                env: None,
+                profile: None,
+                external: None,
+                client_id: None,
+            },
+            ..Default::default()
+        },
+    );
     config.providers.insert(
         ollama_id.clone(),
         ProviderRuntimeConfig {
