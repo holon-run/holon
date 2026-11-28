@@ -234,6 +234,35 @@ pub fn provider_discovers_model_capabilities(
         .is_some_and(|discovery| discovery.decoder == ModelDiscoveryDecoder::Ollama)
 }
 
+/// Why an *explicit* (operator-initiated) model discovery refresh must skip a
+/// provider, or `None` when it may probe the endpoint remotely.
+///
+/// The cache TTL only matters for background discovery and stays with its
+/// callers: an explicit refresh always probes remotely once authorized. The
+/// `allowed` flag carries the caller's authorization basis. The automatic
+/// path passes its full auto-discovery gate, while the manual HTTP sweep
+/// passes the strict operator opt-in (declared, route-referenced, or
+/// explicitly refreshed) because it names no target the way
+/// `holon config models refresh --provider <id>` does.
+pub fn explicit_refresh_exclusion(
+    provider: &ProviderRuntimeConfig,
+    configured: Option<&ProviderDiscoveryConfig>,
+    allowed: bool,
+) -> Option<&'static str> {
+    if !provider_supports_model_discovery(provider, configured) {
+        return Some("discovery_unsupported");
+    }
+    if !allowed {
+        return Some("discovery_not_allowed");
+    }
+    if provider_model_discovery_requires_credential(provider, configured)
+        && !provider.has_configured_credential()
+    {
+        return Some("credential_missing");
+    }
+    None
+}
+
 fn provider_model_discovery_requires_credential(
     provider: &ProviderRuntimeConfig,
     configured: Option<&ProviderDiscoveryConfig>,

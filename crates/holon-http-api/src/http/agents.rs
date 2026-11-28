@@ -9,11 +9,10 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::{
-    config::RuntimeModelCatalog,
+    config::{ModelCatalogSource, RuntimeModelCatalog},
     model_discovery::{
-        discovery_cache_needs_refresh, discovery_cache_path, discovery_cache_status_for_provider,
-        load_discovery_cache_at, provider_supports_model_discovery, refresh_provider_models,
-        DEFAULT_DISCOVERY_CACHE_TTL,
+        discovery_cache_path, discovery_cache_status_for_provider, load_discovery_cache_at,
+        refresh_provider_models, DEFAULT_DISCOVERY_CACHE_TTL,
     },
     provider::resolved_model_availability_with_explicit_refreshes,
     provider::{model_query, resolved_model_providers, resolved_provider_models},
@@ -108,7 +107,15 @@ pub async fn refresh_models_handler(
     load_model_discovery_cache(&mut config).await?;
     let cache_path = discovery_cache_path(&config.home_dir);
     let mut refreshed = Vec::new();
-    for (provider, discovery) in model_discovery_refresh_candidates(&config) {
+    let (candidates, skipped) = model_discovery_refresh_candidates(&config);
+    for (provider, reason) in skipped {
+        debug!(
+            provider = %provider.id.as_str(),
+            reason = reason,
+            "explicit model discovery refresh skipped provider"
+        );
+    }
+    for (provider, discovery) in candidates {
         if let Err(error) =
             refresh_provider_models(&provider, discovery.as_ref(), &cache_path).await
         {
@@ -118,6 +125,10 @@ pub async fn refresh_models_handler(
                 "explicit model discovery refresh failed"
             );
         } else {
+            debug!(
+                provider = %provider.id.as_str(),
+                "explicit model discovery refresh refreshed provider"
+            );
             refreshed.push(provider.id.clone());
         }
     }
@@ -536,29 +547,34 @@ fn discovery_cache_statuses(
         .collect()
 }
 
-fn model_discovery_refresh_candidates(
+pub(super) fn model_discovery_refresh_candidates(
     config: &crate::config::AppConfig,
-) -> Vec<(
-    crate::config::ProviderRuntimeConfig,
-    Option<crate::config::ProviderDiscoveryConfig>,
-)> {
-    config
-        .providers
-        .values()
-        .filter_map(|provider| {
+) -> (
+    Vec<(
+        crate::config::ProviderRuntimeConfig,
+        Option<crate::config::ProviderDiscoveryConfig>,
+    )>,
+    Vec<(crate::config::ProviderRuntimeConfig, &'static str)>,
+) {
+    // The manual refresh is the operator's explicit opt-in, so the automatic
+    // TTL gate deliberately does not apply: an opted-in provider is always
+    // probed remotely. Unlike `holon config models refresh --provider <id>`,
+    // which names its target, the sweep names no provider, so it only probes
+    // providers the operator opted into (declared, route-referenced, or
+    // explicitly refreshed). Providers that cannot be refreshed keep reporting
+    // why instead of disappearing silently.
+    let catalog = config.model_catalog_config();
+    config.providers.values().fold(
+        (Vec::new(), Vec::new()),
+        |(mut candidates, mut skipped), provider| {
             let discovery = config.provider_discovery(provider);
-            (provider_supports_model_discovery(provider, discovery.as_ref())
-                && (provider.auth.kind == CredentialKind::None
-                    || provider.has_configured_credential())
-                && discovery_cache_needs_refresh(
-                    provider,
-                    discovery.as_ref(),
-                    &config.model_discovery_cache,
-                    DEFAULT_DISCOVERY_CACHE_TTL,
-                ))
-            .then(|| (provider.clone(), discovery))
-        })
-        .collect()
+            match catalog.explicit_model_discovery_refresh_exclusion(provider, discovery.as_ref()) {
+                Some(reason) => skipped.push((provider.clone(), reason)),
+                None => candidates.push((provider.clone(), discovery)),
+            }
+            (candidates, skipped)
+        },
+    )
 }
 
 pub async fn search(

@@ -25,7 +25,7 @@ pub(crate) use schemars::JsonSchema;
 pub(crate) use serde::{Deserialize, Serialize};
 pub(crate) use serde_json::{json, Value};
 pub(crate) use tokio::time::Duration;
-pub(crate) use tracing::{error, warn, Span};
+pub(crate) use tracing::{debug, error, warn, Span};
 
 pub(crate) use holon_server::credentials::{
     bearer_session_credential, cookie_session_credential, session_credential, SESSION_COOKIE_NAME,
@@ -80,6 +80,8 @@ mod conversation;
 mod events;
 mod ingress;
 mod jobs;
+#[cfg(test)]
+mod model_refresh_tests;
 mod notifications;
 mod tailscale_serve;
 // S0 contract skeleton: DTOs/fixtures/capability evaluator are exercised by
