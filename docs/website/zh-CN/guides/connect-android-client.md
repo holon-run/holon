@@ -114,6 +114,7 @@ adb install /path/to/downloaded-holon.apk
 
 ## 后续阅读
 
+- [在自己的电脑上运行常驻 AI 助手](/zh-CN/guides/run-always-on-local-assistant.md) — 手机端离线能做什么、哪些操作必须主机在线，以及离开桌面后如何验收结果。
 - [远程连接指南](/zh-CN/guides/connect-remote-runtime.md) — 了解远程守护进程的安全网络拓扑配置。
 - [配置 OIDC 认证](/zh-CN/guides/configure-oidc-authentication.md) — 单点登录与会话策略配置。
 - [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md) — Android SDK 调用的底层 API 端点。

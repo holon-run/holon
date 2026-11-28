@@ -132,6 +132,7 @@ Xcode 本地构建与运行步骤已归档至[构建移动端客户端](../maint
 
 ## 后续阅读
 
+- [在自己的电脑上运行常驻 AI 助手](/zh-CN/guides/run-always-on-local-assistant.md) — 手机端离线能做什么、哪些操作必须主机在线，以及离开桌面后如何验收结果。
 - [远程连接指南](/zh-CN/guides/connect-remote-runtime.md) — 了解基于 Tailscale 与反向代理的安全网络方案。
 - [配置 OIDC 认证](/zh-CN/guides/configure-oidc-authentication.md) — 配置单点登录与 Token 策略。
 - [使用 Android 客户端连接](/zh-CN/guides/connect-android-client.md) — 配置原生 Android 客户端。

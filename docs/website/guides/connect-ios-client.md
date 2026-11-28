@@ -162,6 +162,7 @@ report has been moderated.
 
 ## Next Steps
 
+- [Run an always-on AI assistant on your own computer](/guides/run-always-on-local-assistant.md) — what works offline, what needs the host, and how to verify results away from your desk.
 - [Connect to a remote Holon runtime](/guides/connect-remote-runtime.md) — Secure network setup with Tailscale and reverse proxies.
 - [Configure OIDC authentication](/guides/configure-oidc-authentication.md) — Set up SSO and token policies.
 - [Connect with the Android client](/guides/connect-android-client.md) — Set up the native Android client.

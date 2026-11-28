@@ -44,6 +44,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Attach your local repository in conversation, isolate coding tasks in managed Git worktrees, verify changes safely, and clean up without touching your main working directory.
   <!-- mdorigin:index kind=article -->
 
+- [Run an always-on AI assistant on your own computer](./run-always-on-local-assistant.md)
+  Bridge a local model you already chat with into an assistant that keeps working after the chat window closes: durable WorkItems, scheduled wakeups, and results you verify from any device.
+  <!-- mdorigin:index kind=article -->
+
 - [Run a long-lived task](./run-long-lived-task.md)
   Keep an agent working after closing your terminal, wait for dependencies, and retrieve the same task result across sessions.
   <!-- mdorigin:index kind=article -->

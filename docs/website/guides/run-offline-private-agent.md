@@ -225,6 +225,7 @@ Confirm the returned evidence:
 
 ## See Also
 
+- [Run an always-on AI assistant on your own computer](./run-always-on-local-assistant.md)
 - [Can Local LLMs Complete Multi-Turn Coding Agent Tasks? Benchmarking GGUF, MoE Turn Bloat, and Prompt Caching](../blog/local-model-agent-benchmark.md)
 - [Configure and Switch Models: From Local Ollama to Multi-Cloud Failover](./configure-models.md)
 - [Set Up Self-Hosted SearXNG as Holon WebSearch Provider](./searxng-websearch-provider.md)

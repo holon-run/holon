@@ -42,6 +42,10 @@ order: 30
   在对话中直接挂载本地代码仓库、在受控 Git Worktree 中隔离编码改动并完成本地验证，安全清理临时工作树而不污染主工作区。
   <!-- mdorigin:index kind=article -->
 
+- [在自己的电脑上运行常驻 AI 助手](./run-always-on-local-assistant.md)
+  把已经在用的本地模型从一次性对话升级为常驻助手：WorkItem 让任务状态跨会话存续，定时唤醒让工作按计划推进，并从手机或其他设备验收结果。
+  <!-- mdorigin:index kind=article -->
+
 - [运行长生命周期任务](./run-long-lived-task.md)
   在关闭终端后让 Agent 继续工作，等待外部依赖并在新会话中找回同一任务结果。
   <!-- mdorigin:index kind=article -->

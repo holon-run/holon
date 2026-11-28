@@ -225,6 +225,7 @@ Agent 会自动维护 `agent_home/AGENTS.md`（或项目仓库根目录的 `AGEN
 
 ## 另见
 
+- [在自己的电脑上运行常驻 AI 助手](./run-always-on-local-assistant.md)
 - [本地大模型能跑通多轮编码 Agent 吗？GGUF、MoE 轮次膨胀与 Prompt Cache 实测](../blog/local-model-agent-benchmark.md)
 - [配置与切换大模型：从本地 Ollama 到多云灾备](./configure-models.md)
 - [用自托管 SearXNG 配置 Holon WebSearch 搜索后端](./searxng-websearch-provider.md)

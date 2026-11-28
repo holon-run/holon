@@ -144,6 +144,7 @@ The app interface supports English and Simplified Chinese (`简体中文`). It f
 
 ## Next Steps
 
+- [Run an always-on AI assistant on your own computer](/guides/run-always-on-local-assistant.md) — what works offline, what needs the host, and how to verify results away from your desk.
 - [Remote access guide](/guides/connect-remote-runtime.md) — Secure network configuration for remote daemons.
 - [OIDC authentication guide](/guides/configure-oidc-authentication.md) — Centralized authentication and session policies.
 - [HTTP control plane reference](/reference/http-control-plane.md) — Endpoints used by the Android SDK.
