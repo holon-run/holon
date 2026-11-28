@@ -112,6 +112,11 @@ attestation. The attestation must match:
 - a successful `Release E2E` workflow run
 - an immutable candidate image digest
 
+A stable tag may instead promote the beta attestation for a beta tag that
+points at the identical commit and shares the stable version base
+(`v0.62.0` promoting `v0.62.0-beta.*`). The beta tag keeps its own prerelease
+history; the stable tag remains a separate tag on the same commit.
+
 No GitHub Release, Homebrew formula, or public container tag is published before
 that check passes.
 
@@ -124,12 +129,17 @@ The release workflow builds and uploads:
   signed Sparkle `appcast.xml`
 - `checksums.txt`
 
-After the GitHub release is published successfully, the workflow promotes the
-already verified candidate image digest to the public Linux amd64 container
-tags:
+After the GitHub release is published successfully, the workflow publishes the
+public Linux amd64 container tags:
 
 - `ghcr.io/holon-run/holon:<version>`
 - `ghcr.io/holon-run/holon:latest`
+
+A beta tag promotes the already verified candidate image digest. A stable tag
+that promotes a beta attestation cannot reuse the candidate image unchanged:
+the candidate binary bakes the beta tag into `holon --version`. The workflow
+rebuilds the identical commit with the stable version identity, runs the
+container smoke check, and only then pushes the stable container tags.
 
 The image runs `holon serve --listen 0.0.0.0:7878` in the foreground. A
 non-loopback listener requires `HOLON_CONTROL_TOKEN`, so container deployments
@@ -157,13 +167,14 @@ Before pushing the tag, verify:
 - `checksums.txt` will be included with the release assets
 - `make docker-smoke` passes against the production Dockerfile
 - the protected `Release E2E` workflow passed for the exact candidate commit
-  and intended release tag
+  and intended release tag; a stable promotion may use the beta attestation at
+  the identical commit with a matching `<tag>-beta.*` tag
 - the release record contains the candidate image digest, actual model route,
   workflow run, and uploaded evidence artifact
 - `summary.json`, JUnit, evidence secret scan, and Docker cleanup all passed
 - the release workflow verified the matching E2E attestation before publishing
-- the public GHCR tags promote the verified candidate digest rather than
-  rebuilding a new image
+- beta GHCR tags promote the verified candidate digest; stable promotion rebuilds
+  the identical commit with the stable version identity and smoke-tests it
 - when an upgrade case is available, it used the current recommended release
   through exactly one of `previous_image` or `previous_ref`, and the attestation
   records the resolved image and source
