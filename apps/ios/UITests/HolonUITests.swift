@@ -1517,8 +1517,11 @@ final class HolonUITests: XCTestCase {
         // The canonical image is materialized by the Agent after the share
         // receipt, so it can appear later than the seek budget.
         seek(image, in: app)
-        XCTAssertTrue(image.waitForExistence(timeout: UIWaitScale.scaled(20)),
-                      "Reopened chat must render the canonical system-share image")
+        guard image.waitForExistence(timeout: UIWaitScale.scaled(20)) else {
+            reportSharedImageDiagnostics(app)
+            capture(app, "system-share-image-missing")
+            return XCTFail("Reopened chat never rendered the canonical system-share image")
+        }
         reveal(image, in: app, fullyVisible: true)
         capture(app, "system-share-conversation-image")
         openConversationFiles(app)
@@ -1533,6 +1536,27 @@ final class HolonUITests: XCTestCase {
                       "The paired app must read the shared image through Files")
         XCTAssertTrue(app.staticTexts["image/png"].exists)
         capture(app, "system-share-image-authorized-reader")
+    }
+
+    /// Name what the reopened chat actually held when the canonical image was
+    /// absent: the message may be missing entirely, or the message may be there
+    /// while its preview still loads, reads as unavailable, or stays collapsed
+    /// behind the reference button. CI keeps the xcodebuild log, so the
+    /// distinguishing elements have to be printed instead of attached.
+    private func reportSharedImageDiagnostics(_ app: XCUIApplication) {
+        let loaded = app.images.matching(identifier: "conversation.image.loaded").count
+        let unavailable = app.buttons.matching(identifier: "conversation.image.unavailable").count
+        let references = app.buttons.matching(identifier: "conversation.image.loadReferences").count
+        let rows = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "operator.")).count
+        let markers = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "IOS_SHARED")).count
+        print("[share-readback] loaded=\(loaded) unavailable=\(unavailable)"
+            + " references=\(references) rows=\(rows) markers=\(markers)")
+        let hierarchy = app.debugDescription.split(separator: "\n").filter {
+            $0.contains("identifier") || $0.contains("IOS_SHARED")
+        }
+        print("[share-readback] hierarchy=" + hierarchy.prefix(60).joined(separator: " | "))
     }
 
     func testConversationLongImageHistory() async throws {
