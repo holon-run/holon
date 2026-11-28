@@ -17,7 +17,9 @@ use holon_domain::conversation::{
     StreamCursor, TerminalOutcome, TurnInputSummary, TurnKey, CONVERSATION_QUERY_VERSION,
     CONVERSATION_SCHEMA_VERSION,
 };
-use holon_domain::{ContinuationTriggerKind, MessageKind, TurnRecord, TurnTerminalKind};
+use holon_domain::{
+    ContinuationTriggerKind, MessageKind, TranscriptEntryKind, TurnRecord, TurnTerminalKind,
+};
 
 use holon_domain::conversation::{
     model_request_summary, model_switch_summary, ConversationSourceKind, HistoryAfterCursor,
@@ -1132,12 +1134,18 @@ pub fn activities_in(
     let mut activities = Vec::with_capacity(raw_rows.len());
     let turn_terminal = matches!(&turn.execution, ExecutionState::Terminal { .. });
     for row in raw_rows.into_iter().rev() {
-        if let Some(activity) = row.into_activity(turn_terminal) {
-            activities.push(activity);
-        } else {
-            coverage = DetailCoverage::Partial {
-                reason: DetailCoverageReason::RetentionGap,
-            };
+        // `into_activity` consumes the row, so classify the source kind first.
+        let source_kind = row.source_kind.clone();
+        match row.into_activity(turn_terminal) {
+            Some(activity) => activities.push(activity),
+            None => {
+                // Mirror the turn summary: an unmodeled source kind is an
+                // unknown activity type, while a known source whose canonical
+                // evidence is gone is a retention gap. Never relabel an unknown
+                // row as a retention gap, and never weaken an already-partial
+                // reason computed for the whole turn.
+                coverage = escalate_detail_coverage(coverage, source_coverage_reason(&source_kind));
+            }
         }
     }
     Ok(Some(ConversationActivityPage {
@@ -1796,7 +1804,9 @@ fn detail_coverage(
         })
         .collect::<Vec<_>>()
         .join(" ");
-    let missing_sql = format!(
+    // A known source whose canonical evidence row is gone is the strongest
+    // signal: the activity exists but its display data was retained out.
+    let missing_canonical = format!(
         "SELECT EXISTS(
            SELECT 1
            FROM conversation_source_revisions AS sources
@@ -1817,33 +1827,41 @@ fn detail_coverage(
             AND models.evidence_id = sources.source_id
            WHERE sources.agent_id = ?1
              AND sources.turn_id = ?2
-             AND (
-               sources.source_kind NOT IN ({known_sources})
-               OR CASE sources.source_kind {presence_case} ELSE NULL END IS NULL
-             )
+             AND sources.source_kind IN ({known_sources})
+             AND CASE sources.source_kind {presence_case} ELSE NULL END IS NULL
          )"
     );
-    let missing_source =
-        connection.query_row(&missing_sql, params![agent_id, record.turn_id], |row| {
-            row.get::<_, bool>(0)
-        })?;
-    if missing_source {
+    if coverage_exists(connection, &missing_canonical, agent_id, record)? {
         return Ok(DetailCoverage::Partial {
             reason: DetailCoverageReason::RetentionGap,
         });
     }
-    let unknown_activity = connection.query_row(
+
+    // The source domain has its own closed vocabulary. A source kind outside the
+    // registry cannot be modeled, so it surfaces as an unknown activity type
+    // rather than a retention gap.
+    let unknown_source = format!(
         "SELECT EXISTS(
            SELECT 1
-           FROM transcript_entries
+           FROM conversation_source_revisions
            WHERE agent_id = ?1
              AND turn_id = ?2
-             AND kind NOT IN ('assistant_round', 'subagent_assistant_round', 'runtime_failure')
-         )",
-        params![agent_id, record.turn_id],
-        |row| row.get::<_, bool>(0),
-    )?;
-    if unknown_activity {
+             AND source_kind NOT IN ({known_sources})
+         )"
+    );
+    if coverage_exists(connection, &unknown_source, agent_id, record)? {
+        return Ok(DetailCoverage::Partial {
+            reason: DetailCoverageReason::UnknownActivityType,
+        });
+    }
+
+    // The transcript domain is decoded with the same serde contract the writer
+    // uses: a stored kind the domain enum cannot represent is genuinely
+    // unmodeled, so it stays conservatively unknown. Known detail kinds such as
+    // `tool_results` are classified by `transcript_activity_source` and are
+    // never reported as unknown. Coverage is a turn-level fact, so an unknown
+    // row keeps the turn partial even when it falls outside the current page.
+    if unknown_transcript_kind(connection, agent_id, record)? {
         return Ok(DetailCoverage::Partial {
             reason: DetailCoverageReason::UnknownActivityType,
         });
@@ -1854,6 +1872,115 @@ fn detail_coverage(
         });
     }
     Ok(DetailCoverage::Complete)
+}
+
+/// Whether any row matching `sql` exists for this agent/turn.
+fn coverage_exists(
+    connection: &Connection,
+    sql: &str,
+    agent_id: &str,
+    record: &TurnRecord,
+) -> Result<bool> {
+    Ok(
+        connection.query_row(sql, params![agent_id, record.turn_id], |row| {
+            row.get::<_, bool>(0)
+        })?,
+    )
+}
+
+/// Whether this turn carries a transcript kind the domain enum cannot represent.
+///
+/// Decoding the stored strings with the domain's own serde contract keeps this
+/// exhaustive without a second hand-maintained list of kinds: a variant added
+/// to [`TranscriptEntryKind`] becomes known here automatically, while
+/// [`transcript_activity_source`] still forces an explicit activity decision at
+/// compile time.
+fn unknown_transcript_kind(
+    connection: &Connection,
+    agent_id: &str,
+    record: &TurnRecord,
+) -> Result<bool> {
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT kind
+           FROM transcript_entries
+          WHERE agent_id = ?1
+            AND turn_id = ?2",
+    )?;
+    let mut rows = statement.query(params![agent_id, record.turn_id])?;
+    while let Some(row) = rows.next()? {
+        let kind: String = row.get(0)?;
+        if serde_json::from_value::<TranscriptEntryKind>(Value::String(kind)).is_err() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The activity source kind a transcript entry registers, if any.
+///
+/// This is the single classification of the transcript domain: the evidence
+/// writer uses it to decide which source revision to bump, and coverage uses it
+/// to keep known detail kinds from being reported as unknown. The match is
+/// exhaustive on purpose, so a new [`TranscriptEntryKind`] must be classified
+/// instead of being silently ignored by coverage or dropped from the activity
+/// list.
+pub(crate) fn transcript_activity_source(kind: &TranscriptEntryKind) -> Option<&'static str> {
+    match kind {
+        TranscriptEntryKind::AssistantRound | TranscriptEntryKind::SubagentAssistantRound => {
+            Some(SOURCE_ASSISTANT)
+        }
+        TranscriptEntryKind::RuntimeFailure => Some(SOURCE_ERROR),
+        TranscriptEntryKind::IncomingMessage
+        | TranscriptEntryKind::ToolResults
+        | TranscriptEntryKind::ContinuationPrompt
+        | TranscriptEntryKind::SubagentPrompt => None,
+    }
+}
+
+fn is_known_source_kind(source_kind: &str) -> bool {
+    ConversationSourceKind::ALL
+        .iter()
+        .any(|known| known.as_str() == source_kind)
+}
+
+/// Coverage reason for an activity row that could not be rendered.
+fn source_coverage_reason(source_kind: &str) -> DetailCoverageReason {
+    if is_known_source_kind(source_kind) {
+        DetailCoverageReason::RetentionGap
+    } else {
+        DetailCoverageReason::UnknownActivityType
+    }
+}
+
+/// Combines a page-level coverage fact with the turn-level coverage, applying
+/// the documented priority: a retention gap outranks an unknown activity type,
+/// which outranks the legacy-ownership fallback.
+fn escalate_detail_coverage(
+    coverage: DetailCoverage,
+    reason: DetailCoverageReason,
+) -> DetailCoverage {
+    match coverage {
+        DetailCoverage::Complete => DetailCoverage::Partial { reason },
+        DetailCoverage::Partial { reason: current } => {
+            if coverage_reason_priority(reason) > coverage_reason_priority(current) {
+                DetailCoverage::Partial { reason }
+            } else {
+                DetailCoverage::Partial { reason: current }
+            }
+        }
+        // `Unavailable` (content deleted) and `Unknown` describe the turn at a
+        // coarser level; a single page row cannot refine them.
+        other => other,
+    }
+}
+
+fn coverage_reason_priority(reason: DetailCoverageReason) -> u8 {
+    match reason {
+        DetailCoverageReason::RetentionGap => 3,
+        DetailCoverageReason::UnknownActivityType => 2,
+        DetailCoverageReason::LegacyOwnership => 1,
+        DetailCoverageReason::MissingCanonicalLinkage | DetailCoverageReason::ContentDeleted => 0,
+    }
 }
 
 /// Joined column that proves an activity's backing evidence row is present.
