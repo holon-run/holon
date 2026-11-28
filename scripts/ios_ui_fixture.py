@@ -480,7 +480,7 @@ def fixture_prompt_kind(request):
     return None
 
 
-def record_fixture_prompt(evidence, number, case, path, body, data, status, delivered):
+def record_fixture_prompt(evidence, number, case, case_attempt, path, body, data, status, delivered):
     request, receipt = json.loads(body), json.loads(data)
     # Exact bodies, not headers, tickets, sessions or control traffic. Fail closed
     # on unexpected fields rather than silently redacting an alleged raw artifact.
@@ -490,7 +490,7 @@ def record_fixture_prompt(evidence, number, case, path, body, data, status, deli
                    for item in request.get("attachments", []))):
         raise RuntimeError("Unexpected fields in fixture prompt evidence")
     stem = f"prompt-{number:04}"
-    record = {"source": "real daemon HTTP prompt response", "case": case,
+    record = {"source": "real daemon HTTP prompt response", "case": case, "case_attempt": case_attempt,
               "kind": fixture_prompt_kind(request), "path": path, "status": status,
               "delivered": delivered, "request": request, "receipt": receipt,
               "request_body": write_fixture_bytes(evidence, stem + "-request.json", body),
@@ -756,7 +756,7 @@ with fixture_directory(repo) as root:
     release_lost_response = threading.Event()
     lost_receipts = []
     prompt_evidence = []
-    fixture_case = None
+    fixture_case_attempt = (None, None)
     # The confirming automatic-read endpoint counts marker briefs created
     # after this baseline so a bounded retry of that case starts from a clean
     # count instead of deterministically failing its second attempt.
@@ -818,7 +818,7 @@ with fixture_directory(repo) as root:
             if self.path in {"/fixture/automatic-read-followup", "/fixture/automatic-read-confirmed"}:
                 if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
                     self.send_error(403); return
-                if fixture_case != "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount":
+                if fixture_case_attempt[0] != "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount":
                     self.send_error(409); return
                 # The client establishes its joining baseline before the snapshot.
                 # Only the later followup can prove a visible-body POST advanced it.
@@ -898,6 +898,9 @@ with fixture_directory(repo) as root:
             self.forward()
 
         def forward(self):
+            # Capture on ingress: a slow daemon response can finish during the
+            # next XCTest attempt and must still belong to the original one.
+            case, case_attempt = fixture_case_attempt
             responded = False
             if not proxy_available.is_set():
                 self.send_error(503, "isolated fixture node unavailable")
@@ -944,7 +947,7 @@ with fixture_directory(repo) as root:
                     with lost_lock:
                         if retain_prompt:
                             prompt_evidence.append(record_fixture_prompt(
-                                fixture_evidence, len(prompt_evidence) + 1, fixture_case,
+                                fixture_evidence, len(prompt_evidence) + 1, case, case_attempt,
                                 self.path, body, data, response.status, delivered))
                         if is_lost_prompt:
                             lost_receipts.append((prompt["client_request_id"], receipt))
@@ -1542,8 +1545,7 @@ with fixture_directory(repo) as root:
                     # (history seeds, loss reset, browser link turn, pairing
                     # ticket, report snapshots) is rebuilt from scratch, which
                     # is what makes one bounded retry after a flaky failure safe.
-                    global fixture_case, automatic_read_baseline_seq
-                    fixture_case = method
+                    global automatic_read_baseline_seq
                     if method == "testOfflineReadingCacheColdLaunchAndRetry":
                         # Do not push the onboarding smoke's original brief out of
                         # its latest window before that earlier case has read it.
@@ -1800,6 +1802,7 @@ with fixture_directory(repo) as root:
                             # Same attempt boundary as `started`, on the wall
                             # clock the inbox's st_mtime is expressed in.
                             share_attempt_started_at = time.time()
+                            fixture_case_attempt = (method, attempt)
                             try:
                                 run_ui_case(method, content_size, case_bundle)
                                 ui_telemetry.append({
@@ -1818,6 +1821,8 @@ with fixture_directory(repo) as root:
                                           f"{elapsed:.0f}s; rebuilding per-case fixtures and retrying once")
                                 print(f"::warning title=iOS UI retry::{detail}", flush=True)
                                 print(f"UI 用例 {method} 第 {attempt} 次尝试失败，重建该用例 fixture 后重试一次", flush=True)
+                            finally:
+                                fixture_case_attempt = (None, None)
                 finally:
                     # A stable, machine-readable record of the sweep's outcome.
                     # The CI summary prints it so a flaky case can be named
@@ -1869,9 +1874,20 @@ with fixture_directory(repo) as root:
                            struct.unpack(">II", data[16:24]) == (16, 16) for data in received_files):
                     raise RuntimeError("Direct-share image bytes were not materialized by the daemon")
                 if fixture_evidence is not None:
+                    share_case = "testDirectAgentShareWorkflow"
+                    passing_attempt = next((record["attempt"] for record in ui_telemetry
+                                            if record["case"] == share_case and record["outcome"] == "passed"), None)
+                    if passing_attempt is None:
+                        raise RuntimeError("Direct-share evidence requires a passing UI case attempt")
+                    # Keep all raw prompt files. Only link the passing XCTest
+                    # attempt's requests; HTTP resends within it still share an identity.
                     with lost_lock:
-                        share_prompts = [record for record in prompt_evidence if record["kind"].startswith("share-")]
+                        share_prompts = [record for record in prompt_evidence
+                                         if record["case"] == share_case
+                                         and record["case_attempt"] == passing_attempt
+                                         and record["kind"].startswith("share-")]
                     evidence = direct_share_evidence(root, workspace, agent, share_prompts, inputs, local)
+                    evidence["case_attempt"] = passing_attempt
                     write_fixture_json(fixture_evidence, "direct-share.json", evidence)
                 print("Direct-share acceptance: OS extension text, URL, image and file received by isolated Agent", flush=True)
         finally:
