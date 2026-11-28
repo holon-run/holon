@@ -1514,11 +1514,11 @@ final class HolonUITests: XCTestCase {
         }
         XCTAssertTrue(more.waitForExistence(timeout: UIWaitScale.scaled(15)))
         let image = app.images["conversation.image.loaded"].firstMatch
-        // The canonical image is materialized by the Agent after the share
-        // receipt, so it can appear later than the seek budget.
-        seek(image, in: app)
-        XCTAssertTrue(image.waitForExistence(timeout: UIWaitScale.scaled(20)),
-                      "Reopened chat must render the canonical system-share image")
+        // Reopening can restore a historical window. Scrolling that window
+        // cannot mount the new share turn; follow Latest before seeking the image.
+        guard waitForContentInLatestWindow(image, in: app, timeout: 20) else {
+            return XCTFail("Reopened chat must render the canonical system-share image")
+        }
         reveal(image, in: app, fullyVisible: true)
         capture(app, "system-share-conversation-image")
         openConversationFiles(app)
@@ -1962,7 +1962,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         let body = app.staticTexts.containing(NSPredicate(
             format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_BRIEF")).firstMatch
-        waitForLatestBrief(body, in: app)
+        XCTAssertTrue(waitForContentInLatestWindow(body, in: app, timeout: 30),
+                      "Load the newest real fixture brief")
         reveal(body, in: app, fullyVisible: true)
         XCTAssertTrue(body.isHittable)
         // Never invoke manual mark-read. The fixture enqueues a later real result
@@ -2001,7 +2002,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         let followup = app.staticTexts.containing(NSPredicate(
             format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF")).firstMatch
-        waitForLatestBrief(followup, in: app)
+        XCTAssertTrue(waitForContentInLatestWindow(followup, in: app, timeout: 30),
+                      "Load the newest real fixture brief")
         reveal(followup, in: app, fullyVisible: true)
         XCTAssertTrue(followup.isHittable)
         capture(app, "automatic-read-followup-visible")
@@ -2019,19 +2021,18 @@ final class HolonUITests: XCTestCase {
         capture(app, "automatic-read-home-count")
     }
 
-    private func waitForLatestBrief(_ body: XCUIElement, in app: XCUIApplication,
-                                    file: StaticString = #filePath, line: UInt = #line) {
+    private func waitForContentInLatestWindow(_ content: XCUIElement, in app: XCUIApplication,
+                                              timeout: TimeInterval) -> Bool {
         let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            if body.exists { return true }
-            // Restoration and body hydration can settle after the toolbar.
+            if content.exists { return true }
+            // Restoration and content hydration can settle after the toolbar.
             // Follow the latest-window control when it actually appears,
             // instead of making one pre-load existence check.
             let latest = app.buttons["conversation.latest"]
             if latest.exists && latest.isEnabled && latest.isHittable { latest.tap() }
-            return body.exists
+            return content.exists
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: UIWaitScale.scaled(30)), .completed,
-                       "Load the newest real fixture brief", file: file, line: line)
+        return XCTWaiter.wait(for: [loaded], timeout: UIWaitScale.scaled(timeout)) == .completed
     }
 
     private func waitForRosterStatus(_ label: String, in app: XCUIApplication,
