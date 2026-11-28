@@ -355,6 +355,7 @@ pub async fn http_success_response_shapes_follow_route_class_policy() -> Result<
 pub async fn explicit_model_refresh_discovers_credential_free_ollama_models() -> Result<()> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let base_url = format!("http://{}", listener.local_addr()?);
+    let (mock_done_tx, mock_done_rx) = std::sync::mpsc::channel::<()>();
     let discovery_server = thread::spawn(move || {
         let (mut tags_stream, _) = listener.accept().unwrap();
         let mut request = [0_u8; 2048];
@@ -398,6 +399,7 @@ pub async fn explicit_model_refresh_discovers_credential_free_ollama_models() ->
             body
         )
         .unwrap();
+        let _ = mock_done_tx.send(());
     });
 
     let mut config = test_config();
@@ -459,7 +461,18 @@ pub async fn explicit_model_refresh_discovers_credential_free_ollama_models() ->
         .error_for_status()?
         .json()
         .await?;
-    discovery_server.join().unwrap();
+    // Fail fast instead of hanging when the manual refresh sweep ever skips
+    // this provider again: an unbounded join() turns that contract drift
+    // into a 60-minute CI shard timeout instead of a test failure.
+    match mock_done_rx.recv_timeout(Duration::from_secs(60)) {
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+            "mock discovery server did not finish serving its expected requests within 60s; \
+             the manual model refresh sweep likely skipped the ollama opt-in"
+        ),
+        // Ok: all requests served. Disconnected: the mock thread panicked and
+        // join() propagates the panic. Both join without blocking.
+        _ => discovery_server.join().unwrap(),
+    }
 
     assert!(
         response["model_availability"]
