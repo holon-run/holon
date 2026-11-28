@@ -59,7 +59,22 @@ struct GenerateContentRequest {
     contents: Vec<GeminiContent>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<Value>,
+    /// Only serialized when `tools` mixes a built-in tool with function
+    /// declarations; see `build_gemini_tool_config`. The wire key keeps the
+    /// server contract's snake_case spelling.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "tool_config")]
+    tool_config: Option<GeminiToolConfig>,
     generation_config: GeminiGenerationConfig,
+}
+
+/// `tool_config` wire payload. Gemini serves built-in tools (for example
+/// `google_search`) and function calling separately, but rejects a request
+/// mixing both with HTTP 400 unless `include_server_side_tool_invocations`
+/// opts in; field names follow the server's error contract.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct GeminiToolConfig {
+    include_server_side_tool_invocations: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -237,10 +252,13 @@ impl GeminiProvider {
             self.base_url,
             utf8_percent_encode(&self.model, NON_ALPHANUMERIC)
         );
+        let tools = build_gemini_tools(request);
+        let tool_config = build_gemini_tool_config(&tools);
         let body = GenerateContentRequest {
             system_instruction: build_system_instruction(request),
             contents: build_gemini_contents(request),
-            tools: build_gemini_tools(request),
+            tools,
+            tool_config,
             generation_config: GeminiGenerationConfig {
                 // A hard-coded tiny budget truncates the answer before the
                 // grounded search runs; reuse the route budget and fall back to
@@ -407,10 +425,13 @@ impl AgentProvider for GeminiProvider {
                 let response_json_schema = request.response_format.as_ref().map(|format| match format {
                     ProviderResponseFormatRequest::JsonSchema(format) => format.schema.clone(),
                 });
+                let tools = build_gemini_tools(&request);
+                let tool_config = build_gemini_tool_config(&tools);
                 let request_body = GenerateContentRequest {
                     system_instruction: build_system_instruction(&request),
                     contents: build_gemini_contents(&request),
-                    tools: build_gemini_tools(&request),
+                    tools,
+                    tool_config,
                     generation_config: GeminiGenerationConfig {
                         max_output_tokens: Some(self.max_output_tokens),
                         response_mime_type: response_json_schema.as_ref().map(|_| "application/json"),
@@ -1080,6 +1101,27 @@ fn build_gemini_tools(request: &ProviderTurnRequest) -> Vec<Value> {
         tools.push(tool);
     }
     tools
+}
+
+/// Build the wire `tool_config` for the assembled Gemini tools: the server
+/// rejects a request that mixes a built-in tool entry (an entry without
+/// `function_declarations`, today `google_search`) with function calling
+/// unless `tool_config.include_server_side_tool_invocations` opts in; either
+/// kind alone needs no opt-in.
+fn build_gemini_tool_config(tools: &[Value]) -> Option<GeminiToolConfig> {
+    let function_declarations = tools.iter().any(|tool| {
+        tool.get("function_declarations")
+            .and_then(Value::as_array)
+            .is_some_and(|declarations| !declarations.is_empty())
+    });
+    let builtin_tool = tools.iter().any(|tool| {
+        tool.as_object().is_some_and(|entries| {
+            !entries.is_empty() && !entries.contains_key("function_declarations")
+        })
+    });
+    (function_declarations && builtin_tool).then(|| GeminiToolConfig {
+        include_server_side_tool_invocations: true,
+    })
 }
 
 /// Gemini grounds native web search through the `google_search` tool

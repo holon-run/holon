@@ -213,6 +213,14 @@ test-live-deepseek-web: ## Run live LLM tool roundtrip with two paid DeepSeek we
 		'Test binary: live_deepseek_web'
 	cargo test --test live_deepseek_web -- --ignored --nocapture
 
+.PHONY: test-live-gemini-tool-config
+test-live-gemini-tool-config: ## Run the live Gemini mixed-tools turn probe (google_search + function declarations)
+	@printf '%s\n' \
+		'Requires a configured gemini provider route with a credential.' \
+		'Runs two paid Gemini requests: one mixed-tools grounded turn plus one plain continuation turn.' \
+		'Test binary: live_gemini_tool_config'
+	cargo test --test live_gemini_tool_config -- --ignored --nocapture
+
 test-live-openai: ## Run OpenAI Responses and Chat Completions live tests
 	@printf '%s\n' \
 		'Requires configured OpenAI credentials and network access.' \
