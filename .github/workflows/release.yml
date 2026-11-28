@@ -1082,14 +1082,14 @@ jobs:
           docker buildx build \
             --load \
             --platform linux/amd64 \
-            --context "${RUNNER_TEMP}/holon-promotion/context" \
             --file "${RUNNER_TEMP}/holon-promotion/Dockerfile" \
             --build-arg "OCI_VERSION=${GITHUB_REF_NAME}" \
             --build-arg "OCI_REVISION=${GITHUB_SHA}" \
             --build-arg "OCI_SOURCE=https://github.com/${GITHUB_REPOSITORY}" \
             --build-arg "HOLON_PKG_VERSION_OVERRIDE=${GITHUB_REF_NAME}" \
             --cache-from type=gha,scope=holon-docker \
-            --tag "${image}"
+            --tag "${image}" \
+            "${RUNNER_TEMP}/holon-promotion/context"
           # The beta candidate image bakes the beta tag into the binary; rebuild
           # the same commit with the stable identity and smoke it before
           # publishing the channel tags.
