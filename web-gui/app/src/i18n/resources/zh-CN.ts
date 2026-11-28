@@ -805,6 +805,7 @@ const zh: Record<string, any> = {
       medium: "中",
       high: "高",
       xhigh: "超高",
+      max: "最高",
     },
   },
   settings: {

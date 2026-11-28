@@ -6,7 +6,7 @@ const alternative = "dashscope@coding/shared-model";
 const provider = (id: string, configured: boolean) => ({ id, transport: "openai_responses", base_url: "https://example.test/v1", api_key_supported: true, oauth_supported: false, credential_source: "credential_profile", credential_kind: "api_key", credential_profile: `${id}:default`, credential_configured: configured, configured_in_config: configured });
 const providers = [provider("openai", true), provider("dashscope-coding-plan", true), provider("deepseek", false), ...Array.from({ length: 40 }, (_, i) => provider(`custom-${i}`, false))];
 const models = [
-  { model: "openai/shared-model", provider: "openai", provider_family: "openai", route_provider: "openai", endpoint: "default", display_name: "Shared Model", available: true, resolved_capabilities: { endpoint: { accepted_parameters: [{ name: "service_tier", allowed_values: ["default", "fast"] }] } }, policy: { reasoning_effort_options: ["low", "high"], capabilities: { image_input: true, image_generation: true } } },
+  { model: "openai/shared-model", provider: "openai", provider_family: "openai", route_provider: "openai", endpoint: "default", display_name: "Shared Model", available: true, resolved_capabilities: { endpoint: { accepted_parameters: [{ name: "service_tier", allowed_values: ["default", "fast"] }] } }, policy: { reasoning_effort_options: ["low", "medium", "high", "xhigh", "max"], capabilities: { image_input: true, image_generation: true } } },
   { model: "dashscope/shared-model", provider: "dashscope", provider_family: "dashscope", route_provider: "dashscope-coding-plan", endpoint: "coding", display_name: "Shared Model", available: true },
   { model: "deepseek/hidden-model", provider: "deepseek", endpoint: "default", display_name: "Unavailable Model", available: false, unavailable_reason: "Missing credentials" },
 ];
@@ -289,6 +289,20 @@ test("fast stays on the selected route and reasoning changes preserve it", async
   await page.locator(".model-browser-row").filter({ hasText: "OpenAI" }).locator("[data-model-choice]").click();
   await expect(speed).toHaveAccessibleName("Speed: Auto");
   expect(posts.at(-1)).not.toHaveProperty("service_tier");
+});
+
+
+test("thinking level options stay distinct when a model offers xhigh and max", async ({ page }) => {
+  const { posts } = await setup(page);
+  await page.goto("/agents/bootstrap-agent/conversation");
+  await page.locator(".thinking-button").click();
+  const thinkingDialog = page.getByRole("dialog", { name: "Thinking level", exact: true });
+  await expect(thinkingDialog).toBeVisible();
+  for (const label of ["Auto", "Low", "Medium", "High", "Extra High", "Max"]) {
+    await expect(thinkingDialog.getByRole("button", { name: label, exact: true })).toHaveCount(1);
+  }
+  await thinkingDialog.getByRole("button", { name: "Max", exact: true }).click();
+  await expect.poll(() => posts.at(-1)).toMatchObject({ model: primary, reasoning_effort: "max" });
 });
 
 

@@ -803,7 +803,8 @@ const en = {
       low: "Low",
       medium: "Medium",
       high: "High",
-      xhigh: "Max",
+      xhigh: "Extra High",
+      max: "Max",
     },
   },
   settings: {

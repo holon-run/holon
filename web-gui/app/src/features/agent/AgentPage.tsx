@@ -1182,9 +1182,16 @@ export function AgentPage({
   );
 }
 
-function reasoningEffortLabel(effort: string, t: (key: string, options?: Record<string, unknown>) => string): string {
+export function reasoningEffortLabel(effort: string, t: (key: string, options?: Record<string, unknown>) => string): string {
   const normalized = effort.trim().toLowerCase();
-  if (normalized === "auto" || normalized === "low" || normalized === "medium" || normalized === "high" || normalized === "xhigh") {
+  if (
+    normalized === "auto" ||
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh" ||
+    normalized === "max"
+  ) {
     return t(`agentPage.reasoningEffort.${normalized}`);
   }
   return effort.charAt(0).toUpperCase() + effort.slice(1);
