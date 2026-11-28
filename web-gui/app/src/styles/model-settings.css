@@ -5,10 +5,12 @@
 .provider-directory-toolbar input { min-width: 0; flex: 1; }
 .model-browser-search-field { position: relative; flex: 1 1 200px; min-width: 0; display: flex; align-items: center; }
 .model-browser-search-icon { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
-.model-browser-search-field input,
-.settings-form .model-browser-search-field input { width: 100%; min-width: 0; padding: 8px 10px 8px 30px; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 7px; font: inherit; font-size: 13px; }
-.model-browser-search select,
-.settings-form .model-browser-search select { width: auto; flex: 0 1 190px; max-width: 44%; min-width: 115px; padding: 8px 10px; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 7px; font: inherit; font-size: 13px; }
+/* Scope the search input/select under .model-browser (the ModelList root, present
+   wherever this search renders) so their (0,2,1) specificity beats the generic
+   .model-browser :is(input, select) base rule below despite its later position;
+   the 30px left padding reserves the gutter for the absolute search icon. */
+.model-browser .model-browser-search-field input { width: 100%; min-width: 0; padding: 8px 10px 8px 30px; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 7px; font: inherit; font-size: 13px; }
+.model-browser .model-browser-search select { width: auto; flex: 0 1 190px; max-width: 44%; min-width: 115px; padding: 8px 10px; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 7px; font: inherit; font-size: 13px; }
 .model-browser :is(input, select), .provider-directory-toolbar input { border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 7px; padding: 8px 10px; font: inherit; font-size: 13px; }
 .model-browser-results { max-height: 340px; overflow: auto; overscroll-behavior: contain; }
 .model-browser-results section { margin: 0; padding: 0; }
@@ -70,8 +72,7 @@
   .provider-directory-row > svg { grid-column: 2; grid-row: 1 / 3; }
   .model-browser-search { flex-wrap: wrap; }
   .model-browser-search-field { width: 100%; flex-basis: 100%; }
-  .model-browser-search select,
-  .settings-form .model-browser-search select { width: 100%; flex-basis: 100%; max-width: 100%; }
+  .model-browser .model-browser-search select { width: 100%; flex-basis: 100%; max-width: 100%; }
 }
 
 .settings-model-defaults { grid-template-columns: minmax(0, 1fr); }
