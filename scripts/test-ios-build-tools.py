@@ -617,6 +617,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
                 cases=[(method, "large")], bundles=[bundle],
                 release_lost_response=threading.Event(), lost_receipts=[],
                 lost_lock=threading.Lock(), lost_response_acceptance=False,
+                share_acceptance=False,
                 simulator=UUID, repo=str(ROOT), destination="fixture", derived="fixture",
                 test_env={}, local=Mock(return_value={"ticket": "fixture"}),
                 fixture_evidence=None,
@@ -2124,6 +2125,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         namespace = dict(self.helpers, cases=[(method, "large") for method in methods],
             bundles=[Path(method + ".xcresult") for method in methods], home=home,
             fixture_evidence=evidence, lost_response_acceptance=False,
+            share_acceptance=False,
             simulator=UUID, repo=str(ROOT), agent="holon-tester", rich_turn="turn-fixture",
             destination="fixture", derived="fixture", test_env={},
             local=Mock(return_value={"ticket": "do-not-export-pairing-ticket"}),
@@ -2192,6 +2194,38 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                 self.assertEqual(merge(page), [duplicate, duplicate])
 
     def test_proxy_keeps_raw_identity_chains_and_direct_share_material_without_headers(self):
+        self.check_direct_share_evidence(passing_attempt=1)
+
+    def test_direct_share_retry_preserves_raw_evidence_but_exports_only_passing_attempt(self):
+        self.check_direct_share_evidence(passing_attempt=2)
+
+    def test_direct_share_failure_reports_unattributed_state_from_earlier_attempts(self):
+        # Only a prior attempt left material; the last attempt sent nothing.
+        (self.directory / "request-earlier.txt").write_bytes(b"IOS_SHARED_FILE_BYTES")
+        (self.directory / "request-earlier.png").write_bytes(
+            b"\x89PNG\r\n\x1a\n" + bytes(8) + struct.pack(">II", 16, 16))
+        local = Mock(return_value={"turns": [], "pending_inputs": [
+            {"text": "IOS_SHARED_TEXT https://example.test/holon-share shared-note"}]})
+        with patch("builtins.print") as output:
+            self.helpers["report_direct_share_failure"](self.directory, "holon-tester", local)
+        line, = output.call_args.args
+        self.assertIn("cross-attempt aggregate; not attributable to any single UI attempt", line)
+        self.assertIn("inputs=1 missing_markers=none file_bytes=True image_bytes=True", line)
+        self.assertFalse(list(self.directory.rglob("direct-share.json")))
+
+    def test_direct_share_failure_does_not_log_exception_details(self):
+        private = "private fixture detail"
+        for error, diagnostic in [
+            (self.helpers["FixtureControlError"]("/private", 503, private), "fixture control HTTP 503"),
+            (OSError(private), "could not read fixture state"),
+        ]:
+            with self.subTest(diagnostic=diagnostic), patch("builtins.print") as output:
+                self.helpers["report_direct_share_failure"](
+                    self.directory, "holon-tester", Mock(side_effect=error))
+                output.assert_called_once_with(
+                    f"Direct-share daemon state unavailable: {diagnostic}", flush=True)
+
+    def check_direct_share_evidence(self, passing_attempt):
         evidence = self.directory / "evidence"
         workspace = self.directory / "workspace"
         workspace.mkdir()
@@ -2246,7 +2280,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         self.addCleanup(upstream.shutdown)
         release = threading.Event()
         namespace = dict(self.helpers, port=upstream.server_port, fixture_evidence=evidence,
-            fixture_case="testLostResponseAndProcessRecovery", prompt_evidence=[],
+            fixture_case_attempt=("testLostResponseAndProcessRecovery", 1), prompt_evidence=[],
             lost_receipts=[], lost_lock=threading.Lock(), release_lost_response=release,
             lost_response_acceptance=True, share_acceptance=True, proxy_control_token="do-not-record-control-token",
             proxy_available=threading.Event(), proxy_connections=set(), proxy_state_lock=threading.Lock())
@@ -2280,9 +2314,15 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
 
         with patch("builtins.print"):
             originals = []
+            failed_uuid = str(uuid.UUID(int=99))
             for number, text in enumerate(["IOS_LOST_RESPONSE_SEND\nOriginal App body",
                                           "IOS_SHARED_TEXT\nLiteral **operator** input"]):
-                namespace["fixture_case"] = ["testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"][number]
+                if number:
+                    if passing_attempt == 2:
+                        namespace["fixture_case_attempt"] = ("testDirectAgentShareWorkflow", 1)
+                        release.set()
+                        originals.append(send({"text": text, "client_request_id": failed_uuid, "attachments": []}))
+                    namespace["fixture_case_attempt"] = ("testDirectAgentShareWorkflow", passing_attempt)
                 release.clear()
                 request = {"text": text, "client_request_id": UUID if not number else str(uuid.UUID(int=1)), "attachments": []}
                 originals.extend([send(request)])
@@ -2297,7 +2337,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                 originals.append(send({"text": text, "attachments": attachments, "client_request_id": str(uuid.UUID(int=number))}))
             send({"pairing_ticket": "do-not-record-pairing-ticket"}, "/api/auth/pairing/issue")
         records = namespace["prompt_evidence"]
-        self.assertEqual(len(records), 7)
+        self.assertEqual(len(records), 6 + passing_attempt)
         for index, (record, body) in enumerate(zip(records, originals), 1):
             self.assertEqual((evidence / record["request_body"]["path"]).read_bytes(), body)
             for field in ("request_body", "receipt_body"):
@@ -2306,7 +2346,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(json.loads((evidence / f"prompt-{index:04}.json").read_text()), record)
             self.assertEqual(record["receipt"]["agent_id"], "holon-tester")
-        for first, retry in [(records[0], records[1]), (records[2], records[3])]:
+        for first, retry in [(records[0], records[1]), (records[-5], records[-4])]:
             self.assertEqual(first["request"], retry["request"])
             self.assertEqual(first["receipt"]["message_id"], retry["receipt"]["message_id"])
             self.assertEqual([first["receipt"]["disposition"], retry["receipt"]["disposition"]], ["accepted", "duplicate"])
@@ -2314,21 +2354,13 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         self.assertEqual({record["kind"] for record in records},
                          {"app-lost-response", "share-text", "share-url", "share-image", "share-file"})
         # Execute the real post-run daemon material check/export, not a test-only exporter.
-        # The proxy handler also branches on `share_acceptance`; only the export
-        # block gates on `mode != '--sdk-only'`, delegates to direct_share_evidence
-        # and writes direct-share.json.
-        share_block = next(node for node in ast.walk(self.tree)
-                           if isinstance(node, ast.If) and isinstance(node.test, ast.BoolOp)
-                           and isinstance(node.test.values[0], ast.Name)
-                           and node.test.values[0].id == "share_acceptance"
-                           and any(isinstance(item, ast.Compare) for item in node.test.values)
-                           and any(isinstance(item, ast.Compare)
-                                   and isinstance(item.left, ast.Name)
-                                   and item.left.id == "mode"
-                                   for item in node.test.values)
-                           and any(isinstance(item, ast.Call) and isinstance(item.func, ast.Name)
-                                   and item.func.id == "direct_share_evidence"
-                                   for item in ast.walk(node)))
+        share_checks = next(node for node in ast.walk(self.tree)
+                            if isinstance(node, ast.FunctionDef)
+                            and node.name == "verify_direct_share_acceptance")
+        share_block = [share_checks] + ast.parse(
+            "verify_direct_share_acceptance(root, workspace, agent, prompt_evidence,"
+            " lost_lock, fixture_evidence, local, ui_telemetry)",
+            mode="exec").body
         def local(method, path, payload=None):
             self.assertEqual(method, "GET")
             if "/messages/" in path:
@@ -2338,16 +2370,27 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             turn = {"turn_id": "turn-sharing", "inputs": list(inputs.values())}
             return {"turns": [turn], "active_turns": [turn]}
 
+        telemetry = [
+            {"case": "testDirectAgentShareWorkflow", "attempt": attempt,
+             "outcome": "passed" if attempt == passing_attempt else "failed"}
+            for attempt in range(1, passing_attempt + 1)
+        ]
         namespace.update(mode="--populated", root=self.directory, workspace=workspace, agent="holon-tester",
-                         local=local)
+                         local=local, ui_telemetry=telemetry)
         with patch("builtins.print"):
-            self.execute([share_block], namespace)
+            self.execute(share_block, namespace)
         shared = json.loads((evidence / "direct-share.json").read_text())
         self.assertEqual(len(shared["inputs"]), 4)
         self.assertEqual(len(shared["files"]), 2)
         self.assertEqual(len(shared["chains"]), 4)
         self.assertEqual(len({chain["client_request_id"] for chain in shared["chains"]}), 4)
         self.assertEqual(len({chain["message_id"] for chain in shared["chains"]}), 4)
+        self.assertEqual(shared["case_attempt"], passing_attempt)
+        self.assertEqual(shared["prompts"], records[-5:])
+        if passing_attempt == 2:
+            self.assertEqual(records[2]["case_attempt"], 1)
+            self.assertEqual(records[2]["request"]["client_request_id"], failed_uuid)
+            self.assertNotIn(receipts[failed_uuid], {chain["message_id"] for chain in shared["chains"]})
         for chain in shared["chains"]:
             self.assertEqual(chain["message"]["id"], chain["input"]["message_id"])
             expected = 1 if chain["kind"] in ("share-image", "share-file") else 0
@@ -2357,11 +2400,11 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         # Exercise the real acceptance block with invalid identity/material chains.
         for fault in ("collapsed-message", "reused-uuid", "wrong-text", "swapped-attachment",
                       "missing-input", "wrong-agent", "changed-retry", "invalid-uuid", "duplicate-input",
-                      "cross-turn-duplicate", "pending-duplicate"):
+                      "cross-turn-duplicate", "pending-duplicate", "missing-passing-text", "no-passing-attempt"):
             damaged = json.loads(json.dumps(records))
             damaged_inputs = list(json.loads(json.dumps(inputs)).values())
             damaged_messages = json.loads(json.dumps(messages))
-            share_records = [record for record in damaged if record["kind"].startswith("share-")]
+            share_records = damaged[-5:]
             text_id = share_records[0]["receipt"]["message_id"]
             url_record = next(record for record in share_records if record["kind"] == "share-url")
             image_id = next(record["receipt"]["message_id"] for record in share_records if record["kind"] == "share-image")
@@ -2387,6 +2430,8 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             elif fault == "duplicate-input":
                 damaged_inputs.append(next(value.copy() for value in damaged_inputs
                                            if value["message_id"] == text_id))
+            elif fault == "missing-passing-text":
+                del damaged[-5:-3]
 
             def damaged_local(method, path, payload=None):
                 if "/messages/" in path:
@@ -2401,16 +2446,17 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                 return page
 
             destination = self.directory / ("invalid-" + fault)
-            namespace.update(prompt_evidence=damaged, local=damaged_local, fixture_evidence=destination)
+            namespace.update(prompt_evidence=damaged, local=damaged_local, fixture_evidence=destination,
+                             ui_telemetry=[] if fault == "no-passing-attempt" else telemetry)
             with self.subTest(fault=fault), patch("builtins.print"):
                 with self.assertRaises(RuntimeError):
-                    self.execute([share_block], namespace)
+                    self.execute(share_block, namespace)
                 self.assertFalse((destination / "direct-share.json").exists())
         for path in evidence.iterdir():
             self.assertNotIn(b"do-not-record", path.read_bytes())
             self.assertNotIn(b"Authorization", path.read_bytes())
         with self.assertRaises(RuntimeError):
-            self.helpers["record_fixture_prompt"](evidence, 99, None, "/prompt",
+            self.helpers["record_fixture_prompt"](evidence, 99, None, None, "/prompt",
                 b'{"text":"IOS_SHARED_TEXT","session_token":"do-not-record"}',
                 b'{"message_id":"message-fixture"}', 200, True)
         self.assertFalse((evidence / "prompt-0099-request.json").exists())
@@ -2454,6 +2500,74 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             self.assertEqual(daemon.wait.call_args_list, [call(timeout=8), call()])
 
 
+class UIFixtureShareImageWindowContracts(unittest.TestCase):
+    """A retried share case is judged on its own attempt's image.
+
+    testDirectAgentShareWorkflow re-shares into the same media inbox when the
+    sweep retries it. The reference endpoint used to count every valid PNG in
+    the inbox, so the retry's own image made the count two and the retry
+    answered 404 without ever reading back what it retries for.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="holon-ios-share-window-")
+        self.addCleanup(temporary.cleanup)
+        self.helpers = fixture_helpers()
+        self.select = self.helpers["attempt_share_image"]
+        self.error = self.helpers["ShareImageReferenceError"]
+        self.inbox = Path(temporary.name).resolve() / "media" / "inbox"
+        self.inbox.mkdir(parents=True)
+
+    def share_image(self, name, modified, size=16):
+        def chunk(kind, data):
+            return (struct.pack("!I", len(data)) + kind + data
+                    + struct.pack("!I", self.helpers["zlib"].crc32(kind + data)))
+        image = (b"\x89PNG\r\n\x1a\n"
+                 + chunk(b"IHDR", struct.pack("!2I5B", size, size, 8, 2, 0, 0, 0))
+                 + chunk(b"IDAT", self.helpers["zlib"].compress(
+                     (b"\0" + bytes([40, 100, 190]) * size) * size))
+                 + chunk(b"IEND", b""))
+        path = self.inbox / name
+        path.write_bytes(image)
+        os.utime(path, (modified, modified))
+        return path
+
+    def test_retried_attempt_selects_only_the_image_it_wrote(self):
+        self.share_image("request-attempt1.png", 1_000.0)
+        second = self.share_image("request-attempt2.png", 2_000.0)
+        self.assertEqual(self.select(self.inbox, 1_500.0), second)
+        # Without the attempt window the failed attempt's file is a candidate
+        # too, which is exactly the stale count this window removes.
+        with self.assertRaises(self.error):
+            self.select(self.inbox, 0.0)
+
+    def test_attempt_window_without_exactly_one_valid_image_is_a_missing_reference(self):
+        self.share_image("request-attempt1.png", 1_000.0)
+        with self.assertRaises(self.error):  # nothing written in this window
+            self.select(self.inbox, 1_500.0)
+        self.share_image("request-attempt2.png", 2_000.0)
+        self.share_image("request-attempt2-retry.png", 2_100.0)
+        with self.assertRaises(self.error):  # two candidates in one window
+            self.select(self.inbox, 1_500.0)
+
+    def test_ambiguity_protection_ignores_non_canonical_inbox_files(self):
+        canonical = self.share_image("request-attempt2.png", 2_000.0)
+        # A second in-window file must still disqualify the reference, while
+        # files the endpoint never accepted are not candidates at all.
+        self.share_image("request-thumb.png", 2_100.0, size=32)
+        (self.inbox / "request-file.txt").write_bytes(b"IOS_SHARED_FILE_BYTES")
+        self.assertEqual(self.select(self.inbox, 1_500.0), canonical)
+
+    def test_reference_endpoint_reports_a_window_failure_as_missing(self):
+        source = (ROOT / "scripts/ios_ui_fixture.py").read_text()
+        start = source.index(
+            'if share_acceptance and self.path == "/fixture/shared-image-reference":')
+        endpoint = source[start:source.index("self.forward()", start)]
+        self.assertIn("attempt_share_image(", endpoint)
+        self.assertIn("except ShareImageReferenceError as error:", endpoint)
+        self.assertIn("self.send_error(404, str(error))", endpoint)
+
+
 class UIFixtureProxyAvailabilityContracts(unittest.TestCase):
     def setUp(self):
         self.requests = []
@@ -2494,7 +2608,7 @@ class UIFixtureProxyAvailabilityContracts(unittest.TestCase):
         proxy_class = next(node for node in ast.walk(tree)
                            if isinstance(node, ast.ClassDef) and node.name == "LostResponseProxy")
         self.namespace = dict(fixture_helpers(), port=upstream.server_port, fixture_evidence=None,
-            fixture_case=None, prompt_evidence=[], lost_receipts=[], lost_lock=threading.Lock(),
+            fixture_case_attempt=(None, None), prompt_evidence=[], lost_receipts=[], lost_lock=threading.Lock(),
             release_lost_response=threading.Event(), lost_response_acceptance=False,
             share_acceptance=False, proxy_control_token="fixture-runner-only-control",
             proxy_available=threading.Event(), proxy_connections=set(), proxy_state_lock=threading.Lock())

@@ -45,6 +45,38 @@ class FixtureControlError(RuntimeError):
         self.data = data
 
 
+class ShareImageReferenceError(RuntimeError):
+    """The current attempt's share window does not hold exactly one image."""
+
+
+def attempt_share_image(inbox, attempt_started_at):
+    """Return the one share image this attempt wrote into ``inbox``.
+
+    A retried case shares again into the same media inbox, so the previous
+    attempt's PNG is still on disk. Only files written at or after this
+    attempt started are candidates; counting the stale one made "exactly one"
+    false, so the retry answered 404 without exercising the read-back it
+    exists to retry. The single-image rule stays: two candidates inside one
+    attempt could mean the reference names the wrong file.
+    """
+    images = []
+    for candidate in inbox.glob("request-*.png"):
+        try:
+            if candidate.stat().st_mtime < attempt_started_at:
+                continue
+            with candidate.open("rb") as stream:
+                header = stream.read(24)
+        except OSError:
+            continue  # The daemon may be moving the file out of the inbox.
+        if (header.startswith(b"\x89PNG\r\n\x1a\n") and len(header) == 24
+                and struct.unpack(">II", header[16:24]) == (16, 16)):
+            images.append(candidate)
+    if len(images) != 1:
+        raise ShareImageReferenceError(
+            f"Expected one share image from this attempt, found {len(images)}")
+    return images[0]
+
+
 def report(message):
     """Write a CI annotation without ever raising.
 
@@ -448,7 +480,7 @@ def fixture_prompt_kind(request):
     return None
 
 
-def record_fixture_prompt(evidence, number, case, path, body, data, status, delivered):
+def record_fixture_prompt(evidence, number, case, case_attempt, path, body, data, status, delivered):
     request, receipt = json.loads(body), json.loads(data)
     # Exact bodies, not headers, tickets, sessions or control traffic. Fail closed
     # on unexpected fields rather than silently redacting an alleged raw artifact.
@@ -458,7 +490,7 @@ def record_fixture_prompt(evidence, number, case, path, body, data, status, deli
                    for item in request.get("attachments", []))):
         raise RuntimeError("Unexpected fields in fixture prompt evidence")
     stem = f"prompt-{number:04}"
-    record = {"source": "real daemon HTTP prompt response", "case": case,
+    record = {"source": "real daemon HTTP prompt response", "case": case, "case_attempt": case_attempt,
               "kind": fixture_prompt_kind(request), "path": path, "status": status,
               "delivered": delivered, "request": request, "receipt": receipt,
               "request_body": write_fixture_bytes(evidence, stem + "-request.json", body),
@@ -567,6 +599,70 @@ def direct_share_evidence(root, workspace, agent, prompts, inputs, local):
     return {"source": "real daemon request/receipt/conversation/message and linked attachment bytes",
             "chains": chains, "inputs": [chain["input"] for chain in chains],
             "prompts": prompts, "files": files}
+
+
+def direct_share_daemon_state(workspace, agent, local):
+    """Read conversation and material markers, which are not attempt-scoped."""
+    conversation = local("GET", f"/agents/{agent}/conversation?limit=60")
+    inputs = conversation_inputs(conversation)
+    previews = json.dumps(inputs, ensure_ascii=False)
+    markers = ["IOS_SHARED_TEXT", "https://example.test/holon-share", "shared-note"]
+    missing_markers = [marker for marker in markers if marker not in previews]
+    received_paths = [path for path in workspace.rglob("request-*") if path.is_file()]
+    received_files = [path.read_bytes() for path in received_paths]
+    file_materialized = b"IOS_SHARED_FILE_BYTES" in received_files
+    image_materialized = any(
+        data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24
+        and struct.unpack(">II", data[16:24]) == (16, 16) for data in received_files)
+    print("Direct-share daemon state (cross-attempt aggregate; not attributable "
+          f"to any single UI attempt): inputs={len(inputs)} "
+          "missing_markers=" + (",".join(missing_markers) or "none") +
+          f" file_bytes={file_materialized} image_bytes={image_materialized}", flush=True)
+    return inputs, missing_markers, file_materialized, image_materialized
+
+
+def report_direct_share_failure(workspace, agent, local):
+    """Report only aggregate state without exporting evidence or response bodies."""
+    try:
+        direct_share_daemon_state(workspace, agent, local)
+    except FixtureControlError as error:
+        print(f"Direct-share daemon state unavailable: fixture control HTTP {error.status}",
+              flush=True)
+    except Exception:  # noqa: BLE001
+        print("Direct-share daemon state unavailable: could not read fixture state", flush=True)
+
+
+def verify_direct_share_acceptance(root, workspace, agent, prompt_evidence,
+                                   lost_lock, fixture_evidence, local, ui_telemetry):
+    inputs, missing_markers, file_materialized, image_materialized = (
+        direct_share_daemon_state(workspace, agent, local))
+    if missing_markers:
+        raise RuntimeError(
+            "Direct-share input missing from authoritative conversation: " + missing_markers[0])
+    if not file_materialized:
+        raise RuntimeError("Direct-share file bytes were not materialized by the daemon")
+    if not image_materialized:
+        raise RuntimeError("Direct-share image bytes were not materialized by the daemon")
+    share_case = "testDirectAgentShareWorkflow"
+    passing_attempt = next((record["attempt"] for record in ui_telemetry
+                            if record["case"] == share_case
+                            and record["outcome"] == "passed"), None)
+    if passing_attempt is None:
+        raise RuntimeError("Direct-share evidence requires a passing UI case attempt")
+    if fixture_evidence is not None:
+        # Keep all raw prompt files. Only link the passing XCTest attempt's
+        # requests; HTTP resends within it still share an identity.
+        with lost_lock:
+            share_prompts = [record for record in prompt_evidence
+                             if record["case"] == share_case
+                             and record["case_attempt"] == passing_attempt
+                             and record["kind"].startswith("share-")]
+        evidence = direct_share_evidence(
+            root, workspace, agent, share_prompts, inputs, local)
+        evidence["case_attempt"] = passing_attempt
+        write_fixture_json(fixture_evidence, "direct-share.json", evidence)
+    print("Direct-share acceptance (sweep): OS extension text, URL, image and "
+          "file received by isolated Agent", flush=True)
 
 
 def content_report_snapshot(report_db, evidence, method, phase):
@@ -724,11 +820,15 @@ with fixture_directory(repo) as root:
     release_lost_response = threading.Event()
     lost_receipts = []
     prompt_evidence = []
-    fixture_case = None
+    fixture_case_attempt = (None, None)
     # The confirming automatic-read endpoint counts marker briefs created
     # after this baseline so a bounded retry of that case starts from a clean
     # count instead of deterministically failing its second attempt.
     automatic_read_baseline_seq = -1
+    # Wall clock: the reference endpoint compares it against st_mtime. Every
+    # attempt resets it, so a retried share case never counts the failed
+    # attempt's image, which is still in the inbox.
+    share_attempt_started_at = 0.0
     lost_lock = threading.Lock()
     proxy_control_token = secrets.token_hex(32)
     proxy_available = threading.Event()
@@ -744,16 +844,12 @@ with fixture_directory(repo) as root:
             if share_acceptance and self.path == "/fixture/shared-image-reference":
                 if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
                     self.send_error(403); return
-                images = []
-                for candidate in (workspace / "media" / "inbox").glob("request-*.png"):
-                    with candidate.open("rb") as stream:
-                        header = stream.read(24)
-                    if (header.startswith(b"\x89PNG\r\n\x1a\n") and len(header) == 24
-                            and struct.unpack(">II", header[16:24]) == (16, 16)):
-                        images.append(candidate)
-                if len(images) != 1:
-                    self.send_error(404, "Expected one isolated share image"); return
-                data = json.dumps({"reference": str(images[0])}).encode()
+                try:
+                    reference = attempt_share_image(
+                        workspace / "media" / "inbox", share_attempt_started_at)
+                except ShareImageReferenceError as error:
+                    self.send_error(404, str(error)); return
+                data = json.dumps({"reference": str(reference)}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
@@ -786,7 +882,7 @@ with fixture_directory(repo) as root:
             if self.path in {"/fixture/automatic-read-followup", "/fixture/automatic-read-confirmed"}:
                 if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
                     self.send_error(403); return
-                if fixture_case != "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount":
+                if fixture_case_attempt[0] != "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount":
                     self.send_error(409); return
                 # The client establishes its joining baseline before the snapshot.
                 # Only the later followup can prove a visible-body POST advanced it.
@@ -866,6 +962,9 @@ with fixture_directory(repo) as root:
             self.forward()
 
         def forward(self):
+            # Capture on ingress: a slow daemon response can finish during the
+            # next XCTest attempt and must still belong to the original one.
+            case, case_attempt = fixture_case_attempt
             responded = False
             if not proxy_available.is_set():
                 self.send_error(503, "isolated fixture node unavailable")
@@ -912,7 +1011,7 @@ with fixture_directory(repo) as root:
                     with lost_lock:
                         if retain_prompt:
                             prompt_evidence.append(record_fixture_prompt(
-                                fixture_evidence, len(prompt_evidence) + 1, fixture_case,
+                                fixture_evidence, len(prompt_evidence) + 1, case, case_attempt,
                                 self.path, body, data, response.status, delivered))
                         if is_lost_prompt:
                             lost_receipts.append((prompt["client_request_id"], receipt))
@@ -1510,8 +1609,7 @@ with fixture_directory(repo) as root:
                     # (history seeds, loss reset, browser link turn, pairing
                     # ticket, report snapshots) is rebuilt from scratch, which
                     # is what makes one bounded retry after a flaky failure safe.
-                    global fixture_case, automatic_read_baseline_seq
-                    fixture_case = method
+                    global automatic_read_baseline_seq
                     if method == "testOfflineReadingCacheColdLaunchAndRetry":
                         # Do not push the onboarding smoke's original brief out of
                         # its latest window before that earlier case has read it.
@@ -1765,6 +1863,10 @@ with fixture_directory(repo) as root:
                                 reset_app_group_consent(
                                     simulator, "run.holon.ios", "group.run.holon.ios")
                             started = time.monotonic()
+                            # Same attempt boundary as `started`, on the wall
+                            # clock the inbox's st_mtime is expressed in.
+                            share_attempt_started_at = time.time()
+                            fixture_case_attempt = (method, attempt)
                             try:
                                 run_ui_case(method, content_size, case_bundle)
                                 ui_telemetry.append({
@@ -1777,12 +1879,17 @@ with fixture_directory(repo) as root:
                                     "case": method, "attempt": attempt,
                                     "outcome": "failed", "seconds": elapsed})
                                 if attempt >= max_attempts:
+                                    if (share_acceptance
+                                            and method == "testDirectAgentShareWorkflow"):
+                                        report_direct_share_failure(workspace, agent, local)
                                     raise
                                 ui_retries.append(method)
                                 detail = (f"{method} attempt {attempt} failed after "
                                           f"{elapsed:.0f}s; rebuilding per-case fixtures and retrying once")
                                 print(f"::warning title=iOS UI retry::{detail}", flush=True)
                                 print(f"UI 用例 {method} 第 {attempt} 次尝试失败，重建该用例 fixture 后重试一次", flush=True)
+                            finally:
+                                fixture_case_attempt = (None, None)
                 finally:
                     # A stable, machine-readable record of the sweep's outcome.
                     # The CI summary prints it so a flaky case can be named
@@ -1820,25 +1927,9 @@ with fixture_directory(repo) as root:
             if FakeProvider.image_requests:
                 raise RuntimeError("Markdown renderer made an unconfirmed external image request")
             if share_acceptance and mode != "--sdk-only":
-                conversation = local("GET", f"/agents/{agent}/conversation?limit=60")
-                inputs = conversation_inputs(conversation)
-                previews = json.dumps(inputs, ensure_ascii=False)
-                for marker in ["IOS_SHARED_TEXT", "https://example.test/holon-share", "shared-note"]:
-                    if marker not in previews:
-                        raise RuntimeError("Direct-share input missing from authoritative conversation: " + marker)
-                received_paths = [path for path in workspace.rglob("request-*") if path.is_file()]
-                received_files = [path.read_bytes() for path in received_paths]
-                if b"IOS_SHARED_FILE_BYTES" not in received_files:
-                    raise RuntimeError("Direct-share file bytes were not materialized by the daemon")
-                if not any(data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24 and
-                           struct.unpack(">II", data[16:24]) == (16, 16) for data in received_files):
-                    raise RuntimeError("Direct-share image bytes were not materialized by the daemon")
-                if fixture_evidence is not None:
-                    with lost_lock:
-                        share_prompts = [record for record in prompt_evidence if record["kind"].startswith("share-")]
-                    evidence = direct_share_evidence(root, workspace, agent, share_prompts, inputs, local)
-                    write_fixture_json(fixture_evidence, "direct-share.json", evidence)
-                print("Direct-share acceptance: OS extension text, URL, image and file received by isolated Agent", flush=True)
+                verify_direct_share_acceptance(
+                    root, workspace, agent, prompt_evidence, lost_lock,
+                    fixture_evidence, local, ui_telemetry)
         finally:
             try:
                 if task_id is not None:

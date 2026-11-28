@@ -337,65 +337,75 @@ final class HolonUITests: XCTestCase {
         close.tap()
     }
 
-    private func reveal(_ element: XCUIElement, in app: XCUIApplication,
-                        fullyVisible: Bool = false,
-                        file: StaticString = #filePath, line: UInt = #line) {
-        func viewport() -> CGRect {
-            let window = app.windows.firstMatch.frame
-            let navigation = app.navigationBars.firstMatch
-            let tabs = app.tabBars.firstMatch
-            let keyboard = app.keyboards.firstMatch
-            let top = navigation.exists ? max(window.minY, navigation.frame.maxY) : window.minY
-            var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
-            // Docked search bars are handled by the static reserve below:
-            // iOS 26 drops the floating bar's AX node between snapshots, and
-            // asking for its frame — directly or through a query predicate —
-            // has both aborted tests and crashed the runner outright.
-            let composer = app.otherElements["sending.composer"].firstMatch
-            let editor = app.descendants(matching: .any)["sending.text"].firstMatch
-            // Conversation content scrolls UNDER the floating composer, so
-            // the bottom clamp must apply to every target that is not a
-            // composer child. Membership is decided by identifier equality,
-            // never frame geometry: r9 proved a frame comparison misreads
-            // content scrolled beneath the composer (link top below composer
-            // top) as a child, skips the clamp, and taps the composer's text
-            // field instead of the link.
-            let targetID = element.exists ? element.identifier : ""
-            let insideComposer = !targetID.isEmpty && composer.exists
-                && composer.descendants(matching: .any).matching(
-                    NSPredicate(format: "identifier == %@", targetID)
-                ).count > 0
-            if !insideComposer && composer.exists && !composer.frame.isEmpty && editor.exists && editor.isHittable {
-                bottom = min(bottom, composer.frame.minY)
-            }
-            if keyboard.exists {
-                bottom = min(bottom, keyboard.frame.minY)
-                // The keyboard's AX frame excludes its input assistant overlay.
-                let assistant = app.otherElements["SystemInputAssistantView"].firstMatch
-                if assistant.exists && !assistant.frame.isEmpty {
-                    bottom = min(bottom, assistant.frame.minY)
-                }
-            }
-            // A docked search bar floats over rows near the bottom, and a row
-            // behind it can still report as hittable. Plain existence is a
-            // single snapshot read that stays safe when the node transiently
-            // drops; reserve the bar's resting zone instead of probing its
-            // live frame.
-            if app.searchFields.firstMatch.exists {
-                bottom -= 96
-            }
-            return CGRect(x: window.minX, y: top, width: window.width, height: max(0, bottom - top))
+    /// The unobscured area a control must reach before it is interacted with.
+    private func viewport(for element: XCUIElement, in app: XCUIApplication) -> CGRect {
+        let window = app.windows.firstMatch.frame
+        let navigation = app.navigationBars.firstMatch
+        let tabs = app.tabBars.firstMatch
+        let keyboard = app.keyboards.firstMatch
+        let top = navigation.exists ? max(window.minY, navigation.frame.maxY) : window.minY
+        var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
+        // Docked search bars are handled by the static reserve below:
+        // iOS 26 drops the floating bar's AX node between snapshots, and
+        // asking for its frame — directly or through a query predicate —
+        // has both aborted tests and crashed the runner outright.
+        let composer = app.otherElements["sending.composer"].firstMatch
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+        // Conversation content scrolls UNDER the floating composer, so
+        // the bottom clamp must apply to every target that is not a
+        // composer child. Membership is decided by identifier equality,
+        // never frame geometry: r9 proved a frame comparison misreads
+        // content scrolled beneath the composer (link top below composer
+        // top) as a child, skips the clamp, and taps the composer's text
+        // field instead of the link.
+        let targetID = element.exists ? element.identifier : ""
+        let insideComposer = !targetID.isEmpty && composer.exists
+            && composer.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier == %@", targetID)
+            ).count > 0
+        if !insideComposer && composer.exists && !composer.frame.isEmpty && editor.exists && editor.isHittable {
+            bottom = min(bottom, composer.frame.minY)
         }
-        func contained(_ frame: CGRect, in viewport: CGRect) -> Bool {
-            !frame.isEmpty && (fullyVisible ? viewport.contains(frame)
-                : viewport.contains(CGPoint(x: frame.midX, y: frame.midY)))
+        if keyboard.exists {
+            bottom = min(bottom, keyboard.frame.minY)
+            // The keyboard's AX frame excludes its input assistant overlay.
+            let assistant = app.otherElements["SystemInputAssistantView"].firstMatch
+            if assistant.exists && !assistant.frame.isEmpty {
+                bottom = min(bottom, assistant.frame.minY)
+            }
         }
+        // A docked search bar floats over rows near the bottom, and a row
+        // behind it can still report as hittable. Plain existence is a
+        // single snapshot read that stays safe when the node transiently
+        // drops; reserve the bar's resting zone instead of probing its
+        // live frame.
+        if app.searchFields.firstMatch.exists {
+            bottom -= 96
+        }
+        return CGRect(x: window.minX, y: top, width: window.width, height: max(0, bottom - top))
+    }
+
+    private func contained(_ frame: CGRect, in viewport: CGRect, fullyVisible: Bool) -> Bool {
+        !frame.isEmpty && (fullyVisible ? viewport.contains(frame)
+            : viewport.contains(CGPoint(x: frame.midX, y: frame.midY)))
+    }
+
+    /// Scroll a control into the viewport without asserting anything.
+    ///
+    /// Seeking and asserting are separate on purpose: content that is still
+    /// rendering (an image the Agent has not materialized yet) never reached
+    /// the viewport, and reporting that as "present but offscreen" mislabels
+    /// a missing element as an obscured one. Callers that legitimately wait
+    /// for content seek first, assert existence, then reveal.
+    @discardableResult
+    private func seek(_ element: XCUIElement, in app: XCUIApplication,
+                      fullyVisible: Bool = false) -> Bool {
         for _ in 0..<40 {
-            let viewport = viewport()
+            let viewport = viewport(for: element, in: app)
             guard viewport.height > 0 else { break }
             if element.exists && element.isHittable
-                && contained(element.frame, in: viewport) {
-                return
+                && contained(element.frame, in: viewport, fullyVisible: fullyVisible) {
+                return true
             }
             // Form rows are lazy; small drags load them without skipping the target.
             var distance = viewport.height * 0.3
@@ -421,10 +431,31 @@ final class HolonUITests: XCTestCase {
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow,
                         thenHoldForDuration: 0.1)
         }
-        guard element.waitForExistence(timeout: UIWaitScale.scaled(10)), element.isHittable,
-              contained(element.frame, in: viewport()) else {
+        // Existence is the caller's assertion. A control that has not
+        // rendered yet must not read as one that is present but offscreen.
+        return element.exists && element.isHittable
+            && contained(element.frame, in: viewport(for: element, in: app),
+                         fullyVisible: fullyVisible)
+    }
+
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication,
+                        fullyVisible: Bool = false,
+                        file: StaticString = #filePath, line: UInt = #line) {
+        if seek(element, in: app, fullyVisible: fullyVisible) { return }
+        // Content the Agent materializes after the fact may still be
+        // rendering, so keep a bounded grace window before judging geometry.
+        guard element.waitForExistence(timeout: UIWaitScale.scaled(10)) else {
             capture(app, "unreachable-control")
-            XCTFail("Tap target must remain inside the unobscured viewport", file: file, line: line)
+            XCTFail("Tap target never appeared: existence never became true while seeking it into view",
+                    file: file, line: line)
+            return
+        }
+        guard element.isHittable,
+              contained(element.frame, in: viewport(for: element, in: app),
+                        fullyVisible: fullyVisible) else {
+            capture(app, "unreachable-control")
+            XCTFail("Tap target exists but did not settle inside the unobscured viewport",
+                    file: file, line: line)
             return
         }
     }
@@ -1483,9 +1514,13 @@ final class HolonUITests: XCTestCase {
         }
         XCTAssertTrue(more.waitForExistence(timeout: UIWaitScale.scaled(15)))
         let image = app.images["conversation.image.loaded"].firstMatch
-        reveal(image, in: app)
-        XCTAssertTrue(image.waitForExistence(timeout: UIWaitScale.scaled(20)),
-                      "Reopened chat must render the canonical system-share image")
+        // Reopening can restore a historical window. Scrolling that window
+        // cannot mount the new share turn; follow Latest while waiting for the image.
+        guard waitForContentInLatestWindow(image, in: app, timeout: 20) else {
+            reportSharedImageDiagnostics(app)
+            capture(app, "system-share-image-missing")
+            return XCTFail("Reopened chat never rendered the canonical system-share image")
+        }
         reveal(image, in: app, fullyVisible: true)
         capture(app, "system-share-conversation-image")
         openConversationFiles(app)
@@ -1500,6 +1535,31 @@ final class HolonUITests: XCTestCase {
                       "The paired app must read the shared image through Files")
         XCTAssertTrue(app.staticTexts["image/png"].exists)
         capture(app, "system-share-image-authorized-reader")
+    }
+
+    /// Name what the reopened chat actually held when the canonical image was
+    /// absent: the message may be missing entirely, or the message may be there
+    /// while its preview still loads, reads as unavailable, or stays collapsed
+    /// behind the reference button. Log counts rather than raw accessibility
+    /// hierarchy values, which can include message or connection details.
+    private func reportSharedImageDiagnostics(_ app: XCUIApplication) {
+        let loaded = app.images.matching(identifier: "conversation.image.loaded").count
+        let unavailable = app.buttons.matching(identifier: "conversation.image.unavailable").count
+        let references = app.buttons.matching(identifier: "conversation.image.loadReferences").count
+        let rows = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "operator.")).count
+        let markers = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "IOS_SHARED")).count
+        let latest = app.buttons["conversation.latest"].exists
+        // Which window the chat actually rendered separates "the message is not
+        // here" from "the reader opened an older window and never advanced".
+        let turns = app.staticTexts.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "conversation.time.")).count
+        let activities = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "activities.")).count
+        print("[share-readback] loaded=\(loaded) unavailable=\(unavailable)"
+            + " references=\(references) rows=\(rows) markers=\(markers) latest=\(latest)"
+            + " turns=\(turns) activities=\(activities)")
     }
 
     func testConversationLongImageHistory() async throws {
@@ -1929,7 +1989,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         let body = app.staticTexts.containing(NSPredicate(
             format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_BRIEF")).firstMatch
-        waitForLatestBrief(body, in: app)
+        XCTAssertTrue(waitForContentInLatestWindow(body, in: app, timeout: 30),
+                      "Load the newest real fixture brief")
         reveal(body, in: app, fullyVisible: true)
         XCTAssertTrue(body.isHittable)
         // Never invoke manual mark-read. The fixture enqueues a later real result
@@ -1968,7 +2029,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         let followup = app.staticTexts.containing(NSPredicate(
             format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF")).firstMatch
-        waitForLatestBrief(followup, in: app)
+        XCTAssertTrue(waitForContentInLatestWindow(followup, in: app, timeout: 30),
+                      "Load the newest real fixture brief")
         reveal(followup, in: app, fullyVisible: true)
         XCTAssertTrue(followup.isHittable)
         capture(app, "automatic-read-followup-visible")
@@ -1986,19 +2048,18 @@ final class HolonUITests: XCTestCase {
         capture(app, "automatic-read-home-count")
     }
 
-    private func waitForLatestBrief(_ body: XCUIElement, in app: XCUIApplication,
-                                    file: StaticString = #filePath, line: UInt = #line) {
+    private func waitForContentInLatestWindow(_ content: XCUIElement, in app: XCUIApplication,
+                                              timeout: TimeInterval) -> Bool {
         let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            if body.exists { return true }
-            // Restoration and body hydration can settle after the toolbar.
+            if content.exists { return true }
+            // Restoration and content hydration can settle after the toolbar.
             // Follow the latest-window control when it actually appears,
             // instead of making one pre-load existence check.
             let latest = app.buttons["conversation.latest"]
             if latest.exists && latest.isEnabled && latest.isHittable { latest.tap() }
-            return body.exists
+            return content.exists
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: UIWaitScale.scaled(30)), .completed,
-                       "Load the newest real fixture brief", file: file, line: line)
+        return XCTWaiter.wait(for: [loaded], timeout: UIWaitScale.scaled(timeout)) == .completed
     }
 
     private func waitForRosterStatus(_ label: String, in app: XCUIApplication,
