@@ -104,6 +104,10 @@ printf '%s\n' "${HOLON_HOME:-<default home>}"
 
 升级会移除 `ScheduleDestructiveOperation` 及其私有账本。它不会执行已保存的验证命令、重试旧操作，也不会停止已经交给外部执行器的任务。账本里没有记录，并不意味着操作已成功或进程已退出。如果此前派发的任务可能还在运行，请先在外部服务管理器里独立核对它的状态，再决定是否发起同类操作。如需执行已授权的守护进程重启，请从守护进程所在服务之外的操作者会话中操作。
 
+### 从 0.62.0 beta 升级后 agent 被隔离
+
+如果节点此前运行过 0.62.0 beta，升级可能让历史 turn 的输入证据发生漂移。守护进程随后会在启动时隔离受影响的 agent：日志中出现 `input evidence canonical projection changed without qualified writer`，唤醒请求返回 503，排队的输入也会被一直挂起。v0.62.0 会在启动过程中自动修复漂移的证据，直接升级到 v0.62.0 或更高版本并重启守护进程即可。
+
 ### “No available model” 或凭据失效
 
 ```bash

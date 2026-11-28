@@ -126,10 +126,15 @@ providers.
 
 **`POST /api/models/refresh`** — Refresh available models
 
-Discovers models for providers whose discovery cache is missing or expired,
-then returns the same catalog shape as `GET /api/models`. Refreshing also opts
-credential-free and anonymous-access built-in providers (such as `ollama`, `vllm`, and `magpie`) into serving discovered models for the current session without modifying `config.json`. A discovery failure for
-one provider does not prevent other available models from being returned.
+Probes the providers you have opted into, even when their discovery cache is
+still fresh, then returns the same catalog shape as `GET /api/models`. A
+provider is opted in when it is declared with `providers.<id>` in
+`config.json`, referenced from a configured model route, or targeted by an
+earlier refresh in the current session. Opted-in credential-free and
+anonymous-access built-in providers (such as `ollama`, `vllm`, and `magpie`)
+serve their discovered models for the current session without changes to
+`config.json`. A discovery failure for one provider does not prevent other
+available models from being returned.
 
 ```json
 {
