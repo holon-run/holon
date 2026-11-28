@@ -6,7 +6,7 @@ use crate::{
     },
     types::{
         AuthorityClass, MessageBody, MessageKind, MessageOrigin, Priority, ToolExecutionRecord,
-        ToolExecutionStatus, TurnTerminalKind, TurnTerminalRecord,
+        ToolExecutionStatus, TurnNoBriefReason, TurnTerminalKind, TurnTerminalRecord,
     },
 };
 
@@ -228,5 +228,140 @@ async fn finite_terminal_read_rejects_unacknowledged_turn_deletion() -> Result<(
         error.downcast_ref::<InputEvidenceSnapshotError>(),
         Some(InputEvidenceSnapshotError::ProjectionChanged(_))
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn retired_destructive_fence_rewrite_fails_turn_reads_until_repair() -> Result<()> {
+    use crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError;
+
+    fn payload_digest(payload: &str) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(payload.as_bytes()))
+    }
+
+    fn no_runtime_backfill(
+        _: &rusqlite::Transaction<'_>,
+        _: holon_storage::migrations::RuntimeBackfill,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // Re-freeze every Turn-family fingerprint for this turn against the
+    // current payload, the way the pre-v121 runtime did.
+    fn refreeze_turn_evidence(tx: &rusqlite::Transaction<'_>, turn_id: &str) -> Result<()> {
+        let payload: String = tx.query_row(
+            "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
+            [turn_id],
+            |row| row.get(0),
+        )?;
+        let bytes = i64::try_from(payload.len()).context("payload exceeds i64")?;
+        let digest = payload_digest(&payload);
+        for (sql, bindings) in [
+            (
+                "UPDATE input_evidence_current
+                 SET content_digest = ?1,
+                     fingerprint_json = json_set(fingerprint_json, '$.payload_bytes', ?2)
+                 WHERE family = 'turn' AND record_id = ?3",
+                rusqlite::params![digest, bytes, turn_id],
+            ),
+            (
+                "UPDATE input_evidence_eligibility
+                 SET fingerprint_json = json_set(
+                   fingerprint_json, '$.payload_bytes', ?1, '$.frozen_payload_digest', ?2)
+                 WHERE family = 'turn' AND record_id = ?3",
+                rusqlite::params![bytes, digest, turn_id],
+            ),
+            (
+                "UPDATE input_evidence_seed_recovery_current
+                 SET fingerprint_json = json_set(
+                   fingerprint_json, '$.payload_bytes', ?1, '$.frozen_payload_digest', ?2)
+                 WHERE family = 'turn' AND record_id = ?3",
+                rusqlite::params![bytes, digest, turn_id],
+            ),
+        ] {
+            tx.execute(sql, bindings)?;
+        }
+        Ok(())
+    }
+
+    let (runtime, _home, terminal) = started().await?;
+    let turn_id = terminal.turn_id.clone();
+
+    // Settle the started dispatch so a later queued input may deliver.
+    runtime
+        .persist_turn_terminal_record(
+            TurnTerminalKind::Completed,
+            None,
+            Some(TurnNoBriefReason::ToolOnlyWait),
+            1,
+            None,
+            true,
+        )
+        .await?;
+
+    // Sanity: the completed Turn reads cleanly before any drift.
+    runtime.prepare_turn_record_read(&turn_id).await?;
+
+    // v117-era state: the payload still carries the retired fence key and
+    // the frozen evidence matches it.
+    runtime.runtime_db().transaction(|tx| {
+        tx.execute(
+            "UPDATE turn_records
+             SET payload_json = json_set(
+               payload_json, '$.destructive_operation_id', 'legacy-fence')
+             WHERE turn_id = ?1",
+            [&turn_id],
+        )?;
+        refreeze_turn_evidence(tx, &turn_id)?;
+        Ok(())
+    })?;
+    runtime.prepare_turn_record_read(&turn_id).await?;
+
+    // Replay the v121 fence retirement rewrite.
+    runtime.runtime_db().transaction(|tx| {
+        tx.execute_batch(
+            "UPDATE turn_records
+             SET payload_json = CASE
+               WHEN terminal_kind IS NULL THEN json_remove(
+                 json_set(payload_json, '$.external_side_effect_possible', json('true')),
+                 '$.destructive_operation_id')
+               ELSE json_remove(payload_json, '$.destructive_operation_id')
+             END
+             WHERE json_extract(payload_json, '$.destructive_operation_id') IS NOT NULL;",
+        )?;
+        Ok(())
+    })?;
+
+    // The unfixed chain leaves the frozen fingerprint drifted, so turn input
+    // preparation fails closed exactly like production.
+    let error = runtime
+        .prepare_turn_record_read(&turn_id)
+        .await
+        .err()
+        .context("drifted Turn input was accepted")?;
+    assert!(matches!(
+        error.downcast_ref::<InputEvidenceSnapshotError>(),
+        Some(InputEvidenceSnapshotError::ProjectionChanged(_))
+    ));
+
+    // Re-run the real v123 repair migration against the drifted rows.
+    let migration = holon_storage::migrations::MIGRATIONS
+        .iter()
+        .find(|migration| {
+            migration.name == "repair_retired_destructive_operation_turn_fingerprints"
+        })
+        .unwrap();
+    let mut connection = runtime.runtime_db().connection()?;
+    connection.execute("DELETE FROM schema_migrations WHERE version = 123", [])?;
+    holon_storage::migrations::apply_migration(&mut connection, migration, no_runtime_backfill)?;
+    drop(connection);
+
+    // Repaired evidence passes the real read path again.
+    runtime.prepare_turn_record_read(&turn_id).await?;
+
+    // With the read path restored, queued inputs face no projection gate:
+    // turn input preparation is the exact failure surface that quarantined
+    // agents and pinned queued recovery turns in production.
     Ok(())
 }

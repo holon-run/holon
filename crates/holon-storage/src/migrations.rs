@@ -4694,6 +4694,14 @@ CREATE INDEX IF NOT EXISTS idx_usage_attempts_day ON usage_attempts(day);
 CREATE INDEX IF NOT EXISTS idx_usage_attempts_agent_day ON usage_attempts(agent_id, day);
 CREATE INDEX IF NOT EXISTS idx_usage_attempts_model_day ON usage_attempts(model_ref, day);",
     },
+    Migration {
+        version: 123,
+        name: "repair_retired_destructive_operation_turn_fingerprints",
+        // The v121 fence retirement rewrote `turn_records.payload_json`
+        // without refreshing frozen Turn input evidence; the hook below
+        // re-freezes the drifted fingerprints. Table DDL is unchanged.
+        sql: "",
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -5174,6 +5182,9 @@ fn apply_migration_transaction(
     }
     if migration.name == "repair_retired_outcome_current_fingerprint" {
         repair_retired_outcome_current_fingerprint(transaction)?;
+    }
+    if migration.name == "repair_retired_destructive_operation_turn_fingerprints" {
+        repair_retired_destructive_operation_turn_fingerprints(transaction)?;
     }
     if migration.name == "strict_runtime_sequences" {
         migrate_runtime_sequences(transaction)?;
@@ -5895,6 +5906,453 @@ WHERE json_extract(payload_json, '$.destructive_operation_id') IS NOT NULL;
         )?;
     }
     Ok(())
+}
+
+/// v123: re-freeze Turn input-evidence fingerprints drifted by the v121
+/// `retire_destructive_operation_fences` rewrite.
+///
+/// v121 removed `$.destructive_operation_id` from `turn_records.payload_json`
+/// (and added `$.external_side_effect_possible` to unfinished turns) without
+/// refreshing the frozen Turn fingerprints, so read-time qualification fails
+/// with `ProjectionChanged` and quarantines agents at runtime construction.
+/// Only drift attributable to that rewrite is repaired: the current payload no
+/// longer carries the fence key and every non-body fingerprint field still
+/// matches the row. Other drifted rows are counted, logged, and left
+/// unchanged instead of being silently legalized.
+fn repair_retired_destructive_operation_turn_fingerprints(
+    transaction: &Transaction<'_>,
+) -> Result<()> {
+    if !table_exists_tx(transaction, "turn_records")? {
+        return Ok(());
+    }
+    let mut counters = TurnFingerprintRepairCounters::default();
+    if table_exists_tx(transaction, "input_evidence_current")? {
+        repair_turn_fingerprints_current(transaction, &mut counters)?;
+    }
+    if table_exists_tx(transaction, "input_evidence_eligibility")? {
+        repair_turn_fingerprints_eligibility(transaction, &mut counters)?;
+    }
+    if table_exists_tx(transaction, "input_evidence_seed_recovery_current")? {
+        repair_turn_fingerprints_seed_recovery(transaction, &mut counters)?;
+    }
+    counters.report(transaction)?;
+    Ok(())
+}
+
+#[derive(Default)]
+struct TurnFingerprintRepairCounters {
+    repaired_current: u64,
+    repaired_eligibility: u64,
+    repaired_seed_recovery: u64,
+    non_v121_current: u64,
+    non_v121_eligibility: u64,
+    non_v121_seed_recovery: u64,
+}
+
+impl TurnFingerprintRepairCounters {
+    fn report(&self, transaction: &Transaction<'_>) -> Result<()> {
+        let drifted =
+            self.non_v121_current + self.non_v121_eligibility + self.non_v121_seed_recovery;
+        if drifted > 0 {
+            tracing::warn!(
+                non_v121_current = self.non_v121_current,
+                non_v121_eligibility = self.non_v121_eligibility,
+                non_v121_seed_recovery = self.non_v121_seed_recovery,
+                "Turn input-evidence drift is not attributable to the retired destructive-operation fence rewrite; rows were left unchanged for diagnosis"
+            );
+        }
+        tracing::info!(
+            repaired_current = self.repaired_current,
+            repaired_eligibility = self.repaired_eligibility,
+            repaired_seed_recovery = self.repaired_seed_recovery,
+            non_v121_total = drifted,
+            "re-froze Turn input-evidence fingerprints drifted by the fence retirement"
+        );
+        if !table_exists_tx(transaction, "runtime_metadata")? {
+            return Ok(());
+        }
+        let report = serde_json::json!({
+            "repaired": {
+                "input_evidence_current": self.repaired_current,
+                "input_evidence_eligibility": self.repaired_eligibility,
+                "input_evidence_seed_recovery_current": self.repaired_seed_recovery,
+            },
+            "non_v121": {
+                "input_evidence_current": self.non_v121_current,
+                "input_evidence_eligibility": self.non_v121_eligibility,
+                "input_evidence_seed_recovery_current": self.non_v121_seed_recovery,
+            },
+        })
+        .to_string();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        transaction.execute(
+            "INSERT INTO runtime_metadata (key, value, created_at, updated_at)
+             VALUES ('repair_retired_destructive_operation_turn_fingerprints', ?1, ?2, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![report, now],
+        )?;
+        Ok(())
+    }
+}
+
+enum TurnFingerprintDrift {
+    Repair {
+        payload_bytes: i64,
+        payload_digest: String,
+    },
+    NotAttributable,
+}
+
+/// Mirrors RuntimeDb's Turn `fingerprint_on` projection
+/// (`runtime_db::input_evidence_snapshot`): every Turn fingerprint field
+/// except the body-dependent `payload_bytes` and `frozen_payload_digest`.
+fn turn_fingerprint_metadata_matches(
+    stored: &serde_json::Value,
+    turn_index: i64,
+    created_at: &str,
+    owner_kind: Option<&str>,
+    owner_id: Option<&str>,
+) -> bool {
+    let optional_text = |stored: &serde_json::Value, name: &str, expected: Option<&str>| match (
+        stored.get(name),
+        expected,
+    ) {
+        (None, _) => false,
+        (Some(field), None) => field.is_null(),
+        (Some(field), Some(text)) => field.as_str() == Some(text),
+    };
+    stored
+        .get("content_hash")
+        .is_some_and(serde_json::Value::is_null)
+        && stored
+            .get("sequence")
+            .is_some_and(serde_json::Value::is_null)
+        && stored.get("turn_index").and_then(serde_json::Value::as_i64) == Some(turn_index)
+        && stored.get("created_at").and_then(serde_json::Value::as_str) == Some(created_at)
+        && optional_text(stored, "owner_kind", owner_kind)
+        && optional_text(stored, "owner_id", owner_id)
+        && stored
+            .get("revision_marker")
+            .and_then(serde_json::Value::as_str)
+            == Some("canonical_body")
+        && stored
+            .get("related_turn_id")
+            .is_some_and(serde_json::Value::is_null)
+}
+
+/// Classify one drifted Turn fingerprint row against the v121 rewrite shape.
+fn classify_turn_fingerprint_drift(
+    fingerprint_json: &str,
+    turn_index: i64,
+    created_at: &str,
+    owner_kind: Option<&str>,
+    owner_id: Option<&str>,
+    payload: &str,
+    payload_is_json: bool,
+    fence_key: Option<rusqlite::types::Value>,
+) -> Result<TurnFingerprintDrift> {
+    if !payload_is_json || fence_key.is_some() {
+        return Ok(TurnFingerprintDrift::NotAttributable);
+    }
+    let Ok(stored) = serde_json::from_str::<serde_json::Value>(fingerprint_json) else {
+        return Ok(TurnFingerprintDrift::NotAttributable);
+    };
+    if !turn_fingerprint_metadata_matches(&stored, turn_index, created_at, owner_kind, owner_id) {
+        return Ok(TurnFingerprintDrift::NotAttributable);
+    }
+    Ok(TurnFingerprintDrift::Repair {
+        payload_bytes: i64::try_from(payload.len()).context("turn payload exceeds i64")?,
+        payload_digest: bytes_sha256_hex(payload.as_bytes()),
+    })
+}
+
+fn turn_row_drift(
+    row: &rusqlite::Row<'_>,
+    fingerprint_col: usize,
+    turn_index_col: usize,
+    created_at_col: usize,
+    owner_kind_col: usize,
+    owner_id_col: usize,
+    payload_col: usize,
+    payload_valid_col: usize,
+    fence_col: usize,
+) -> Result<TurnFingerprintDrift> {
+    let fingerprint_json = row
+        .get_ref(fingerprint_col)
+        .ok()
+        .and_then(|value| value.as_str().ok());
+    let payload = row
+        .get_ref(payload_col)
+        .ok()
+        .and_then(|value| value.as_str().ok());
+    match (fingerprint_json, payload) {
+        (Some(fingerprint_json), Some(payload)) => classify_turn_fingerprint_drift(
+            fingerprint_json,
+            row.get::<_, i64>(turn_index_col)?,
+            &row.get::<_, String>(created_at_col)?,
+            row.get::<_, Option<String>>(owner_kind_col)?.as_deref(),
+            row.get::<_, Option<String>>(owner_id_col)?.as_deref(),
+            payload,
+            row.get::<_, i64>(payload_valid_col)? != 0,
+            row.get::<_, Option<rusqlite::types::Value>>(fence_col)?,
+        ),
+        _ => Ok(TurnFingerprintDrift::NotAttributable),
+    }
+}
+
+fn repair_turn_fingerprints_current(
+    transaction: &Transaction<'_>,
+    counters: &mut TurnFingerprintRepairCounters,
+) -> Result<()> {
+    // Current aliases keep the body digest in its own column and demand full
+    // fingerprint equality, so the repair drops any stray frozen digest.
+    let mut scan = transaction.prepare(
+        "SELECT c.agent_id, c.identity_incarnation, c.record_id, c.fingerprint_json,
+                r.turn_index, r.created_at, r.owner_kind, r.owner_id, r.payload_json,
+                json_valid(r.payload_json),
+                CASE WHEN json_valid(r.payload_json)
+                     THEN json_extract(r.payload_json, '$.destructive_operation_id') END
+         FROM input_evidence_current c
+         JOIN turn_records r
+           ON r.agent_id = c.agent_id AND r.turn_id = c.record_id
+         WHERE c.family = 'turn' AND c.availability = 'present'
+           AND (c.agent_id, c.identity_incarnation, c.record_id) > (?1, ?2, ?3)
+           AND CASE WHEN json_valid(c.fingerprint_json)
+               THEN COALESCE(json_extract(c.fingerprint_json, '$.payload_bytes'), -1)
+                    <> length(CAST(r.payload_json AS BLOB))
+               ELSE 1 END
+         ORDER BY c.agent_id, c.identity_incarnation, c.record_id
+         LIMIT 128",
+    )?;
+    let mut repair = transaction.prepare(
+        "UPDATE input_evidence_current
+         SET content_digest = ?1,
+             fingerprint_json = json_remove(
+               json_set(fingerprint_json, '$.payload_bytes', ?2),
+               '$.frozen_payload_digest')
+         WHERE agent_id = ?3 AND identity_incarnation = ?4
+           AND family = 'turn' AND record_id = ?5",
+    )?;
+    struct CurrentRepair {
+        agent_id: String,
+        identity_incarnation: i64,
+        record_id: String,
+        payload_bytes: i64,
+        payload_digest: String,
+    }
+    let mut cursor = (String::new(), 0_i64, String::new());
+    loop {
+        // Close the scan before mutating the table; keep one batch of keys.
+        let mut repairs = Vec::new();
+        let mut rows = scan.query(params![cursor.0, cursor.1, cursor.2])?;
+        let mut advanced = false;
+        while let Some(row) = rows.next()? {
+            cursor = (row.get(0)?, row.get(1)?, row.get(2)?);
+            advanced = true;
+            match turn_row_drift(row, 3, 4, 5, 6, 7, 8, 9, 10)? {
+                TurnFingerprintDrift::Repair {
+                    payload_bytes,
+                    payload_digest,
+                } => repairs.push(CurrentRepair {
+                    agent_id: cursor.0.clone(),
+                    identity_incarnation: cursor.1,
+                    record_id: cursor.2.clone(),
+                    payload_bytes,
+                    payload_digest,
+                }),
+                TurnFingerprintDrift::NotAttributable => {
+                    counters.non_v121_current += 1;
+                    tracing::warn!(
+                        agent_id = %cursor.0,
+                        turn_id = %cursor.2,
+                        "input_evidence_current Turn fingerprint drift is not attributable to the retired destructive-operation fence rewrite; leaving the row unchanged"
+                    );
+                }
+            }
+        }
+        drop(rows);
+        if !advanced {
+            return Ok(());
+        }
+        for pending in repairs {
+            repair.execute(params![
+                pending.payload_digest,
+                pending.payload_bytes,
+                pending.agent_id,
+                pending.identity_incarnation,
+                pending.record_id
+            ])?;
+            counters.repaired_current += 1;
+        }
+    }
+}
+
+fn repair_turn_fingerprints_eligibility(
+    transaction: &Transaction<'_>,
+    counters: &mut TurnFingerprintRepairCounters,
+) -> Result<()> {
+    // Fixed seed evidence freezes the body digest inside the fingerprint.
+    let mut scan = transaction.prepare(
+        "SELECT e.seed_id, e.capture_phase, e.record_id, e.fingerprint_json,
+                r.turn_index, r.created_at, r.owner_kind, r.owner_id, r.payload_json,
+                json_valid(r.payload_json),
+                CASE WHEN json_valid(r.payload_json)
+                     THEN json_extract(r.payload_json, '$.destructive_operation_id') END
+         FROM input_evidence_eligibility e
+         JOIN episode_continuity_seeds s ON s.seed_id = e.seed_id
+         JOIN turn_records r
+           ON r.agent_id = s.agent_id AND r.turn_id = e.record_id
+         WHERE e.family = 'turn'
+           AND (e.seed_id, e.capture_phase, e.record_id) > (?1, ?2, ?3)
+           AND CASE WHEN json_valid(e.fingerprint_json)
+               THEN COALESCE(json_extract(e.fingerprint_json, '$.payload_bytes'), -1)
+                    <> length(CAST(r.payload_json AS BLOB))
+               ELSE 1 END
+         ORDER BY e.seed_id, e.capture_phase, e.record_id
+         LIMIT 128",
+    )?;
+    let mut repair = transaction.prepare(
+        "UPDATE input_evidence_eligibility
+         SET fingerprint_json = json_set(
+               fingerprint_json,
+               '$.payload_bytes', ?1,
+               '$.frozen_payload_digest', ?2)
+         WHERE seed_id = ?3 AND capture_phase = ?4
+           AND family = 'turn' AND record_id = ?5",
+    )?;
+    struct EligibilityRepair {
+        seed_id: String,
+        capture_phase: String,
+        record_id: String,
+        payload_bytes: i64,
+        payload_digest: String,
+    }
+    let mut cursor = (String::new(), String::new(), String::new());
+    loop {
+        let mut repairs = Vec::new();
+        let mut rows = scan.query(params![cursor.0, cursor.1, cursor.2])?;
+        let mut advanced = false;
+        while let Some(row) = rows.next()? {
+            cursor = (row.get(0)?, row.get(1)?, row.get(2)?);
+            advanced = true;
+            match turn_row_drift(row, 3, 4, 5, 6, 7, 8, 9, 10)? {
+                TurnFingerprintDrift::Repair {
+                    payload_bytes,
+                    payload_digest,
+                } => repairs.push(EligibilityRepair {
+                    seed_id: cursor.0.clone(),
+                    capture_phase: cursor.1.clone(),
+                    record_id: cursor.2.clone(),
+                    payload_bytes,
+                    payload_digest,
+                }),
+                TurnFingerprintDrift::NotAttributable => {
+                    counters.non_v121_eligibility += 1;
+                    tracing::warn!(
+                        seed_id = %cursor.0,
+                        turn_id = %cursor.2,
+                        "input_evidence_eligibility Turn fingerprint drift is not attributable to the retired destructive-operation fence rewrite; leaving the row unchanged"
+                    );
+                }
+            }
+        }
+        drop(rows);
+        if !advanced {
+            return Ok(());
+        }
+        for pending in repairs {
+            repair.execute(params![
+                pending.payload_bytes,
+                pending.payload_digest,
+                pending.seed_id,
+                pending.capture_phase,
+                pending.record_id
+            ])?;
+            counters.repaired_eligibility += 1;
+        }
+    }
+}
+
+fn repair_turn_fingerprints_seed_recovery(
+    transaction: &Transaction<'_>,
+    counters: &mut TurnFingerprintRepairCounters,
+) -> Result<()> {
+    // Recovery-minted fixed evidence stores the same frozen digest shape.
+    let mut scan = transaction.prepare(
+        "SELECT n.seed_id, n.record_id, n.fingerprint_json,
+                r.turn_index, r.created_at, r.owner_kind, r.owner_id, r.payload_json,
+                json_valid(r.payload_json),
+                CASE WHEN json_valid(r.payload_json)
+                     THEN json_extract(r.payload_json, '$.destructive_operation_id') END
+         FROM input_evidence_seed_recovery_current n
+         JOIN episode_continuity_seeds s ON s.seed_id = n.seed_id
+         JOIN turn_records r
+           ON r.agent_id = s.agent_id AND r.turn_id = n.record_id
+         WHERE n.family = 'turn'
+           AND (n.seed_id, n.record_id) > (?1, ?2)
+           AND CASE WHEN json_valid(n.fingerprint_json)
+               THEN COALESCE(json_extract(n.fingerprint_json, '$.payload_bytes'), -1)
+                    <> length(CAST(r.payload_json AS BLOB))
+               ELSE 1 END
+         ORDER BY n.seed_id, n.record_id
+         LIMIT 128",
+    )?;
+    let mut repair = transaction.prepare(
+        "UPDATE input_evidence_seed_recovery_current
+         SET fingerprint_json = json_set(
+               fingerprint_json,
+               '$.payload_bytes', ?1,
+               '$.frozen_payload_digest', ?2)
+         WHERE seed_id = ?3 AND family = 'turn' AND record_id = ?4",
+    )?;
+    struct SeedRecoveryRepair {
+        seed_id: String,
+        record_id: String,
+        payload_bytes: i64,
+        payload_digest: String,
+    }
+    let mut cursor = (String::new(), String::new());
+    loop {
+        let mut repairs = Vec::new();
+        let mut rows = scan.query(params![cursor.0, cursor.1])?;
+        let mut advanced = false;
+        while let Some(row) = rows.next()? {
+            cursor = (row.get(0)?, row.get(1)?);
+            advanced = true;
+            match turn_row_drift(row, 2, 3, 4, 5, 6, 7, 8, 9)? {
+                TurnFingerprintDrift::Repair {
+                    payload_bytes,
+                    payload_digest,
+                } => repairs.push(SeedRecoveryRepair {
+                    seed_id: cursor.0.clone(),
+                    record_id: cursor.1.clone(),
+                    payload_bytes,
+                    payload_digest,
+                }),
+                TurnFingerprintDrift::NotAttributable => {
+                    counters.non_v121_seed_recovery += 1;
+                    tracing::warn!(
+                        seed_id = %cursor.0,
+                        turn_id = %cursor.1,
+                        "input_evidence_seed_recovery_current Turn fingerprint drift is not attributable to the retired destructive-operation fence rewrite; leaving the row unchanged"
+                    );
+                }
+            }
+        }
+        drop(rows);
+        if !advanced {
+            return Ok(());
+        }
+        for pending in repairs {
+            repair.execute(params![
+                pending.payload_bytes,
+                pending.payload_digest,
+                pending.seed_id,
+                pending.record_id
+            ])?;
+            counters.repaired_seed_recovery += 1;
+        }
+    }
 }
 
 fn ensure_conversation_read_model_phase1_schema(transaction: &Transaction<'_>) -> Result<()> {
